@@ -1,0 +1,123 @@
+// Global properties for the app project
+ext {
+    flutterCompileSdkVersion = 36
+    flutterMinSdkVersion = 26
+    flutterTargetSdkVersion = 36
+}
+
+// Robustly load local.properties to get Flutter SDK path
+def getFlutterSdkPath() {
+    def properties = new Properties()
+    def localPropertiesFile = rootProject.file('local.properties')
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.withReader('UTF-8') { reader ->
+            properties.load(reader)
+        }
+    }
+    def sdkPath = properties.getProperty('flutter.sdk')
+    if (sdkPath == null) {
+        sdkPath = System.getenv("FLUTTER_ROOT") ?: System.getenv("FLUTTER_HOME")
+    }
+    return sdkPath
+}
+
+def flutterSdkPath = getFlutterSdkPath()
+
+// Share the SDK path with all subprojects
+ext.flutterSdkPath = flutterSdkPath
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        if (flutterSdkPath != null) {
+            // Manual bridging: Point to local Flutter engine artifacts
+            maven {
+                url "$flutterSdkPath/bin/cache/artifacts/engine"
+            }
+        }
+    }
+    
+    // Inject properties into every project's extension so they are available as 'flutter.XXX'
+    project.ext {
+        set("flutter.compileSdkVersion", rootProject.ext.flutterCompileSdkVersion)
+        set("flutter.minSdkVersion", rootProject.ext.flutterMinSdkVersion)
+        set("flutter.targetSdkVersion", rootProject.ext.flutterTargetSdkVersion)
+    }
+
+    // ALSO inject a 'flutter' object into every project's extra properties
+    project.ext.flutter = [
+        compileSdkVersion: rootProject.ext.flutterCompileSdkVersion,
+        minSdkVersion: rootProject.ext.flutterMinSdkVersion,
+        targetSdkVersion: rootProject.ext.flutterTargetSdkVersion
+    ]
+
+    // CRITICAL FIX: Add properties directly to subprojects so they are available during configuration
+    if (project != rootProject) {
+        project.configurations.all {
+            resolutionStrategy.eachDependency { details ->
+                if (details.requested.group == 'com.android.tools.build' && details.requested.name == 'gradle') {
+                    details.useVersion '8.1.1'
+                }
+            }
+        }
+    }
+}
+
+// Manual bridging for plugins that expect 'android.flutter' property or missing symbols
+subprojects {
+    // Inject properties as soon as the Android plugins are applied
+    project.plugins.withId('com.android.library') {
+        injectFlutterExtension(project)
+    }
+    project.plugins.withId('com.android.application') {
+        injectFlutterExtension(project)
+    }
+}
+
+def injectFlutterExtension(p) {
+    if (p.hasProperty('android')) {
+        p.android {
+            compileSdkVersion rootProject.ext.flutterCompileSdkVersion
+            
+            // Ensure the 'flutter' extension exists on the android object too
+            if (!p.android.extensions.findByName('flutter')) {
+                p.android.extensions.add('flutter', [
+                    compileSdkVersion: rootProject.ext.flutterCompileSdkVersion,
+                    minSdkVersion: rootProject.ext.flutterMinSdkVersion,
+                    targetSdkVersion: rootProject.ext.flutterTargetSdkVersion
+                ])
+            }
+        }
+    }
+    
+    // Inject essential dependencies for non-app projects
+    if (p.name != 'app') {
+        p.dependencies {
+            // CRITICAL: Manually include the specific Flutter engine JAR from the local SDK
+            // This specifically resolves "package io.flutter.plugin.common does not exist" 
+            if (rootProject.ext.flutterSdkPath) {
+                def flutterJarPath = "${rootProject.ext.flutterSdkPath}/bin/cache/artifacts/engine/android-arm-release/flutter.jar"
+                compileOnly p.files(flutterJarPath)
+            }
+            
+            implementation "androidx.annotation:annotation:1.7.0"
+            implementation "androidx.core:core:1.12.0"
+            implementation "androidx.lifecycle:lifecycle-common:2.6.2"
+            implementation "androidx.lifecycle:lifecycle-runtime:2.6.2"
+        }
+    }
+}
+
+rootProject.buildDir = '../build'
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

@@ -1,0 +1,203 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'home_screen.dart';
+import 'history_screen.dart';
+
+class ScanScreen extends StatefulWidget {
+  final String modelCode;
+  const ScanScreen({super.key, required this.modelCode});
+
+  @override
+  State<ScanScreen> createState() => _ScanScreenState();
+}
+
+class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
+  bool _isProcessing = false;
+  final MobileScannerController _scannerController = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    facing: CameraFacing.back,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _scannerController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _scannerController.start();
+    } else if (state == AppLifecycleState.inactive) {
+      _scannerController.stop();
+    }
+  }
+
+  Future<void> _onDetect(BarcodeCapture capture) async {
+    if (_isProcessing) return;
+    
+    final List<Barcode> barcodes = capture.barcodes;
+    if (barcodes.isNotEmpty) {
+      final String? code = barcodes.first.rawValue;
+      if (code != null && code.length >= 18) {
+        setState(() => _isProcessing = true);
+        
+        // Rules:
+        // 1. VIN: First 17 characters
+        // 2. Model Code: Remaining characters except the last TWO
+        String raw = code.trim();
+        String vin = raw.substring(0, 17);
+        String extractedModelCode = "";
+        
+        if (raw.length > 19) {
+          // 17 characters for VIN, then take from index 17 up to length-2
+          extractedModelCode = raw.substring(17, raw.length - 2);
+        } else {
+          // If code is too short to follow the N-2 rule after VIN
+          extractedModelCode = ""; 
+        }
+        
+        if (!mounted) return;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (context) => HomeScreen(
+              vin: vin,
+              modelCode: extractedModelCode,
+              cameras: [], 
+            ),
+          ),
+        ).then((_) {
+          if (mounted) {
+            setState(() {
+              _isProcessing = false;
+            });
+            // RESUME SCANNER
+            _scannerController.start();
+          }
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.white, Color(0xFFFFF5F5)],
+          ),
+        ),
+        child: Column(
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+              decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+              child: SafeArea(
+                bottom: false,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    Text(
+                      'SCAN BARCODE',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Expanded(
+              child: Stack(
+                children: [
+                  MobileScanner(
+                    controller: _scannerController,
+                    onDetect: _onDetect,
+                  ),
+                  // Scanner frame overlay
+                  Center(
+                    child: Container(
+                      width: 250,
+                      height: 250,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: const Color(0xFFDC143C), width: 2),
+                      ),
+                      child: Stack(
+                        children: [
+                          _bracket(top: 0, left: 0, isTop: true, isLeft: true),
+                          _bracket(top: 0, right: 0, isTop: true, isLeft: false),
+                          _bracket(bottom: 0, left: 0, isTop: false, isLeft: true),
+                          _bracket(bottom: 0, right: 0, isTop: false, isLeft: false),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (_isProcessing)
+                    Container(
+                      color: Colors.black.withOpacity(0.5),
+                      child: const Center(
+                        child: CircularProgressIndicator(color: Color(0xFFDC143C)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFDC143C),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('VIEW HISTORY', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bracket({double? top, double? bottom, double? left, double? right, required bool isTop, required bool isLeft}) {
+    return Positioned(
+      top: top,
+      bottom: bottom,
+      left: left,
+      right: right,
+      child: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          border: Border(
+            top: isTop ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
+            bottom: !isTop ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
+            left: isLeft ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
+            right: !isLeft ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
+          ),
+        ),
+      ),
+    );
+  }
+}

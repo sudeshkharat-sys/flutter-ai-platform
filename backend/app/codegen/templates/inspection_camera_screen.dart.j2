@@ -1,0 +1,378 @@
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../ml/detector.dart';
+import '../ml/detection_result.dart';
+import '../database/database.dart';
+
+class InspectionCameraScreen extends StatefulWidget {
+  final String vin;
+  final String modelCode;
+  final List<dynamic> tasks;
+  final int initialIndex;
+
+  const InspectionCameraScreen({
+    super.key,
+    required this.vin,
+    required this.modelCode,
+    required this.tasks,
+    required this.initialIndex,
+  });
+
+  @override
+  State<InspectionCameraScreen> createState() => _InspectionCameraScreenState();
+}
+
+class _InspectionCameraScreenState extends State<InspectionCameraScreen> with WidgetsBindingObserver {
+  CameraController? _cameraController;
+  bool _isCameraInitialized = false;
+  Uint8List? _capturedImageBytes;
+  DetectionResult? _bestResult;
+  bool _isAnalyzing = false;
+  bool _isModelLoaded = false;
+  bool _isLoadingModel = true;
+  String? _error;
+  
+  // Debug Console State
+  List<String> _debugLogs = [];
+  bool _showDebugConsole = false;
+
+  int _currentIndex = 0;
+  final Map<int, dynamic> _results = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    WidgetsBinding.instance.addObserver(this);
+    _initializeCamera();
+    _loadCurrentModel();
+    _addLog("Screen initialized for VIN: ${widget.vin}");
+  }
+
+  void _addLog(String msg) {
+    if(!mounted) return;
+    setState(() {
+      _debugLogs.insert(0, "${DateTime.now().toString().split('.').first.split(' ').last} | $msg");
+      if (_debugLogs.length > 50) _debugLogs.removeLast();
+    });
+    debugPrint(msg);
+  }
+
+  Future<void> _loadCurrentModel() async {
+    setState(() {
+      _isLoadingModel = true;
+      _isModelLoaded = false;
+    });
+    
+    try {
+      final task = widget.tasks[_currentIndex];
+      _addLog("Loading Task: ${task['name']}");
+      _addLog("TFLite: ${task['tflite_path']}");
+      
+      await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
+      
+      if (mounted) {
+        setState(() {
+          _isLoadingModel = false;
+          _isModelLoaded = true;
+        });
+        _addLog("Model loaded. Target classes: ${task['classes']}");
+      }
+    } catch (e) {
+      _addLog("AI Init error: $e");
+      if (mounted) setState(() => _error = "AI Init error: $e");
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _cameraController?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final CameraController? cameraController = _cameraController;
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      return;
+    }
+    if (state == AppLifecycleState.inactive) {
+      cameraController.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initializeCamera();
+    }
+  }
+
+  Future<void> _initializeCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        _addLog("No cameras found");
+        if (mounted) setState(() => _error = "No cameras found");
+        return;
+      }
+      final backCamera = cameras.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cameras.first);
+      final controller = CameraController(backCamera, ResolutionPreset.high, enableAudio: false);
+      _cameraController = controller;
+      await controller.initialize();
+      if (mounted) setState(() => _isCameraInitialized = true);
+      _addLog("Camera initialized");
+    } catch (e) {
+      _addLog("Camera error: $e");
+      if (mounted) setState(() => _error = "Camera error: $e");
+    }
+  }
+
+  Future<void> _handleCapture() async {
+    if (_isAnalyzing || !_isModelLoaded || _cameraController == null) {
+      _addLog("Capture blocked: Busy=${_isAnalyzing}, ModelReady=${_isModelLoaded}");
+      return;
+    }
+    try {
+      _addLog("--- Start Inference ---");
+      final XFile image = await _cameraController!.takePicture();
+      final bytes = await image.readAsBytes();
+      setState(() { _isAnalyzing = true; _bestResult = null; _capturedImageBytes = bytes; });
+      
+      final currentTask = widget.tasks[_currentIndex];
+      final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
+      _addLog("Target: ${targetClasses.join(', ')}");
+      
+      final allDetections = await ModelManager().predictBytes(bytes);
+      _addLog("Raw objects found: ${allDetections.length}");
+      
+      for(var d in allDetections) {
+        _addLog("Found: ${d.className} (${(d.confidence*100).toStringAsFixed(1)}%)");
+      }
+
+      final filtered = allDetections.where((d) => targetClasses.any((tc) => d.className.toLowerCase().contains(tc.toLowerCase()))).toList();
+      _addLog("Matches after filtering: ${filtered.length}");
+      
+      setState(() {
+        if (filtered.isNotEmpty) {
+          filtered.sort((a, b) => b.confidence.compareTo(a.confidence));
+          _bestResult = filtered.first;
+          _addLog("WINNER: ${_bestResult!.className}");
+          
+          _results[_currentIndex] = {
+            'className': _bestResult!.className,
+            'success': true,
+          };
+        } else {
+          _addLog("RESULT: NOT FOUND");
+          _results[_currentIndex] = {
+            'className': 'None',
+            'success': false,
+          };
+        }
+        _isAnalyzing = false;
+      });
+    } catch (e) {
+      _addLog("ERROR: $e");
+      setState(() => _isAnalyzing = false);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Capture failed: $e')));
+    }
+  }
+
+  void _retake() {
+    _addLog("Retake requested");
+    setState(() { _capturedImageBytes = null; _bestResult = null; _isAnalyzing = false; });
+  }
+
+  void _onSaveAndContinue() {
+    _results[_currentIndex] = {
+      'className': _bestResult?.className ?? 'None',
+      'success': _bestResult != null,
+    };
+
+    int nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    
+    if (_results.length == widget.tasks.length) {
+      _addLog("All tasks finished");
+      Navigator.pop(context, _results);
+      return;
+    }
+
+    _addLog("Moving to Task ${nextIdx + 1}");
+    setState(() {
+      _currentIndex = nextIdx;
+      _capturedImageBytes = null;
+      _bestResult = null;
+    });
+    _loadCurrentModel();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) return Scaffold(body: Center(child: Text('Error: $_error')));
+    final currentTask = widget.tasks[_currentIndex];
+
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.white, Color(0xFFFFF5F5)]),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              // Top Header
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+                child: Row(
+                  children: [
+                    IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context, _results)),
+                    Expanded(
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('TASK ${_currentIndex + 1} OF ${widget.tasks.length}', style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                            Text('VIN: ${widget.vin}', style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(_showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
+                      onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Info Banner
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                color: Colors.white.withOpacity(0.9),
+                child: Column(
+                  children: [
+                    Text(currentTask['name'], style: const TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.w900, fontSize: 18)),
+                    const SizedBox(height: 4),
+                    const Text("Align object within the frame and capture", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  ],
+                ),
+              ),
+
+              // Main Content Area
+              Expanded(
+                child: Stack(
+                  children: [
+                    if (_capturedImageBytes == null)
+                      Positioned.fill(child: _isCameraInitialized && _cameraController != null ? CameraPreview(_cameraController!) : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))),
+                    if (_capturedImageBytes != null)
+                      Positioned.fill(child: Image.memory(_capturedImageBytes!, fit: BoxFit.contain)),
+
+                    if (_capturedImageBytes == null)
+                      Center(child: Container(width: 280, height: 280, decoration: BoxDecoration(border: Border.all(color: const Color(0xFFDC143C), width: 2)))),
+
+                    if (_isLoadingModel && _capturedImageBytes == null)
+                      Container(color: Colors.black45, child: const Center(child: CircularProgressIndicator(color: Colors.white))),
+
+                    if (_isAnalyzing)
+                      Container(color: Colors.black54, child: const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))),
+
+                    if (!_isAnalyzing && _capturedImageBytes != null)
+                      Positioned(
+                        top: 16, right: 16,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(color: _bestResult != null ? Colors.green : Colors.red, borderRadius: BorderRadius.circular(20)),
+                          child: Text(_bestResult != null ? 'OK: ${_bestResult!.className}' : 'NOT FOUND', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                      
+                    // DEBUG CONSOLE OVERLAY
+                    if (_showDebugConsole)
+                      Positioned(
+                        bottom: 0, left: 0, right: 0,
+                        height: 200,
+                        child: Container(
+                          color: Colors.black.withOpacity(0.85),
+                          padding: const EdgeInsets.all(8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text("DEBUG CONSOLE", style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 10)),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 16),
+                                    onPressed: () => setState(() => _debugLogs = []),
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                  )
+                                ],
+                              ),
+                              const Divider(color: Colors.white24),
+                              Expanded(
+                                child: ListView.builder(
+                                  itemCount: _debugLogs.length,
+                                  itemBuilder: (context, idx) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 2),
+                                    child: Text(
+                                      _debugLogs[idx],
+                                      style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 9),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+
+              // Actions
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    if (_capturedImageBytes == null)
+                      GestureDetector(
+                        onTap: (_isLoadingModel || _isAnalyzing || !_isCameraInitialized) ? null : _handleCapture,
+                        child: Container(
+                          width: 80, height: 80,
+                          decoration: BoxDecoration(color: const Color(0xFFDC143C), shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 10, offset: const Offset(0, 4))]),
+                          child: const Icon(Icons.camera_alt, color: Colors.white, size: 40),
+                        ),
+                      )
+                    else
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _retake,
+                              style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16), side: const BorderSide(color: Color(0xFFDC143C))),
+                              child: const Text("RETAKE", style: TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: _onSaveAndContinue,
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(vertical: 16)),
+                              child: Text(_results.length + 1 == widget.tasks.length ? "FINISH" : "NEXT TASK", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

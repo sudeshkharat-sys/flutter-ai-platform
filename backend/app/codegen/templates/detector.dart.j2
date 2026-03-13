@@ -1,0 +1,149 @@
+import 'dart:io';
+import 'dart:isolate';
+import 'dart:typed_data';
+import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'detection_result.dart';
+
+class ModelManager {
+  static final ModelManager _instance = ModelManager._internal();
+  factory ModelManager() => _instance;
+  ModelManager._internal();
+
+  Interpreter? _interpreter;
+  List<String> _labels = [];
+  String? _currentModelPath;
+  bool _isLoaded = false;
+  double confidenceThreshold = 0.3;
+
+  bool get isLoaded => _isLoaded;
+
+  Future<void> loadModel(String modelPath, String labelsPath) async {
+    if (_currentModelPath == modelPath && _isLoaded) return;
+
+    try {
+      _isLoaded = false;
+      _interpreter?.close();
+      
+      final options = InterpreterOptions();
+      if (Platform.isAndroid) {
+        options.addDelegate(GpuDelegateV2());
+      }
+      
+      _interpreter = await Interpreter.fromAsset(modelPath, options: options);
+      
+      final labelsData = await rootBundle.loadString(labelsPath);
+      _labels = labelsData
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+      
+      _currentModelPath = modelPath;
+      _isLoaded = true;
+      debugPrint('Model loaded: $modelPath with ${_labels.length} labels');
+    } catch (e) {
+      debugPrint('Error loading model: $e');
+      _interpreter = await Interpreter.fromAsset(modelPath);
+      _isLoaded = true;
+    }
+  }
+
+  void dispose() {
+    _interpreter?.close();
+    _isLoaded = false;
+  }
+
+  Future<List<DetectionResult>> predictBytes(Uint8List bytes) async {
+    if (!_isLoaded || _interpreter == null) return [];
+    
+    return compute(_runInferenceBytes, {
+      'bytes': bytes,
+      'interpreter_address': _interpreter!.address,
+      'labels': _labels,
+      'inputSize': {{ input_size }},
+      'threshold': confidenceThreshold,
+    });
+  }
+
+  static List<DetectionResult> _runInferenceBytes(Map<String, dynamic> args) {
+    final Uint8List bytes = args['bytes'];
+    final int interpreterAddress = args['interpreter_address'];
+    final List<String> labels = args['labels'];
+    final int inputSize = args['inputSize'];
+    final double threshold = args['threshold'];
+
+    final interpreter = Interpreter.fromAddress(interpreterAddress);
+    
+    img.Image? baseImage = img.decodeImage(bytes);
+    if (baseImage == null) return [];
+    
+    final resized = img.copyResize(baseImage, width: inputSize, height: inputSize);
+    
+    // Normalize image [1, size, size, 3]
+    final input = [List.generate(inputSize, (y) => List.generate(inputSize, (x) {
+      final pixel = resized.getPixel(x, y);
+      return [pixel.r / 255.0, pixel.g / 255.0, pixel.b / 255.0];
+    }))];
+
+    final outputTensor = interpreter.getOutputTensor(0);
+    final shape = outputTensor.shape;
+    
+    // Allocate output buffer based on shape
+    // Supports [1, 4+N, 8400] or [1, 8400, 4+N]
+    var output;
+    if (shape.length == 3) {
+      output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+    } else {
+      return []; // Unsupported shape
+    }
+
+    interpreter.run(input, output);
+    return _parseGenericYolo(output[0], labels, threshold, inputSize, shape);
+  }
+
+  static List<DetectionResult> _parseGenericYolo(List<dynamic> output, List<String> labels, double threshold, int inputSize, List<int> shape) {
+    final results = <DetectionResult>[];
+    
+    // Check if output is [4+N, 8400] or [8400, 4+N]
+    bool isTransposed = shape[1] < shape[2]; 
+    int numElements = isTransposed ? shape[1] : shape[2];
+    int numBoxes = isTransposed ? shape[2] : shape[1];
+
+    for (int i = 0; i < numBoxes; i++) {
+      double maxClassScore = -1.0;
+      int classId = -1;
+      
+      // Class scores start at index 4
+      for (int j = 4; j < numElements; j++) {
+        double score = isTransposed ? output[j][i] : output[i][j];
+        if (score > maxClassScore) {
+          maxClassScore = score;
+          classId = j - 4;
+        }
+      }
+
+      if (maxClassScore >= threshold) {
+        double cx = isTransposed ? output[0][i] : output[i][0];
+        double cy = isTransposed ? output[1][i] : output[i][1];
+        double w = isTransposed ? output[2][i] : output[i][2];
+        double h = isTransposed ? output[3][i] : output[i][3];
+
+        results.add(DetectionResult(
+          className: (classId >= 0 && classId < labels.length) ? labels[classId] : 'unknown (id:$classId)',
+          confidence: maxClassScore,
+          bbox: Rect.fromLTWH(
+            (cx - w / 2) / inputSize, 
+            (cy - h / 2) / inputSize, 
+            w / inputSize, 
+            h / inputSize
+          ),
+        ));
+      }
+    }
+    return results;
+  }
+}

@@ -1,0 +1,17 @@
+import 'dart:ui';
+
+class DetectionResult {
+  final String className;
+  final double confidence;
+  final Rect bbox; // normalized 0.0–1.0 coordinates (x, y, w, h)
+
+  const DetectionResult({
+    required this.className,
+    required this.confidence,
+    required this.bbox,
+  });
+
+  @override
+  String toString() =>
+      'DetectionResult(class=$className, conf=${confidence.toStringAsFixed(2)}, bbox=$bbox)';
+}

@@ -1,0 +1,311 @@
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:drift/drift.dart' as drift;
+import 'inspection_camera_screen.dart';
+import 'history_screen.dart';
+import '../database/database.dart';
+
+class HomeScreen extends StatefulWidget {
+  final List<CameraDescription> cameras;
+  final String? vin;
+  final String? modelCode;
+  const HomeScreen({super.key, required this.cameras, this.vin, this.modelCode});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  List<dynamic> _tasks = [];
+  Map<int, dynamic> _taskResults = {}; // Index -> DetectionResult
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTasksAndProgress();
+  }
+
+  Future<void> _loadTasksAndProgress() async {
+    try {
+      // 1. Load tasks from manifest
+      final String manifestStr = await rootBundle.loadString('assets/models_manifest.json');
+      final List<dynamic> manifest = json.decode(manifestStr);
+      
+      final List<dynamic> filtered = manifest.where((task) {
+        if (widget.modelCode == null || widget.modelCode!.isEmpty) return true;
+        return task['vehicle_code'] == widget.modelCode;
+      }).toList();
+
+      // 2. Load existing progress from local DB for this VIN
+      if (widget.vin != null) {
+        final existingResults = await db.getLatestResultsForVin(widget.vin!);
+        final Map<int, dynamic> restored = {};
+        
+        for (var res in existingResults) {
+          // Try to match by task name
+          final idx = filtered.indexWhere((t) => t['name'] == res.taskName);
+          if (idx != -1) {
+            restored[idx] = {
+              'className': res.className,
+              'success': res.success,
+            };
+          }
+        }
+        _taskResults = restored;
+      }
+
+      setState(() {
+        _tasks = filtered;
+        _loading = false;
+      });
+    } catch (e) {
+      setState(() => _loading = false);
+      debugPrint("Load error: $e");
+    }
+  }
+
+  void _submitInspection() async {
+    if (_taskResults.length < _tasks.length) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text("Incomplete Inspection"),
+          content: Text("Please complete all ${_tasks.length} tasks before submitting."),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text("OK")),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // Prepare grouped results for Drift
+    final inspectionId = await db.saveInspection(InspectionsCompanion.insert(
+      vin: widget.vin ?? 'UNKNOWN',
+      modelCode: widget.modelCode ?? 'UNKNOWN',
+    ));
+
+    bool allSuccess = true;
+    for (int i = 0; i < _tasks.length; i++) {
+      final task = _tasks[i];
+      final result = _taskResults[i];
+      final success = result['success'] ?? false;
+      if (!success) allSuccess = false;
+      
+      await db.saveTaskResult(TaskResultsCompanion.insert(
+        inspectionId: inspectionId,
+        taskName: task['name'],
+        className: result['className'] ?? 'None',
+        confidence: 0.0, // We could track this too if needed
+        success: success,
+      ));
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Inspection Persisted to Local Database!"), backgroundColor: Colors.green),
+    );
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFFFF5F5),
+      body: Column(
+        children: [
+          // Top Header
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+            decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+            child: SafeArea(
+              bottom: false,
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                  const Spacer(),
+                  const Text(
+                    'INSPECTION',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  const Spacer(),
+                  const SizedBox(width: 48), 
+                ],
+              ),
+            ),
+          ),
+
+          // Vehicle Info Bar
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.9),
+              border: const Border(
+                top: BorderSide(color: Color(0xFFD4AF37), width: 1),
+                bottom: BorderSide(color: Color(0xFFD4AF37), width: 1),
+              ),
+            ),
+            child: Column(
+              children: [
+                Text(
+                  'VIN: ${widget.vin ?? "N/A"}',
+                  style: const TextStyle(
+                    color: Color(0xFFDC143C),
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Model Code: ${widget.modelCode ?? "N/A"}',
+                  style: const TextStyle(
+                    color: Colors.black87,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Task List
+          Expanded(
+            child: _loading 
+              ? const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _tasks.length,
+                  itemBuilder: (context, index) {
+                    final task = _tasks[index];
+                    final bool isDone = _taskResults.containsKey(index);
+                    
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          final result = await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => InspectionCameraScreen(
+                                vin: widget.vin ?? "MANUAL_SCAN",
+                                modelCode: widget.modelCode ?? "", 
+                                tasks: _tasks,
+                                initialIndex: index,
+                              ),
+                            ),
+                          );
+                          
+                          if (result != null && result is Map<int, dynamic>) {
+                            setState(() {
+                              _taskResults.addAll(result);
+                            });
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFFDC143C),
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            side: BorderSide(color: isDone ? Colors.green : const Color(0xFFD4AF37), width: isDone ? 2 : 1),
+                          ),
+                          elevation: 0,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                task['name'],
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w500,
+                                  color: isDone ? Colors.green[700] : const Color(0xFFDC143C),
+                                ),
+                              ),
+                            ),
+                            if (isDone)
+                              const Icon(Icons.check_circle, color: Colors.green)
+                            else
+                              const Icon(Icons.camera_alt, size: 20, color: Color(0xFFDC143C)),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+          ),
+          
+          // Submit Button
+          if (_tasks.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _submitInspection,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFDC143C),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 18),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    elevation: 4,
+                  ),
+                  child: const Text('SUBMIT INSPECTION', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                ),
+              ),
+            ),
+        ],
+      ),
+      bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return Container(
+      height: 80,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, -2))],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          _navItem(Icons.home, "Home", true),
+          _navItem(Icons.history, "History", false, onTap: () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()));
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _navItem(IconData icon, String label, bool active, {VoidCallback? onTap}) {
+    final color = active ? const Color(0xFFDC143C) : Colors.grey;
+    return InkWell(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color),
+          Text(label, style: TextStyle(color: color, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}

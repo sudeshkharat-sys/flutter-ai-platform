@@ -1,0 +1,73 @@
+/* Puck Crimson & White Theme Overrides */
+
+body .puck-dark-wrapper {
+  --puck-color-white: #FFFFFF !important;
+  --puck-color-black: #1a1a1a !important;
+  --puck-color-grey-01: #FFFFFF !important;
+  --puck-color-grey-02: #F8F9FA !important;
+  --puck-color-grey-03: #F1F3F5 !important;
+  --puck-color-grey-04: #E9ECEF !important;
+  --puck-color-grey-05: #DEE2E6 !important;
+  --puck-color-grey-06: #CED4DA !important;
+  --puck-color-grey-07: #ADB5BD !important;
+  --puck-color-grey-08: #8E9AAF !important;
+  --puck-color-grey-09: #6C757D !important;
+  --puck-color-grey-10: #495057 !important;
+  --puck-color-grey-11: #343A40 !important;
+  --puck-color-grey-12: #212529 !important;
+  --puck-color-azure: #dc143c !important;
+  --puck-color-blue: #ff4d6d !important;
+}
+
+/* Force light backgrounds on ALL Puck internal elements */
+body .puck-dark-wrapper [class*="Puck-"],
+body .puck-dark-wrapper [class*="_sidebar_"],
+body .puck-dark-wrapper [class*="_drawer_"],
+body .puck-dark-wrapper [class*="_header_"],
+body .puck-dark-wrapper [class*="_viewport_"],
+body .puck-dark-wrapper [class*="_menu_"],
+body .puck-dark-wrapper [class*="_components_"],
+body .puck-dark-wrapper [class*="_fields_"],
+body .puck-dark-wrapper [class*="_layerTree_"],
+body .puck-dark-wrapper [class*="_fieldLabel_"] {
+  background-color: #FFFFFF !important;
+  color: #1a1a1a !important;
+  border-color: #eeeeee !important;
+}
+
+/* Specific fix for the main canvas background */
+body .puck-dark-wrapper [class*="_viewport_"],
+body .puck-dark-wrapper [class*="_canvas_"],
+body .puck-dark-wrapper [class*="_page_"] {
+  background-color: #F8F9FA !important;
+}
+
+/* Input fields and buttons */
+body .puck-dark-wrapper input,
+body .puck-dark-wrapper select,
+body .puck-dark-wrapper textarea,
+body .puck-dark-wrapper button:not([class*="_accent_"]) {
+  background-color: #FFFFFF !important;
+  color: #1a1a1a !important;
+  border: 1px solid #eeeeee !important;
+}
+
+/* List items / Tree items */
+body .puck-dark-wrapper [class*="_item_"] {
+  background-color: transparent !important;
+}
+
+body .puck-dark-wrapper [class*="_item_"]:hover {
+  background-color: rgba(220, 20, 60, 0.05) !important;
+}
+
+/* Active/Selected states */
+body .puck-dark-wrapper [class*="_selected_"],
+body .puck-dark-wrapper [class*="_active_"] {
+  background-color: rgba(220, 20, 60, 0.1) !important;
+}
+
+/* Selected item border */
+body .puck-dark-wrapper [class*="_selected_"] {
+  border-left: 3px solid #dc143c !important;
+}

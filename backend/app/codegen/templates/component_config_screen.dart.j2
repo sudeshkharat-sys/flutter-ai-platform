@@ -1,0 +1,233 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'inspection_camera_screen.dart';
+import 'history_screen.dart';
+
+class ComponentConfigScreen extends StatefulWidget {
+  final String vin;
+  final String modelCode;
+  final String sessionDescription;
+
+  const ComponentConfigScreen({
+    super.key,
+    required this.vin,
+    required this.modelCode,
+    required this.sessionDescription,
+  });
+
+  @override
+  State<ComponentConfigScreen> createState() => _ComponentConfigScreenState();
+}
+
+class _ComponentConfigScreenState extends State<ComponentConfigScreen> {
+  final TextEditingController _compDescriptionController = TextEditingController();
+  
+  List<dynamic> _modelsManifest = [];
+  Map<String, dynamic>? _selectedModel;
+  Set<String> _selectedClasses = {}; // Multi-select set
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadManifest();
+  }
+
+  Future<void> _loadManifest() async {
+    try {
+      final String response = await rootBundle.loadString('assets/models_manifest.json');
+      final data = await json.decode(response);
+      setState(() {
+        _modelsManifest = data;
+        if (_modelsManifest.isNotEmpty) {
+          _selectedModel = _modelsManifest.first;
+          // Pre-select first class by default
+          if (_selectedModel!['classes'].isNotEmpty) {
+            _selectedClasses = {_selectedModel!['classes'].first};
+          }
+        }
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint("Error loading manifest: $e");
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F0F13),
+      appBar: AppBar(
+        title: const Text('Add Component'),
+        backgroundColor: const Color(0xFF1A1A24),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())),
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildHeader(),
+            const SizedBox(height: 32),
+            
+            _buildLabel('Select AI Model'),
+            _buildModelDropdown(),
+            
+            const SizedBox(height: 20),
+            _buildLabel('Select Classes to Verify (Multi-Select)'),
+            _buildClassMultiSelect(),
+            
+            const SizedBox(height: 20),
+            _buildLabel('Capture Description'),
+            TextField(
+              controller: _compDescriptionController,
+              style: const TextStyle(color: Colors.white),
+              decoration: _inputDecoration('e.g., capture the tyre'),
+            ),
+            
+            const SizedBox(height: 40),
+            SizedBox(
+              width: double.infinity,
+              height: 56,
+              child: ElevatedButton(
+                onPressed: (_selectedModel != null && _selectedClasses.isNotEmpty) ? () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => InspectionCameraScreen(
+                        vin: widget.vin,
+                        modelCode: widget.modelCode,
+                        sessionDescription: widget.sessionDescription,
+                        targetClasses: _selectedClasses.toList(),
+                        captureDescription: _compDescriptionController.text,
+                        modelPath: _selectedModel!['tflite_path'],
+                        labelsPath: _selectedModel!['labels_path'],
+                      ),
+                    ),
+                  );
+                } : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF7C5CFC),
+                  disabledBackgroundColor: Colors.grey.withOpacity(0.2),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Start Capture', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildModelDropdown() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A24),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF2E2E40)),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<Map<String, dynamic>>(
+          value: _selectedModel,
+          isExpanded: true,
+          dropdownColor: const Color(0xFF1A1A24),
+          style: const TextStyle(color: Colors.white),
+          items: _modelsManifest.map((m) => DropdownMenuItem<Map<String, dynamic>>(
+            value: m as Map<String, dynamic>, 
+            child: Text(m['name'])
+          )).toList(),
+          onChanged: (val) {
+            setState(() {
+              _selectedModel = val;
+              _selectedClasses = {}; // Reset classes when model changes
+            });
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildClassMultiSelect() {
+    final List<String> classes = _selectedModel != null ? List<String>.from(_selectedModel!['classes']) : [];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A24),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF2E2E40)),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: classes.map((c) {
+          final isSelected = _selectedClasses.contains(c);
+          return FilterChip(
+            label: Text(c),
+            selected: isSelected,
+            onSelected: (bool selected) {
+              setState(() {
+                if (selected) {
+                  _selectedClasses.add(c);
+                } else {
+                  _selectedClasses.remove(c);
+                }
+              });
+            },
+            selectedColor: const Color(0xFF7C5CFC).withOpacity(0.3),
+            checkmarkColor: const Color(0xFF7C5CFC),
+            backgroundColor: const Color(0xFF0F0F13),
+            labelStyle: TextStyle(
+              color: isSelected ? const Color(0xFF7C5CFC) : Colors.grey,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: BorderSide(color: isSelected ? const Color(0xFF7C5CFC) : const Color(0xFF2E2E40)),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Model Code: ${widget.modelCode}', style: const TextStyle(color: Color(0xFF7C5CFC), fontWeight: FontWeight.bold, fontSize: 15)),
+        const SizedBox(height: 4),
+        Text('Desc: ${widget.sessionDescription}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+      ],
+    );
+  }
+
+  Widget _buildLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8.0, top: 12.0),
+      child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
+    );
+  }
+
+  InputDecoration _inputDecoration(String hint) {
+    return InputDecoration(
+      hintText: hint,
+      hintStyle: const TextStyle(color: Colors.grey, fontSize: 14),
+      filled: true,
+      fillColor: const Color(0xFF1A1A24),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF2E2E40))),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF2E2E40))),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF7C5CFC))),
+    );
+  }
+}

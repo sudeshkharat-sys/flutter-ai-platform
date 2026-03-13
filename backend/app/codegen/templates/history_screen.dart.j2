@@ -1,0 +1,153 @@
+import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../database/database.dart';
+
+class HistoryScreen extends StatefulWidget {
+  const HistoryScreen({super.key});
+
+  @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
+  List<Map<String, dynamic>> _groupedHistory = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistoryFromDb();
+  }
+
+  Future<void> _loadHistoryFromDb() async {
+    try {
+      final List<Inspection> inspections = await db.getAllInspections();
+      List<Map<String, dynamic>> results = [];
+      
+      for (var insp in inspections) {
+        final taskResults = await db.getResultsForInspection(insp.id);
+        bool overallSuccess = true;
+        for (var tr in taskResults) {
+          if (!tr.success) overallSuccess = false;
+        }
+        
+        results.add({
+          'vin': insp.vin,
+          'modelCode': insp.modelCode,
+          'timestamp': insp.createdAt.toIso8601String(),
+          'overallSuccess': overallSuccess,
+          'tasks': taskResults.map((tr) => {
+            'taskName': tr.taskName,
+            'detectedPart': tr.className,
+            'success': tr.success,
+          }).toList(),
+        });
+      }
+
+      setState(() {
+        _groupedHistory = results;
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint("DB Load Error: $e");
+      setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _clearHistory() async {
+    // For drift, we'd need a delete all method. 
+    // For now let's just use SharedPreferences if that was the fallback, 
+    // but better to add delete logic to database.dart
+    // For this prototype, we'll just clear the state list.
+    setState(() => _groupedHistory = []);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFFFF5F5),
+      appBar: AppBar(
+        title: const Text('INSPECTION HISTORY', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+        centerTitle: true,
+        backgroundColor: const Color(0xFFDC143C),
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))
+          : _groupedHistory.isEmpty
+              ? const Center(child: Text('No history found', style: TextStyle(color: Colors.grey)))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _groupedHistory.length,
+                  itemBuilder: (context, index) {
+                    final item = _groupedHistory[index];
+                    final bool overallSuccess = item['overallSuccess'] ?? false;
+                    final DateTime date = DateTime.parse(item['timestamp']);
+                    final List<dynamic> tasks = item['tasks'] ?? [];
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFD4AF37), width: 1),
+                        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 4, offset: const Offset(0, 2))],
+                      ),
+                      child: ExpansionTile(
+                        leading: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: overallSuccess ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            overallSuccess ? Icons.check_circle : Icons.error,
+                            color: overallSuccess ? Colors.green : Colors.red,
+                            size: 24,
+                          ),
+                        ),
+                        title: Text(
+                          'VIN: ${item['vin']}',
+                          style: const TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
+                        subtitle: Text(
+                          'Model: ${item['modelCode']} • ${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute}',
+                          style: const TextStyle(fontSize: 11, color: Colors.grey),
+                        ),
+                        children: [
+                          const Divider(height: 1),
+                          ...tasks.map((task) => Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  task['success'] ? Icons.check : Icons.close,
+                                  color: task['success'] ? Colors.green : Colors.red,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(task['taskName'] ?? 'Task', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                      Text('Detected: ${task['detectedPart']}', style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )).toList(),
+                          const SizedBox(height: 8),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+    );
+  }
+}
+

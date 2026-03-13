@@ -1,0 +1,38 @@
+import 'package:flutter/material.dart';
+import 'package:camera/camera.dart';
+import 'screens/home_screen.dart';
+import 'screens/scan_screen.dart';
+
+List<CameraDescription> cameras = [];
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  cameras = await availableCameras();
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: '{{ app_name }}',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFDC143C),
+          brightness: Brightness.light,
+        ),
+        useMaterial3: true,
+        scaffoldBackgroundColor: Colors.white,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFFDC143C),
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
+      ),
+      home: {% if app_type == 'sequential' %}const ScanScreen(modelCode: '{{ app_settings.model_code }}'){% else %}HomeScreen(cameras: cameras){% endif %},
+    );
+  }
+}
