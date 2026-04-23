@@ -1,0 +1,251 @@
+/* ── Master Data ─────────────────────────────────────────────── */
+.master-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* Form Panel */
+.master-form-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 32px;
+  backdrop-filter: blur(8px);
+  animation: fadeUp 0.4s ease;
+}
+
+.master-panel-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 24px;
+  letter-spacing: -0.2px;
+}
+
+.master-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 16px;
+  align-items: end;
+}
+
+@media (max-width: 900px) {
+  .master-form-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.master-form-field {
+  display: flex;
+  flex-direction: column;
+}
+
+/* List Panel */
+.master-list-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 32px;
+  backdrop-filter: blur(8px);
+  animation: fadeUp 0.4s 0.1s ease both;
+}
+
+.master-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 28px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.master-list-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.master-search-wrap {
+  position: relative;
+  width: 280px;
+}
+
+.master-search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.master-search {
+  width: 100%;
+  padding: 10px 16px 10px 40px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.05);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.master-search:focus {
+  border-color: var(--accent);
+}
+
+.master-search::placeholder { color: var(--text-dim); }
+
+/* Table */
+.master-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.master-table thead th {
+  padding: 10px 16px;
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+.master-table tbody tr {
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.15s;
+}
+
+.master-table tbody tr:hover {
+  background: rgba(255,255,255,0.02);
+}
+
+.master-table tbody td {
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+
+.master-group-row td {
+  padding: 10px 16px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--accent2);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  background: rgba(220,20,60,0.05);
+  border-bottom: 1px solid rgba(220,20,60,0.08);
+}
+
+.model-code-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  background: rgba(220,20,60,0.1);
+  border: 1px solid rgba(220,20,60,0.2);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent2);
+  letter-spacing: 0.04em;
+}
+
+/* Checkbox */
+.master-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent2);
+}
+
+/* Selected row highlight */
+.master-row-selected {
+  background: rgba(220, 20, 60, 0.06) !important;
+}
+
+/* Action buttons (edit / delete icons) */
+.master-action-btns {
+  display: inline-flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.btn-icon-edit,
+.btn-icon-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.btn-icon-edit {
+  color: var(--text-muted);
+}
+
+.btn-icon-edit:hover {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #818cf8;
+}
+
+.btn-icon-delete {
+  color: var(--text-muted);
+}
+
+.btn-icon-delete:hover {
+  background: rgba(220, 20, 60, 0.12);
+  border-color: rgba(220, 20, 60, 0.4);
+  color: var(--accent2);
+}
+
+/* Bulk delete button */
+.btn-bulk-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(220, 20, 60, 0.4);
+  background: rgba(220, 20, 60, 0.1);
+  color: var(--accent2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.btn-bulk-delete:hover {
+  background: rgba(220, 20, 60, 0.2);
+}
+
+/* Empty / loading */
+.master-empty {
+  padding: 60px 20px;
+  text-align: center;
+  background: rgba(255,255,255,0.02);
+  border-radius: var(--radius);
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.master-loading {
+  color: var(--text-muted);
+  font-size: 14px;
+  animation: pulse 2s infinite;
+}

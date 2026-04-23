@@ -1,0 +1,122 @@
+import 'package:flutter/material.dart';
+import '../ml/detection_result.dart';
+
+class DetectionOverlay extends StatelessWidget {
+  final List<DetectionResult> results;
+  final Size previewSize;
+
+  const DetectionOverlay({
+    super.key,
+    required this.results,
+    required this.previewSize,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _BoundingBoxPainter(
+        results: results,
+        previewSize: previewSize,
+        {% if show_labels %}showLabels: true,{% else %}showLabels: false,{% endif %}
+        {% if show_confidence %}showConfidence: true,{% else %}showConfidence: false,{% endif %}
+      ),
+    );
+  }
+}
+
+class _BoundingBoxPainter extends CustomPainter {
+  final List<DetectionResult> results;
+  final Size previewSize;
+  final bool showLabels;
+  final bool showConfidence;
+
+  static const _colors = [
+    Color(0xFF7C5CFC),
+    Color(0xFF5B8AF5),
+    Color(0xFF4CAF82),
+    Color(0xFFF5A623),
+    Color(0xFFF55C5C),
+    Color(0xFF00BCD4),
+    Color(0xFFFF6B9D),
+  ];
+
+  _BoundingBoxPainter({
+    required this.results,
+    required this.previewSize,
+    this.showLabels = true,
+    this.showConfidence = true,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (int i = 0; i < results.length; i++) {
+      final result = results[i];
+      final color = _colors[i % _colors.length];
+
+      final rect = Rect.fromLTRB(
+        result.bbox.left * size.width,
+        result.bbox.top * size.height,
+        result.bbox.right * size.width,
+        result.bbox.bottom * size.height,
+      );
+
+      // Draw bounding box
+      final boxPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5;
+      canvas.drawRect(rect, boxPaint);
+
+      // Draw corner accents
+      final accentPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4.0;
+      const cornerLen = 16.0;
+
+      // Top-left
+      canvas.drawLine(rect.topLeft, rect.topLeft.translate(cornerLen, 0), accentPaint);
+      canvas.drawLine(rect.topLeft, rect.topLeft.translate(0, cornerLen), accentPaint);
+      // Top-right
+      canvas.drawLine(rect.topRight, rect.topRight.translate(-cornerLen, 0), accentPaint);
+      canvas.drawLine(rect.topRight, rect.topRight.translate(0, cornerLen), accentPaint);
+      // Bottom-left
+      canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(cornerLen, 0), accentPaint);
+      canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(0, -cornerLen), accentPaint);
+      // Bottom-right
+      canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(-cornerLen, 0), accentPaint);
+      canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(0, -cornerLen), accentPaint);
+
+      // Draw label
+      if (showLabels) {
+        final label = showConfidence
+            ? '${result.className} ${(result.confidence * 100).toStringAsFixed(0)}%'
+            : result.className;
+
+        final textSpan = TextSpan(
+          text: ' $label ',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            backgroundColor: color.withOpacity(0.85),
+          ),
+        );
+        final textPainter = TextPainter(
+          text: textSpan,
+          textDirection: TextDirection.ltr,
+        )..layout();
+
+        final labelY = rect.top - textPainter.height - 2;
+        textPainter.paint(
+          canvas,
+          Offset(rect.left, labelY < 0 ? rect.top + 2 : labelY),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _BoundingBoxPainter old) =>
+      old.results != results;
+}

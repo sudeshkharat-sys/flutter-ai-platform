@@ -1,0 +1,29 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-multipart==0.0.12
+httpx==0.27.2
+celery==5.4.0
+redis==5.1.1
+jinja2==3.1.4
+ultralytics==8.3.0
+
+# TFLite / ONNX conversion deps (required by ultralytics .pt → .tflite export)
+tf_keras
+sng4onnx>=1.0.1
+onnx_graphsurgeon>=0.3.26
+onnx>=1.17.0
+onnx2tf>1.17.5,<=1.22.3
+onnxslim>=0.1.31
+onnxscript
+# tflite_support
+onnxruntime-gpu
+
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+aiofiles==24.1.0
+psycopg2-binary==2.9.9
+Pillow>=10.0.0

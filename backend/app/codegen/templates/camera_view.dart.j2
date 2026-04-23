@@ -1,0 +1,102 @@
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'dart:typed_data';
+
+class CameraView extends StatefulWidget {
+  final List<CameraDescription> cameras;
+  final Function(CameraImage)? onImageCaptured;
+
+  const CameraView({
+    super.key,
+    required this.cameras,
+    this.onImageCaptured,
+  });
+
+  @override
+  State<CameraView> createState() => CameraViewState();
+}
+
+class CameraViewState extends State<CameraView> with WidgetsBindingObserver {
+  CameraController? _controller;
+  bool _isInitialized = false;
+  CameraImage? _lastImage;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initializeCamera();
+  }
+
+  Future<void> _initializeCamera() async {
+    if (widget.cameras.isEmpty) return;
+
+    // Selection logic matching reference app
+    final backCamera = widget.cameras.firstWhere(
+      (camera) => camera.lensDirection == CameraLensDirection.back,
+      orElse: () => widget.cameras.first,
+    );
+
+    _controller = CameraController(
+      backCamera,
+      ResolutionPreset.high,
+      enableAudio: false,
+    );
+
+    try {
+      await _controller!.initialize();
+      
+      if (widget.onImageCaptured != null) {
+        await _controller!.startImageStream((image) {
+          _lastImage = image;
+          widget.onImageCaptured!(image);
+        });
+      }
+      
+      if (mounted) setState(() => _isInitialized = true);
+    } catch (e) {
+      debugPrint('Camera error: $e');
+    }
+  }
+
+  CameraImage? get lastImage => _lastImage;
+
+  Future<Uint8List?> takePicture() async {
+    if (_controller == null || !_controller!.value.isInitialized) {
+      debugPrint("Camera controller not ready");
+      return null;
+    }
+    
+    try {
+      final XFile file = await _controller!.takePicture();
+      return await file.readAsBytes();
+    } catch (e) {
+      debugPrint("Error taking picture: $e");
+      return null;
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    if (state == AppLifecycleState.inactive) {
+      _controller?.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initializeCamera();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isInitialized || _controller == null) return const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)));
+    
+    return CameraPreview(_controller!);
+  }
+}

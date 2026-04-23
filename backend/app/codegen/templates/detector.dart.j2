@@ -1,0 +1,247 @@
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'detection_result.dart';
+
+class ModelManager {
+  static final ModelManager _instance = ModelManager._internal();
+  factory ModelManager() => _instance;
+  ModelManager._internal();
+
+  Interpreter? _interpreter;
+  List<String> _labels = [];
+  String? _currentModelPath;
+  bool _isLoaded = false;
+  double confidenceThreshold = 0.3;
+
+  bool get isLoaded => _isLoaded;
+
+  int get labelsCount => _labels.length;
+
+  Future<void> loadModel(String modelPath, String labelsPath) async {
+    if (_currentModelPath == modelPath && _isLoaded) return;
+
+    _isLoaded = false;
+    _interpreter?.close();
+
+    // Always load labels first, independently of the interpreter delegate
+    try {
+      final labelsData = await rootBundle.loadString(labelsPath);
+      _labels = labelsData
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+    } catch (e) {
+      debugPrint('Error loading labels: $e');
+      _labels = [];
+    }
+
+    // Try GPU delegate first, fall back to CPU if it fails
+    try {
+      final options = InterpreterOptions();
+      if (Platform.isAndroid) {
+        options.addDelegate(GpuDelegateV2());
+      }
+      _interpreter = await Interpreter.fromAsset(modelPath, options: options);
+    } catch (e) {
+      debugPrint('GPU delegate failed, falling back to CPU: $e');
+      try {
+        _interpreter = await Interpreter.fromAsset(modelPath);
+      } catch (e2) {
+        debugPrint('Error loading model: $e2');
+        return;
+      }
+    }
+
+    _currentModelPath = modelPath;
+    _isLoaded = true;
+    debugPrint('Model loaded: $modelPath with ${_labels.length} labels');
+  }
+
+  void dispose() {
+    _interpreter?.close();
+    _isLoaded = false;
+  }
+
+  /// Converts an already-decoded, EXIF-corrected [img.Image] into a flat
+  /// [Float32List] of shape [1, inputSize, inputSize, 3] ready for TFLite.
+  /// Using a typed flat buffer instead of nested [List.generate] calls is
+  /// ~5–10× faster because it avoids Dart object allocation overhead.
+  static Float32List _imageToFloat32(img.Image image, int inputSize) {
+    final resized = img.copyResize(
+      image,
+      width: inputSize,
+      height: inputSize,
+      interpolation: img.Interpolation.linear,
+    );
+    final buffer = Float32List(inputSize * inputSize * 3);
+    int idx = 0;
+    for (int y = 0; y < inputSize; y++) {
+      for (int x = 0; x < inputSize; x++) {
+        final pixel = resized.getPixel(x, y);
+        buffer[idx++] = pixel.r.toDouble() / 255.0;
+        buffer[idx++] = pixel.g.toDouble() / 255.0;
+        buffer[idx++] = pixel.b.toDouble() / 255.0;
+      }
+    }
+    return buffer;
+  }
+
+  /// Fast path: caller already decoded + EXIF-corrected the image (e.g. during
+  /// blur detection), so we skip the redundant decode + bakeOrientation step.
+  Future<List<DetectionResult>> predictImage(img.Image orientedImage) async {
+    if (!_isLoaded || _interpreter == null) return [];
+
+    final inputData = _imageToFloat32(orientedImage, {{ input_size }});
+    return compute(_runInference, {
+      'inputData': inputData,
+      'interpreter_address': _interpreter!.address,
+      'labels': _labels,
+      'inputSize': {{ input_size }},
+      'threshold': confidenceThreshold,
+    });
+  }
+
+  /// Fallback path: accepts raw JPEG bytes when a pre-decoded image is not
+  /// available. Decodes + EXIF-corrects internally before inference.
+  Future<List<DetectionResult>> predictBytes(Uint8List bytes) async {
+    if (!_isLoaded || _interpreter == null) return [];
+
+    return compute(_runInferenceBytes, {
+      'bytes': bytes,
+      'interpreter_address': _interpreter!.address,
+      'labels': _labels,
+      'inputSize': {{ input_size }},
+      'threshold': confidenceThreshold,
+    });
+  }
+
+  /// Inference isolate entry-point for the fast path (pre-processed Float32List).
+  static List<DetectionResult> _runInference(Map<String, dynamic> args) {
+    final Float32List inputData = args['inputData'] as Float32List;
+    final int interpreterAddress = args['interpreter_address'] as int;
+    final List<String> labels = List<String>.from(args['labels'] as List);
+    final int inputSize = args['inputSize'] as int;
+    final double threshold = args['threshold'] as double;
+
+    final interpreter = Interpreter.fromAddress(interpreterAddress);
+
+    // Reshape flat buffer to [1, inputSize, inputSize, 3]
+    final input = inputData.reshape([1, inputSize, inputSize, 3]);
+
+    final outputTensor = interpreter.getOutputTensor(0);
+    final shape = outputTensor.shape;
+    var output;
+    if (shape.length == 3) {
+      output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+    } else {
+      return [];
+    }
+
+    interpreter.run(input, output);
+    final detections = _parseGenericYolo(output[0], labels, threshold, inputSize, shape);
+    debugPrint('[Detector] raw detections: ${detections.length}, first bbox: ${detections.isNotEmpty ? detections.first.bbox : "none"}');
+    return detections;
+  }
+
+  /// Inference isolate entry-point for the fallback path (raw JPEG bytes).
+  static List<DetectionResult> _runInferenceBytes(Map<String, dynamic> args) {
+    final Uint8List bytes = args['bytes'] as Uint8List;
+    final int interpreterAddress = args['interpreter_address'] as int;
+    final List<String> labels = List<String>.from(args['labels'] as List);
+    final int inputSize = args['inputSize'] as int;
+    final double threshold = args['threshold'] as double;
+
+    final interpreter = Interpreter.fromAddress(interpreterAddress);
+
+    img.Image? baseImage = img.decodeImage(bytes);
+    if (baseImage == null) return [];
+
+    // Apply EXIF orientation before inference. Android's takePicture() often
+    // returns a landscape JPEG with an EXIF rotation tag. Flutter's Image
+    // widget handles this automatically, but img.decodeImage does not — so
+    // without this fix the model runs on a landscape frame while the display
+    // shows a portrait one, causing x/y axes to be effectively swapped.
+    baseImage = img.bakeOrientation(baseImage);
+
+    // Use Float32List for fast normalization (avoids nested Dart object alloc).
+    final inputData = _imageToFloat32(baseImage, inputSize);
+    final input = inputData.reshape([1, inputSize, inputSize, 3]);
+
+    final outputTensor = interpreter.getOutputTensor(0);
+    final shape = outputTensor.shape;
+    var output;
+    if (shape.length == 3) {
+      output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+    } else {
+      return [];
+    }
+
+    interpreter.run(input, output);
+    final detections = _parseGenericYolo(output[0], labels, threshold, inputSize, shape);
+    debugPrint('[Detector] raw detections: ${detections.length}, first bbox: ${detections.isNotEmpty ? detections.first.bbox : "none"}');
+    return detections;
+  }
+
+  static List<DetectionResult> _parseGenericYolo(List<dynamic> output, List<String> labels, double threshold, int inputSize, List<int> shape) {
+    final results = <DetectionResult>[];
+
+    // Check if output is [4+N, 8400] or [8400, 4+N]
+    bool isTransposed = shape[1] < shape[2];
+    int numElements = isTransposed ? shape[1] : shape[2];
+    int numBoxes = isTransposed ? shape[2] : shape[1];
+
+    // Auto-detect whether coordinates are absolute pixels [0, inputSize]
+    // or already normalized [0, 1]. Sample the first few valid cx values:
+    // any absolute-pixel coord from a real detection will be > 1.5, whereas
+    // normalized coords are always ≤ 1.0.
+    double maxSampledCoord = 0.0;
+    final sampleCount = numBoxes < 200 ? numBoxes : 200;
+    for (int i = 0; i < sampleCount; i++) {
+      final cx = (isTransposed ? output[0][i] : output[i][0]) as double;
+      final cy = (isTransposed ? output[1][i] : output[i][1]) as double;
+      if (cx > maxSampledCoord) maxSampledCoord = cx;
+      if (cy > maxSampledCoord) maxSampledCoord = cy;
+    }
+    // If max sampled coord is ≤ 1.5 the model outputs normalized [0,1] coords;
+    // skip the /inputSize division so bboxes are placed correctly.
+    final double coordScale = maxSampledCoord > 1.5 ? inputSize.toDouble() : 1.0;
+
+    for (int i = 0; i < numBoxes; i++) {
+      double maxClassScore = -1.0;
+      int classId = -1;
+      
+      // Class scores start at index 4
+      for (int j = 4; j < numElements; j++) {
+        double score = isTransposed ? output[j][i] : output[i][j];
+        if (score > maxClassScore) {
+          maxClassScore = score;
+          classId = j - 4;
+        }
+      }
+
+      if (maxClassScore >= threshold) {
+        double cx = isTransposed ? output[0][i] : output[i][0];
+        double cy = isTransposed ? output[1][i] : output[i][1];
+        double w = isTransposed ? output[2][i] : output[i][2];
+        double h = isTransposed ? output[3][i] : output[i][3];
+
+        results.add(DetectionResult(
+          className: (classId >= 0 && classId < labels.length) ? labels[classId] : 'unknown (id:$classId)',
+          confidence: maxClassScore,
+          bbox: Rect.fromLTWH(
+            (cx - w / 2) / coordScale,
+            (cy - h / 2) / coordScale,
+            w / coordScale,
+            h / coordScale,
+          ),
+        ));
+      }
+    }
+    return results;
+  }
+}

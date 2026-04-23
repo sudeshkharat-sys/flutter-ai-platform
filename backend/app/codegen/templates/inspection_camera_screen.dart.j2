@@ -1,0 +1,637 @@
+import 'dart:io';
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../ml/detector.dart';
+import '../ml/detection_result.dart';
+import '../database/database.dart';
+import '../widgets/detection_overlay.dart';
+
+class InspectionCameraScreen extends StatefulWidget {
+  final String vin;
+  final String modelCode;
+  final List<dynamic> tasks;
+  final int initialIndex;
+
+  const InspectionCameraScreen({
+    super.key,
+    required this.vin,
+    required this.modelCode,
+    required this.tasks,
+    required this.initialIndex,
+  });
+
+  @override
+  State<InspectionCameraScreen> createState() => _InspectionCameraScreenState();
+}
+
+class _InspectionCameraScreenState extends State<InspectionCameraScreen> with WidgetsBindingObserver {
+  CameraController? _cameraController;
+  bool _isCameraInitialized = false;
+  Uint8List? _capturedImageBytes;
+  Size? _capturedImageSize;
+  DetectionResult? _bestResult;
+  bool _isAnalyzing = false;
+  bool _isModelLoaded = false;
+  bool _isLoadingModel = true;
+  String? _error;
+  
+  // Debug Console State
+  List<String> _debugLogs = [];
+  bool _showDebugConsole = false;
+
+  bool _isFlashOn = false;
+
+  List<DetectionResult> _allDetections = [];
+  List<DetectionResult> _detectedNonTargetClasses = [];
+  int _currentIndex = 0;
+  final Map<int, dynamic> _results = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    WidgetsBinding.instance.addObserver(this);
+    _initializeCamera();
+    _loadCurrentModel();
+    _addLog("Screen initialized for VIN: ${widget.vin}");
+  }
+
+  void _addLog(String msg) {
+    if(!mounted) return;
+    setState(() {
+      _debugLogs.insert(0, "${DateTime.now().toString().split('.').first.split(' ').last} | $msg");
+      if (_debugLogs.length > 50) _debugLogs.removeLast();
+    });
+    debugPrint(msg);
+  }
+
+  Future<void> _loadCurrentModel() async {
+    setState(() {
+      _isLoadingModel = true;
+      _isModelLoaded = false;
+    });
+    
+    try {
+      final task = widget.tasks[_currentIndex];
+      _addLog("Loading Task: ${task['name']}");
+      _addLog("TFLite: ${task['tflite_path']}");
+      
+      await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
+      
+      if (mounted) {
+        setState(() {
+          _isLoadingModel = false;
+          _isModelLoaded = true;
+        });
+        _addLog("Model loaded. Target classes: ${task['classes']}");
+        _addLog("Labels in model: ${ModelManager().labelsCount}");
+      }
+    } catch (e) {
+      _addLog("AI Init error: $e");
+      if (mounted) setState(() => _error = "AI Init error: $e");
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    if (_isFlashOn) {
+      _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});
+    }
+    _cameraController?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final CameraController? cameraController = _cameraController;
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      return;
+    }
+    if (state == AppLifecycleState.inactive) {
+      if (_isFlashOn) {
+        cameraController.setFlashMode(FlashMode.off).catchError((_) {});
+        setState(() => _isFlashOn = false);
+      }
+      cameraController.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initializeCamera();
+    }
+  }
+
+  Future<void> _initializeCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        _addLog("No cameras found");
+        if (mounted) setState(() => _error = "No cameras found");
+        return;
+      }
+      final backCamera = cameras.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cameras.first);
+      // ResolutionPreset.medium (~720p) is sufficient for 640×640 model input and
+      // cuts JPEG decode time roughly in half vs. high (~1080p).
+      final controller = CameraController(backCamera, ResolutionPreset.medium, enableAudio: false);
+      _cameraController = controller;
+      await controller.initialize();
+      if (mounted) setState(() => _isCameraInitialized = true);
+      _addLog("Camera initialized");
+    } catch (e) {
+      _addLog("Camera error: $e");
+      if (mounted) setState(() => _error = "Camera error: $e");
+    }
+  }
+
+  Future<void> _handleCapture() async {
+    if (_isAnalyzing || !_isModelLoaded || _cameraController == null) {
+      _addLog("Capture blocked: Busy=${_isAnalyzing}, ModelReady=${_isModelLoaded}");
+      return;
+    }
+    try {
+      _addLog("--- Start Inference ---");
+      final XFile image = await _cameraController!.takePicture();
+      final bytes = await image.readAsBytes();
+
+      // Decode EXIF-corrected dimensions and run blur detection.
+      // We keep a reference to the oriented image so that inference can reuse it
+      // directly (predictImage), avoiding a second decode + bakeOrientation call.
+      Size? imageSize;
+      img.Image? orientedImage; // reused by inference below
+      try {
+        final decoded = img.decodeImage(bytes);
+        if (decoded != null) {
+          final oriented = img.bakeOrientation(decoded);
+          orientedImage = oriented; // captured for inference
+          imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble());
+
+          // Blur detection: Laplacian variance on a 150×150 thumbnail.
+          // Sharp images have high variance; blurry images have low variance.
+          final small = img.copyResize(oriented, width: 150, height: 150);
+          final gray = img.grayscale(small);
+          double sumLap = 0, sumLapSq = 0;
+          int count = 0;
+          for (int y = 1; y < gray.height - 1; y++) {
+            for (int x = 1; x < gray.width - 1; x++) {
+              final c = gray.getPixel(x, y).r.toDouble();
+              final t = gray.getPixel(x, y - 1).r.toDouble();
+              final b = gray.getPixel(x, y + 1).r.toDouble();
+              final l = gray.getPixel(x - 1, y).r.toDouble();
+              final rv = gray.getPixel(x + 1, y).r.toDouble();
+              final lap = t + b + l + rv - 4 * c;
+              sumLap += lap;
+              sumLapSq += lap * lap;
+              count++;
+            }
+          }
+          if (count > 0) {
+            final mean = sumLap / count;
+            final blurVariance = (sumLapSq / count) - (mean * mean);
+            _addLog('Blur variance: ${blurVariance.toStringAsFixed(1)}');
+            if (blurVariance < 150.0 && mounted) {
+              await showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (_) => AlertDialog(
+                  backgroundColor: const Color(0xFF1A1A24),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  title: const Row(children: [
+                    Icon(Icons.blur_on, color: Color(0xFFDC143C)),
+                    SizedBox(width: 8),
+                    Text('Image Not Clear', style: TextStyle(color: Colors.white, fontSize: 18)),
+                  ]),
+                  content: const Text(
+                    'The photo appears blurry or out of focus.\nPlease hold the device steady and retake.',
+                    style: TextStyle(color: Colors.white70, height: 1.5),
+                  ),
+                  actions: [
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
+                      label: const Text('Retake', style: TextStyle(color: Colors.white)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFDC143C),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+              return; // Abort — don't run detection on a blurry image
+            }
+          }
+        }
+      } catch (_) {}
+
+      setState(() {
+        _isAnalyzing = true;
+        _bestResult = null;
+        _capturedImageBytes = bytes;
+        _capturedImageSize = imageSize;
+      });
+      
+      final currentTask = widget.tasks[_currentIndex];
+      final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
+      _addLog("Target: ${targetClasses.join(', ')}");
+      
+      // Fast path: skip re-decode + re-orient by reusing the image from blur detection.
+      // Falls back to predictBytes (raw JPEG) if blur detection was skipped.
+      final allDetections = orientedImage != null
+          ? await ModelManager().predictImage(orientedImage)
+          : await ModelManager().predictBytes(bytes);
+      setState(() => _allDetections = allDetections);
+
+      // Persist captured image to device storage for history
+      String? savedImagePath;
+      try {
+        final dir = await getApplicationDocumentsDirectory();
+        final imgDir = Directory('${dir.path}/inspection_images');
+        await imgDir.create(recursive: true);
+        savedImagePath = '${imgDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
+        await File(savedImagePath).writeAsBytes(bytes);
+      } catch (e) {
+        _addLog("Image save error: $e");
+      }
+      _addLog("Raw objects found: ${allDetections.length}");
+
+      for(var d in allDetections) {
+        _addLog("Found: ${d.className} (${(d.confidence*100).toStringAsFixed(1)}%)");
+      }
+
+      final filtered = allDetections.where((d) => targetClasses.any((tc) => d.className.toLowerCase().contains(tc.toLowerCase()))).toList();
+      _addLog("Matches after filtering: ${filtered.length}");
+
+      setState(() {
+        if (filtered.isNotEmpty) {
+          filtered.sort((a, b) => b.confidence.compareTo(a.confidence));
+          _bestResult = filtered.first;
+          _addLog("WINNER: ${_bestResult!.className}");
+
+          // Store only the single winning bbox so history shows one clean box.
+          final detectionsJson = jsonEncode([_bestResult!.toJson()]);
+
+          _results[_currentIndex] = {
+            'className': _bestResult!.className,
+            'success': true,
+            'imagePath': savedImagePath,
+            'detectionsJson': detectionsJson,
+          };
+        } else {
+          _addLog("RESULT: NOT FOUND");
+          // Collect non-target detections (top 3 by confidence) to show the user.
+          final nonTarget = List<DetectionResult>.from(allDetections)
+            ..sort((a, b) => b.confidence.compareTo(a.confidence));
+          _detectedNonTargetClasses = nonTarget.take(3).toList();
+          if (allDetections.isNotEmpty) {
+            final best = allDetections.reduce((a, b) => a.confidence > b.confidence ? a : b);
+            _addLog("Detected '${best.className}' but target is '${targetClasses.join(', ')}'");
+          }
+          _results[_currentIndex] = {
+            'className': 'None',
+            'success': false,
+            'imagePath': savedImagePath,
+            'detectionsJson': jsonEncode([]),
+          };
+        }
+        _isAnalyzing = false;
+      });
+    } catch (e) {
+      _addLog("ERROR: $e");
+      setState(() => _isAnalyzing = false);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Capture failed: $e')));
+    }
+  }
+
+  Future<void> _toggleFlash() async {
+    if (_cameraController == null || !_isCameraInitialized) return;
+    final newFlashOn = !_isFlashOn;
+    try {
+      await _cameraController!.setFlashMode(newFlashOn ? FlashMode.torch : FlashMode.off);
+      setState(() => _isFlashOn = newFlashOn);
+      _addLog("Flash ${newFlashOn ? 'ON' : 'OFF'}");
+    } catch (e) {
+      _addLog("Flash error: $e");
+    }
+  }
+
+  void _retake() {
+    _addLog("Retake requested");
+    setState(() { _capturedImageBytes = null; _capturedImageSize = null; _bestResult = null; _isAnalyzing = false; _allDetections = []; _detectedNonTargetClasses = []; });
+  }
+
+  void _onSaveAndContinue() {
+    _results[_currentIndex] = {
+      'className': _bestResult?.className ?? 'None',
+      'success': _bestResult != null,
+    };
+
+    int nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    
+    if (_results.length == widget.tasks.length) {
+      _addLog("All tasks finished");
+      Navigator.pop(context, _results);
+      return;
+    }
+
+    _addLog("Moving to Task ${nextIdx + 1}");
+    setState(() {
+      _currentIndex = nextIdx;
+      _capturedImageBytes = null;
+      _bestResult = null;
+    });
+    _loadCurrentModel();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) return Scaffold(body: Center(child: Text('Error: $_error')));
+    final currentTask = widget.tasks[_currentIndex];
+
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.white, Color(0xFFFFF5F5)]),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              // Top Header
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+                child: Row(
+                  children: [
+                    IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context, _results)),
+                    Expanded(
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('TASK ${_currentIndex + 1} OF ${widget.tasks.length}', style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                            Text('VIN: ${widget.vin}', style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(_showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
+                      onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Info Banner
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                color: Colors.white.withOpacity(0.9),
+                child: Column(
+                  children: [
+                    Text(currentTask['name'], style: const TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.w900, fontSize: 18)),
+                    const SizedBox(height: 4),
+                    const Text("Align object within the frame and capture", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  ],
+                ),
+              ),
+
+              // Main Content Area
+              Expanded(
+                child: Stack(
+                  children: [
+                    if (_capturedImageBytes == null)
+                      Positioned.fill(child: _isCameraInitialized && _cameraController != null ? CameraPreview(_cameraController!) : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))),
+
+                    // Show captured image with bbox overlay. FittedBox + SizedBox
+                    // ensures the overlay coordinate system exactly matches the
+                    // visible image pixels (no letterbox offset errors).
+                    if (_capturedImageBytes != null)
+                      Positioned.fill(
+                        child: _capturedImageSize != null
+                          ? FittedBox(
+                              fit: BoxFit.contain,
+                              child: SizedBox(
+                                width: _capturedImageSize!.width,
+                                height: _capturedImageSize!.height,
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    Image.memory(
+                                      _capturedImageBytes!,
+                                      fit: BoxFit.fill,
+                                      width: _capturedImageSize!.width,
+                                      height: _capturedImageSize!.height,
+                                    ),
+                                    if (_bestResult != null)
+                                      DetectionOverlay(
+                                        results: [_bestResult!],
+                                        previewSize: _capturedImageSize!,
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            )
+                          : Image.memory(_capturedImageBytes!, fit: BoxFit.contain),
+                      ),
+
+                    if (_capturedImageBytes == null)
+                      Center(child: Container(width: 280, height: 280, decoration: BoxDecoration(border: Border.all(color: const Color(0xFFDC143C), width: 2)))),
+
+                    if (_isLoadingModel && _capturedImageBytes == null)
+                      Container(color: Colors.black45, child: const Center(child: CircularProgressIndicator(color: Colors.white))),
+
+                    if (_isAnalyzing)
+                      Container(color: Colors.black54, child: const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))),
+
+                    // Flashlight toggle — visible only during live camera preview
+                    if (_capturedImageBytes == null && _isCameraInitialized)
+                      Positioned(
+                        top: 16, left: 16,
+                        child: GestureDetector(
+                          onTap: _toggleFlash,
+                          child: Container(
+                            width: 48, height: 48,
+                            decoration: BoxDecoration(
+                              color: _isFlashOn ? const Color(0xFFFFD700) : Colors.black54,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: _isFlashOn ? const Color(0xFFFFD700) : Colors.white30, width: 1.5),
+                            ),
+                            child: Icon(
+                              _isFlashOn ? Icons.flashlight_on : Icons.flashlight_off,
+                              color: _isFlashOn ? Colors.black : Colors.white,
+                              size: 24,
+                            ),
+                          ),
+                        ),
+                      ),
+
+                    // Top-right status badge
+                    if (!_isAnalyzing && _capturedImageBytes != null)
+                      Positioned(
+                        top: 16, right: 16,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: _bestResult != null ? Colors.green : Colors.red,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: _bestResult != null
+                              ? Text('✓  ${_bestResult!.className}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
+                              : const Text('NOT FOUND', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                        ),
+                      ),
+
+                    // Bottom panel — shown when NOT FOUND (and debug console is hidden)
+                    if (!_isAnalyzing && _capturedImageBytes != null && _bestResult == null && !_showDebugConsole)
+                      Positioned(
+                        bottom: 0, left: 0, right: 0,
+                        child: Container(
+                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.88),
+                            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Target not found row
+                              Row(children: [
+                                const Icon(Icons.cancel, color: Colors.red, size: 16),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    'Target not found: ${List<String>.from(widget.tasks[_currentIndex]['classes'] ?? []).join(', ')}',
+                                    style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ]),
+                              const SizedBox(height: 10),
+                              if (_detectedNonTargetClasses.isNotEmpty) ...[
+                                const Text('Detected in this image:', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                                const SizedBox(height: 6),
+                                ..._detectedNonTargetClasses.map((d) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 6),
+                                  child: Row(children: [
+                                    const Icon(Icons.close, color: Colors.orange, size: 16),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      '${d.className}',
+                                      style: const TextStyle(
+                                        color: Colors.orange,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        decoration: TextDecoration.lineThrough,
+                                        decorationColor: Colors.orange,
+                                        decorationThickness: 2,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      '${(d.confidence * 100).toStringAsFixed(0)}%',
+                                      style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Text('— not this task', style: TextStyle(color: Colors.white38, fontSize: 11, fontStyle: FontStyle.italic)),
+                                  ]),
+                                )),
+                              ] else
+                                const Text('Nothing was detected in this image.', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      
+                    // DEBUG CONSOLE OVERLAY
+                    if (_showDebugConsole)
+                      Positioned(
+                        bottom: 0, left: 0, right: 0,
+                        height: 200,
+                        child: Container(
+                          color: Colors.black.withOpacity(0.85),
+                          padding: const EdgeInsets.all(8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text("DEBUG CONSOLE", style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 10)),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 16),
+                                    onPressed: () => setState(() => _debugLogs = []),
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                  )
+                                ],
+                              ),
+                              const Divider(color: Colors.white24),
+                              Expanded(
+                                child: ListView.builder(
+                                  itemCount: _debugLogs.length,
+                                  itemBuilder: (context, idx) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 2),
+                                    child: Text(
+                                      _debugLogs[idx],
+                                      style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 9),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+
+              // Actions
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    if (_capturedImageBytes == null)
+                      GestureDetector(
+                        onTap: (_isLoadingModel || _isAnalyzing || !_isCameraInitialized) ? null : _handleCapture,
+                        child: Container(
+                          width: 80, height: 80,
+                          decoration: BoxDecoration(color: const Color(0xFFDC143C), shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 10, offset: const Offset(0, 4))]),
+                          child: const Icon(Icons.camera_alt, color: Colors.white, size: 40),
+                        ),
+                      )
+                    else
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _retake,
+                              style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16), side: const BorderSide(color: Color(0xFFDC143C))),
+                              child: const Text("RETAKE", style: TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: _onSaveAndContinue,
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(vertical: 16)),
+                              child: Text(_results.length + 1 == widget.tasks.length ? "FINISH" : "NEXT TASK", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
