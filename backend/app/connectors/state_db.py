@@ -4,6 +4,7 @@ Manages connection and state management for Flutter AI Studio
 """
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -15,6 +16,26 @@ from app.queries import CommonQueries, DatabaseQueries, QueryValidator
 from app.connectors.table_creation import metadata
 
 logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 5
+_RETRY_BACKOFF = [2, 4, 8, 16, 32]
+
+
+def _retry_connect(fn, label: str):
+    """Run fn(), retrying up to _MAX_RETRIES times with exponential backoff."""
+    last_exc = None
+    for attempt, wait in enumerate(_RETRY_BACKOFF[:_MAX_RETRIES], start=1):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                f"{label}: attempt {attempt}/{_MAX_RETRIES} failed — {exc}. "
+                f"Retrying in {wait}s..."
+            )
+            time.sleep(wait)
+    raise last_exc
+
 
 class StateDBConnector:
     """
@@ -29,16 +50,12 @@ class StateDBConnector:
         self._connect()
 
     def _connect(self):
-        """Establish connection to PostgreSQL database"""
-        try:
-            # Ensure UTF-8 client encoding
+        """Establish connection to PostgreSQL database, retrying on failure."""
+        def _attempt():
             url = self.settings.postgres_url
-            if "?" in url:
-                url += "&client_encoding=utf8"
-            else:
-                url += "?client_encoding=utf8"
+            url += ("&" if "?" in url else "?") + "client_encoding=utf8"
 
-            self.engine = create_engine(
+            engine = create_engine(
                 url,
                 poolclass=QueuePool,
                 pool_size=5,
@@ -47,17 +64,24 @@ class StateDBConnector:
                 echo=False,
             )
 
-            self.SessionLocal = sessionmaker(
-                autocommit=False, autoflush=False, bind=self.engine
+            session_local = sessionmaker(
+                autocommit=False, autoflush=False, bind=engine
             )
 
-            # Test connection
-            with self.engine.connect() as conn:
+            with engine.connect() as conn:
                 conn.execute(text(CommonQueries.TEST_CONNECTION))
 
-            logger.info(f"Successfully connected to PostgreSQL at {self.settings.POSTGRES_HOST}")
+            return engine, session_local
+
+        try:
+            self.engine, self.SessionLocal = _retry_connect(
+                _attempt, "PostgreSQL connect"
+            )
+            logger.info(
+                f"Successfully connected to PostgreSQL at {self.settings.POSTGRES_HOST}"
+            )
         except Exception as e:
-            logger.error(f"Failed to connect to PostgreSQL: {e}")
+            logger.error(f"Failed to connect to PostgreSQL after retries: {e}")
             raise
 
     @contextmanager
@@ -85,7 +109,6 @@ class StateDBConnector:
 
                 rows = result.fetchall()
                 logger.debug(f"Query returned {len(rows)} rows")
-                # Convert rows to dicts for easier consumption
                 return [dict(row._mapping) for row in rows]
 
         except Exception as e:
@@ -97,8 +120,6 @@ class StateDBConnector:
         try:
             with self.get_session() as session:
                 result = session.execute(text(query), params)
-                
-                # Check for returning ID
                 try:
                     row = result.fetchone()
                     return row[0] if row else None
@@ -138,6 +159,7 @@ class StateDBConnector:
             except Exception as e:
                 logger.error(f"Error closing connection: {e}")
 
+
 class StateDBManager:
     """
     Manages database initialization and table creation for PostgreSQL
@@ -148,16 +170,17 @@ class StateDBManager:
         self.engine = None
 
     def _get_engine(self, database: str = None):
-        if database:
-            url = f"postgresql://{self.settings.POSTGRES_USER}:{self.settings.POSTGRES_PASSWORD}@{self.settings.POSTGRES_HOST}:{self.settings.POSTGRES_PORT}/{database}?client_encoding=utf8"
-        else:
-            url = f"postgresql://{self.settings.POSTGRES_USER}:{self.settings.POSTGRES_PASSWORD}@{self.settings.POSTGRES_HOST}:{self.settings.POSTGRES_PORT}/postgres?client_encoding=utf8"
-
+        db = database or "postgres"
+        url = (
+            f"postgresql://{self.settings.POSTGRES_USER}:{self.settings.POSTGRES_PASSWORD}"
+            f"@{self.settings.POSTGRES_HOST}:{self.settings.POSTGRES_PORT}/{db}"
+            f"?client_encoding=utf8"
+        )
         return create_engine(url, isolation_level="AUTOCOMMIT")
 
     def initialize_database(self):
-        """Create database if it doesn't exist."""
-        try:
+        """Create database if it doesn't exist, retrying on connection failure."""
+        def _attempt():
             db_name = self.settings.POSTGRES_DB
             QueryValidator.validate_identifier(db_name, "database name")
 
@@ -178,6 +201,8 @@ class StateDBManager:
 
             engine.dispose()
 
+        try:
+            _retry_connect(_attempt, "initialize_database")
         except Exception as e:
             logger.error(f"Error initializing database: {e}")
             raise
