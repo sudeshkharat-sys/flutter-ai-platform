@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import zipfile
 import io
@@ -241,7 +242,7 @@ def build_apk_task(self, app_id: str):
         # Derive project_dir from the known app name slug — same formula as
         # generator.py — instead of next(iterdir()) which is unreliable when a
         # stale directory from a failed previous cleanup survives and sorts first.
-        _app_name_slug = app.get("name", "My App").lower().replace(" ", "_").replace("-", "_")
+        _app_name_slug = re.sub(r'[^a-z0-9_]', '_', app.get("name", "My App").lower()).strip('_') or "app"
         project_dir = export_root / _app_name_slug
         _update_status(db, app_id, log_append=f"Project dir: {project_dir}\n")
 

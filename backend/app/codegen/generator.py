@@ -1,5 +1,6 @@
 import zipfile
 import io
+import re
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
@@ -104,7 +105,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
 
     ctx = {
         "app_name": app_name,
-        "app_name_slug": app_name.lower().replace(" ", "_").replace("-", "_"),
+        "app_name_slug": re.sub(r'[^a-z0-9_]', '_', app_name.lower()).strip('_') or "app",
         "package_name": package_name,
         "classes": get_attr(models_list[0], "classes") if models_list else ["object"],
         "models_manifest": models_manifest,
