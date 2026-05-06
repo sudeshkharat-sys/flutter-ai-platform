@@ -28,14 +28,3 @@ plugins {
 }
 
 include ":app"
-
-// Use Flutter's standard plugin loader which reads .flutter-plugins (generated
-// by 'flutter pub get') to resolve all plugins automatically.  This replaces
-// the former manual pluginMap whose hardcoded versions went stale.
-def _flutterSdkPath = {
-    def props = new Properties()
-    def lp = file("local.properties")
-    if (lp.exists()) lp.withInputStream { props.load(it) }
-    return props.getProperty("flutter.sdk") ?: System.getenv("FLUTTER_ROOT") ?: "C:/flutter"
-}()
-apply from: "$_flutterSdkPath/packages/flutter_tools/gradle/app_plugin_loader.gradle"
