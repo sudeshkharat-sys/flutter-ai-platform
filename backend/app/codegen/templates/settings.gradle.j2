@@ -32,9 +32,10 @@ include ":app"
 // --- MANUAL OFFLINE PLUGIN BRIDGING ---
 // NOTE: variable is named pluginMap (not 'plugins') to avoid shadowing
 //       Gradle's built-in plugins{} DSL object which causes silent failures.
-// Resolve pub cache: honour PUB_CACHE env var (set by the build task) so the
-// correct shared cache is used regardless of which OS user runs the build.
-def _pubCacheRoot = System.getenv("PUB_CACHE") ?: "C:/Users/50014665/AppData/Local/Pub/Cache"
+// Resolve pub cache: PUB_CACHE env var (set by the build task) takes priority;
+// fall back to LOCALAPPDATA so it always resolves to the current user's cache.
+def _localAppData = System.getenv("LOCALAPPDATA") ?: "C:/Users/50017162/AppData/Local"
+def _pubCacheRoot = System.getenv("PUB_CACHE") ?: (_localAppData + "/Pub/Cache")
 def pubCacheDir = _pubCacheRoot.replace("\\", "/") + "/hosted/pub.dev"
 
 def pluginMap = [
