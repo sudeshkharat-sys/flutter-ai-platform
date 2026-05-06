@@ -57,10 +57,16 @@ flutter {
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.20"
 
-    // Explicitly add Flutter engine jar so Kotlin can resolve io.flutter.*
-    // classes (e.g. FlutterActivity) during compilation.  The Flutter Gradle
-    // plugin normally does this, but in offline/local builds it is sometimes
-    // not on the classpath early enough for the Kotlin compiler.
+    // androidx deps required by FlutterActivity's supertypes (FragmentActivity,
+    // LifecycleOwner etc.).  The Flutter Gradle plugin adds these transitively at
+    // runtime, but the Kotlin compiler needs them on the classpath at compile time.
+    implementation "androidx.core:core:1.12.0"
+    implementation "androidx.lifecycle:lifecycle-common:2.6.2"
+    implementation "androidx.lifecycle:lifecycle-runtime:2.6.2"
+    implementation "androidx.activity:activity:1.8.0"
+    implementation "androidx.fragment:fragment:1.6.2"
+
+    // Flutter engine jar — provides io.flutter.* classes for compilation.
     def flutterSdk = localProperties.getProperty('flutter.sdk')
                   ?: System.getenv("FLUTTER_ROOT") ?: "C:/flutter"
     compileOnly files("$flutterSdk/bin/cache/artifacts/engine/android-arm64-release/flutter.jar",
