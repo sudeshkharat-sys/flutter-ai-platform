@@ -237,7 +237,20 @@ def build_apk_task(self, app_id: str):
         export_root.mkdir(parents=True, exist_ok=True)
         _update_status(db, app_id, step="Preparing project workspace...", log_append="Extracting project files...\n")
         _safe_extract(zip_bytes, export_root)
-        project_dir = next(export_root.iterdir())
+
+        # Derive project_dir from the known app name slug — same formula as
+        # generator.py — instead of next(iterdir()) which is unreliable when a
+        # stale directory from a failed previous cleanup survives and sorts first.
+        _app_name_slug = app.get("name", "My App").lower().replace(" ", "_").replace("-", "_")
+        project_dir = export_root / _app_name_slug
+        _update_status(db, app_id, log_append=f"Project dir: {project_dir}\n")
+
+        if not (project_dir / "pubspec.yaml").exists():
+            found = [str(p) for p in export_root.rglob("pubspec.yaml")]
+            raise FileNotFoundError(
+                f"pubspec.yaml not found in {project_dir}. "
+                f"Searched export root — found at: {found or 'nowhere'}"
+            )
         
         # 3. Copy model assets
         if all_model_assets:
