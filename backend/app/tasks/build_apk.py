@@ -302,7 +302,7 @@ def build_apk_task(self, app_id: str):
         dart_path = r"C:\flutter\bin\dart.bat"
         if not os.path.exists(dart_path): dart_path = "dart"
         _update_status(db, app_id, step="Generating database code...", log_append="\nRunning 'dart run build_runner build'...\n")
-        ret_gen = _run_command_streaming(db, app_id, [dart_path, "run", "build_runner", "build", "--delete-conflicting-outputs"], project_dir, env)
+        ret_gen = _run_command_streaming(db, app_id, [dart_path, "run", "build_runner", "build"], project_dir, env)
         if ret_gen != 0: raise Exception(f"Code generation failed with exit code {ret_gen}")
 
         # flutter build apk
