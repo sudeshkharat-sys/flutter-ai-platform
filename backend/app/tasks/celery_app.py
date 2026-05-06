@@ -16,4 +16,5 @@ celery_app.conf.update(
     enable_utc=True,
     worker_prefetch_multiplier=1,
     task_track_started=True,
+    broker_connection_retry_on_startup=True,
 )
