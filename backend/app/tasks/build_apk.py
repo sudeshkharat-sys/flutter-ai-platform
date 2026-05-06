@@ -264,6 +264,11 @@ def build_apk_task(self, app_id: str):
         env["ANDROID_HOME"] = r"C:\android-sdk"
         env["PATH"] = f"C:\\jdk-17.0.14+7\\bin;C:\\flutter\\bin;C:\\android-sdk\\cmdline-tools\\latest\\bin;C:\\android-sdk\\platform-tools;{env.get('PATH', '')}"
         env["FLUTTER_ROOT"] = "C:\\flutter"
+        # Point Flutter/Dart tooling at the shared pub cache where offline
+        # packages like zsdk-5.0.0 are stored.  Without this, each OS user
+        # gets their own empty cache and 'flutter pub get' fails because zsdk
+        # is not available on pub.dev and cannot be downloaded.
+        env.setdefault("PUB_CACHE", r"C:\Users\50014665\AppData\Local\Pub\Cache")
 
         # flutter clean — wipe any Gradle / Dart build caches that may have
         # survived an incomplete previous cleanup (e.g. cross-drive .gradle dirs).
