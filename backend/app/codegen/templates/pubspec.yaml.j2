@@ -25,6 +25,14 @@ dependency_overrides:
   # path_provider_android 2.3.x requires AGP 8.5+; our build uses AGP 8.1.1.
   # Force the last compatible version here and in settings.gradle.
   path_provider_android: 2.2.22
+  # sqlite3 3.x introduced a build hook that downloads libsqlite3.x64.android.so
+  # from a CDN at Flutter build time.  The hash of the file currently served by
+  # the CDN does not match the expected hash embedded in sqlite3 3.3.1, causing
+  # the Flutter build to abort with "Bad state: Hash of downloaded file …".
+  # sqlite3 2.x has no download hook — it uses sqlite3_flutter_libs (already
+  # listed in dependencies) to supply the pre-built native binary, which is the
+  # correct approach for a packaged Flutter app.  drift 2.x accepts both lines.
+  sqlite3: '>=2.4.0 <3.0.0'
 
 dev_dependencies:
   flutter_test:
