@@ -56,18 +56,6 @@ flutter {
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.20"
-    
-    // --- MANUAL PLUGIN DEPENDENCIES ---
-    implementation project(':camera_android')
-    implementation project(':camera_android_camerax')
-    implementation project(':permission_handler_android')
-    implementation project(':flutter_plugin_android_lifecycle')
-    implementation project(':tflite_flutter')
-    implementation project(':path_provider_android')
-    implementation project(':shared_preferences_android')
-    implementation project(':mobile_scanner')
-    implementation project(':sqlite3_flutter_libs')
-    implementation project(':zsdk')
-    implementation project(':jni')
-    implementation project(':jni_flutter')
+    // Plugin dependencies are added automatically by dev.flutter.flutter-gradle-plugin
+    // from .flutter-plugins-dependencies — no manual declarations needed.
 }
