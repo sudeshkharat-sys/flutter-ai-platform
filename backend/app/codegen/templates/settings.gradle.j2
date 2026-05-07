@@ -63,7 +63,7 @@ def findPluginAndroid = { String pluginName ->
     def cacheRoot = new File(pubCacheHosted)
     if (!cacheRoot.exists()) return null
     def match = cacheRoot.listFiles()?.find { f ->
-        f.isDirectory() && f.name == pluginName || f.name.startsWith(pluginName + "-")
+        f.isDirectory() && (f.name == pluginName || f.name.startsWith(pluginName + "-"))
     }
     return match ? new File(match, "android") : null
 }
