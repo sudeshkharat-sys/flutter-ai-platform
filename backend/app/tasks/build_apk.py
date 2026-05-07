@@ -125,12 +125,22 @@ def _force_delete_dir(path: Path, log_fn=None):
             log_fn(msg)
 
     # 1. Ask the Gradle daemon to stop so it releases its locks.
-    gradlew = path / "android" / "gradlew.bat"
-    if gradlew.exists():
+    # gradlew.bat lives at: export_root/{slug}/android/gradlew.bat
+    # Search one level deep to find it regardless of the project slug.
+    gradlew = None
+    try:
+        for subdir in path.iterdir():
+            candidate = subdir / "android" / "gradlew.bat"
+            if candidate.exists():
+                gradlew = candidate
+                break
+    except Exception:
+        pass
+    if gradlew:
         try:
             subprocess.run(
                 [str(gradlew), "--stop"],
-                cwd=str(path / "android"),
+                cwd=str(gradlew.parent),
                 capture_output=True,
                 timeout=20,
             )
@@ -237,7 +247,27 @@ def build_apk_task(self, app_id: str):
         export_root.mkdir(parents=True, exist_ok=True)
         _update_status(db, app_id, step="Preparing project workspace...", log_append="Extracting project files...\n")
         _safe_extract(zip_bytes, export_root)
-        project_dir = next(export_root.iterdir())
+
+        # Resolve project directory: the ZIP always places files under
+        # {app_name_slug}/ so there should be exactly one subdirectory.
+        # Filter to directories only — stale Windows filesystem artifacts
+        # (Thumbs.db, desktop.ini) must not be picked up as the project root.
+        app_name_slug = (app.get("name") or "app").lower().replace(" ", "_").replace("-", "_")
+        project_dir = export_root / app_name_slug
+        if not project_dir.is_dir():
+            dirs = [p for p in export_root.iterdir() if p.is_dir()]
+            if not dirs:
+                raise RuntimeError(
+                    f"Project extraction produced no directory in {export_root}. "
+                    f"Contents: {list(export_root.iterdir())}"
+                )
+            project_dir = dirs[0]
+        _update_status(db, app_id, log_append=f"Project dir: {project_dir.name}\n")
+        if not (project_dir / "pubspec.yaml").exists():
+            raise RuntimeError(
+                f"pubspec.yaml missing from extracted project at {project_dir}. "
+                f"ZIP may be corrupt or extraction failed."
+            )
         
         # 3. Copy model assets
         if all_model_assets:
