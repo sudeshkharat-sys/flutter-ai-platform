@@ -1,3 +1,4 @@
+import re
 import zipfile
 import io
 from pathlib import Path
@@ -91,10 +92,10 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 "labels_path": paths.get("labels")
             })
 
-    app_name = get_attr(app_project, "name", "My App")
-    package_name = get_attr(app_project, "package_name", "com.example.app")
+    app_name = get_attr(app_project, "name") or "My App"
+    package_name = get_attr(app_project, "package_name") or "com.example.app"
     canvas_state = get_attr(app_project, "canvas_state") or []
-    
+
     if isinstance(canvas_state, str):
         import json
         try:
@@ -102,9 +103,18 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         except:
             canvas_state = []
 
+    # Produce a valid Dart/filesystem identifier: lowercase, only [a-z0-9_],
+    # no leading digit, never empty.  An empty slug would make every zip entry
+    # start with "/" which Python strips on extraction, depositing all files
+    # flat in the export directory instead of a named subdirectory.
+    _raw_slug = re.sub(r"[^a-z0-9]+", "_", app_name.lower()).strip("_")
+    if _raw_slug and _raw_slug[0].isdigit():
+        _raw_slug = "app_" + _raw_slug
+    app_name_slug = _raw_slug or "flutter_app"
+
     ctx = {
         "app_name": app_name,
-        "app_name_slug": app_name.lower().replace(" ", "_").replace("-", "_"),
+        "app_name_slug": app_name_slug,
         "package_name": package_name,
         "classes": get_attr(models_list[0], "classes") if models_list else ["object"],
         "models_manifest": models_manifest,

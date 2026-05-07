@@ -239,16 +239,22 @@ def build_apk_task(self, app_id: str):
         _safe_extract(zip_bytes, export_root)
 
         # Find the Flutter project root — the directory that contains pubspec.yaml.
-        # Using next(iterdir()) is fragile: it returns the first filesystem entry
-        # which may be a file or the wrong directory when export_root has stale
-        # content or the zip layout differs.
+        # Normal case: zip was created with a named root dir → look for a
+        #   subdirectory that contains pubspec.yaml.
+        # Fallback: if app_name_slug was empty the zip entries had a leading "/"
+        #   which Python strips on extraction, so all files land flat inside
+        #   export_root itself.
         project_dir = next(
             (p for p in export_root.iterdir() if p.is_dir() and (p / "pubspec.yaml").exists()),
             None,
         )
+        if project_dir is None and (export_root / "pubspec.yaml").exists():
+            project_dir = export_root
         if project_dir is None:
+            contents = sorted(str(p.name) for p in export_root.iterdir()) if export_root.exists() else []
             raise Exception(
-                f"Extracted zip contains no Flutter project root (no directory with pubspec.yaml) in {export_root}"
+                f"Extracted zip contains no Flutter project root (no directory with pubspec.yaml) "
+                f"in {export_root}. Contents: {contents[:15]}"
             )
         _update_status(db, app_id, log_append=f"Project dir: {project_dir.name}\n")
         
