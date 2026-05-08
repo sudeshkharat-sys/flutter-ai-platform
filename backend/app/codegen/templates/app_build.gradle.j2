@@ -1,0 +1,73 @@
+plugins {
+    id "com.android.application"
+    id "dev.flutter.flutter-gradle-plugin"
+    id "org.jetbrains.kotlin.android"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader('UTF-8') { reader ->
+        localProperties.load(reader)
+    }
+}
+
+android {
+    namespace "{{ package_name }}"
+    compileSdk rootProject.ext.flutterCompileSdkVersion
+    ndkVersion "27.0.12077973"
+
+    defaultConfig {
+        applicationId "{{ package_name }}"
+        minSdk rootProject.ext.flutterMinSdkVersion
+        targetSdk rootProject.ext.flutterTargetSdkVersion
+        versionCode 1
+        versionName "1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.debug
+        }
+    }
+}
+
+// CRITICAL: Disable AAR metadata checks that force AGP 8.6.0 for camera dependencies
+tasks.withType(com.android.build.gradle.internal.tasks.CheckAarMetadataTask).configureEach {
+    enabled = false
+}
+
+flutter {
+    source '../..'
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.20"
+    
+    // --- MANUAL PLUGIN DEPENDENCIES ---
+    implementation project(':camera_android')
+    implementation project(':camera_android_camerax')
+    implementation project(':permission_handler_android')
+    implementation project(':flutter_plugin_android_lifecycle')
+    implementation project(':tflite_flutter')
+    implementation project(':path_provider_android')
+    implementation project(':shared_preferences_android')
+    implementation project(':mobile_scanner')
+    implementation project(':sqlite3_flutter_libs')
+    implementation project(':zsdk')
+    implementation project(':jni')
+    implementation project(':jni_flutter')
+}

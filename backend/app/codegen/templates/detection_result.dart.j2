@@ -1,0 +1,39 @@
+import 'dart:ui';
+
+class DetectionResult {
+  final String className;
+  final double confidence;
+  final Rect bbox; // normalized 0.0–1.0 coordinates (x, y, w, h)
+
+  const DetectionResult({
+    required this.className,
+    required this.confidence,
+    required this.bbox,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'className': className,
+    'confidence': confidence,
+    'bbox': {
+      'left': bbox.left,
+      'top': bbox.top,
+      'right': bbox.right,
+      'bottom': bbox.bottom,
+    },
+  };
+
+  static DetectionResult fromJson(Map<String, dynamic> json) => DetectionResult(
+    className: json['className'] as String,
+    confidence: (json['confidence'] as num).toDouble(),
+    bbox: Rect.fromLTRB(
+      (json['bbox']['left'] as num).toDouble(),
+      (json['bbox']['top'] as num).toDouble(),
+      (json['bbox']['right'] as num).toDouble(),
+      (json['bbox']['bottom'] as num).toDouble(),
+    ),
+  );
+
+  @override
+  String toString() =>
+      'DetectionResult(class=$className, conf=${confidence.toStringAsFixed(2)}, bbox=$bbox)';
+}

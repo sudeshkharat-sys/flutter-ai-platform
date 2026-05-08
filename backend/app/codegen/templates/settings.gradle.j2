@@ -1,0 +1,55 @@
+pluginManagement {
+    def flutterSdkPath = {
+        def properties = new Properties()
+        def localPropertiesFile = file("local.properties")
+        if (localPropertiesFile.exists()) {
+            localPropertiesFile.withInputStream { properties.load(it) }
+        }
+        def flutterSdkPath = properties.getProperty("flutter.sdk")
+        if (flutterSdkPath == null) {
+            flutterSdkPath = System.getenv("FLUTTER_ROOT") ?: System.getenv("FLUTTER_HOME")
+        }
+        return flutterSdkPath
+    }()
+
+    includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+plugins {
+    id "dev.flutter.flutter-gradle-plugin" version "1.0.0" apply false
+    id "com.android.application" version "8.1.1" apply false
+    id "org.jetbrains.kotlin.android" version "1.9.20" apply false
+}
+
+include ":app"
+
+// --- MANUAL OFFLINE PLUGIN BRIDGING ---
+// NOTE: variable is named pluginMap (not 'plugins') to avoid shadowing
+//       Gradle's built-in plugins{} DSL object which causes silent failures.
+def pubCacheDir = "C:/Users/50014665/AppData/Local/Pub/Cache/hosted/pub.dev"
+
+def pluginMap = [
+    "camera_android": "camera_android-0.10.10+15",
+    "camera_android_camerax": "camera_android_camerax-0.6.30",
+    "permission_handler_android": "permission_handler_android-12.1.0",
+    "flutter_plugin_android_lifecycle": "flutter_plugin_android_lifecycle-2.0.34",
+    "tflite_flutter": "tflite_flutter-0.10.4",
+    "path_provider_android": "path_provider_android-2.2.22",
+    "shared_preferences_android": "shared_preferences_android-2.4.23",
+    "mobile_scanner": "mobile_scanner-3.5.7",
+    "sqlite3_flutter_libs": "sqlite3_flutter_libs-0.5.42",
+    "zsdk": "zsdk-5.0.0",
+    "jni": "jni-1.0.0",
+    "jni_flutter": "jni_flutter-1.0.1"
+]
+
+pluginMap.each { name, folder ->
+    include ":$name"
+    project(":$name").projectDir = new File(pubCacheDir, "$folder/android")
+}

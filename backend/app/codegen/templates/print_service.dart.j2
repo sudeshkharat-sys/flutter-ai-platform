@@ -1,0 +1,196 @@
+import 'package:flutter/material.dart';
+import 'package:zsdk/zsdk.dart';
+
+/// A Bluetooth printer (bonded or discovered via zsdk).
+class DiscoveredPrinter {
+  final String name;
+  final String address; // Bluetooth MAC address (e.g. C4:D3:6A:AC:F0:AE)
+
+  const DiscoveredPrinter({
+    required this.name,
+    required this.address,
+  });
+}
+
+class PrintService {
+  static final PrintService instance = PrintService._();
+  PrintService._();
+
+  final _zsdk = ZSDK();
+
+  // ── Bluetooth discovery ───────────────────────────────────────────────────
+
+  /// Return already-paired (bonded) Bluetooth devices.
+  Future<List<DiscoveredPrinter>> getBondedPrinters() async {
+    try {
+      final devices = await _zsdk.getBondedDevices();
+      return devices
+          .map((d) => DiscoveredPrinter(
+                name: (d['name'] as String?)?.isNotEmpty == true
+                    ? d['name']!
+                    : (d['address'] ?? 'Unknown'),
+                address: d['address'] ?? '',
+              ))
+          .where((p) => p.address.isNotEmpty)
+          .toList();
+    } catch (e) {
+      debugPrint('[PrintService] getBondedDevices error: $e');
+      return [];
+    }
+  }
+
+  /// Actively scan for nearby Zebra Bluetooth printers (Android only).
+  Future<List<DiscoveredPrinter>> discoverBluetoothPrinters() async {
+    try {
+      final devices = await _zsdk.discoverBluetoothPrinters();
+      return devices
+          .map((d) => DiscoveredPrinter(
+                name: (d['name'] as String?)?.isNotEmpty == true
+                    ? d['name']!
+                    : 'Zebra Printer',
+                address: d['address'] ?? '',
+              ))
+          .where((p) => p.address.isNotEmpty)
+          .toList();
+    } catch (e) {
+      debugPrint('[PrintService] discoverBluetoothPrinters error: $e');
+      return [];
+    }
+  }
+
+  // ── ZPL label generation ──────────────────────────────────────────────────
+
+  /// Returns true if [value] is a real detected part (not null/empty/"None").
+  bool _hasValue(String? value) {
+    if (value == null) return false;
+    final v = value.trim().toLowerCase();
+    return v.isNotEmpty && v != 'none' && v != 'null' && v != 'n/a';
+  }
+
+  /// Build a ZPL II label for the inspection report.
+  /// Designed for Zebra ZT411 at 300 dpi, 4-inch wide labels.
+  String _buildZpl({
+    required String vin,
+    required String modelCode,
+    required String timestamp,
+    required bool overallSuccess,
+    required List<Map<String, dynamic>> tasks,
+  }) {
+    // Clean up ISO timestamp → "2026-03-26 15:46:09"
+    final cleanDate = timestamp
+        .replaceFirst('T', ' ')
+        .replaceAll(RegExp(r'\.\d+$'), '');
+
+    // Only show failed tasks on the label
+    final failedTasks = overallSuccess
+        ? <Map<String, dynamic>>[]
+        : tasks.where((t) => t['success'] != true).toList();
+
+    // Dynamic height
+    int taskRows = 0;
+    for (final t in failedTasks) {
+      taskRows += 56 + 8;
+      if (_hasValue(t['detectedPart'] as String?)) taskRows += 40;
+    }
+    final tasksSection = failedTasks.isEmpty ? 0 : 60 + taskRows;
+    final labelHeight = 80 + 140 + 80 + tasksSection + 55;
+
+    final buf = StringBuffer();
+    int y = 20;
+
+    buf.writeln('^XA');
+    buf.writeln('^PW1200');
+    buf.writeln('^LL$labelHeight');
+
+    // ── Title ─────────────────────────────────────────────────────────────────
+    buf.writeln('^FO50,$y^A0N,62,44^FDINSPECTION REPORT^FS');
+    y += 75;
+    buf.writeln('^FO50,$y^GB1100,4,4^FS');
+    y += 18;
+
+    // ── VIN and DATE only ─────────────────────────────────────────────────────
+    buf.writeln('^FO50,$y^A0N,42,30^FDVIN  : $vin^FS');
+    y += 56;
+    buf.writeln('^FO50,$y^A0N,38,27^FDDATE : $cleanDate^FS');
+    y += 54;
+    buf.writeln('^FO50,$y^GB1100,4,4^FS');
+    y += 18;
+
+    // ── Status ────────────────────────────────────────────────────────────────
+    final statusText = overallSuccess ? '[ PASSED ]' : '[ FAILED ]';
+    buf.writeln('^FO50,$y^A0N,60,44^FD$statusText^FS');
+    y += 75;
+    buf.writeln('^FO50,$y^GB1100,4,4^FS');
+    y += 18;
+
+    // ── Failed tasks only ─────────────────────────────────────────────────────
+    if (failedTasks.isNotEmpty) {
+      buf.writeln('^FO50,$y^A0N,32,23^FDFAILED TASKS^FS');
+      y += 44;
+      buf.writeln('^FO50,$y^GB1100,2,2^FS');
+      y += 12;
+
+      for (final task in failedTasks) {
+        final name = task['taskName'] as String? ?? 'Task';
+        buf.writeln('^FO50,$y^A0N,38,27^FD$name^FS');
+        y += 50;
+
+        final part = task['detectedPart'] as String?;
+        if (_hasValue(part)) {
+          buf.writeln('^FO70,$y^A0N,30,22^FD> ${part!.trim()}^FS');
+          y += 40;
+        }
+
+        buf.writeln('^FO50,$y^GB1100,2,2^FS');
+        y += 8;
+      }
+      y += 6;
+    }
+
+    buf.writeln('^FO50,$y^GB1100,4,4^FS');
+    y += 14;
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    buf.writeln('^FO50,$y^A0N,30,22^FDFlutter AI Inspection System^FS');
+
+    buf.writeln('^XZ');
+    return buf.toString();
+  }
+
+  // ── Print ─────────────────────────────────────────────────────────────────
+
+  /// Send ZPL inspection report to [printer] over Bluetooth.
+  Future<bool> printInspectionReport({
+    required DiscoveredPrinter printer,
+    required String vin,
+    required String modelCode,
+    required String timestamp,
+    required bool overallSuccess,
+    required List<Map<String, dynamic>> tasks,
+  }) async {
+    try {
+      final zpl = _buildZpl(
+        vin: vin,
+        modelCode: modelCode,
+        timestamp: timestamp,
+        overallSuccess: overallSuccess,
+        tasks: tasks,
+      );
+
+      final result = await _zsdk.printZplDataOverBluetooth(
+        data: zpl,
+        macAddress: printer.address,
+      );
+
+      final response = PrinterResponse.fromMap(result);
+      if (response.errorCode == ErrorCode.SUCCESS) {
+        return true;
+      }
+      debugPrint('[PrintService] ZPL BT print failed: ${response.statusInfo?.cause}');
+      return false;
+    } catch (e) {
+      debugPrint('[PrintService] ZPL BT print error: $e');
+      return false;
+    }
+  }
+}

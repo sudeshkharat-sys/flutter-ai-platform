@@ -1,0 +1,283 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'home_screen.dart';
+import 'history_screen.dart';
+
+class ScanScreen extends StatefulWidget {
+  final String modelCode;
+  const ScanScreen({super.key, required this.modelCode});
+
+  @override
+  State<ScanScreen> createState() => _ScanScreenState();
+}
+
+class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
+  bool _isProcessing = false;
+  List<dynamic> _masterData = [];
+
+  final MobileScannerController _scannerController = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    facing: CameraFacing.back,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadMasterData();
+  }
+
+  Future<void> _loadMasterData() async {
+    try {
+      final String jsonStr = await rootBundle.loadString('assets/master_data.json');
+      final List<dynamic> data = json.decode(jsonStr);
+      if (mounted) {
+        setState(() => _masterData = data);
+      }
+    } catch (e) {
+      debugPrint('Could not load master_data.json: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _scannerController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _scannerController.start();
+    } else if (state == AppLifecycleState.inactive) {
+      _scannerController.stop();
+    }
+  }
+
+  /// Returns true if [candidate] matches any model_code in master_data
+  /// (case-insensitive comparison).
+  bool _isKnownModelCode(String candidate) {
+    if (candidate.isEmpty || _masterData.isEmpty) return false;
+    final upper = candidate.toUpperCase();
+    return _masterData.any(
+      (m) => (m['model_code'] as String? ?? '').toUpperCase() == upper,
+    );
+  }
+
+  /// Resolves the correct model code from the raw suffix (everything after
+  /// the 17-char VIN).
+  ///
+  /// Strip strategy (tried in order, first match wins):
+  ///   strip-2 → THAR, THAR ROXX, SCORPIO  (remove last 2 chars)
+  ///   strip-1 → ARMY                        (remove last 1 char)
+  ///   strip-0 → fallback, use full suffix
+  ///
+  /// If none match the master data, defaults to strip-2 (or the full
+  /// suffix when it is too short to strip).
+  String _resolveModelCode(String suffix) {
+    for (final strip in [2, 1, 0]) {
+      if (suffix.length > strip) {
+        final candidate = suffix.substring(0, suffix.length - strip);
+        if (_isKnownModelCode(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    // No match in master data — fall back to strip-2, or full suffix if too short
+    if (suffix.length > 2) return suffix.substring(0, suffix.length - 2);
+    return suffix;
+  }
+
+  void _showErrorDialog(String message) {
+    _scannerController.stop();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Invalid Barcode', style: TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold)),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              if (mounted) {
+                setState(() => _isProcessing = false);
+                _scannerController.start();
+              }
+            },
+            child: const Text('OK', style: TextStyle(color: Color(0xFFDC143C))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _onDetect(BarcodeCapture capture) async {
+    if (_isProcessing) return;
+
+    final List<Barcode> barcodes = capture.barcodes;
+    if (barcodes.isNotEmpty) {
+      final String? code = barcodes.first.rawValue;
+      if (code == null) return;
+
+      final String raw = code.trim();
+
+      // Step 1: Validate total length must be between 30 and 35 (inclusive)
+      if (raw.length < 30 || raw.length > 35) {
+        setState(() => _isProcessing = true);
+        _showErrorDialog('Please scan the right VIN model code.');
+        return;
+      }
+
+      setState(() => _isProcessing = true);
+
+      // VIN: always the first 17 characters
+      final String vin = raw.substring(0, 17);
+
+      // Suffix: everything after the VIN (18 chars)
+      final String suffix = raw.substring(17);
+
+      // Resolve model code using platform-aware strip strategy
+      final String extractedModelCode = _resolveModelCode(suffix);
+
+      // Step 2: Validate model code exists in master data
+      if (!_isKnownModelCode(extractedModelCode)) {
+        _showErrorDialog('Model code is not present, please add code and rebuild app.');
+        return;
+      }
+
+      if (!mounted) return;
+      _scannerController.stop();
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => HomeScreen(
+            vin: vin,
+            modelCode: extractedModelCode,
+            cameras: [],
+          ),
+        ),
+      ).then((_) {
+        if (mounted) {
+          setState(() => _isProcessing = false);
+          _scannerController.start();
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.white, Color(0xFFFFF5F5)],
+          ),
+        ),
+        child: Column(
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+              decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+              child: SafeArea(
+                bottom: false,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    Text(
+                      'SCAN BARCODE',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Expanded(
+              child: Stack(
+                children: [
+                  MobileScanner(
+                    controller: _scannerController,
+                    onDetect: _onDetect,
+                  ),
+                  // Scanner frame overlay
+                  Center(
+                    child: Container(
+                      width: 250,
+                      height: 250,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: const Color(0xFFDC143C), width: 2),
+                      ),
+                      child: Stack(
+                        children: [
+                          _bracket(top: 0, left: 0, isTop: true, isLeft: true),
+                          _bracket(top: 0, right: 0, isTop: true, isLeft: false),
+                          _bracket(bottom: 0, left: 0, isTop: false, isLeft: true),
+                          _bracket(bottom: 0, right: 0, isTop: false, isLeft: false),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (_isProcessing)
+                    Container(
+                      color: Colors.black.withOpacity(0.5),
+                      child: const Center(
+                        child: CircularProgressIndicator(color: Color(0xFFDC143C)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFDC143C),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('VIEW HISTORY', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bracket({double? top, double? bottom, double? left, double? right, required bool isTop, required bool isLeft}) {
+    return Positioned(
+      top: top,
+      bottom: bottom,
+      left: left,
+      right: right,
+      child: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          border: Border(
+            top: isTop ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
+            bottom: !isTop ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
+            left: isLeft ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
+            right: !isLeft ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
+          ),
+        ),
+      ),
+    );
+  }
+}

@@ -1,0 +1,20 @@
+/**
+ * Flutter SDK version properties made available to ALL Gradle build scripts,
+ * including Kotlin DSL (.kts) files in plugin subprojects.
+ * Lives in buildSrc so it is compiled before any project build script and
+ * added to the classpath of every subsequent build script.
+ */
+class FlutterLocalExtension {
+    int    compileSdkVersion = 36
+    int    minSdkVersion     = 26
+    int    targetSdkVersion  = 36
+    String ndkVersion        = "27.0.12077973"
+
+    // AGP 8.x+ aliases (without "Version" suffix) used by newer plugins
+    int    getCompileSdk()  { return compileSdkVersion }
+    int    getMinSdk()      { return minSdkVersion }
+    int    getTargetSdk()   { return targetSdkVersion }
+
+    // jni 1.0.0 android/build.gradle typo: flutter.mnSdkVersion
+    int    getMnSdkVersion() { return minSdkVersion }
+}

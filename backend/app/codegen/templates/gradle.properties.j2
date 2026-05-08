@@ -1,0 +1,11 @@
+org.gradle.jvmargs=-Xmx4G -XX:MaxMetaspaceSize=1G -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
+systemProp.file.encoding=UTF-8
+
+# FIX: Disable incremental compilation to allow cross-drive (C: to D:) bridging
+kotlin.incremental=false
+kotlin.incremental.java=false
+kotlin.incremental.js=false
+
+android.useAndroidX=true
+android.enableJetifier=true
+android.ignoreAarMetadataCheck=true

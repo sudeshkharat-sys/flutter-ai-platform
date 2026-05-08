@@ -1,0 +1,49 @@
+import 'package:flutter/material.dart';
+
+class CaptureButton extends StatelessWidget {
+  final String label;
+  final String color;
+  final VoidCallback? onPressed;
+
+  const CaptureButton({
+    super.key,
+    required this.label,
+    this.color = '#DC143C',
+    this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Parse hex color
+    final hex = color.replaceAll('#', '');
+    final bgColor = Color(int.parse('FF$hex', radix: 16));
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: ElevatedButton(
+        onPressed: onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: bgColor,
+          foregroundColor: Colors.white,
+          minimumSize: const Size(double.infinity, 56),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          elevation: 8,
+          shadowColor: bgColor.withOpacity(0.4),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.camera_alt),
+            const SizedBox(width: 12),
+            Text(
+              label,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
