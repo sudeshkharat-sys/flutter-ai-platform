@@ -247,11 +247,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
       // Persist captured image to device storage for history
       String? savedImagePath;
       try {
-        final dir = await getApplicationDocumentsDirectory();
+        final dir = await getApplicationSupportDirectory();
         final imgDir = Directory('${dir.path}/inspection_images');
         await imgDir.create(recursive: true);
         savedImagePath = '${imgDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
         await File(savedImagePath).writeAsBytes(bytes);
+        _addLog("Image saved: $savedImagePath");
       } catch (e) {
         _addLog("Image save error: $e");
       }

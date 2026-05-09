@@ -626,8 +626,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         .toList();
                   } catch (_) {}
                 }
-                final hasImage = imgPath != null && File(imgPath).existsSync();
-
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -663,16 +661,22 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         ],
                       ),
                     ),
-                    if (hasImage)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: _HistoryImageWithOverlay(
-                            imagePath: imgPath!,
-                            detections: detections,
-                          ),
-                        ),
+                    if (imgPath != null)
+                      FutureBuilder<bool>(
+                        future: File(imgPath!).exists(),
+                        builder: (ctx, snap) {
+                          if (snap.data != true) return const SizedBox.shrink();
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: _HistoryImageWithOverlay(
+                                imagePath: imgPath!,
+                                detections: detections,
+                              ),
+                            ),
+                          );
+                        },
                       ),
                   ],
                 );
