@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
+import { getApp, getModels, buildAPK, resetBuild, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -27,6 +27,10 @@ export default function AppBuilder() {
   
   const pollingRef = useRef(null);
   const logEndRef = useRef(null);
+  const lastLogRef = useRef('');
+  const lastLogChangeRef = useRef(Date.now());
+  const [buildStale, setBuildStale] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -43,7 +47,22 @@ export default function AppBuilder() {
 
   useEffect(() => {
     if (logEndRef.current) logEndRef.current.scrollIntoView({ behavior: 'smooth' });
-  }, [app?.build_log]);
+    // Detect stale build: log unchanged for 5 minutes while status is still 'building'
+    if (app?.build_status === 'building') {
+      const currentLog = app?.build_log || '';
+      if (currentLog !== lastLogRef.current) {
+        lastLogRef.current = currentLog;
+        lastLogChangeRef.current = Date.now();
+        setBuildStale(false);
+      } else if (Date.now() - lastLogChangeRef.current > 5 * 60 * 1000) {
+        setBuildStale(true);
+      }
+    } else {
+      setBuildStale(false);
+      lastLogRef.current = '';
+      lastLogChangeRef.current = Date.now();
+    }
+  }, [app?.build_log, app?.build_status]);
 
   const loadData = async () => {
     try {
@@ -66,6 +85,18 @@ export default function AppBuilder() {
       alert(err.response?.data?.detail || "Failed to start build.");
     } finally {
       setBuildLoading(false);
+    }
+  };
+
+  const handleResetBuild = async () => {
+    setResetLoading(true);
+    try {
+      await resetBuild(id);
+      await loadData();
+    } catch (err) {
+      alert(err.response?.data?.detail || "Failed to reset build.");
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -274,10 +305,33 @@ export default function AppBuilder() {
           </div>
 
           {/* 4. Build Status / Build APK (Bottom) */}
-          <div style={{ background: C.surface2, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`}}>
+          <div style={{ background: C.surface2, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <button onClick={handleStartBuild} disabled={isBuilding || buildLoading} style={{ width: '100%', padding: '16px', borderRadius: 12, border: 'none', background: isBuilding ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 800, cursor: isBuilding ? 'not-allowed' : 'pointer' }}>
               {isBuilding ? 'Compiling APK...' : 'Build Final APK'}
             </button>
+            {(isBuilding && buildStale) && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 11, color: 'var(--error)', textAlign: 'center' }}>
+                  Worker appears unresponsive — no log update for 5+ minutes.
+                </div>
+                <button
+                  onClick={handleResetBuild}
+                  disabled={resetLoading}
+                  style={{ width: '100%', padding: '10px', borderRadius: 10, border: `1px solid var(--error)`, background: 'transparent', color: 'var(--error)', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}
+                >
+                  {resetLoading ? 'Resetting...' : 'Reset Build'}
+                </button>
+              </div>
+            )}
+            {app.build_status === 'error' && (
+              <button
+                onClick={handleResetBuild}
+                disabled={resetLoading}
+                style={{ width: '100%', padding: '10px', borderRadius: 10, border: `1px solid var(--error)`, background: 'transparent', color: 'var(--error)', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}
+              >
+                {resetLoading ? 'Resetting...' : 'Clear Error & Reset'}
+              </button>
+            )}
           </div>
 
         </div>

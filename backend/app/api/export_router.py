@@ -7,6 +7,7 @@ from app.connectors.state_db import StateDBConnector
 from app.queries import ProjectQueries, ModelAssetQueries
 from app.codegen.generator import generate_flutter_project
 from app.tasks.build_apk import build_apk_task
+from app.tasks.celery_app import celery_app as _celery_app
 
 router = APIRouter(prefix="/apps", tags=["export"])
 
@@ -17,21 +18,43 @@ def get_db_connector():
     finally:
         pass
 
+def _is_worker_available(timeout: float = 2.0) -> bool:
+    """Ping registered Celery workers; returns True if at least one responds."""
+    try:
+        inspect = _celery_app.control.inspect(timeout=timeout)
+        pong = inspect.ping()
+        return bool(pong)
+    except Exception:
+        return False
+
 @router.post("/{app_id}/build")
 def trigger_build(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
     """Trigger an APK build for the app."""
     rows = db.execute_query(ProjectQueries.GET_PROJECT_BY_ID, {"id": app_id})
     if not rows:
         raise HTTPException(status_code=404, detail="App project not found")
-    
+
     app = rows[0]
-    
+
     model_asset_ids = app.get("model_asset_ids", [])
     if isinstance(model_asset_ids, str):
         model_asset_ids = json.loads(model_asset_ids)
 
-    if not model_asset_ids or len(model_asset_ids) == 0:
-        raise HTTPException(status_code=400, detail="No model assigned to this app. Please add a model in the Studio UI first.")
+    if not model_asset_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="No model assigned to this app. Please add a model in the Studio UI first.",
+        )
+
+    if not _is_worker_available():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No AI Vision worker is running. "
+                "Start the Celery worker with: "
+                "celery -A app.tasks.celery_app worker --pool=solo --loglevel=info"
+            ),
+        )
 
     params = {
         "id": app_id,
@@ -45,15 +68,48 @@ def trigger_build(app_id: str, db: StateDBConnector = Depends(get_db_connector))
         "build_status": "building",
         "build_log": "Build triggered via UI.\n",
         "build_step": "Starting Celery task...",
-        "apk_path": ""
+        "apk_path": "",
     }
-    
-    db.execute_update(ProjectQueries.UPDATE_PROJECT, params)
 
-    # In a real environment with Celery worker running:
+    db.execute_update(ProjectQueries.UPDATE_PROJECT, params)
     build_apk_task.delay(app_id)
-    
+
     return {"status": "building", "message": "APK build started in background"}
+
+
+@router.post("/{app_id}/build/reset")
+def reset_build(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
+    """Reset a stuck 'building' or 'error' status back to 'idle'."""
+    rows = db.execute_query(ProjectQueries.GET_PROJECT_BY_ID, {"id": app_id})
+    if not rows:
+        raise HTTPException(status_code=404, detail="App project not found")
+
+    app = rows[0]
+    if app["build_status"] not in ("building", "error"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot reset a build with status '{app['build_status']}'.",
+        )
+
+    current_log = app.get("build_log", "") or ""
+    params = {
+        "id": app_id,
+        "name": app["name"],
+        "package_name": app["package_name"],
+        "model_asset_id": app.get("model_asset_id"),
+        "model_asset_ids": json.dumps(app.get("model_asset_ids", [])) if not isinstance(app.get("model_asset_ids"), str) else app.get("model_asset_ids"),
+        "inspection_tasks": json.dumps(app.get("inspection_tasks", [])) if not isinstance(app.get("inspection_tasks"), str) else app.get("inspection_tasks"),
+        "canvas_state": json.dumps(app.get("canvas_state", [])) if not isinstance(app.get("canvas_state"), str) else app.get("canvas_state"),
+        "app_settings": json.dumps(app.get("app_settings", {})) if not isinstance(app.get("app_settings"), str) else app.get("app_settings"),
+        "build_status": "idle",
+        "build_log": current_log + "\n[Build reset by user]\n",
+        "build_step": "",
+        "apk_path": app.get("apk_path", ""),
+    }
+
+    db.execute_update(ProjectQueries.UPDATE_PROJECT, params)
+    return {"status": "idle", "message": "Build reset successfully"}
+
 
 @router.get("/{app_id}/apk")
 def download_apk(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
@@ -61,46 +117,41 @@ def download_apk(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
     rows = db.execute_query(ProjectQueries.GET_PROJECT_BY_ID, {"id": app_id})
     if not rows:
         raise HTTPException(status_code=404, detail="App project not found")
-    
+
     app = rows[0]
     if app["build_status"] != "ready" or not app.get("apk_path"):
         raise HTTPException(status_code=400, detail=f"APK not ready. Status: {app['build_status']}")
-    
+
     if not os.path.exists(app["apk_path"]):
         raise HTTPException(status_code=404, detail="APK file not found on disk")
 
     return FileResponse(
         app["apk_path"],
         media_type="application/vnd.android.package-archive",
-        filename=f"{app['name'].lower().replace(' ', '_')}.apk"
+        filename=f"{app['name'].lower().replace(' ', '_')}.apk",
     )
+
 
 @router.post("/{app_id}/export")
 def export_app(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
     rows = db.execute_query(ProjectQueries.GET_PROJECT_BY_ID, {"id": app_id})
     if not rows:
         raise HTTPException(status_code=404, detail="App project not found")
-    
+
     app = rows[0]
     all_model_assets = []
-    
+
     model_asset_ids = app.get("model_asset_ids", [])
     if isinstance(model_asset_ids, str):
         model_asset_ids = json.loads(model_asset_ids)
 
     if model_asset_ids:
-        # Construct dynamic IN clause
         placeholders = ", ".join([f":id{i}" for i in range(len(model_asset_ids))])
         query = f"SELECT * FROM model_assets WHERE id IN ({placeholders})"
         params = {f"id{i}": mid for i, mid in enumerate(model_asset_ids)}
-        models = db.execute_query(query, params)
-        all_model_assets = models
+        all_model_assets = db.execute_query(query, params)
 
-    # Note: We need to adapt the generator to accept dicts instead of ORM objects
-    # This might require some adaptation in app.codegen.generator.generate_flutter_project
-    # For now, we will pass dicts.
     zip_bytes = generate_flutter_project(app, all_model_assets=all_model_assets)
-
     safe_name = app["name"].lower().replace(" ", "_")
     filename = f"{safe_name}_flutter.zip"
 
@@ -109,6 +160,7 @@ def export_app(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
 
 @router.get("/{app_id}/preview")
 def preview_export(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
@@ -119,7 +171,7 @@ def preview_export(app_id: str, db: StateDBConnector = Depends(get_db_connector)
 
     app = rows[0]
     model_asset = None
-    
+
     model_asset_id = app.get("model_asset_id")
     if model_asset_id:
         m_rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})
@@ -129,7 +181,7 @@ def preview_export(app_id: str, db: StateDBConnector = Depends(get_db_connector)
     app_settings = app.get("app_settings", {})
     if isinstance(app_settings, str):
         app_settings = json.loads(app_settings)
-        
+
     canvas_state = app.get("canvas_state", [])
     if isinstance(canvas_state, str):
         canvas_state = json.loads(canvas_state)
@@ -137,7 +189,7 @@ def preview_export(app_id: str, db: StateDBConnector = Depends(get_db_connector)
     classes = []
     input_size = 640
     model_name = "No model"
-    
+
     if model_asset:
         model_name = model_asset.get("vision_project_name", "Unknown")
         input_size = model_asset.get("input_size", 640)

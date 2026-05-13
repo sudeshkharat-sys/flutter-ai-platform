@@ -5,8 +5,18 @@ from app.connectors.state_db import StateDBConnector
 from app.queries import ModelAssetQueries
 from app.schemas.base import ModelAssetResponse, ModelAssetStatus
 from app.tasks.convert_model import convert_model_to_tflite
+from app.tasks.celery_app import celery_app as _celery_app
 from app.config import settings
 import uuid
+
+def _is_worker_available(timeout: float = 2.0) -> bool:
+    """Ping registered Celery workers; returns True if at least one responds."""
+    try:
+        inspect = _celery_app.control.inspect(timeout=timeout)
+        pong = inspect.ping()
+        return bool(pong)
+    except Exception:
+        return False
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -117,6 +127,16 @@ def upload_model(
     }
 
     db.execute_insert(ModelAssetQueries.INSERT_MODEL, params)
+
+    if not _is_worker_available():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Model uploaded but no AI Vision worker is running — training cannot start. "
+                "Start the worker with: "
+                "celery -A app.tasks.celery_app worker --pool=solo --loglevel=info"
+            ),
+        )
 
     convert_model_to_tflite.delay(asset_id)
 
