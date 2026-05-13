@@ -23,9 +23,14 @@ celery_app.conf.update(
 
 @worker_process_init.connect
 def init_worker(**kwargs):
-    # On Windows, worker processes are spawned (not forked), so each child
-    # starts with a clean module state. Importing task modules here populates
-    # the Celery task registry and triggers setup_worker_optimizations, which
-    # fills the _loc list that fast_trace_task unpacks. Without this, every
-    # task dispatch raises: ValueError: not enough values to unpack (expected 3, got 0)
+    # On Windows, worker processes are spawned (not forked) so each child
+    # starts with a clean module state. We must:
+    # 1. Import all task modules so the task registry is populated
+    # 2. Call setup_worker_optimizations to fill the _loc list that
+    #    fast_trace_task unpacks as (tasks, accept, hostname).
+    #    Without this step _loc stays [] and every task raises:
+    #    ValueError: not enough values to unpack (expected 3, got 0)
+    import socket
+    from celery.app.trace import setup_worker_optimizations
     celery_app.loader.import_default_modules()
+    setup_worker_optimizations(celery_app, hostname=socket.gethostname())
