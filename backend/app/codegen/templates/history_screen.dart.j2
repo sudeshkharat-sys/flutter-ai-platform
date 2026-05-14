@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
+import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../database/database.dart';
 
@@ -41,6 +42,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
             'taskName': tr.taskName,
             'detectedPart': tr.className,
             'success': tr.success,
+            'imagePath': tr.imagePath,
+            'detectionsJson': tr.detectionsJson,
           }).toList(),
         });
       }
@@ -121,23 +124,48 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           const Divider(height: 1),
                           ...tasks.map((task) => Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                            child: Row(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Icon(
-                                  task['success'] ? Icons.check : Icons.close,
-                                  color: task['success'] ? Colors.green : Colors.red,
-                                  size: 16,
+                                Row(
+                                  children: [
+                                    Icon(
+                                      task['success'] ? Icons.check : Icons.close,
+                                      color: task['success'] ? Colors.green : Colors.red,
+                                      size: 16,
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(task['taskName'] ?? 'Task', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                          Text('Detected: ${task['detectedPart']}', style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(task['taskName'] ?? 'Task', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                                      Text('Detected: ${task['detectedPart']}', style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
-                                    ],
+                                if (task['imagePath'] != null && (task['imagePath'] as String).isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 8, left: 28),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: SizedBox(
+                                        height: 180,
+                                        width: double.infinity,
+                                        child: Image.file(
+                                          File(task['imagePath'] as String),
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (_, __, ___) => Container(
+                                            height: 180,
+                                            color: Colors.grey.shade200,
+                                            child: const Center(child: Icon(Icons.broken_image, color: Colors.grey)),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
                                   ),
-                                ),
                               ],
                             ),
                           )).toList(),

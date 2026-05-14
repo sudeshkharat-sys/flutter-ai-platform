@@ -59,4 +59,13 @@ export const getMasterMappings = () => api.get('/master-data');
 export const createMasterMapping = (data) => api.post('/master-data', data);
 export const deleteMasterMapping = (id) => api.delete(`/master-data/${id}`);
 
+// ── Reference Images ─────────────────────────────────────────────────────────
+export const uploadReferenceImage = (appId, taskIndex, formData) =>
+  api.post(`/apps/${appId}/tasks/${taskIndex}/reference-image`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+
+export const getReferenceImageUrl = (appId, taskIndex) =>
+  `${api.defaults.baseURL}/apps/${appId}/tasks/${taskIndex}/reference-image`;
+
 export default api;

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings } from '../api';
+import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
 
 const C = {
   surface: 'var(--surface)', surface2: 'var(--surface2)',
@@ -301,7 +301,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   // Step 2: Review State
   const [isReviewing, setIsReviewing] = useState(startAtReview);
-  const [reviewData, setReviewData] = useState([]); 
+  const [reviewData, setReviewData] = useState([]);
+  const [referenceImages, setReferenceImages] = useState({}); // key: "rowIndex_aiIdx" → { url, uploading }
 
   useEffect(() => {
     Promise.all([getModels(), getMasterMappings()]).then(([mr, gr]) => { 
@@ -446,6 +447,23 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   const handleRemoveRow = (rowIndex) => {
     setReviewData(reviewData.filter((_, i) => i !== rowIndex));
+  };
+
+  const handleReferenceImageUpload = async (rowIndex, aiIdx, file) => {
+    if (!file || !existingApp) return;
+    const key = `${rowIndex}_${aiIdx}`;
+    setReferenceImages(prev => ({ ...prev, [key]: { url: null, uploading: true } }));
+    try {
+      const taskIndex = reviewData.slice(0, rowIndex).reduce((acc, r) => acc + r.selectedAIModels.length, 0) + aiIdx;
+      const fd = new FormData();
+      fd.append('file', file);
+      await uploadReferenceImage(existingApp.id, taskIndex, fd);
+      const url = getReferenceImageUrl(existingApp.id, taskIndex) + '?t=' + Date.now();
+      setReferenceImages(prev => ({ ...prev, [key]: { url, uploading: false } }));
+    } catch {
+      setReferenceImages(prev => ({ ...prev, [key]: { url: null, uploading: false } }));
+      alert('Reference image upload failed');
+    }
   };
 
   const handleSaveProfile = async () => {
@@ -683,6 +701,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                     <th style={{ ...thStyle, width: '180px' }}>AI Model</th>
                     <th style={{ ...thStyle, width: '140px' }}>Class</th>
                     <th style={thStyle}>Instruction / Description</th>
+                    <th style={{ ...thStyle, width: '90px' }}>Ref. Image</th>
                     <th style={{ ...thStyle, textAlign: 'right', width: '90px' }}>Reorder</th>
                     <th style={{ ...thStyle, textAlign: 'right', width: '50px' }}></th>
                   </tr>
@@ -692,10 +711,10 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                     <tr key={row.id} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={tdStyle}><div style={{ fontWeight: 700, fontSize: 13 }}>{row.platform_name}</div></td>
                       <td style={tdStyle}><span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span></td>
-                      <td colSpan={5} style={{ padding: 0 }}>
+                      <td colSpan={6} style={{ padding: 0 }}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
                           {row.selectedAIModels.map((ai, aiIdx) => (
-                            <div key={aiIdx} style={{ display: 'grid', gridTemplateColumns: '180px 140px 1fr 90px 50px', borderBottom: aiIdx === row.selectedAIModels.length - 1 ? 'none' : `1px solid ${C.border}` }}>
+                            <div key={aiIdx} style={{ display: 'grid', gridTemplateColumns: '180px 140px 1fr 90px 90px 50px', borderBottom: aiIdx === row.selectedAIModels.length - 1 ? 'none' : `1px solid ${C.border}` }}>
                               <div style={{ padding: '12px 16px' }}>
                                 <select 
                                   style={{ ...miniSelectStyle, width: '100%' }} 
@@ -719,12 +738,37 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                 </select>
                               </div>
                               <div style={{ padding: '12px 16px' }}>
-                                <input 
-                                  style={{ ...miniSelectStyle, width: '100%', border: 'none', background: 'transparent' }} 
-                                  value={ai.instruction} 
+                                <input
+                                  style={{ ...miniSelectStyle, width: '100%', border: 'none', background: 'transparent' }}
+                                  value={ai.instruction}
                                   onChange={(e) => handleUpdateRowAI(rowIndex, aiIdx, 'instruction', e.target.value)}
-                                  placeholder="e.g. Check front left..." 
+                                  placeholder="e.g. Check front left..."
                                 />
+                              </div>
+                              <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                                {(() => {
+                                  const key = `${rowIndex}_${aiIdx}`;
+                                  const ref = referenceImages[key];
+                                  if (ref?.uploading) return <span style={{ fontSize: 10, color: C.muted }}>Uploading…</span>;
+                                  if (ref?.url) return (
+                                    <div style={{ position: 'relative' }}>
+                                      <img src={ref.url} alt="ref" style={{ width: 64, height: 48, objectFit: 'cover', borderRadius: 4, border: `1px solid ${C.border}` }} />
+                                      <label style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.4)', borderRadius: 4, cursor: 'pointer', opacity: 0, transition: 'opacity 0.2s' }}
+                                        onMouseEnter={e => e.currentTarget.style.opacity = 1}
+                                        onMouseLeave={e => e.currentTarget.style.opacity = 0}>
+                                        <span style={{ color: '#fff', fontSize: 9, fontWeight: 700 }}>CHANGE</span>
+                                        <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => e.target.files[0] && handleReferenceImageUpload(rowIndex, aiIdx, e.target.files[0])} />
+                                      </label>
+                                    </div>
+                                  );
+                                  return (
+                                    <label style={{ cursor: existingApp ? 'pointer' : 'not-allowed', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }} title={existingApp ? 'Upload reference image' : 'Save app first'}>
+                                      <span style={{ fontSize: 18, color: existingApp ? C.accent : C.muted }}>📷</span>
+                                      <span style={{ fontSize: 9, color: C.muted }}>Upload</span>
+                                      {existingApp && <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => e.target.files[0] && handleReferenceImageUpload(rowIndex, aiIdx, e.target.files[0])} />}
+                                    </label>
+                                  );
+                                })()}
                               </div>
                               <div style={{ padding: '12px 16px', display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
                                 <button 

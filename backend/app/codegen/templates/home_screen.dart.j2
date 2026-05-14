@@ -100,8 +100,10 @@ class _HomeScreenState extends State<HomeScreen> {
         inspectionId: inspectionId,
         taskName: task['name'],
         className: result['className'] ?? 'None',
-        confidence: 0.0, // We could track this too if needed
+        confidence: 0.0,
         success: success,
+        imagePath: Value(result['imagePath'] as String?),
+        detectionsJson: Value(result['detectionsJson'] as String?),
       ));
     }
 

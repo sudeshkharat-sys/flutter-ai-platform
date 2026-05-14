@@ -40,6 +40,13 @@ class _BoundingBoxPainter extends CustomPainter {
     Color(0xFFFF6B9D),
   ];
 
+  Color _colorForClass(String className) {
+    final cls = className.toLowerCase();
+    if (cls.contains('not ok') || cls.contains('not_ok')) return const Color(0xFFF55C5C);
+    if (cls.contains('ok')) return const Color(0xFF4CAF82);
+    return _colors[className.hashCode.abs() % _colors.length];
+  }
+
   _BoundingBoxPainter({
     required this.results,
     required this.previewSize,
@@ -51,7 +58,7 @@ class _BoundingBoxPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     for (int i = 0; i < results.length; i++) {
       final result = results[i];
-      final color = _colors[i % _colors.length];
+      final color = _colorForClass(result.className);
 
       final rect = Rect.fromLTRB(
         result.bbox.left * size.width,
