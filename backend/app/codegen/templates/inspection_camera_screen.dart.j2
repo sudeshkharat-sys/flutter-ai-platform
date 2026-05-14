@@ -479,7 +479,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           decoration: BoxDecoration(
-                            color: _bestResult != null ? Colors.green : Colors.red,
+                            color: _bestResult == null
+                                ? Colors.red
+                                : (_bestResult!.className.toLowerCase().contains('not ok') ? Colors.red : Colors.green),
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: _bestResult != null
