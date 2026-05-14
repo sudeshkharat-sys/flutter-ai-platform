@@ -261,7 +261,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
         _addLog("Found: ${d.className} (${(d.confidence*100).toStringAsFixed(1)}%)");
       }
 
-      final filtered = allDetections.where((d) => targetClasses.any((tc) => d.className.toLowerCase().contains(tc.toLowerCase()))).toList();
+      final filtered = allDetections.where((d) => targetClasses.any((tc) => d.className.toLowerCase() == tc.toLowerCase())).toList();
       _addLog("Matches after filtering: ${filtered.length}");
 
       setState(() {
