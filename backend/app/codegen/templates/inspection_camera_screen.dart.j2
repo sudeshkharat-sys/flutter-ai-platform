@@ -323,8 +323,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
   }
 
   void _onSaveAndContinue() {
+    // Preserve imagePath and detectionsJson already stored by _handleCapture.
+    final existing = (_results[_currentIndex] as Map<String, dynamic>?) ?? {};
     _results[_currentIndex] = {
-      'className': _bestResult?.className ?? 'None',
+      ...existing,
+      'className': _bestResult?.className ?? existing['className'] ?? 'None',
       'success': _bestResult != null,
     };
 
