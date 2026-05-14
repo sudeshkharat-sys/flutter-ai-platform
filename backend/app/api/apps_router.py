@@ -1,10 +1,15 @@
 import uuid
 import json
+import os
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends
+from pathlib import Path
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi.responses import FileResponse
 from app.connectors.state_db import StateDBConnector
 from app.queries import ProjectQueries
 from app.schemas.base import AppProjectCreate, AppProjectUpdate, AppProjectResponse
+
+REFERENCE_IMAGES_DIR = Path(os.environ.get("REFERENCE_IMAGES_DIR", "/tmp/reference_images"))
 
 router = APIRouter(prefix="/apps", tags=["apps"])
 
@@ -175,7 +180,29 @@ def submit_inspection(app_id: str, data: dict, db: StateDBConnector = Depends(ge
 def list_results(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
     from app.queries import ResultQueries
     rows = db.execute_query(ResultQueries.GET_RESULTS_BY_APP, {"app_id": app_id})
-    # Parse JSON results
     for row in rows:
         row["results"] = parse_json_field(row.get("results"), [])
     return rows
+
+
+@router.post("/{app_id}/tasks/{task_index}/reference-image")
+async def upload_reference_image(app_id: str, task_index: int, file: UploadFile = File(...)):
+    """Upload a reference image for a specific task of an app."""
+    dest_dir = REFERENCE_IMAGES_DIR / app_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(file.filename).suffix or ".jpg"
+    dest = dest_dir / f"task_{task_index}{ext}"
+    content = await file.read()
+    dest.write_bytes(content)
+    return {"status": "ok", "path": str(dest)}
+
+
+@router.get("/{app_id}/tasks/{task_index}/reference-image")
+def get_reference_image(app_id: str, task_index: int):
+    """Serve the reference image for a specific task."""
+    dest_dir = REFERENCE_IMAGES_DIR / app_id
+    for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+        path = dest_dir / f"task_{task_index}{ext}"
+        if path.exists():
+            return FileResponse(str(path))
+    raise HTTPException(status_code=404, detail="Reference image not found")
