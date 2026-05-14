@@ -282,7 +282,7 @@ export default function AppBuilder() {
   );
 }
 
-import { Plus, Trash2, Edit3, ChevronRight, ArrowLeft, Check, ChevronDown, ArrowUp, ArrowDown, Search, Download } from 'lucide-react';
+import { Plus, Trash2, Edit3, ChevronRight, ArrowLeft, Check, ChevronDown, ArrowUp, ArrowDown, Search, Download, ImagePlus } from 'lucide-react';
 
 function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const navigate = useNavigate();
@@ -762,9 +762,11 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                     </div>
                                   );
                                   return (
-                                    <label style={{ cursor: existingApp ? 'pointer' : 'not-allowed', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }} title={existingApp ? 'Upload reference image' : 'Save app first'}>
-                                      <span style={{ fontSize: 18, color: existingApp ? C.accent : C.muted }}>📷</span>
-                                      <span style={{ fontSize: 9, color: C.muted }}>Upload</span>
+                                    <label style={{ cursor: existingApp ? 'pointer' : 'not-allowed', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: '6px 8px', borderRadius: 6, border: `1px dashed ${existingApp ? C.accent : C.border}`, transition: 'background 0.15s' }} title={existingApp ? 'Upload reference image' : 'Save app first'}
+                                      onMouseEnter={e => { if (existingApp) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
+                                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+                                      <ImagePlus size={16} color={existingApp ? C.accent : C.muted} />
+                                      <span style={{ fontSize: 9, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Upload</span>
                                       {existingApp && <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => e.target.files[0] && handleReferenceImageUpload(rowIndex, aiIdx, e.target.files[0])} />}
                                     </label>
                                   );
