@@ -713,7 +713,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                     <tr key={row.id} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={tdStyle}><div style={{ fontWeight: 700, fontSize: 13 }}>{row.platform_name}</div></td>
                       <td style={tdStyle}><span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span></td>
-                      <td colSpan={5} style={{ padding: 0 }}>
+                      <td colSpan={6} style={{ padding: 0 }}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
                           {row.selectedAIModels.map((ai, aiIdx) => (
                             <div key={aiIdx} style={{ display: 'grid', gridTemplateColumns: '180px 140px 1fr 80px 90px 50px', borderBottom: aiIdx === row.selectedAIModels.length - 1 ? 'none' : `1px solid ${C.border}` }}>
