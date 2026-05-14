@@ -217,11 +217,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                                     child: ClipRRect(
                                       borderRadius: BorderRadius.circular(8),
-                                      child: ConstrainedBox(
-                                        constraints: const BoxConstraints(
-                                          maxHeight: 260,
-                                          minWidth: double.infinity,
-                                        ),
+                                      child: SizedBox(
+                                        height: 220,
+                                        width: double.infinity,
                                         child: _HistoryImageWithOverlay(
                                           imagePath: imgPath!,
                                           detections: detections,
@@ -277,42 +275,41 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
 
   @override
   Widget build(BuildContext context) {
+    // Loading state: show image while async size decode is in progress.
     if (_imageSize == null) {
       return Image.file(
         File(widget.imagePath),
-        fit: BoxFit.cover,
+        fit: BoxFit.contain,
         width: double.infinity,
         errorBuilder: (_, __, ___) => Container(
-          height: 120,
           color: Colors.grey[200],
           child: const Center(child: Icon(Icons.broken_image, color: Colors.grey, size: 40)),
         ),
       );
     }
-    return AspectRatio(
-      aspectRatio: _imageSize!.width / _imageSize!.height,
-      child: FittedBox(
-        fit: BoxFit.contain,
-        child: SizedBox(
-          width: _imageSize!.width,
-          height: _imageSize!.height,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.file(
-                File(widget.imagePath),
-                fit: BoxFit.fill,
-                width: _imageSize!.width,
-                height: _imageSize!.height,
-                errorBuilder: (_, __, ___) => Container(color: Colors.grey[200]),
+    // FittedBox scales the pixel-sized SizedBox to fill the parent SizedBox(220)
+    // while preserving aspect ratio — same technique as the capture screen.
+    return FittedBox(
+      fit: BoxFit.contain,
+      child: SizedBox(
+        width: _imageSize!.width,
+        height: _imageSize!.height,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.file(
+              File(widget.imagePath),
+              fit: BoxFit.fill,
+              width: _imageSize!.width,
+              height: _imageSize!.height,
+              errorBuilder: (_, __, ___) => Container(color: Colors.grey[200]),
+            ),
+            if (widget.detections.isNotEmpty)
+              DetectionOverlay(
+                results: widget.detections,
+                previewSize: _imageSize!,
               ),
-              if (widget.detections.isNotEmpty)
-                DetectionOverlay(
-                  results: widget.detections,
-                  previewSize: _imageSize!,
-                ),
-            ],
-          ),
+          ],
         ),
       ),
     );
