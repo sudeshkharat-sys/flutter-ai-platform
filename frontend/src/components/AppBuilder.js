@@ -775,6 +775,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                       src={getReferenceImageUrl(ai.referenceImage)}
                                       alt="ref"
                                       style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 6, border: `2px solid ${C.accent}` }}
+                                      onError={(ev) => { ev.target.style.outline = '2px solid red'; ev.target.title = 'Image failed to load: ' + getReferenceImageUrl(ai.referenceImage); }}
                                     />
                                   ) : (
                                     <div style={{ width: 44, height: 44, border: `1px dashed ${C.border}`, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted }}>
@@ -792,9 +793,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                     if (!file) return;
                                     try {
                                       const r = await uploadReferenceImage(file);
-                                      handleUpdateRowAI(rowIndex, aiIdx, 'referenceImage', r.data.filename);
-                                    } catch {
-                                      alert('Image upload failed. Please try again.');
+                                      console.log('[RefImg] upload response:', r.data);
+                                      const filename = r.data?.filename;
+                                      if (!filename) {
+                                        alert('Upload succeeded but no filename returned. Check backend.');
+                                        return;
+                                      }
+                                      handleUpdateRowAI(rowIndex, aiIdx, 'referenceImage', filename);
+                                      console.log('[RefImg] state updated for row', rowIndex, 'ai', aiIdx, 'filename', filename);
+                                    } catch (err) {
+                                      console.error('[RefImg] upload error:', err);
+                                      alert('Image upload failed: ' + (err?.response?.data?.detail || err?.message || 'Unknown error'));
                                     }
                                     e.target.value = '';
                                   }}
