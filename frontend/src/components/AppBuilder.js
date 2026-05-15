@@ -234,9 +234,18 @@ export default function AppBuilder() {
                         <td style={{ padding: '12px 16px' }}>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                             {tasks.map((t, i) => (
-                              <div key={i} style={{ fontSize: 11 }}>
-                                <div style={{ fontWeight: 700 }}>{i+1}. {t.taskName}</div>
-                                <div style={{ color: C.muted, fontSize: 10 }}>{t.modelName} • {t.classes?.[0]}</div>
+                              <div key={i} style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontWeight: 700 }}>{i+1}. {t.taskName}</div>
+                                  <div style={{ color: C.muted, fontSize: 10 }}>{t.modelName} • {t.classes?.[0]}</div>
+                                </div>
+                                {t.referenceImage && (
+                                  <img
+                                    src={getReferenceImageUrl(t.referenceImage)}
+                                    alt="ref"
+                                    style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4, border: `1px solid ${C.accent}`, flexShrink: 0 }}
+                                  />
+                                )}
                               </div>
                             ))}
                           </div>
@@ -428,13 +437,21 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleUpdateRowAI = (rowIndex, aiIdx, field, value) => {
-    const newData = [...reviewData];
-    newData[rowIndex].selectedAIModels[aiIdx][field] = value;
-    if (field === 'modelId') {
-      const m = models.find(mod => mod.id === value);
-      newData[rowIndex].selectedAIModels[aiIdx].class = m?.classes[0] || '';
-    }
-    setReviewData(newData);
+    setReviewData(reviewData.map((row, rIdx) => {
+      if (rIdx !== rowIndex) return row;
+      return {
+        ...row,
+        selectedAIModels: row.selectedAIModels.map((ai, aIdx) => {
+          if (aIdx !== aiIdx) return ai;
+          const updated = { ...ai, [field]: value };
+          if (field === 'modelId') {
+            const m = models.find(mod => mod.id === value);
+            updated.class = m?.classes[0] || '';
+          }
+          return updated;
+        }),
+      };
+    }));
   };
 
   const handleMoveRowAI = (rowIndex, aiIdx, direction) => {
