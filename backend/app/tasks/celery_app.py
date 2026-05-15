@@ -1,5 +1,4 @@
 from celery import Celery
-from celery.signals import worker_process_init
 from app.config import settings
 
 celery_app = Celery(
@@ -19,14 +18,3 @@ celery_app.conf.update(
     task_track_started=True,
     broker_connection_retry_on_startup=True,
 )
-
-# Windows uses 'spawn' for multiprocessing (not 'fork'), so child worker
-# processes start fresh and Celery's setup_worker_optimizations() may not
-# run before the first task arrives, leaving _loc=[] and causing:
-#   ValueError: not enough values to unpack (expected 3, got 0)
-# Explicitly calling it here via worker_process_init guarantees _loc is
-# populated in every child process before any task executes.
-@worker_process_init.connect
-def _init_worker_process(sender=None, **kwargs):
-    from celery.app.trace import setup_worker_optimizations
-    setup_worker_optimizations(celery_app)
