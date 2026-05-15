@@ -30,15 +30,22 @@ class _BoundingBoxPainter extends CustomPainter {
   final bool showLabels;
   final bool showConfidence;
 
-  static const _colors = [
+  static const _fallbackColors = [
     Color(0xFF7C5CFC),
     Color(0xFF5B8AF5),
     Color(0xFF4CAF82),
     Color(0xFFF5A623),
-    Color(0xFFF55C5C),
     Color(0xFF00BCD4),
     Color(0xFFFF6B9D),
   ];
+
+  // "not ok" must be checked before "ok" to avoid substring collision.
+  static Color _colorForClass(String className, int index) {
+    final lower = className.toLowerCase();
+    if (lower.contains('not ok') || lower.contains('not_ok')) return Colors.red;
+    if (lower == 'ok' || lower.contains('ok')) return Colors.green;
+    return _fallbackColors[index % _fallbackColors.length];
+  }
 
   _BoundingBoxPainter({
     required this.results,
@@ -51,7 +58,7 @@ class _BoundingBoxPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     for (int i = 0; i < results.length; i++) {
       final result = results[i];
-      final color = _colors[i % _colors.length];
+      final color = _colorForClass(result.className, i);
 
       final rect = Rect.fromLTRB(
         result.bbox.left * size.width,
