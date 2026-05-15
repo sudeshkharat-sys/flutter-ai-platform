@@ -45,29 +45,25 @@ android {
     }
 }
 
-// CRITICAL: Disable AAR metadata checks that force AGP 8.6.0 for camera dependencies
-tasks.withType(com.android.build.gradle.internal.tasks.CheckAarMetadataTask).configureEach {
-    enabled = false
-}
-
 flutter {
     source '../..'
 }
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.20"
-    
-    // --- MANUAL PLUGIN DEPENDENCIES ---
-    implementation project(':camera_android')
-    implementation project(':camera_android_camerax')
-    implementation project(':permission_handler_android')
-    implementation project(':flutter_plugin_android_lifecycle')
-    implementation project(':tflite_flutter')
-    implementation project(':path_provider_android')
-    implementation project(':shared_preferences_android')
-    implementation project(':mobile_scanner')
-    implementation project(':sqlite3_flutter_libs')
-    implementation project(':zsdk')
-    implementation project(':jni')
-    implementation project(':jni_flutter')
+
+    // Only add plugin project dependencies that were actually included via
+    // .flutter-plugins in settings.gradle. findProject returns null for any
+    // plugin whose directory was not found, so those are silently skipped.
+    def pluginNames = [
+        'camera_android', 'camera_android_camerax', 'permission_handler_android',
+        'flutter_plugin_android_lifecycle', 'tflite_flutter', 'path_provider_android',
+        'shared_preferences_android', 'mobile_scanner', 'sqlite3_flutter_libs',
+        'zsdk', 'jni', 'jni_flutter'
+    ]
+    pluginNames.each { pluginName ->
+        if (rootProject.findProject(":${pluginName}") != null) {
+            implementation project(":${pluginName}")
+        }
+    }
 }
