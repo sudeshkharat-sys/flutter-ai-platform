@@ -61,6 +61,9 @@ class AppProjectUpdate(BaseModel):
     inspection_tasks: Optional[List[Any]] = None
     canvas_state: Optional[List[Any]] = None
     app_settings: Optional[dict] = None
+    build_status: Optional[str] = None
+    build_step: Optional[str] = None
+    build_log: Optional[str] = None
 
 
 class AppProjectResponse(BaseModel):
