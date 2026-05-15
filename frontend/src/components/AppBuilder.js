@@ -437,7 +437,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleUpdateRowAI = (rowIndex, aiIdx, field, value) => {
-    setReviewData(reviewData.map((row, rIdx) => {
+    setReviewData(prev => prev.map((row, rIdx) => {
       if (rIdx !== rowIndex) return row;
       return {
         ...row,
