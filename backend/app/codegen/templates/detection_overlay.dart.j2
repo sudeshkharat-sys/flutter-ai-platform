@@ -42,8 +42,8 @@ class _BoundingBoxPainter extends CustomPainter {
   // "not ok" must be checked before "ok" to avoid substring collision.
   static Color _colorForClass(String className, int index) {
     final lower = className.toLowerCase();
-    if (lower.contains('not ok') || lower.contains('not_ok')) return Colors.red;
-    if (lower == 'ok' || lower.contains('ok')) return Colors.green;
+    if (lower.contains('not ok')) return const Color(0xFFE53935); // red
+    if (lower.contains('ok')) return const Color(0xFF43A047);     // green
     return _fallbackColors[index % _fallbackColors.length];
   }
 

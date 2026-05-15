@@ -323,8 +323,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
   }
 
   void _onSaveAndContinue() {
+    // Spread existing result so imagePath and detectionsJson stored by
+    // _handleCapture are preserved — only override className and success.
+    final existing = (_results[_currentIndex] as Map<String, dynamic>?) ?? {};
     _results[_currentIndex] = {
-      'className': _bestResult?.className ?? 'None',
+      ...existing,
+      'className': _bestResult?.className ?? existing['className'] ?? 'None',
       'success': _bestResult != null,
     };
 
@@ -476,7 +480,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           decoration: BoxDecoration(
-                            color: _bestResult != null ? Colors.green : Colors.red,
+                            color: _bestResult == null
+                                ? Colors.red
+                                : (_bestResult!.className.toLowerCase().contains('not ok') ? Colors.red : Colors.green),
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: _bestResult != null
