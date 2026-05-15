@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   camera: ^0.11.0+2
-  tflite_flutter: ^0.10.4
+  tflite_flutter: '>=0.10.4 <2.0.0'
   image: ^4.2.0
   permission_handler: ^11.3.1
   mobile_scanner: ^3.5.2
@@ -22,7 +22,7 @@ dependencies:
   zsdk: 5.0.0
 
 dependency_overrides:
-  # path_provider_android 2.3.x requires AGP 8.5+; our build uses AGP 8.1.1.
+  # path_provider_android 2.3.x requires AGP 8.5+; our build uses AGP 8.7.0.
   # Force the last compatible version here and in settings.gradle.
   path_provider_android: 2.2.22
 
