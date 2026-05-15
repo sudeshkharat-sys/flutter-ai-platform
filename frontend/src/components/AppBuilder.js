@@ -234,18 +234,9 @@ export default function AppBuilder() {
                         <td style={{ padding: '12px 16px' }}>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                             {tasks.map((t, i) => (
-                              <div key={i} style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <div style={{ flex: 1 }}>
-                                  <div style={{ fontWeight: 700 }}>{i+1}. {t.taskName}</div>
-                                  <div style={{ color: C.muted, fontSize: 10 }}>{t.modelName} • {t.classes?.[0]}</div>
-                                </div>
-                                {t.referenceImage && (
-                                  <img
-                                    src={getReferenceImageUrl(t.referenceImage)}
-                                    alt="ref"
-                                    style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4, border: `1px solid ${C.accent}`, flexShrink: 0 }}
-                                  />
-                                )}
+                              <div key={i} style={{ fontSize: 11 }}>
+                                <div style={{ fontWeight: 700 }}>{i+1}. {t.taskName}</div>
+                                <div style={{ color: C.muted, fontSize: 10 }}>{t.modelName} • {t.classes?.[0]}</div>
                               </div>
                             ))}
                           </div>
@@ -437,21 +428,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleUpdateRowAI = (rowIndex, aiIdx, field, value) => {
-    const newData = reviewData.map((row, rIdx) => {
-      if (rIdx !== rowIndex) return row;
-      return {
-        ...row,
-        selectedAIModels: row.selectedAIModels.map((ai, aIdx) => {
-          if (aIdx !== aiIdx) return ai;
-          const updated = { ...ai, [field]: value };
-          if (field === 'modelId') {
-            const m = models.find(mod => mod.id === value);
-            updated.class = m?.classes[0] || '';
-          }
-          return updated;
-        }),
-      };
-    });
+    const newData = [...reviewData];
+    newData[rowIndex].selectedAIModels[aiIdx][field] = value;
+    if (field === 'modelId') {
+      const m = models.find(mod => mod.id === value);
+      newData[rowIndex].selectedAIModels[aiIdx].class = m?.classes[0] || '';
+    }
     setReviewData(newData);
   };
 
@@ -776,7 +758,6 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                       src={getReferenceImageUrl(ai.referenceImage)}
                                       alt="ref"
                                       style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 6, border: `2px solid ${C.accent}` }}
-                                      onError={(ev) => { ev.target.style.outline = '2px solid red'; ev.target.title = 'Image failed to load: ' + getReferenceImageUrl(ai.referenceImage); }}
                                     />
                                   ) : (
                                     <div style={{ width: 44, height: 44, border: `1px dashed ${C.border}`, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted }}>
@@ -794,17 +775,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                     if (!file) return;
                                     try {
                                       const r = await uploadReferenceImage(file);
-                                      console.log('[RefImg] upload response:', r.data);
-                                      const filename = r.data?.filename;
-                                      if (!filename) {
-                                        alert('Upload succeeded but no filename returned. Check backend.');
-                                        return;
-                                      }
-                                      handleUpdateRowAI(rowIndex, aiIdx, 'referenceImage', filename);
-                                      console.log('[RefImg] state updated for row', rowIndex, 'ai', aiIdx, 'filename', filename);
-                                    } catch (err) {
-                                      console.error('[RefImg] upload error:', err);
-                                      alert('Image upload failed: ' + (err?.response?.data?.detail || err?.message || 'Unknown error'));
+                                      handleUpdateRowAI(rowIndex, aiIdx, 'referenceImage', r.data.filename);
+                                    } catch {
+                                      alert('Image upload failed. Please try again.');
                                     }
                                     e.target.value = '';
                                   }}
