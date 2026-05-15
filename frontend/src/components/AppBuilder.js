@@ -437,21 +437,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleUpdateRowAI = (rowIndex, aiIdx, field, value) => {
-    setReviewData(prev => prev.map((row, rIdx) => {
-      if (rIdx !== rowIndex) return row;
-      return {
-        ...row,
-        selectedAIModels: row.selectedAIModels.map((ai, aIdx) => {
-          if (aIdx !== aiIdx) return ai;
-          const updated = { ...ai, [field]: value };
-          if (field === 'modelId') {
-            const m = models.find(mod => mod.id === value);
-            updated.class = m?.classes[0] || '';
-          }
-          return updated;
-        }),
-      };
-    }));
+    const newData = [...reviewData];
+    newData[rowIndex].selectedAIModels[aiIdx][field] = value;
+    if (field === 'modelId') {
+      const m = models.find(mod => mod.id === value);
+      newData[rowIndex].selectedAIModels[aiIdx].class = m?.classes[0] || '';
+    }
+    setReviewData(newData);
   };
 
   const handleMoveRowAI = (rowIndex, aiIdx, direction) => {
