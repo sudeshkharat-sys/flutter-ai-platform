@@ -2,11 +2,26 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:image/image.dart' as img;
-import 'package:shared_preferences/shared_preferences.dart';
 import '../database/database.dart';
 import '../ml/detection_result.dart';
 import '../widgets/detection_overlay.dart';
 import '../services/print_service.dart';
+
+class _ShiftSummary {
+  final DateTime date;
+  final String shift;
+  final Set<String> vins = {};
+  int totalScans = 0;
+  int okScans = 0;
+  int totalTasks = 0;
+  int passedTasks = 0;
+
+  _ShiftSummary({required this.date, required this.shift});
+
+  int get vehicleCount => vins.length;
+  double get okPercent => totalScans == 0 ? 0.0 : (okScans / totalScans * 100);
+  double get taskPassPercent => totalTasks == 0 ? 0.0 : (passedTasks / totalTasks * 100);
+}
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -29,26 +44,28 @@ class _HistoryScreenState extends State<HistoryScreen> {
     try {
       final List<Inspection> inspections = await db.getAllInspections();
       List<Map<String, dynamic>> results = [];
-      
+
       for (var insp in inspections) {
         final taskResults = await db.getResultsForInspection(insp.id);
         bool overallSuccess = true;
         for (var tr in taskResults) {
           if (!tr.success) overallSuccess = false;
         }
-        
+
         results.add({
           'vin': insp.vin,
           'modelCode': insp.modelCode,
           'timestamp': insp.createdAt.toIso8601String(),
           'overallSuccess': overallSuccess,
-          'tasks': taskResults.map((tr) => {
-            'taskName': tr.taskName,
-            'detectedPart': tr.className,
-            'success': tr.success,
-            'imagePath': tr.imagePath,
-            'detectionsJson': tr.detectionsJson,
-          }).toList(),
+          'tasks': taskResults
+              .map((tr) => {
+                    'taskName': tr.taskName,
+                    'detectedPart': tr.className,
+                    'success': tr.success,
+                    'imagePath': tr.imagePath,
+                    'detectionsJson': tr.detectionsJson,
+                  })
+              .toList(),
         });
       }
 
@@ -62,191 +79,640 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-  Future<void> _clearHistory() async {
-    // For drift, we'd need a delete all method. 
-    // For now let's just use SharedPreferences if that was the fallback, 
-    // but better to add delete logic to database.dart
-    // For this prototype, we'll just clear the state list.
-    setState(() => _groupedHistory = []);
+  // ── Shift logic ──────────────────────────────────────────────────────────────
+  // A: 07:00–15:30   B: 15:30–00:00   C: 00:00–07:00 (counts as previous date)
+
+  String _getShift(DateTime dt) {
+    final int mins = dt.hour * 60 + dt.minute;
+    if (mins >= 420 && mins < 930) return 'A';
+    if (mins >= 930) return 'B';
+    return 'C';
   }
+
+  DateTime _getShiftDate(DateTime dt) {
+    // Shift C (night, 00:00–07:00) is attributed to the previous calendar date
+    if (dt.hour < 7) {
+      return DateTime(dt.year, dt.month, dt.day).subtract(const Duration(days: 1));
+    }
+    return DateTime(dt.year, dt.month, dt.day);
+  }
+
+  // ── Dashboard helpers ─────────────────────────────────────────────────────────
+
+  List<_ShiftSummary> _buildDashboardData() {
+    final Map<String, _ShiftSummary> map = {};
+
+    for (final item in _groupedHistory) {
+      final dt = DateTime.parse(item['timestamp'] as String);
+      final shift = _getShift(dt);
+      final shiftDate = _getShiftDate(dt);
+      final key = '${shiftDate.year}-${shiftDate.month}-${shiftDate.day}_$shift';
+
+      map.putIfAbsent(key, () => _ShiftSummary(date: shiftDate, shift: shift));
+      final s = map[key]!;
+
+      s.vins.add(item['vin'] as String);
+      s.totalScans++;
+      if (item['overallSuccess'] == true) s.okScans++;
+
+      final tasks = item['tasks'] as List<dynamic>;
+      s.totalTasks += tasks.length;
+      s.passedTasks += tasks.where((t) => t['success'] == true).length;
+    }
+
+    return map.values.toList()
+      ..sort((a, b) {
+        final d = b.date.compareTo(a.date);
+        return d != 0 ? d : a.shift.compareTo(b.shift);
+      });
+  }
+
+  String _formatDate(DateTime dt) =>
+      '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+
+  Color _percentColor(double pct) {
+    if (pct >= 80) return Colors.green.shade700;
+    if (pct >= 50) return Colors.orange.shade700;
+    return Colors.red.shade700;
+  }
+
+  Color _shiftColor(String shift) {
+    switch (shift) {
+      case 'A':
+        return const Color(0xFF1565C0);
+      case 'B':
+        return const Color(0xFFE65100);
+      default:
+        return const Color(0xFF4A148C);
+    }
+  }
+
+  String _shiftTimeLabel(String shift) {
+    switch (shift) {
+      case 'A':
+        return '07:00 – 15:30';
+      case 'B':
+        return '15:30 – 00:00';
+      default:
+        return '00:00 – 07:00';
+    }
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFFFF5F5),
-      appBar: AppBar(
-        title: const Text('INSPECTION HISTORY', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
-        centerTitle: true,
-        backgroundColor: const Color(0xFFDC143C),
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        backgroundColor: const Color(0xFFFFF5F5),
+        appBar: AppBar(
+          title: const Text(
+            'INSPECTION HISTORY',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          centerTitle: true,
+          backgroundColor: const Color(0xFFDC143C),
+          elevation: 0,
+          iconTheme: const IconThemeData(color: Colors.white),
+          bottom: const TabBar(
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white60,
+            indicatorColor: Color(0xFFD4AF37),
+            indicatorWeight: 3,
+            tabs: [
+              Tab(icon: Icon(Icons.bar_chart_rounded), text: 'Dashboard'),
+              Tab(icon: Icon(Icons.history_rounded), text: 'History'),
+            ],
+          ),
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))
+            : TabBarView(
+                children: [
+                  _buildDashboardTab(),
+                  _buildHistoryTab(),
+                ],
+              ),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))
-          : _groupedHistory.isEmpty
-              ? const Center(child: Text('No history found', style: TextStyle(color: Colors.grey)))
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _groupedHistory.length,
-                  itemBuilder: (context, index) {
-                    final item = _groupedHistory[index];
-                    final bool overallSuccess = item['overallSuccess'] ?? false;
-                    final DateTime date = DateTime.parse(item['timestamp']);
-                    final List<dynamic> tasks = item['tasks'] ?? [];
+    );
+  }
 
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFFD4AF37), width: 1),
-                        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 4, offset: const Offset(0, 2))],
-                      ),
-                      child: ExpansionTile(
-                        leading: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: overallSuccess ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            overallSuccess ? Icons.check_circle : Icons.error,
-                            color: overallSuccess ? Colors.green : Colors.red,
-                            size: 24,
-                          ),
-                        ),
-                        title: Text(
-                          'VIN: ${item['vin']}',
-                          style: const TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold, fontSize: 14),
-                        ),
-                        subtitle: Text(
-                          'Model: ${item['modelCode']} • ${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute}',
-                          style: const TextStyle(fontSize: 11, color: Colors.grey),
-                        ),
-                        trailing: Row(
+  // ── Dashboard tab ─────────────────────────────────────────────────────────────
+
+  Widget _buildDashboardTab() {
+    final summaries = _buildDashboardData();
+    final today = _getShiftDate(DateTime.now());
+    final todaySums = summaries.where(
+      (s) => s.date.year == today.year && s.date.month == today.month && s.date.day == today.day,
+    ).toList();
+
+    final todayScans = todaySums.fold<int>(0, (a, s) => a + s.totalScans);
+    final todayOk = todaySums.fold<int>(0, (a, s) => a + s.okScans);
+    final todayOkPct = todayScans == 0 ? 0.0 : (todayOk / todayScans * 100);
+    final currentShift = _getShift(DateTime.now());
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ── KPI cards ──────────────────────────────────────────────────────
+          Row(
+            children: [
+              Expanded(
+                child: _kpiCard(
+                  label: "Today's\nScans",
+                  value: '$todayScans',
+                  icon: Icons.directions_car_rounded,
+                  color: const Color(0xFF1565C0),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _kpiCard(
+                  label: 'OK Rate\nToday',
+                  value: '${todayOkPct.toStringAsFixed(0)}%',
+                  icon: Icons.check_circle_rounded,
+                  color: _percentColor(todayOkPct),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _kpiCard(
+                  label: 'Current\nShift',
+                  value: 'Shift $currentShift',
+                  icon: Icons.schedule_rounded,
+                  color: _shiftColor(currentShift),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // ── Shift legend ───────────────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFD4AF37)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Shift Schedule',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                    color: Color(0xFFDC143C),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: ['A', 'B', 'C']
+                      .map(
+                        (sh) => Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            IconButton(
-                              icon: const Icon(Icons.print_outlined, color: Color(0xFFDC143C), size: 22),
-                              tooltip: 'Print Report',
-                              onPressed: () async {
-                                final printers = await PrintService.instance.getBondedPrinters();
-                                if (!context.mounted) return;
-                                if (printers.isEmpty) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text("No paired printer found. Please pair a Bluetooth printer in device settings."),
-                                      backgroundColor: Colors.orange,
-                                      duration: Duration(seconds: 4),
-                                    ),
-                                  );
-                                  return;
-                                }
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text("Printing to ${printers.first.name}..."),
-                                    backgroundColor: Colors.blue,
-                                    duration: const Duration(seconds: 2),
-                                  ),
-                                );
-                                final printSuccess = await PrintService.instance.printInspectionReport(
-                                  printer: printers.first,
-                                  vin: item['vin'] as String,
-                                  modelCode: item['modelCode'] as String,
-                                  timestamp: item['timestamp'] as String,
-                                  overallSuccess: overallSuccess,
-                                  tasks: List<Map<String, dynamic>>.from(tasks),
-                                );
-                                if (!context.mounted) return;
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(printSuccess
-                                        ? "Report printed to ${printers.first.name}"
-                                        : "Print failed. Please check the printer."),
-                                    backgroundColor: printSuccess ? Colors.green : Colors.red,
-                                  ),
-                                );
-                              },
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: _shiftColor(sh),
+                                shape: BoxShape.circle,
+                              ),
                             ),
-                            const Icon(Icons.expand_more, color: Colors.grey),
+                            const SizedBox(width: 5),
+                            Text(
+                              '$sh: ${_shiftTimeLabel(sh)}',
+                              style: const TextStyle(fontSize: 10),
+                            ),
                           ],
                         ),
-                        children: [
-                          const Divider(height: 1),
-                          ...tasks.map((task) {
-                            final String? imgPath = task['imagePath'] as String?;
-                            final String? detectionsRaw = task['detectionsJson'] as String?;
-                            List<DetectionResult> detections = [];
-                            if (detectionsRaw != null) {
-                              try {
-                                detections = (jsonDecode(detectionsRaw) as List)
-                                    .map((e) => DetectionResult.fromJson(e as Map<String, dynamic>))
-                                    .toList();
-                              } catch (_) {}
-                            }
-                            final hasImage = imgPath != null && File(imgPath).existsSync();
+                      )
+                      .toList(),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
 
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        task['success'] ? Icons.check : Icons.close,
-                                        color: task['success'] ? Colors.green : Colors.red,
-                                        size: 16,
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(task['taskName'] ?? 'Task', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                                            Text('Detected: ${task['detectedPart']}', style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                if (hasImage)
-                                  Padding(
-                                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                                    child: ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: _HistoryImageWithOverlay(
-                                        imagePath: imgPath!,
-                                        detections: detections,
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            );
-                          }).toList(),
-                          const SizedBox(height: 8),
-                        ],
+          // ── Shift summary table ────────────────────────────────────────────
+          if (summaries.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(32),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Text(
+                'No inspection data yet',
+                style: TextStyle(color: Colors.grey),
+              ),
+            )
+          else ...[
+            const Text(
+              'Shift Summary',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+                color: Color(0xFFDC143C),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: const Color(0xFFD4AF37)),
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: _buildShiftTable(summaries),
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  Widget _kpiCard({
+    required String label,
+    required String value,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFD4AF37)),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 4),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: color),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 10, color: Colors.grey),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildShiftTable(List<_ShiftSummary> summaries) {
+    const headerStyle = TextStyle(
+      color: Colors.white,
+      fontWeight: FontWeight.bold,
+      fontSize: 12,
+    );
+
+    return Table(
+      defaultColumnWidth: const IntrinsicColumnWidth(),
+      border: TableBorder(
+        horizontalInside: BorderSide(color: Colors.grey.shade200),
+        verticalInside: BorderSide(color: Colors.grey.shade100),
+      ),
+      children: [
+        TableRow(
+          decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+          children: [
+            _hCell('Date', headerStyle),
+            _hCell('Shift', headerStyle),
+            _hCell('VINs\nScanned', headerStyle),
+            _hCell('Scans\n(OK)', headerStyle),
+            _hCell('Vehicle\nOK %', headerStyle),
+            _hCell('Total\nTasks', headerStyle),
+            _hCell('Tasks\nPassed', headerStyle),
+            _hCell('Task\nPass %', headerStyle),
+          ],
+        ),
+        ...summaries.asMap().entries.map((e) {
+          final i = e.key;
+          final s = e.value;
+          return TableRow(
+            decoration: BoxDecoration(
+              color: i.isEven ? Colors.white : Colors.grey.shade50,
+            ),
+            children: [
+              _dCell(_formatDate(s.date)),
+              _shiftBadgeCell(s.shift),
+              _dCell('${s.vehicleCount}', center: true),
+              _dCell('${s.totalScans} (${s.okScans})', center: true),
+              _pctBadgeCell(s.okPercent),
+              _dCell('${s.totalTasks}', center: true),
+              _dCell('${s.passedTasks}', center: true),
+              _pctBadgeCell(s.taskPassPercent),
+            ],
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _hCell(String text, TextStyle style) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Text(text, style: style, textAlign: TextAlign.center),
+      );
+
+  Widget _dCell(String text, {bool center = false}) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Text(
+          text,
+          style: const TextStyle(fontSize: 12),
+          textAlign: center ? TextAlign.center : TextAlign.left,
+        ),
+      );
+
+  Widget _shiftBadgeCell(String shift) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+          decoration: BoxDecoration(
+            color: _shiftColor(shift).withOpacity(0.12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: _shiftColor(shift)),
+          ),
+          child: Text(
+            shift,
+            style: TextStyle(
+              color: _shiftColor(shift),
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+
+  Widget _pctBadgeCell(double pct) {
+    final color = _percentColor(pct);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          '${pct.toStringAsFixed(1)}%',
+          style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
+          textAlign: TextAlign.center,
+        ),
+      ),
+    );
+  }
+
+  // ── History tab ───────────────────────────────────────────────────────────────
+
+  Widget _buildHistoryTab() {
+    if (_groupedHistory.isEmpty) {
+      return const Center(
+        child: Text('No history found', style: TextStyle(color: Colors.grey)),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _groupedHistory.length,
+      itemBuilder: (context, index) {
+        final item = _groupedHistory[index];
+        final bool overallSuccess = item['overallSuccess'] ?? false;
+        final DateTime date = DateTime.parse(item['timestamp']);
+        final List<dynamic> tasks = item['tasks'] ?? [];
+        final shift = _getShift(date);
+
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFD4AF37), width: 1),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 4,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: ExpansionTile(
+            leading: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: overallSuccess
+                    ? Colors.green.withOpacity(0.1)
+                    : Colors.red.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                overallSuccess ? Icons.check_circle : Icons.error,
+                color: overallSuccess ? Colors.green : Colors.red,
+                size: 24,
+              ),
+            ),
+            title: Text(
+              'VIN: ${item['vin']}',
+              style: const TextStyle(
+                color: Color(0xFFDC143C),
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+            subtitle: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Model: ${item['modelCode']} • ${_formatDate(date)} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}',
+                    style: const TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                ),
+                Container(
+                  margin: const EdgeInsets.only(top: 2),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: _shiftColor(shift).withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _shiftColor(shift), width: 0.8),
+                  ),
+                  child: Text(
+                    'Shift $shift',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: _shiftColor(shift),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.print_outlined,
+                      color: Color(0xFFDC143C), size: 22),
+                  tooltip: 'Print Report',
+                  onPressed: () async {
+                    final printers =
+                        await PrintService.instance.getBondedPrinters();
+                    if (!context.mounted) return;
+                    if (printers.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                              'No paired printer found. Please pair a Bluetooth printer in device settings.'),
+                          backgroundColor: Colors.orange,
+                          duration: Duration(seconds: 4),
+                        ),
+                      );
+                      return;
+                    }
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Printing to ${printers.first.name}...'),
+                        backgroundColor: Colors.blue,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                    final printSuccess =
+                        await PrintService.instance.printInspectionReport(
+                      printer: printers.first,
+                      vin: item['vin'] as String,
+                      modelCode: item['modelCode'] as String,
+                      timestamp: item['timestamp'] as String,
+                      overallSuccess: overallSuccess,
+                      tasks: List<Map<String, dynamic>>.from(tasks),
+                    );
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(printSuccess
+                            ? 'Report printed to ${printers.first.name}'
+                            : 'Print failed. Please check the printer.'),
+                        backgroundColor:
+                            printSuccess ? Colors.green : Colors.red,
                       ),
                     );
                   },
                 ),
+                const Icon(Icons.expand_more, color: Colors.grey),
+              ],
+            ),
+            children: [
+              const Divider(height: 1),
+              ...tasks.map((task) {
+                final String? imgPath = task['imagePath'] as String?;
+                final String? detectionsRaw = task['detectionsJson'] as String?;
+                List<DetectionResult> detections = [];
+                if (detectionsRaw != null) {
+                  try {
+                    detections = (jsonDecode(detectionsRaw) as List)
+                        .map((e) =>
+                            DetectionResult.fromJson(e as Map<String, dynamic>))
+                        .toList();
+                  } catch (_) {}
+                }
+                final hasImage = imgPath != null && File(imgPath).existsSync();
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 10),
+                      child: Row(
+                        children: [
+                          Icon(
+                            task['success'] ? Icons.check : Icons.close,
+                            color: task['success'] ? Colors.green : Colors.red,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  task['taskName'] ?? 'Task',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13),
+                                ),
+                                Text(
+                                  'Detected: ${task['detectedPart']}',
+                                  style: const TextStyle(
+                                      fontSize: 11, color: Colors.blueGrey),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (hasImage)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: _HistoryImageWithOverlay(
+                            imagePath: imgPath!,
+                            detections: detections,
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              }).toList(),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
     );
   }
 }
 
-/// Loads the EXIF-corrected image size then renders the image and the
-/// single best-match bbox overlay using the same FittedBox approach as
-/// the capture screen — ensuring pixel-accurate alignment.
+// ── Image + overlay helper ────────────────────────────────────────────────────
+
 class _HistoryImageWithOverlay extends StatefulWidget {
   final String imagePath;
   final List<DetectionResult> detections;
 
-  const _HistoryImageWithOverlay({required this.imagePath, required this.detections});
+  const _HistoryImageWithOverlay(
+      {required this.imagePath, required this.detections});
 
   @override
-  State<_HistoryImageWithOverlay> createState() => _HistoryImageWithOverlayState();
+  State<_HistoryImageWithOverlay> createState() =>
+      _HistoryImageWithOverlayState();
 }
 
 class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
@@ -264,7 +730,8 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
       final decoded = img.decodeImage(bytes);
       if (decoded != null && mounted) {
         final oriented = img.bakeOrientation(decoded);
-        setState(() => _imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble()));
+        setState(() =>
+            _imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble()));
       }
     } catch (_) {}
   }
