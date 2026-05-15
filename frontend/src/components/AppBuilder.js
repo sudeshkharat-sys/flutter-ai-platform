@@ -69,6 +69,11 @@ export default function AppBuilder() {
     }
   };
 
+  const handleResetBuild = async () => {
+    await updateApp(id, { build_status: 'idle', build_step: '' });
+    loadData();
+  };
+
   const handleDownloadAPK = async () => {
     try {
       const r = await downloadAPK(id);
@@ -287,6 +292,14 @@ export default function AppBuilder() {
             <button onClick={handleStartBuild} disabled={isBuilding || buildLoading} style={{ width: '100%', padding: '16px', borderRadius: 12, border: 'none', background: isBuilding ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 800, cursor: isBuilding ? 'not-allowed' : 'pointer' }}>
               {isBuilding ? 'Compiling APK...' : 'Build Final APK'}
             </button>
+            {isBuilding && (
+              <button
+                onClick={handleResetBuild}
+                style={{ width: '100%', marginTop: 8, padding: '10px', borderRadius: 12, border: `1px solid ${C.error}`, background: 'transparent', color: C.error, fontWeight: 700, cursor: 'pointer', fontSize: 13 }}
+              >
+                Cancel / Reset Build
+              </button>
+            )}
           </div>
 
         </div>
