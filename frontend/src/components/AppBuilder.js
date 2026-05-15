@@ -437,7 +437,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleUpdateRowAI = (rowIndex, aiIdx, field, value) => {
-    setReviewData(prev => prev.map((row, rIdx) => {
+    const newData = reviewData.map((row, rIdx) => {
       if (rIdx !== rowIndex) return row;
       return {
         ...row,
@@ -451,7 +451,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           return updated;
         }),
       };
-    }));
+    });
+    setReviewData(newData);
   };
 
   const handleMoveRowAI = (rowIndex, aiIdx, direction) => {
