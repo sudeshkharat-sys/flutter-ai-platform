@@ -23,7 +23,7 @@ pluginManagement {
 
 plugins {
     id "dev.flutter.flutter-gradle-plugin" version "1.0.0" apply false
-    id "com.android.application" version "8.1.1" apply false
+    id "com.android.application" version "8.7.0" apply false
     id "org.jetbrains.kotlin.android" version "1.9.20" apply false
 }
 
@@ -50,6 +50,11 @@ def pluginMap = [
 ]
 
 pluginMap.each { name, folder ->
-    include ":$name"
-    project(":$name").projectDir = new File(pubCacheDir, "$folder/android")
+    def pluginDir = new File(pubCacheDir, "$folder/android")
+    if (pluginDir.exists() && pluginDir.isDirectory()) {
+        include ":$name"
+        project(":$name").projectDir = pluginDir
+    } else {
+        println "[settings] WARNING: plugin '$name' not found at ${pluginDir.path} -- skipping"
+    }
 }
