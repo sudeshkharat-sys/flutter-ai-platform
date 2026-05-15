@@ -452,17 +452,22 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const handleReferenceImageUpload = async (rowIndex, aiIdx, file) => {
     if (!file || !existingApp) return;
     const key = `${rowIndex}_${aiIdx}`;
-    setReferenceImages(prev => ({ ...prev, [key]: { url: null, uploading: true } }));
+    // Show local preview immediately so user sees selection right away
+    const localUrl = URL.createObjectURL(file);
+    setReferenceImages(prev => ({ ...prev, [key]: { url: localUrl, uploading: true } }));
     try {
       const taskIndex = reviewData.slice(0, rowIndex).reduce((acc, r) => acc + r.selectedAIModels.length, 0) + aiIdx;
       const fd = new FormData();
       fd.append('file', file);
       await uploadReferenceImage(existingApp.id, taskIndex, fd);
-      const url = getReferenceImageUrl(existingApp.id, taskIndex) + '?t=' + Date.now();
-      setReferenceImages(prev => ({ ...prev, [key]: { url, uploading: false } }));
+      // Replace local blob URL with server URL after successful upload
+      const serverUrl = getReferenceImageUrl(existingApp.id, taskIndex) + '?t=' + Date.now();
+      URL.revokeObjectURL(localUrl);
+      setReferenceImages(prev => ({ ...prev, [key]: { url: serverUrl, uploading: false } }));
     } catch {
-      setReferenceImages(prev => ({ ...prev, [key]: { url: null, uploading: false } }));
-      alert('Reference image upload failed');
+      // Keep the local preview visible even if upload fails
+      setReferenceImages(prev => ({ ...prev, [key]: { url: localUrl, uploading: false } }));
+      console.error('Reference image upload failed');
     }
   };
 
