@@ -317,21 +317,22 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const [masterMappings, setMasterMappings] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Step 1: Selection State
   const [profileName, setProfileName] = useState(existingApp?.name || '');
   const [selectedModelCodes, setSelectedModelCodes] = useState([]); 
   const [showDropdown, setShowDropdown] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Step 1: Initial AI Model State (Multiple)
   const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', instruction: '' }]);
 
-  // Step 2: Review State
   const [isReviewing, setIsReviewing] = useState(startAtReview);
   const [reviewData, setReviewData] = useState([]); 
 
   useEffect(() => {
-    Promise.all([getModels(), getMasterMappings()]).then(([mr, gr]) => { 
+    let mounted = true;
+
+    Promise.all([getModels(), getMasterMappings()]).then(([mr, gr]) => {
+      if (!mounted) return;
+
       const availableModels = mr.data.filter(m => m.status === 'ready');
       const allMappings = gr.data;
       
@@ -340,7 +341,6 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       setLoading(false); 
 
       if (existingApp) {
-        // 1. Restore selected model codes
         let codes = [];
         if (existingApp.app_settings?.model_codes) {
           codes = existingApp.app_settings.model_codes;
@@ -349,12 +349,10 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         }
         setSelectedModelCodes(codes);
 
-        // 2. Restore default configs template
         if (existingApp.app_settings?.default_configs) {
           setDefaultAIConfigs(existingApp.app_settings.default_configs);
         }
 
-        // 3. Reconstruct reviewData
         if (existingApp.inspection_tasks && existingApp.inspection_tasks.length > 0) {
           const tasksByCode = existingApp.inspection_tasks.reduce((acc, t) => {
             const code = t.vehicleCode || 'Default';
@@ -384,10 +382,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         }
       }
     }).catch((err) => {
+      if (!mounted) return;
       console.error("Restoration error:", err);
       setLoading(false);
     });
-  }, [existingApp, startAtReview]);
+
+    return () => { mounted = false; };
+  }, [existingApp?.id, startAtReview]);
 
   const handleToggleModelCode = (code) => {
     setSelectedModelCodes(prev => 
@@ -419,7 +420,6 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       return;
     }
 
-    // Valid AI configs only
     const validAI = defaultAIConfigs.filter(c => c.modelId && c.class);
 
     const newReviewData = selectedModelCodes.map(code => {
@@ -514,7 +514,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           app_type: 'sequential', 
           model_codes: selectedModelCodes,
           model_code: selectedModelCodes[0],
-          default_configs: defaultAIConfigs // Persist the template
+          default_configs: defaultAIConfigs
         }
       };
 
@@ -529,7 +529,6 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     } catch { alert('Failed to save profile'); }
   };
 
-  // Grouping and Filtering logic
   const filteredMappings = masterMappings.filter(m => 
     m.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
     m.platform_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -857,7 +856,6 @@ function ModelModal({ id, appIds, onClose }) {
   const [tab, setTab] = useState('library');
   const [existing, setExisting] = useState([]);
   
-  // Conversion state
   const [ptFile, setPtFile] = useState(null);
   const [modelName, setModelName] = useState('');
   const [classes, setClasses] = useState([]);
