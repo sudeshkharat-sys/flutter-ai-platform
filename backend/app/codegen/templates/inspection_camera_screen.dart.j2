@@ -121,8 +121,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
   Future<void> _initializeCamera() async {
     try {
       final cameras = await availableCameras();
-      if (cameras.isEmpty) { _addLog("No cameras found"); if (mounted) setState(() => _error = "No cameras found"); return; }
-      final back = cameras.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cameras.first);
+      if (cameras.isEmpty) {
+        _addLog("No cameras found");
+        if (mounted) setState(() => _error = "No cameras found");
+        return;
+      }
+      final back = cameras.firstWhere(
+          (c) => c.lensDirection == CameraLensDirection.back,
+          orElse: () => cameras.first);
       final controller = CameraController(back, ResolutionPreset.medium, enableAudio: false);
       _cameraController = controller;
       await controller.initialize();
@@ -136,7 +142,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
 
   Future<void> _handleCapture() async {
     if (_isAnalyzing || !_isModelLoaded || _cameraController == null) {
-      _addLog("Capture blocked: Busy=${_isAnalyzing}, ModelReady=${_isModelLoaded}");
+      _addLog("Capture blocked: analyzing=$_isAnalyzing modelReady=$_isModelLoaded");
       return;
     }
     try {
@@ -171,7 +177,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
           if (count > 0) {
             final mean = sumLap / count;
             final blurVariance = (sumLapSq / count) - (mean * mean);
-            _addLog('Blur variance: ${blurVariance.toStringAsFixed(1)}');
+            _addLog("Blur variance: ${blurVariance.toStringAsFixed(1)}");
             if (blurVariance < 150.0 && mounted) {
               await showDialog(
                 context: context,
@@ -216,48 +222,49 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
 
       final currentTask = widget.tasks[_currentIndex];
       final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
-      _addLog("Target classes: ${targetClasses.join(', ')}");
+      _addLog("Target: ${targetClasses.join(', ')}");
 
       final allDetections = orientedImage != null
           ? await ModelManager().predictImage(orientedImage)
           : await ModelManager().predictBytes(bytes);
       setState(() => _allDetections = allDetections);
 
-      // Save image to app-private storage for history.
-      // flush:true guarantees bytes reach disk before the path is recorded.
+      // Save image to app-private storage; flush:true ensures bytes hit disk
+      // before the path is recorded in _results.
       String? savedImagePath;
       try {
         final dir = await getApplicationDocumentsDirectory();
-        final imgDir = Directory('\${dir.path}/inspection_images');
+        final imgDir = Directory('${dir.path}/inspection_images');
         await imgDir.create(recursive: true);
-        savedImagePath = '\${imgDir.path}/\${DateTime.now().millisecondsSinceEpoch}.jpg';
+        savedImagePath = '${imgDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
         await File(savedImagePath).writeAsBytes(bytes, flush: true);
         final savedLen = await File(savedImagePath).length();
-        _addLog("Image saved: \${savedLen}B -> \$savedImagePath");
+        _addLog("Image saved: ${savedLen}B");
       } catch (e) {
-        _addLog("Image save FAILED: \$e");
+        _addLog("Image save FAILED: $e");
         savedImagePath = null;
       }
 
-      _addLog("Detections: \${allDetections.length}");
+      _addLog("Raw detections: ${allDetections.length}");
       for (final d in allDetections) {
-        _addLog("  \${d.className} \${(d.confidence * 100).toStringAsFixed(1)}%");
+        _addLog("  ${d.className} ${(d.confidence * 100).toStringAsFixed(1)}%");
       }
 
+      // Exact case-insensitive match against configured target classes.
       final filtered = allDetections
-          .where((d) => targetClasses.any((tc) => d.className.toLowerCase().trim() == tc.toLowerCase().trim()))
+          .where((d) => targetClasses
+              .any((tc) => d.className.toLowerCase().trim() == tc.toLowerCase().trim()))
           .toList();
-      _addLog("Matched target: \${filtered.length}");
+      _addLog("Matched target: ${filtered.length}");
 
       setState(() {
         if (filtered.isNotEmpty) {
-          // Target class detected -- check if it's a pass (ok-type) or fail (not-ok).
           filtered.sort((a, b) => b.confidence.compareTo(a.confidence));
           _bestResult = filtered.first;
-          _addLog("WINNER: \${_bestResult!.className}");
+          _addLog("WINNER: ${_bestResult!.className}");
 
           final pass = _isPass(_bestResult!.className, targetClasses);
-          _addLog("Pass: \$pass");
+          _addLog("Pass: $pass");
 
           _results[_currentIndex] = {
             'className': _bestResult!.className,
@@ -266,23 +273,20 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
             'detectionsJson': jsonEncode([_bestResult!.toJson()]),
           };
         } else {
-          // Non-target class detected (e.g. "not ok" when target is "thar").
-          // We still want to show the bounding box and store it for history.
+          // Non-target class (e.g. "not ok" when target is "thar").
+          // Store detection so bounding box shows in live UI and history.
           final nonTarget = List<DetectionResult>.from(allDetections)
             ..sort((a, b) => b.confidence.compareTo(a.confidence));
           _detectedNonTargetClasses = nonTarget.take(3).toList();
-
           final bestDetected = _detectedNonTargetClasses.isNotEmpty
               ? _detectedNonTargetClasses.first
               : null;
-
-          _addLog("NON-TARGET: \${bestDetected?.className ?? 'nothing'} (target was \${targetClasses.join(', ')})");
+          _addLog("NON-TARGET: ${bestDetected?.className ?? 'nothing'}");
 
           _results[_currentIndex] = {
             'className': bestDetected?.className ?? 'None',
             'success': false,
             'imagePath': savedImagePath,
-            // Store the actual detection so history can draw its bounding box.
             'detectionsJson': bestDetected != null
                 ? jsonEncode([bestDetected.toJson()])
                 : jsonEncode([]),
@@ -291,9 +295,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
         _isAnalyzing = false;
       });
     } catch (e) {
-      _addLog("ERROR: \$e");
+      _addLog("ERROR: $e");
       setState(() => _isAnalyzing = false);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Capture failed: \$e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Capture failed: $e')));
+      }
     }
   }
 
@@ -303,12 +310,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
     try {
       await _cameraController!.setFlashMode(newOn ? FlashMode.torch : FlashMode.off);
       setState(() => _isFlashOn = newOn);
-      _addLog("Flash \${newOn ? 'ON' : 'OFF'}");
-    } catch (e) { _addLog("Flash error: \$e"); }
+      _addLog(newOn ? 'Flash ON' : 'Flash OFF');
+    } catch (e) {
+      _addLog("Flash error: $e");
+    }
   }
 
   void _retake() {
-    _addLog("Retake");
+    _addLog('Retake');
     setState(() {
       _capturedImageBytes = null;
       _capturedImageSize = null;
@@ -320,8 +329,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
   }
 
   void _onSaveAndContinue() {
-    // _handleCapture already set the correct result including imagePath.
-    // ??= only triggers if capture never ran (e.g. user skipped).
+    // _handleCapture already stored imagePath and detectionsJson.
+    // ??= only fires if capture was never run (user skipped).
     _results[_currentIndex] ??= {
       'className': 'None',
       'success': false,
@@ -330,13 +339,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
     };
 
     if (_results.length == widget.tasks.length) {
-      _addLog("All tasks done");
+      _addLog('All tasks done');
       Navigator.pop(context, _results);
       return;
     }
 
     final nextIdx = (_currentIndex + 1) % widget.tasks.length;
-    _addLog("Moving to Task \${nextIdx + 1}");
+    _addLog("Moving to Task ${nextIdx + 1}");
     setState(() {
       _currentIndex = nextIdx;
       _capturedImageBytes = null;
@@ -348,17 +357,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
 
   @override
   Widget build(BuildContext context) {
-    if (_error != null) return Scaffold(body: Center(child: Text('Error: \$_error')));
+    if (_error != null) return Scaffold(body: Center(child: Text('Error: $_error')));
     final currentTask = widget.tasks[_currentIndex];
     final List<String> taskClasses = List<String>.from(currentTask['classes'] ?? []);
-    final bool badgeGreen = _bestResult != null && _isPass(_bestResult!.className, taskClasses);
+    final bool badgeGreen =
+        _bestResult != null && _isPass(_bestResult!.className, taskClasses);
 
-    // The result to show in the bounding-box overlay:
-    // - target class matched  → use _bestResult
-    // - non-target detected   → use first of _detectedNonTargetClasses
-    // - nothing detected      → null (no overlay)
-    final DetectionResult? overlayResult =
-        _bestResult ?? (_detectedNonTargetClasses.isNotEmpty ? _detectedNonTargetClasses.first : null);
+    // Show bbox for target match OR non-target detection (e.g. "not ok").
+    final DetectionResult? overlayResult = _bestResult ??
+        (_detectedNonTargetClasses.isNotEmpty ? _detectedNonTargetClasses.first : null);
 
     return Scaffold(
       body: Container(
@@ -372,7 +379,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
         child: SafeArea(
           child: Column(
             children: [
-              // Top Header
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
@@ -388,42 +394,55 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text('TASK \${_currentIndex + 1} OF \${widget.tasks.length}',
-                                style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
-                            Text('VIN: \${widget.vin}',
-                                style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                            Text(
+                              'TASK ${_currentIndex + 1} OF ${widget.tasks.length}',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              'VIN: ${widget.vin}',
+                              style: const TextStyle(color: Colors.white70, fontSize: 10),
+                            ),
                           ],
                         ),
                       ),
                     ),
                     IconButton(
                       icon: Icon(
-                        _showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined,
+                        _showDebugConsole
+                            ? Icons.bug_report
+                            : Icons.bug_report_outlined,
                         color: Colors.white70,
                       ),
-                      onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
+                      onPressed: () =>
+                          setState(() => _showDebugConsole = !_showDebugConsole),
                     ),
                   ],
                 ),
               ),
-
-              // Info Banner
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
                 color: Colors.white.withOpacity(0.9),
                 child: Column(
                   children: [
-                    Text(currentTask['name'],
-                        style: const TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.w900, fontSize: 18)),
+                    Text(
+                      currentTask['name'] as String,
+                      style: const TextStyle(
+                          color: Color(0xFFDC143C),
+                          fontWeight: FontWeight.w900,
+                          fontSize: 18),
+                    ),
                     const SizedBox(height: 4),
-                    const Text('Align object within the frame and capture',
-                        style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    const Text(
+                      'Align object within the frame and capture',
+                      style: TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
                   ],
                 ),
               ),
-
-              // Main Content
               Expanded(
                 child: Stack(
                   children: [
@@ -431,9 +450,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                       Positioned.fill(
                         child: _isCameraInitialized && _cameraController != null
                             ? CameraPreview(_cameraController!)
-                            : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
+                            : const Center(
+                                child: CircularProgressIndicator(
+                                    color: Color(0xFFDC143C))),
                       ),
-
                     if (_capturedImageBytes != null)
                       Positioned.fill(
                         child: _capturedImageSize != null
@@ -451,9 +471,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                                         width: _capturedImageSize!.width,
                                         height: _capturedImageSize!.height,
                                       ),
-                                      // Show bounding box for ANY detected class:
-                                      // green box for matching target, red box for
-                                      // non-target (e.g. "not ok" when target is "thar").
+                                      // Draw bbox for ANY detected class (target or not).
                                       if (overlayResult != null)
                                         DetectionOverlay(
                                           results: [overlayResult],
@@ -463,33 +481,33 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                                   ),
                                 ),
                               )
-                            : Image.memory(_capturedImageBytes!, fit: BoxFit.contain),
+                            : Image.memory(_capturedImageBytes!,
+                                fit: BoxFit.contain),
                       ),
-
                     if (_capturedImageBytes == null)
                       Center(
                         child: Container(
                           width: 280,
                           height: 280,
                           decoration: BoxDecoration(
-                            border: Border.all(color: const Color(0xFFDC143C), width: 2),
+                            border: Border.all(
+                                color: const Color(0xFFDC143C), width: 2),
                           ),
                         ),
                       ),
-
                     if (_isLoadingModel && _capturedImageBytes == null)
                       Container(
                         color: Colors.black45,
-                        child: const Center(child: CircularProgressIndicator(color: Colors.white)),
+                        child: const Center(
+                            child: CircularProgressIndicator(color: Colors.white)),
                       ),
-
                     if (_isAnalyzing)
                       Container(
                         color: Colors.black54,
-                        child: const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
+                        child: const Center(
+                            child: CircularProgressIndicator(
+                                color: Color(0xFFDC143C))),
                       ),
-
-                    // Flash toggle
                     if (_capturedImageBytes == null && _isCameraInitialized)
                       Positioned(
                         top: 16,
@@ -500,47 +518,57 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                             width: 48,
                             height: 48,
                             decoration: BoxDecoration(
-                              color: _isFlashOn ? const Color(0xFFFFD700) : Colors.black54,
+                              color: _isFlashOn
+                                  ? const Color(0xFFFFD700)
+                                  : Colors.black54,
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: _isFlashOn ? const Color(0xFFFFD700) : Colors.white30,
+                                color: _isFlashOn
+                                    ? const Color(0xFFFFD700)
+                                    : Colors.white30,
                                 width: 1.5,
                               ),
                             ),
                             child: Icon(
-                              _isFlashOn ? Icons.flashlight_on : Icons.flashlight_off,
+                              _isFlashOn
+                                  ? Icons.flashlight_on
+                                  : Icons.flashlight_off,
                               color: _isFlashOn ? Colors.black : Colors.white,
                               size: 24,
                             ),
                           ),
                         ),
                       ),
-
-                    // Status badge
+                    // Badge: green = exact match + ok-type. Everything else red.
                     if (!_isAnalyzing && _capturedImageBytes != null)
                       Positioned(
                         top: 16,
                         right: 16,
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 8),
                           decoration: BoxDecoration(
                             color: badgeGreen ? Colors.green : Colors.red,
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
                             badgeGreen
-                                ? '✓  \${_bestResult!.className}'
+                                ? '✓ ${_bestResult!.className}'
                                 : overlayResult != null
-                                    ? '✗  \${overlayResult.className}'
+                                    ? '✗ ${overlayResult.className}'
                                     : 'NOT FOUND',
                             style: const TextStyle(
-                                color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13),
                           ),
                         ),
                       ),
-
-                    // Not-found info panel
-                    if (!_isAnalyzing && _capturedImageBytes != null && _bestResult == null && !_showDebugConsole)
+                    // Bottom info panel when target not found
+                    if (!_isAnalyzing &&
+                        _capturedImageBytes != null &&
+                        _bestResult == null &&
+                        !_showDebugConsole)
                       Positioned(
                         bottom: 0,
                         left: 0,
@@ -549,20 +577,24 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                           padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
                           decoration: BoxDecoration(
                             color: Colors.black.withOpacity(0.88),
-                            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                            borderRadius: const BorderRadius.vertical(
+                                top: Radius.circular(16)),
                           ),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(children: [
-                                const Icon(Icons.cancel, color: Colors.red, size: 16),
+                                const Icon(Icons.cancel,
+                                    color: Colors.red, size: 16),
                                 const SizedBox(width: 6),
                                 Expanded(
                                   child: Text(
-                                    'Target not found: \${taskClasses.join(', ')}',
+                                    "Target not found: ${taskClasses.join(', ')}",
                                     style: const TextStyle(
-                                        color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13),
+                                        color: Colors.red,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13),
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
@@ -570,34 +602,42 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                               if (_detectedNonTargetClasses.isNotEmpty) ...[
                                 const SizedBox(height: 10),
                                 const Text('Detected instead:',
-                                    style: TextStyle(color: Colors.white54, fontSize: 11)),
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 11)),
                                 const SizedBox(height: 6),
                                 ..._detectedNonTargetClasses.map((d) => Padding(
-                                      padding: const EdgeInsets.only(bottom: 4),
+                                      padding:
+                                          const EdgeInsets.only(bottom: 4),
                                       child: Row(children: [
-                                        const Icon(Icons.close, color: Colors.orange, size: 14),
+                                        const Icon(Icons.close,
+                                            color: Colors.orange, size: 14),
                                         const SizedBox(width: 6),
-                                        Text(d.className,
-                                            style: const TextStyle(
-                                                color: Colors.orange,
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.w600)),
+                                        Text(
+                                          d.className,
+                                          style: const TextStyle(
+                                              color: Colors.orange,
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w600),
+                                        ),
                                         const SizedBox(width: 8),
-                                        Text('\${(d.confidence * 100).toStringAsFixed(0)}%',
-                                            style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                                        Text(
+                                          "${(d.confidence * 100).toStringAsFixed(0)}%",
+                                          style: const TextStyle(
+                                              color: Colors.white54,
+                                              fontSize: 12),
+                                        ),
                                       ]),
                                     )),
                               ] else ...[
                                 const SizedBox(height: 8),
                                 const Text('Nothing detected.',
-                                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 12)),
                               ],
                             ],
                           ),
                         ),
                       ),
-
-                    // Debug console
                     if (_showDebugConsole)
                       Positioned(
                         bottom: 0,
@@ -611,14 +651,19 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 children: [
                                   const Text('DEBUG CONSOLE',
                                       style: TextStyle(
-                                          color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 10)),
+                                          color: Colors.yellow,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 10)),
                                   IconButton(
-                                    icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 16),
-                                    onPressed: () => setState(() => _debugLogs = []),
+                                    icon: const Icon(Icons.delete_sweep,
+                                        color: Colors.white, size: 16),
+                                    onPressed: () =>
+                                        setState(() => _debugLogs = []),
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints(),
                                   ),
@@ -629,11 +674,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                                 child: ListView.builder(
                                   itemCount: _debugLogs.length,
                                   itemBuilder: (_, idx) => Padding(
-                                    padding: const EdgeInsets.only(bottom: 2),
+                                    padding:
+                                        const EdgeInsets.only(bottom: 2),
                                     child: Text(
                                       _debugLogs[idx],
                                       style: const TextStyle(
-                                          color: Colors.white, fontFamily: 'monospace', fontSize: 9),
+                                          color: Colors.white,
+                                          fontFamily: 'monospace',
+                                          fontSize: 9),
                                     ),
                                   ),
                                 ),
@@ -645,13 +693,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                   ],
                 ),
               ),
-
-              // Action buttons
               Padding(
                 padding: const EdgeInsets.all(24),
                 child: _capturedImageBytes == null
                     ? GestureDetector(
-                        onTap: (_isLoadingModel || _isAnalyzing || !_isCameraInitialized)
+                        onTap: (_isLoadingModel ||
+                                _isAnalyzing ||
+                                !_isCameraInitialized)
                             ? null
                             : _handleCapture,
                         child: Container(
@@ -660,12 +708,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                           decoration: BoxDecoration(
                             color: const Color(0xFFDC143C),
                             shape: BoxShape.circle,
-                            boxShadow: [
+                            boxShadow: const [
                               BoxShadow(
-                                  color: Colors.black26, blurRadius: 10, offset: const Offset(0, 4))
+                                  color: Colors.black26,
+                                  blurRadius: 10,
+                                  offset: Offset(0, 4))
                             ],
                           ),
-                          child: const Icon(Icons.camera_alt, color: Colors.white, size: 40),
+                          child: const Icon(Icons.camera_alt,
+                              color: Colors.white, size: 40),
                         ),
                       )
                     : Row(
@@ -674,12 +725,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                             child: OutlinedButton(
                               onPressed: _retake,
                               style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(vertical: 16),
-                                side: const BorderSide(color: Color(0xFFDC143C)),
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 16),
+                                side: const BorderSide(
+                                    color: Color(0xFFDC143C)),
                               ),
                               child: const Text('RETAKE',
                                   style: TextStyle(
-                                      color: Color(0xFFDC143C), fontWeight: FontWeight.bold)),
+                                      color: Color(0xFFDC143C),
+                                      fontWeight: FontWeight.bold)),
                             ),
                           ),
                           const SizedBox(width: 16),
@@ -688,12 +742,16 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                               onPressed: _onSaveAndContinue,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.green,
-                                padding: const EdgeInsets.symmetric(vertical: 16),
+                                padding: const EdgeInsets.symmetric(
+                                    vertical: 16),
                               ),
                               child: Text(
-                                _results.length + 1 == widget.tasks.length ? 'FINISH' : 'NEXT TASK',
+                                _results.length + 1 == widget.tasks.length
+                                    ? 'FINISH'
+                                    : 'NEXT TASK',
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold),
                               ),
                             ),
                           ),
