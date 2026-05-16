@@ -244,14 +244,17 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
           : await ModelManager().predictBytes(bytes);
       setState(() => _allDetections = allDetections);
 
-      // Persist captured image to device storage for history
+      // Persist captured image to device storage for history.
+      // savedImagePath is only set after a successful write so that a failed
+      // write never stores a dangling path in the database.
       String? savedImagePath;
       try {
         final dir = await getApplicationDocumentsDirectory();
         final imgDir = Directory('${dir.path}/inspection_images');
         await imgDir.create(recursive: true);
-        savedImagePath = '${imgDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
-        await File(savedImagePath).writeAsBytes(bytes);
+        final tempPath = '${imgDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
+        await File(tempPath).writeAsBytes(bytes);
+        savedImagePath = tempPath;
       } catch (e) {
         _addLog("Image save error: $e");
       }

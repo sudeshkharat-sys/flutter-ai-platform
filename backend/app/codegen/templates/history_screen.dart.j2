@@ -641,7 +641,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         .toList();
                   } catch (_) {}
                 }
-                final hasImage = imgPath != null && File(imgPath).existsSync();
+                final hasImage = imgPath != null;
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -739,7 +739,11 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
   @override
   Widget build(BuildContext context) {
     if (_imageSize == null) {
-      return Image.file(File(widget.imagePath), fit: BoxFit.contain);
+      return Image.file(
+        File(widget.imagePath),
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      );
     }
     return FittedBox(
       fit: BoxFit.contain,
@@ -754,6 +758,7 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
               fit: BoxFit.fill,
               width: _imageSize!.width,
               height: _imageSize!.height,
+              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
             ),
             if (widget.detections.isNotEmpty)
               DetectionOverlay(
