@@ -4,11 +4,14 @@ import '../ml/detection_result.dart';
 class DetectionOverlay extends StatelessWidget {
   final List<DetectionResult> results;
   final Size previewSize;
+  // When set, every bounding box uses this colour instead of the class-based colour.
+  final Color? overrideColor;
 
   const DetectionOverlay({
     super.key,
     required this.results,
     required this.previewSize,
+    this.overrideColor,
   });
 
   @override
@@ -19,6 +22,7 @@ class DetectionOverlay extends StatelessWidget {
         previewSize: previewSize,
         {% if show_labels %}showLabels: true,{% else %}showLabels: false,{% endif %}
         {% if show_confidence %}showConfidence: true,{% else %}showConfidence: false,{% endif %}
+        overrideColor: overrideColor,
       ),
     );
   }
@@ -47,18 +51,21 @@ class _BoundingBoxPainter extends CustomPainter {
     return _fallbackColors[index % _fallbackColors.length];
   }
 
+  final Color? overrideColor;
+
   _BoundingBoxPainter({
     required this.results,
     required this.previewSize,
     this.showLabels = true,
     this.showConfidence = true,
+    this.overrideColor,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     for (int i = 0; i < results.length; i++) {
       final result = results[i];
-      final color = _colorForClass(result.className, i);
+      final color = overrideColor ?? _colorForClass(result.className, i);
 
       final rect = Rect.fromLTRB(
         result.bbox.left * size.width,

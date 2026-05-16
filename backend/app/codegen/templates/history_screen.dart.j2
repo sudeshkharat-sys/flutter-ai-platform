@@ -686,6 +686,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           child: _HistoryImageWithOverlay(
                             imagePath: imgPath!,
                             detections: detections,
+                            success: task['success'] as bool? ?? false,
                           ),
                         ),
                       ),
@@ -706,9 +707,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
 class _HistoryImageWithOverlay extends StatefulWidget {
   final String imagePath;
   final List<DetectionResult> detections;
+  final bool success;
 
   const _HistoryImageWithOverlay(
-      {required this.imagePath, required this.detections});
+      {required this.imagePath, required this.detections, required this.success});
 
   @override
   State<_HistoryImageWithOverlay> createState() =>
@@ -764,6 +766,7 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
               DetectionOverlay(
                 results: widget.detections,
                 previewSize: _imageSize!,
+                overrideColor: widget.success ? Colors.green : Colors.red,
               ),
           ],
         ),

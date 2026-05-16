@@ -287,7 +287,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
           // Collect non-target detections (top 3 by confidence) to show the user.
           final nonTarget = List<DetectionResult>.from(allDetections)
             ..sort((a, b) => b.confidence.compareTo(a.confidence));
-          _detectedNonTargetClasses = nonTarget.take(3).toList();
+          // Deduplicate by class name — keep only the highest-confidence
+          // instance of each class so the same label doesn't appear twice.
+          final _seen = <String>{};
+          _detectedNonTargetClasses = nonTarget
+              .where((d) => _seen.add(d.className.toLowerCase()))
+              .take(3)
+              .toList();
           if (allDetections.isNotEmpty) {
             final best = allDetections.reduce((a, b) => a.confidence > b.confidence ? a : b);
             _addLog("Detected '${best.className}' but target is '${targetClasses.join(', ')}'");
@@ -437,6 +443,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                                       DetectionOverlay(
                                         results: [_bestResult!],
                                         previewSize: _capturedImageSize!,
+                                        overrideColor: _bestResult!.className.toLowerCase().contains('not ok')
+                                            ? Colors.red
+                                            : Colors.green,
                                       ),
                                   ],
                                 ),
