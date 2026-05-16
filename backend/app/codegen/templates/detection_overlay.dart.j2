@@ -4,11 +4,13 @@ import '../ml/detection_result.dart';
 class DetectionOverlay extends StatelessWidget {
   final List<DetectionResult> results;
   final Size previewSize;
+  final Color? overrideColor;
 
   const DetectionOverlay({
     super.key,
     required this.results,
     required this.previewSize,
+    this.overrideColor,
   });
 
   @override
@@ -17,6 +19,7 @@ class DetectionOverlay extends StatelessWidget {
       painter: _BoundingBoxPainter(
         results: results,
         previewSize: previewSize,
+        overrideColor: overrideColor,
         {% if show_labels %}showLabels: true,{% else %}showLabels: false,{% endif %}
         {% if show_confidence %}showConfidence: true,{% else %}showConfidence: false,{% endif %}
       ),
@@ -29,6 +32,7 @@ class _BoundingBoxPainter extends CustomPainter {
   final Size previewSize;
   final bool showLabels;
   final bool showConfidence;
+  final Color? overrideColor;
 
   static const _fallbackColors = [
     Color(0xFF7C5CFC),
@@ -39,17 +43,17 @@ class _BoundingBoxPainter extends CustomPainter {
     Color(0xFFFF6B9D),
   ];
 
-  // "not ok" must be checked before "ok" to avoid substring collision.
   static Color _colorForClass(String className, int index) {
     final lower = className.toLowerCase();
-    if (lower.contains('not ok')) return const Color(0xFFE53935); // red
-    if (lower.contains('ok')) return const Color(0xFF43A047);     // green
+    if (lower.contains('not ok')) return const Color(0xFFE53935);
+    if (lower.contains('ok')) return const Color(0xFF43A047);
     return _fallbackColors[index % _fallbackColors.length];
   }
 
   _BoundingBoxPainter({
     required this.results,
     required this.previewSize,
+    this.overrideColor,
     this.showLabels = true,
     this.showConfidence = true,
   });
@@ -58,7 +62,9 @@ class _BoundingBoxPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     for (int i = 0; i < results.length; i++) {
       final result = results[i];
-      final color = _colorForClass(result.className, i);
+      // overrideColor lets the caller force green/red based on pass/fail logic
+      // rather than relying on class name substring matching.
+      final color = overrideColor ?? _colorForClass(result.className, i);
 
       final rect = Rect.fromLTRB(
         result.bbox.left * size.width,
@@ -67,34 +73,27 @@ class _BoundingBoxPainter extends CustomPainter {
         result.bbox.bottom * size.height,
       );
 
-      // Draw bounding box
       final boxPaint = Paint()
         ..color = color
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.5;
       canvas.drawRect(rect, boxPaint);
 
-      // Draw corner accents
       final accentPaint = Paint()
         ..color = color
         ..style = PaintingStyle.stroke
         ..strokeWidth = 4.0;
       const cornerLen = 16.0;
 
-      // Top-left
       canvas.drawLine(rect.topLeft, rect.topLeft.translate(cornerLen, 0), accentPaint);
       canvas.drawLine(rect.topLeft, rect.topLeft.translate(0, cornerLen), accentPaint);
-      // Top-right
       canvas.drawLine(rect.topRight, rect.topRight.translate(-cornerLen, 0), accentPaint);
       canvas.drawLine(rect.topRight, rect.topRight.translate(0, cornerLen), accentPaint);
-      // Bottom-left
       canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(cornerLen, 0), accentPaint);
       canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(0, -cornerLen), accentPaint);
-      // Bottom-right
       canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(-cornerLen, 0), accentPaint);
       canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(0, -cornerLen), accentPaint);
 
-      // Draw label
       if (showLabels) {
         final label = showConfidence
             ? '${result.className} ${(result.confidence * 100).toStringAsFixed(0)}%'
@@ -125,5 +124,5 @@ class _BoundingBoxPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _BoundingBoxPainter old) =>
-      old.results != results;
+      old.results != results || old.overrideColor != overrideColor;
 }
