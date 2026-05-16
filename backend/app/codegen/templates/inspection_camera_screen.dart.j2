@@ -46,6 +46,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   bool _isFlashOn = false;
 
   List<DetectionResult> _allDetections = [];
+  // Only the single best non-target detection is kept to avoid showing
+  // multiple rows of the same class at different confidences.
   List<DetectionResult> _detectedNonTargetClasses = [];
   int _currentIndex = 0;
   final Map<int, dynamic> _results = {};
@@ -71,8 +73,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     debugPrint(msg);
   }
 
-  /// True when the class name is a "not ok" variant (not_ok, NOT-OK, not ok, etc.).
-  /// These are ALWAYS a failing result, even if they match the target class list.
   bool _isNotOkClass(String? className) {
     if (className == null) return false;
     final cn =
@@ -80,11 +80,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     return cn.contains('not') && cn.contains('ok');
   }
 
-  /// True when:
-  ///   1. className exactly matches one of the target classes (case-insensitive)
-  ///   2. AND the class is NOT a "not ok" variant
-  ///
-  /// Rule: if prediction == target => GREEN, unless it is "not ok" => always RED.
   bool _isPass(String? className, List<String> targetClasses) {
     if (className == null) return false;
     if (_isNotOkClass(className)) return false;
@@ -262,8 +257,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           : await ModelManager().predictBytes(bytes);
       setState(() => _allDetections = allDetections);
 
-      // Save captured image; flush:true ensures bytes reach disk before path
-      // is stored in _results.
       String? savedImagePath;
       try {
         final dir = await getApplicationDocumentsDirectory();
@@ -305,11 +298,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             'detectionsJson': jsonEncode([_bestResult!.toJson()]),
           };
         } else {
-          // Non-target class detected (e.g. "not ok" when target is "thar").
-          // Still store it so history shows the image + bounding box.
+          // Keep only the single best non-target detection.
+          // Taking more than 1 caused repeated rows of the same class
+          // (e.g. "not ok 85%, not ok 72%, not ok 63%") which confused users.
           final nonTarget = List<DetectionResult>.from(allDetections)
             ..sort((a, b) => b.confidence.compareTo(a.confidence));
-          _detectedNonTargetClasses = nonTarget.take(3).toList();
+          _detectedNonTargetClasses = nonTarget.take(1).toList();
           final bestDetected = _detectedNonTargetClasses.isNotEmpty
               ? _detectedNonTargetClasses.first
               : null;
@@ -362,8 +356,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   }
 
   void _onSaveAndContinue() {
-    // _handleCapture already stored the correct result with imagePath.
-    // ??= only fires when the user skipped capture entirely.
     _results[_currentIndex] ??= {
       'className': 'None',
       'success': false,
@@ -397,11 +389,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     final List<String> taskClasses =
         List<String>.from(currentTask['classes'] ?? []);
 
-    // GREEN only when detected class exactly matches target AND is not "not ok".
     final bool badgeGreen =
         _bestResult != null && _isPass(_bestResult!.className, taskClasses);
 
-    // Bbox overlay: use _bestResult if matched, otherwise best non-target.
     final DetectionResult? overlayResult = _bestResult ??
         (_detectedNonTargetClasses.isNotEmpty
             ? _detectedNonTargetClasses.first
@@ -419,7 +409,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         child: SafeArea(
           child: Column(
             children: [
-              // Header
               Container(
                 width: double.infinity,
                 padding:
@@ -465,7 +454,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                   ],
                 ),
               ),
-              // Task name banner
               Container(
                 width: double.infinity,
                 padding:
@@ -488,7 +476,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                   ],
                 ),
               ),
-              // Camera / image area
               Expanded(
                 child: Stack(
                   children: [
@@ -517,8 +504,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                         width: _capturedImageSize!.width,
                                         height: _capturedImageSize!.height,
                                       ),
-                                      // Bbox color matches the badge:
-                                      // green when pass, red when fail/mismatch.
                                       if (overlayResult != null)
                                         DetectionOverlay(
                                           results: [overlayResult],
@@ -559,7 +544,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                             child: CircularProgressIndicator(
                                 color: Color(0xFFDC143C))),
                       ),
-                    // Flash button
                     if (_capturedImageBytes == null && _isCameraInitialized)
                       Positioned(
                         top: 16,
@@ -592,7 +576,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                           ),
                         ),
                       ),
-                    // Result badge -- green = pass, red = fail/mismatch
                     if (!_isAnalyzing && _capturedImageBytes != null)
                       Positioned(
                         top: 16,
@@ -617,7 +600,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                           ),
                         ),
                       ),
-                    // Bottom info panel (when target not found)
                     if (!_isAnalyzing &&
                         _capturedImageBytes != null &&
                         _bestResult == null &&
@@ -697,7 +679,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                           ),
                         ),
                       ),
-                    // Debug console
                     if (_showDebugConsole)
                       Positioned(
                         bottom: 0,
@@ -753,7 +734,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                   ],
                 ),
               ),
-              // Capture / Next buttons
               Padding(
                 padding: const EdgeInsets.all(24),
                 child: _capturedImageBytes == null

@@ -79,9 +79,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-  // -- Shift logic ---------------------------------------------------------------
-  // A: 07:00-15:30   B: 15:30-00:00   C: 00:00-07:00 (counts as previous date)
-
   String _getShift(DateTime dt) {
     final int mins = dt.hour * 60 + dt.minute;
     if (mins >= 420 && mins < 930) return 'A';
@@ -95,8 +92,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
     return DateTime(dt.year, dt.month, dt.day);
   }
-
-  // -- Dashboard helpers ---------------------------------------------------------
 
   List<_ShiftSummary> _buildDashboardData() {
     final Map<String, _ShiftSummary> map = {};
@@ -157,8 +152,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-  // -- Build --------------------------------------------------------------------
-
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
@@ -196,8 +189,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
   }
-
-  // -- Dashboard tab ------------------------------------------------------------
 
   Widget _buildDashboardTab() {
     final summaries = _buildDashboardData();
@@ -485,8 +476,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
-  // -- History tab --------------------------------------------------------------
-
   Widget _buildHistoryTab() {
     if (_groupedHistory.isEmpty) {
       return const Center(
@@ -625,6 +614,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               const Divider(height: 1),
               ...tasks.map((task) {
                 final String? imgPath = task['imagePath'] as String?;
+                final bool taskSuccess = task['success'] as bool? ?? false;
                 final String? detectionsRaw = task['detectionsJson'] as String?;
                 List<DetectionResult> detections = [];
                 if (detectionsRaw != null) {
@@ -645,8 +635,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       child: Row(
                         children: [
                           Icon(
-                            task['success'] ? Icons.check : Icons.close,
-                            color: task['success'] ? Colors.green : Colors.red,
+                            taskSuccess ? Icons.check : Icons.close,
+                            color: taskSuccess ? Colors.green : Colors.red,
                             size: 16,
                           ),
                           const SizedBox(width: 12),
@@ -679,6 +669,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           child: _HistoryImageWithOverlay(
                             imagePath: imgPath,
                             detections: detections,
+                            // Match bbox color to the pass/fail result so
+                            // green = matched target, red = not ok / mismatch.
+                            taskSuccess: taskSuccess,
                           ),
                         ),
                       ),
@@ -699,9 +692,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
 class _HistoryImageWithOverlay extends StatefulWidget {
   final String imagePath;
   final List<DetectionResult> detections;
+  final bool taskSuccess;
 
-  const _HistoryImageWithOverlay(
-      {required this.imagePath, required this.detections});
+  const _HistoryImageWithOverlay({
+    required this.imagePath,
+    required this.detections,
+    required this.taskSuccess,
+  });
 
   @override
   State<_HistoryImageWithOverlay> createState() =>
@@ -709,8 +706,6 @@ class _HistoryImageWithOverlay extends StatefulWidget {
 }
 
 class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
-  // Decoded image dimensions for overlay alignment.
-  // Null while decoding is in progress — Image.file renders before this completes.
   Size? _imageSize;
 
   @override
@@ -734,10 +729,10 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
   @override
   Widget build(BuildContext context) {
     final file = File(widget.imagePath);
+    // Bbox color mirrors the prediction result: green = pass, red = fail.
+    final Color overlayColor =
+        widget.taskSuccess ? Colors.green : Colors.red;
 
-    // Before size decode finishes, show Image.file directly.
-    // ConstrainedBox ensures the widget never collapses to zero height
-    // inside an unconstrained Column (e.g. inside ExpansionTile).
     if (_imageSize == null) {
       return ConstrainedBox(
         constraints: const BoxConstraints(maxHeight: 260),
@@ -759,7 +754,6 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
       );
     }
 
-    // Once decoded: FittedBox aligns overlay pixels 1:1 with image pixels.
     return ConstrainedBox(
       constraints: const BoxConstraints(maxHeight: 400),
       child: FittedBox(
@@ -780,6 +774,7 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
                 DetectionOverlay(
                   results: widget.detections,
                   previewSize: _imageSize!,
+                  overrideColor: overlayColor,
                 ),
             ],
           ),
