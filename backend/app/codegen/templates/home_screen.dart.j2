@@ -98,6 +98,8 @@ class _HomeScreenState extends State<HomeScreen> {
             restored[idx] = {
               'className': res.className,
               'success': res.success,
+              'imagePath': res.imagePath,
+              'detectionsJson': res.detectionsJson,
             };
           }
         }
@@ -248,7 +250,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const Divider(),
             const SizedBox(height: 8),
 
-            // Per-task summary — scrollable so it never overflows
+            // Per-task summary -- scrollable so it never overflows
             Flexible(
               child: SingleChildScrollView(
                 child: Column(

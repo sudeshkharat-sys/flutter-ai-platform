@@ -70,6 +70,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
     debugPrint(msg);
   }
 
+  /// Returns true when the detected class name indicates a passing ("ok") result.
+  /// Normalises underscores/dashes so variants like "not_ok", "NOT-OK", "not ok"
+  /// are all correctly treated as failing.
+  bool _isOkClass(String? className) {
+    if (className == null) return false;
+    final cn = className.toLowerCase().replaceAll('_', ' ').replaceAll('-', ' ');
+    return cn.contains('ok') && !cn.contains('not');
+  }
+
   Future<void> _loadCurrentModel() async {
     setState(() {
       _isLoadingModel = true;
@@ -133,7 +142,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
         return;
       }
       final backCamera = cameras.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cameras.first);
-      // ResolutionPreset.medium (~720p) is sufficient for 640×640 model input and
+      // ResolutionPreset.medium (~720p) is sufficient for 640x640 model input and
       // cuts JPEG decode time roughly in half vs. high (~1080p).
       final controller = CameraController(backCamera, ResolutionPreset.medium, enableAudio: false);
       _cameraController = controller;
@@ -168,7 +177,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
           orientedImage = oriented; // captured for inference
           imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble());
 
-          // Blur detection: Laplacian variance on a 150×150 thumbnail.
+          // Blur detection: Laplacian variance on a 150x150 thumbnail.
           // Sharp images have high variance; blurry images have low variance.
           final small = img.copyResize(oriented, width: 150, height: 150);
           final gray = img.grayscale(small);
@@ -220,7 +229,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                   ],
                 ),
               );
-              return; // Abort — don't run detection on a blurry image
+              return; // Abort -- don't run detection on a blurry image
             }
           }
         }
@@ -261,7 +270,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
         _addLog("Found: ${d.className} (${(d.confidence*100).toStringAsFixed(1)}%)");
       }
 
-      final filtered = allDetections.where((d) => targetClasses.any((tc) => d.className.toLowerCase().contains(tc.toLowerCase()))).toList();
+      // Use exact case-insensitive match so 'not ok' never accidentally matches the 'ok' target class.
+      final filtered = allDetections.where((d) => targetClasses.any((tc) => d.className.toLowerCase().trim() == tc.toLowerCase().trim())).toList();
       _addLog("Matches after filtering: ${filtered.length}");
 
       setState(() {
@@ -275,7 +285,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
 
           _results[_currentIndex] = {
             'className': _bestResult!.className,
-            'success': true,
+            'success': _isOkClass(_bestResult!.className),
             'imagePath': savedImagePath,
             'detectionsJson': detectionsJson,
           };
@@ -324,12 +334,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
 
   void _onSaveAndContinue() {
     // Spread existing result so imagePath and detectionsJson stored by
-    // _handleCapture are preserved — only override className and success.
+    // _handleCapture are preserved -- only override className and success.
     final existing = (_results[_currentIndex] as Map<String, dynamic>?) ?? {};
     _results[_currentIndex] = {
       ...existing,
       'className': _bestResult?.className ?? existing['className'] ?? 'None',
-      'success': _bestResult != null,
+      'success': _isOkClass(_bestResult?.className),
     };
 
     int nextIdx = (_currentIndex + 1) % widget.tasks.length;
@@ -451,7 +461,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                     if (_isAnalyzing)
                       Container(color: Colors.black54, child: const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))),
 
-                    // Flashlight toggle — visible only during live camera preview
+                    // Flashlight toggle -- visible only during live camera preview
                     if (_capturedImageBytes == null && _isCameraInitialized)
                       Positioned(
                         top: 16, left: 16,
@@ -482,7 +492,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                           decoration: BoxDecoration(
                             color: _bestResult == null
                                 ? Colors.red
-                                : (_bestResult!.className.toLowerCase().contains('not ok') ? Colors.red : Colors.green),
+                                : (_isOkClass(_bestResult!.className) ? Colors.green : Colors.red),
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: _bestResult != null
@@ -491,7 +501,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                         ),
                       ),
 
-                    // Bottom panel — shown when NOT FOUND (and debug console is hidden)
+                    // Bottom panel -- shown when NOT FOUND (and debug console is hidden)
                     if (!_isAnalyzing && _capturedImageBytes != null && _bestResult == null && !_showDebugConsole)
                       Positioned(
                         bottom: 0, left: 0, right: 0,
@@ -543,7 +553,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                                       style: const TextStyle(color: Colors.white54, fontSize: 12),
                                     ),
                                     const SizedBox(width: 8),
-                                    const Text('— not this task', style: TextStyle(color: Colors.white38, fontSize: 11, fontStyle: FontStyle.italic)),
+                                    const Text('-- not this task', style: TextStyle(color: Colors.white38, fontSize: 11, fontStyle: FontStyle.italic)),
                                   ]),
                                 )),
                               ] else
