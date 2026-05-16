@@ -443,9 +443,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                                       DetectionOverlay(
                                         results: [_bestResult!],
                                         previewSize: _capturedImageSize!,
-                                        overrideColor: _bestResult!.className.toLowerCase().contains('not ok')
-                                            ? Colors.red
-                                            : Colors.green,
+                                        overrideColor: Colors.green,
                                       ),
                                   ],
                                 ),
@@ -492,9 +490,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           decoration: BoxDecoration(
-                            color: _bestResult == null
-                                ? Colors.red
-                                : (_bestResult!.className.toLowerCase().contains('not ok') ? Colors.red : Colors.green),
+                            color: _bestResult != null ? Colors.green : Colors.red,
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: _bestResult != null
