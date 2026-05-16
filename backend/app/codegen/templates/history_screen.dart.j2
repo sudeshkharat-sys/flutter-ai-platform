@@ -90,7 +90,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   DateTime _getShiftDate(DateTime dt) {
-    // Shift C (night, 00:00-07:00) is attributed to the previous calendar date
     if (dt.hour < 7) {
       return DateTime(dt.year, dt.month, dt.day).subtract(const Duration(days: 1));
     }
@@ -217,7 +216,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // -- KPI cards --------------------------------------------------------
           Row(
             children: [
               Expanded(
@@ -249,8 +247,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ],
           ),
           const SizedBox(height: 12),
-
-          // -- Shift legend -----------------------------------------------------
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
@@ -299,8 +295,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ),
           ),
           const SizedBox(height: 16),
-
-          // -- Shift summary table ----------------------------------------------
           if (summaries.isEmpty)
             Container(
               padding: const EdgeInsets.all(32),
@@ -677,8 +671,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         ],
                       ),
                     ),
-                    // Use async file-existence check inside the widget itself
-                    // so synchronous existsSync() false-negatives don't hide images.
                     if (imgPath != null)
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -717,8 +709,9 @@ class _HistoryImageWithOverlay extends StatefulWidget {
 }
 
 class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
+  // Decoded image dimensions for overlay alignment.
+  // Null while decoding is in progress — Image.file renders before this completes.
   Size? _imageSize;
-  bool _exists = false;
 
   @override
   void initState() {
@@ -728,10 +721,7 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
 
   Future<void> _loadSize() async {
     try {
-      final file = File(widget.imagePath);
-      if (!await file.exists()) return;
-      if (mounted) setState(() => _exists = true);
-      final bytes = await file.readAsBytes();
+      final bytes = await File(widget.imagePath).readAsBytes();
       final decoded = img.decodeImage(bytes);
       if (decoded != null && mounted) {
         final oriented = img.bakeOrientation(decoded);
@@ -743,34 +733,56 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_exists) return const SizedBox.shrink();
+    final file = File(widget.imagePath);
+
+    // Before size decode finishes, show Image.file directly.
+    // ConstrainedBox ensures the widget never collapses to zero height
+    // inside an unconstrained Column (e.g. inside ExpansionTile).
     if (_imageSize == null) {
-      return Image.file(
-        File(widget.imagePath),
-        fit: BoxFit.contain,
-        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      return ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 260),
+        child: Image.file(
+          file,
+          width: double.infinity,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => Container(
+            height: 80,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: const Center(
+              child: Icon(Icons.broken_image_outlined, color: Colors.grey, size: 32),
+            ),
+          ),
+        ),
       );
     }
-    return FittedBox(
-      fit: BoxFit.contain,
-      child: SizedBox(
-        width: _imageSize!.width,
-        height: _imageSize!.height,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.file(
-              File(widget.imagePath),
-              fit: BoxFit.fill,
-              width: _imageSize!.width,
-              height: _imageSize!.height,
-            ),
-            if (widget.detections.isNotEmpty)
-              DetectionOverlay(
-                results: widget.detections,
-                previewSize: _imageSize!,
+
+    // Once decoded: FittedBox aligns overlay pixels 1:1 with image pixels.
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 400),
+      child: FittedBox(
+        fit: BoxFit.contain,
+        child: SizedBox(
+          width: _imageSize!.width,
+          height: _imageSize!.height,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Image.file(
+                file,
+                fit: BoxFit.fill,
+                width: _imageSize!.width,
+                height: _imageSize!.height,
               ),
-          ],
+              if (widget.detections.isNotEmpty)
+                DetectionOverlay(
+                  results: widget.detections,
+                  previewSize: _imageSize!,
+                ),
+            ],
+          ),
         ),
       ),
     );
