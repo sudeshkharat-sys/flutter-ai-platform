@@ -1,3 +1,4 @@
+import re
 import zipfile
 import io
 from pathlib import Path
@@ -11,6 +12,24 @@ def _get_jinja_env() -> Environment:
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         keep_trailing_newline=True,
     )
+
+
+def _dart_slug(name: str) -> str:
+    """Return a valid Dart package identifier derived from name.
+
+    Dart identifiers must match [a-z][a-z0-9_]* -- they can only contain
+    lowercase letters, digits, and underscores, and must start with a
+    letter or underscore (not a digit).  Names like '4x4_logo',
+    'sc/dc_logo 2.0', or 'my-app' would otherwise break flutter pub get.
+    """
+    slug = name.lower().replace(" ", "_").replace("-", "_")
+    slug = re.sub(r"[^a-z0-9_]", "_", slug)   # replace illegal chars (/, ., etc.)
+    slug = re.sub(r"_+", "_", slug).strip("_")  # collapse underscores
+    if not slug:
+        return "app"
+    if slug[0].isdigit():
+        slug = "app_" + slug
+    return slug
 
 
 def generate_flutter_project(app_project, model_asset=None, all_model_assets=None) -> bytes:
@@ -104,7 +123,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
 
     ctx = {
         "app_name": app_name,
-        "app_name_slug": app_name.lower().replace(" ", "_").replace("-", "_"),
+        "app_name_slug": _dart_slug(app_name),
         "package_name": package_name,
         "classes": get_attr(models_list[0], "classes") if models_list else ["object"],
         "models_manifest": models_manifest,
@@ -127,7 +146,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "app_settings": settings,
     }
 
-    # Map of zip path → template name
+    # Map of zip path -> template name
     files = {
         "pubspec.yaml": "pubspec.yaml.j2",
         "lib/main.dart": "main.dart.j2",
@@ -160,14 +179,10 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "android/gradle/wrapper/gradle-wrapper.jar": "gradle-wrapper.jar.raw",
         "android/gradlew": "gradlew.j2",
         "android/gradlew.bat": "gradlew.bat.j2",
-        # buildSrc: compiled before any build script, puts FlutterLocalExtension
-        # on the classpath so Kotlin DSL (.kts) plugin files can resolve
-        # flutter.compileSdkVersion at compile time.
         "android/buildSrc/build.gradle": "buildSrc_build.gradle.j2",
         "android/buildSrc/src/main/groovy/FlutterLocalExtension.groovy": "FlutterLocalExtension.groovy.j2",
         f"android/app/src/main/kotlin/{ctx['package_name'].replace('.', '/')}/MainActivity.kt": "MainActivity.kt.j2",
         "android/app/src/main/res/values/styles.xml": "styles.xml.j2",
-
         "android/app/src/main/res/drawable/launch_background.xml": "launch_background.xml.j2",
     }
 
@@ -189,7 +204,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         db = StateDBConnector()
         master_mappings = db.execute_query(MasterDataQueries.GET_ALL_MAPPINGS)
         for m in master_mappings:
-            # Explicitly extract only string fields to avoid serialization errors (e.g. datetimes)
             master_data_manifest.append({
                 "platform_name": str(m["platform_name"]),
                 "model_code": str(m["model_code"]),
@@ -197,7 +211,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             })
     except Exception as e:
         print(f"Warning: Could not fetch master mappings: {e}")
-        # Keep it empty rather than failing the whole build
 
     buf = io.BytesIO()
     root = ctx["app_name_slug"]
@@ -208,7 +221,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             if template_name is None:
                 zf.writestr(full_path, "")
             elif template_name.endswith(".raw"):
-                # Copy binary file directly
                 raw_path = TEMPLATES_DIR / template_name
                 if raw_path.exists():
                     zf.writestr(full_path, raw_path.read_bytes())
@@ -217,14 +229,10 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 content = tmpl.render(**ctx)
                 zf.writestr(full_path, content)
         
-        # Add models manifest
         import json
         zf.writestr(f"{root}/assets/models_manifest.json", json.dumps(models_manifest, indent=2))
-
-        # Add master data for generic decoding
         zf.writestr(f"{root}/assets/master_data.json", json.dumps(master_data_manifest, indent=2))
 
-        # Bundle Android launcher icons for each mipmap density
         icon_src = TEMPLATES_DIR / "icons" / "ic_launcher.png"
         if icon_src.exists():
             try:
@@ -243,7 +251,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             except Exception as e:
                 print(f"Warning: Could not process app icon: {e}")
 
-        # Bundle reference images into the app assets
         from app.config import settings as app_settings
         for entry in models_manifest:
             ref = entry.get("reference_image")
