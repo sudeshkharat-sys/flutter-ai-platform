@@ -709,11 +709,13 @@ class _HistoryImageWithOverlay extends StatefulWidget {
   final String imagePath;
   final List<DetectionResult> detections;
   final bool success;
+  final String detectedPart;
 
   const _HistoryImageWithOverlay({
     required this.imagePath,
     required this.detections,
     required this.success,
+    required this.detectedPart,
   });
 
   @override
