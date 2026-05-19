@@ -89,7 +89,25 @@ def convert_model_to_tflite(self, model_asset_id: str):
             model_dir = pt_path.parent
             imgsz = asset.get("input_size", 640)
 
-            model.export(format="tflite", imgsz=imgsz, int8=False)
+            # Step 1: Export to ONNX first (more reliable than direct tflite export)
+            log_txt += "Step 1a: Exporting to ONNX intermediate format...\n"
+            _update_asset(db, model_asset_id, conversion_log=log_txt)
+            onnx_result = model.export(format="onnx", imgsz=imgsz, opset=11, simplify=False)
+            onnx_path = Path(str(onnx_result))
+
+            # Step 2: Convert ONNX → TFLite via onnx2tf with YOLO11-safe params
+            log_txt += "Step 1b: Converting ONNX to TFLite...\n"
+            _update_asset(db, model_asset_id, conversion_log=log_txt)
+
+            import onnx2tf
+            tflite_out_dir = model_dir / "tflite_output"
+            tflite_out_dir.mkdir(exist_ok=True)
+            onnx2tf.convert(
+                input_onnx_file_path=str(onnx_path),
+                output_folder_path=str(tflite_out_dir),
+                non_verbose=True,
+                not_use_onnxsim=True,
+            )
             
             # Sync logs
             log_txt += log_capture.getvalue()
@@ -97,8 +115,13 @@ def convert_model_to_tflite(self, model_asset_id: str):
 
             # Step 2: Find the exported .tflite file
             tflite_path = None
-            for p in model_dir.rglob("*.tflite"):
+            for p in tflite_out_dir.rglob("*.tflite"):
                 if "float32" in p.name or p.name == "model.tflite" or p.name.endswith(".tflite"):
+                    tflite_path = p
+                    break
+            # Fallback: search whole model_dir
+            if not tflite_path:
+                for p in model_dir.rglob("*.tflite"):
                     tflite_path = p
                     break
 
