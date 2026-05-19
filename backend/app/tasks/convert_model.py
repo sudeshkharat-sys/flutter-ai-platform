@@ -99,6 +99,19 @@ def convert_model_to_tflite(self, model_asset_id: str):
             log_txt += "Step 1b: Converting ONNX to TFLite...\n"
             _update_asset(db, model_asset_id, conversion_log=log_txt)
 
+            # Patch onnx2tf accuracy correction which crashes on YOLO11 scalar constants
+            try:
+                import onnx2tf.utils.common_functions as _onnx2tf_cf
+                _orig_correction = _onnx2tf_cf.correction_process_for_accuracy_errors
+                def _safe_correction(*args, **kwargs):
+                    try:
+                        return _orig_correction(*args, **kwargs)
+                    except Exception:
+                        pass
+                _onnx2tf_cf.correction_process_for_accuracy_errors = _safe_correction
+            except Exception:
+                pass
+
             import onnx2tf
             tflite_out_dir = model_dir / "tflite_output"
             tflite_out_dir.mkdir(exist_ok=True)
