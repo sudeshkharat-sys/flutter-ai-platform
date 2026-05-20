@@ -249,3 +249,34 @@
   font-size: 14px;
   animation: pulse 2s infinite;
 }
+
+/* ── Tabs ─────────────────────────────────────────────────────────────────── */
+.master-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+}
+
+.master-tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 10px 20px;
+  margin-bottom: -1px;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.master-tab-btn:hover {
+  color: var(--text-primary, #fff);
+}
+
+.master-tab-btn.active {
+  border-bottom-color: #DC143C;
+  color: #DC143C;
+}

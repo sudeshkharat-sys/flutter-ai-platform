@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.api import models_router, apps_router, export_router, master_router
 from app.api import assets_router
+from app.api import engine_router
 from app.config import settings
 from app.connectors.state_db import StateDBManager
 
@@ -50,6 +51,7 @@ app.include_router(apps_router.router, prefix="/api/v1")
 app.include_router(export_router.router, prefix="/api/v1")
 app.include_router(master_router.router, prefix="/api/v1")
 app.include_router(assets_router.router, prefix="/api/v1")
+app.include_router(engine_router.router, prefix="/api/v1")
 
 @app.get("/health")
 async def health():
