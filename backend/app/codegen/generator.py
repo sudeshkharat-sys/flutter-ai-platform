@@ -143,6 +143,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             w.get("type") == "StatsView" for w in canvas_state
         ),
         "app_type": settings.get("app_type", "sequential"),
+        "scan_type": settings.get("scan_type", "model"),
         "app_settings": settings,
     }
 
@@ -212,6 +213,21 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
     except Exception as e:
         print(f"Warning: Could not fetch master mappings: {e}")
 
+    from app.queries import EngineDataQueries
+    engine_data_manifest = []
+    try:
+        db = StateDBConnector()
+        engine_mappings = db.execute_query(EngineDataQueries.GET_ALL_MAPPINGS)
+        for m in engine_mappings:
+            engine_data_manifest.append({
+                "sheet_name": str(m["sheet_name"]),
+                "part_no": str(m["part_no"]),
+                "model_name": str(m.get("model_name", "")) if m.get("model_name") else "",
+                "description": str(m.get("description", "")) if m.get("description") else ""
+            })
+    except Exception as e:
+        print(f"Warning: Could not fetch engine mappings: {e}")
+
     buf = io.BytesIO()
     root = ctx["app_name_slug"]
 
@@ -232,6 +248,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         import json
         zf.writestr(f"{root}/assets/models_manifest.json", json.dumps(models_manifest, indent=2))
         zf.writestr(f"{root}/assets/master_data.json", json.dumps(master_data_manifest, indent=2))
+        zf.writestr(f"{root}/assets/engine_data.json", json.dumps(engine_data_manifest, indent=2))
 
         icon_src = TEMPLATES_DIR / "icons" / "ic_launcher.png"
         if icon_src.exists():

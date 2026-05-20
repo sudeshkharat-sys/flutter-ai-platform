@@ -108,3 +108,30 @@ class MasterMappingResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ── EngineMapping schemas ─────────────────────────────────────────────────────
+
+class EngineMappingCreate(BaseModel):
+    sheet_name: str
+    part_no: str
+    model_name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class EngineMappingUpdate(BaseModel):
+    sheet_name: Optional[str] = None
+    part_no: Optional[str] = None
+    model_name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class EngineMappingResponse(BaseModel):
+    id: str
+    sheet_name: str
+    part_no: str
+    model_name: Optional[str]
+    description: Optional[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

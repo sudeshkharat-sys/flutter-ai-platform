@@ -523,7 +523,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ),
             ),
             title: Text(
-              'VIN: ${item['vin']}',
+              '{% if scan_type == "engine" %}Serial{% else %}VIN{% endif %}: ${item['vin']}',
               style: const TextStyle(
                 color: Color(0xFFDC143C),
                 fontWeight: FontWeight.bold,
@@ -534,7 +534,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    'Model: ${item['modelCode']} • ${_formatDate(date)} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}',
+                    '{% if scan_type == "engine" %}Engine Code{% else %}Model{% endif %}: ${item['modelCode']} • ${_formatDate(date)} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}',
                     style: const TextStyle(fontSize: 11, color: Colors.grey),
                   ),
                 ),

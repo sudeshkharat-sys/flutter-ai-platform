@@ -71,4 +71,10 @@ export const createMasterMapping = (data) => api.post('/master-data', data);
 export const updateMasterMapping = (id, data) => api.put(`/master-data/${id}`, data);
 export const deleteMasterMapping = (id) => api.delete(`/master-data/${id}`);
 
+// ── Engine Data ──────────────────────────────────────────────────────────────
+export const getEngineMappings = () => api.get('/engine-data');
+export const createEngineMapping = (data) => api.post('/engine-data', data);
+export const updateEngineMapping = (id, data) => api.put(`/engine-data/${id}`, data);
+export const deleteEngineMapping = (id) => api.delete(`/engine-data/${id}`);
+
 export default api;

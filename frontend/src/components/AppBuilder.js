@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
+import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -328,12 +328,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const navigate = useNavigate();
   const [models, setModels] = useState([]);
   const [masterMappings, setMasterMappings] = useState([]);
+  const [engineMappings, setEngineMappings] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const [profileName, setProfileName] = useState(existingApp?.name || '');
-  const [selectedModelCodes, setSelectedModelCodes] = useState([]); 
+  const [scanType, setScanType] = useState(existingApp?.app_settings?.scan_type || 'model');
+  const [selectedModelCodes, setSelectedModelCodes] = useState([]);
+  const [selectedEngineCodes, setSelectedEngineCodes] = useState([]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showEngineDropdown, setShowEngineDropdown] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [engineSearchTerm, setEngineSearchTerm] = useState('');
 
   const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', instruction: '' }]);
 
@@ -343,15 +348,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   useEffect(() => {
     let mounted = true;
 
-    Promise.all([getModels(), getMasterMappings()]).then(([mr, gr]) => {
+    Promise.all([getModels(), getMasterMappings(), getEngineMappings()]).then(([mr, gr, er]) => {
       if (!mounted) return;
 
       const availableModels = mr.data.filter(m => m.status === 'ready');
       const allMappings = gr.data;
-      
-      setModels(availableModels); 
+      const allEngineMappings = er.data;
+
+      setModels(availableModels);
       setMasterMappings(allMappings);
-      setLoading(false); 
+      setEngineMappings(allEngineMappings);
+      setLoading(false);
 
       if (existingApp) {
         let codes = [];
@@ -361,6 +368,10 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           codes = [existingApp.app_settings.model_code];
         }
         setSelectedModelCodes(codes);
+
+        if (existingApp.app_settings?.engine_codes) {
+          setSelectedEngineCodes(existingApp.app_settings.engine_codes);
+        }
 
         if (existingApp.app_settings?.default_configs) {
           setDefaultAIConfigs(existingApp.app_settings.default_configs);
@@ -404,8 +415,14 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   }, [existingApp?.id, startAtReview]);
 
   const handleToggleModelCode = (code) => {
-    setSelectedModelCodes(prev => 
+    setSelectedModelCodes(prev =>
       prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
+    );
+  };
+
+  const handleToggleEngineCode = (partNo) => {
+    setSelectedEngineCodes(prev =>
+      prev.includes(partNo) ? prev.filter(c => c !== partNo) : [...prev, partNo]
     );
   };
 
@@ -428,24 +445,41 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleEnterReview = () => {
-    if (selectedModelCodes.length === 0) {
-      alert("Please select at least one Vehicle Model Code.");
-      return;
+    if (scanType === 'engine') {
+      if (selectedEngineCodes.length === 0) {
+        alert("Please select at least one Engine Code.");
+        return;
+      }
+      const validAI = defaultAIConfigs.filter(c => c.modelId && c.class);
+      const newReviewData = selectedEngineCodes.map(partNo => {
+        const mapping = engineMappings.find(m => m.part_no === partNo) || { part_no: partNo, sheet_name: 'Unknown', description: '' };
+        return {
+          id: mapping.id || Math.random().toString(),
+          platform_name: mapping.sheet_name,
+          model_code: mapping.part_no,
+          description: mapping.description,
+          selectedAIModels: validAI.map(v => ({ ...v }))
+        };
+      });
+      setReviewData(newReviewData);
+    } else {
+      if (selectedModelCodes.length === 0) {
+        alert("Please select at least one Vehicle Model Code.");
+        return;
+      }
+      const validAI = defaultAIConfigs.filter(c => c.modelId && c.class);
+      const newReviewData = selectedModelCodes.map(code => {
+        const mapping = masterMappings.find(m => m.model_code === code);
+        return {
+          id: mapping.id,
+          platform_name: mapping.platform_name,
+          model_code: mapping.model_code,
+          description: mapping.description,
+          selectedAIModels: validAI.map(v => ({ ...v }))
+        };
+      });
+      setReviewData(newReviewData);
     }
-
-    const validAI = defaultAIConfigs.filter(c => c.modelId && c.class);
-
-    const newReviewData = selectedModelCodes.map(code => {
-      const mapping = masterMappings.find(m => m.model_code === code);
-      return {
-        id: mapping.id,
-        platform_name: mapping.platform_name,
-        model_code: mapping.model_code,
-        description: mapping.description,
-        selectedAIModels: validAI.map(v => ({ ...v })) 
-      };
-    });
-    setReviewData(newReviewData);
     setIsReviewing(true);
   };
 
@@ -522,11 +556,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         package_name: existingApp?.package_name || `com.inspection.${(profileName || 'app').toLowerCase().replace(/\s+/g, '_')}`,
         model_asset_ids: modelAssetIds,
         inspection_tasks: finalTasks,
-        app_settings: { 
-          ...(existingApp?.app_settings || {}), 
-          app_type: 'sequential', 
+        app_settings: {
+          ...(existingApp?.app_settings || {}),
+          app_type: 'sequential',
+          scan_type: scanType,
           model_codes: selectedModelCodes,
           model_code: selectedModelCodes[0],
+          engine_codes: selectedEngineCodes,
           default_configs: defaultAIConfigs
         }
       };
@@ -542,7 +578,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     } catch { alert('Failed to save profile'); }
   };
 
-  const filteredMappings = masterMappings.filter(m => 
+  const filteredMappings = masterMappings.filter(m =>
     m.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
     m.platform_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (m.description || '').toLowerCase().includes(searchTerm.toLowerCase())
@@ -553,6 +589,20 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     acc[m.platform_name].push(m);
     return acc;
   }, {});
+
+  const filteredEngineMappings = engineMappings.filter(m =>
+    m.part_no.toLowerCase().includes(engineSearchTerm.toLowerCase()) ||
+    m.sheet_name.toLowerCase().includes(engineSearchTerm.toLowerCase()) ||
+    (m.model_name || '').toLowerCase().includes(engineSearchTerm.toLowerCase()) ||
+    (m.description || '').toLowerCase().includes(engineSearchTerm.toLowerCase())
+  );
+
+  const groupedEngineMappings = filteredEngineMappings.reduce((acc, m) => {
+    if (!acc[m.sheet_name]) acc[m.sheet_name] = [];
+    acc[m.sheet_name].push(m);
+    return acc;
+  }, {});
+
 
   if (loading) return null;
 
@@ -576,83 +626,136 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                 <input style={inputStyle} value={profileName} onChange={e => setProfileName(e.target.value)} placeholder="e.g. Bumper Inspection" />
               </div>
 
-              <div style={{ position: 'relative' }}>
-                <label style={labelStyle}>Vehicle Model Code (Multi-Select)</label>
-                <div 
-                  onClick={() => setShowDropdown(!showDropdown)}
-                  style={{ ...inputStyle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', minHeight: 46 }}
+              <div>
+                <label style={labelStyle}>Scan Type</label>
+                <select
+                  style={{ ...inputStyle, cursor: 'pointer' }}
+                  value={scanType}
+                  onChange={e => setScanType(e.target.value)}
                 >
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {selectedModelCodes.length === 0 ? (
-                      <span style={{ color: C.muted }}>Select Model Codes...</span>
-                    ) : (
-                      selectedModelCodes.map(code => (
-                        <span key={code} style={{ background: C.accent, color: '#fff', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-                          {code}
-                          <span onClick={(e) => { e.stopPropagation(); handleToggleModelCode(code); }} style={{ cursor: 'pointer', opacity: 0.8 }}>×</span>
-                        </span>
-                      ))
-                    )}
-                  </div>
-                  <ChevronDown size={18} color={C.muted} />
-                </div>
+                  <option value="model">Model Code (VIN barcode)</option>
+                  <option value="engine">Engine Code (Part No + Serial)</option>
+                </select>
+              </div>
 
-                {showDropdown && (
-                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, background:"black", border: `1px solid ${C.border}`, borderRadius: 12, marginTop: 4, maxHeight: 350, overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ padding: '12px', borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.surface, zIndex: 5 }}>
-                      <div style={{ position: 'relative' }}>
-                        <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.muted }} />
-                        <input 
-                          style={{ ...inputStyle, paddingLeft: 36, marginBottom: 0 }} 
-                          value={searchTerm} 
-                          onChange={e => setSearchTerm(e.target.value)} 
-                          placeholder="Search code, platform, description..."
-                          onClick={e => e.stopPropagation()}
-                        />
-                      </div>
-                    </div>
-                    
-                    <div style={{ overflowY: 'auto', flex: 1 }}>
-                      {Object.keys(groupedMappings).length === 0 ? (
-                        <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>No matches found.</div>
+              {scanType === 'model' ? (
+                <div style={{ position: 'relative' }}>
+                  <label style={labelStyle}>Vehicle Model Code (Multi-Select)</label>
+                  <div
+                    onClick={() => setShowDropdown(!showDropdown)}
+                    style={{ ...inputStyle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', minHeight: 46 }}
+                  >
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {selectedModelCodes.length === 0 ? (
+                        <span style={{ color: C.muted }}>Select Model Codes...</span>
                       ) : (
-                        Object.entries(groupedMappings).map(([platform, items]) => (
-                          <div key={platform}>
-                            <div style={{ padding: '8px 16px', background: C.surface2, fontSize: 10, fontWeight: 800, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: `1px solid ${C.border}` }}>
-                              {platform}
-                            </div>
-                            {items.map(m => {
-                              const isSelected = selectedModelCodes.includes(m.model_code);
-                              return (
-                                <div 
-                                  key={m.id} 
-                                  onClick={() => handleToggleModelCode(m.model_code)}
-                                  style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', borderBottom: `1px solid ${C.border}`, background: isSelected ? 'rgba(220, 20, 60, 0.05)' : 'transparent' }}
-                                >
-                                  <div style={{ width: 18, height: 18, borderRadius: 4, border: `1px solid ${isSelected ? C.accent : C.border}`, background: isSelected ? C.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                    {isSelected && <Check size={12} color="#fff" />}
-                                  </div>
-                                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text, lineHeight: '1.4' }}>
-                                    <span style={{ fontWeight: 800, color: C.accent }}>{m.model_code}</span>
-                                    <span style={{ margin: '0 8px', color: C.muted }}>|</span>
-                                    <span>{m.platform_name}</span>
-                                    {m.description && (
-                                      <>
-                                        <span style={{ margin: '0 8px', color: C.muted }}>|</span>
-                                        <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>{m.description}</span>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                        selectedModelCodes.map(code => (
+                          <span key={code} style={{ background: C.accent, color: '#fff', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            {code}
+                            <span onClick={(e) => { e.stopPropagation(); handleToggleModelCode(code); }} style={{ cursor: 'pointer', opacity: 0.8 }}>×</span>
+                          </span>
                         ))
                       )}
                     </div>
+                    <ChevronDown size={18} color={C.muted} />
                   </div>
-                )}
-              </div>
+                  {showDropdown && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, background: 'black', border: `1px solid ${C.border}`, borderRadius: 12, marginTop: 4, maxHeight: 350, overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column' }}>
+                      <div style={{ padding: '12px', borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.surface, zIndex: 5 }}>
+                        <div style={{ position: 'relative' }}>
+                          <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.muted }} />
+                          <input style={{ ...inputStyle, paddingLeft: 36, marginBottom: 0 }} value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Search code, platform, description..." onClick={e => e.stopPropagation()} />
+                        </div>
+                      </div>
+                      <div style={{ overflowY: 'auto', flex: 1 }}>
+                        {Object.keys(groupedMappings).length === 0 ? (
+                          <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>No matches found.</div>
+                        ) : (
+                          Object.entries(groupedMappings).map(([platform, items]) => (
+                            <div key={platform}>
+                              <div style={{ padding: '8px 16px', background: C.surface2, fontSize: 10, fontWeight: 800, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: `1px solid ${C.border}` }}>{platform}</div>
+                              {items.map(m => {
+                                const isSelected = selectedModelCodes.includes(m.model_code);
+                                return (
+                                  <div key={m.id} onClick={() => handleToggleModelCode(m.model_code)} style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', borderBottom: `1px solid ${C.border}`, background: isSelected ? 'rgba(220, 20, 60, 0.05)' : 'transparent' }}>
+                                    <div style={{ width: 18, height: 18, borderRadius: 4, border: `1px solid ${isSelected ? C.accent : C.border}`, background: isSelected ? C.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                      {isSelected && <Check size={12} color="#fff" />}
+                                    </div>
+                                    <div style={{ fontSize: 13, fontWeight: 600, color: C.text, lineHeight: '1.4' }}>
+                                      <span style={{ fontWeight: 800, color: C.accent }}>{m.model_code}</span>
+                                      <span style={{ margin: '0 8px', color: C.muted }}>|</span>
+                                      <span>{m.platform_name}</span>
+                                      {m.description && (<><span style={{ margin: '0 8px', color: C.muted }}>|</span><span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>{m.description}</span></>)}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ position: 'relative' }}>
+                  <label style={labelStyle}>Engine Code (Multi-Select)</label>
+                  <div
+                    onClick={() => setShowEngineDropdown(!showEngineDropdown)}
+                    style={{ ...inputStyle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', minHeight: 46 }}
+                  >
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {selectedEngineCodes.length === 0 ? (
+                        <span style={{ color: C.muted }}>Select Engine Codes...</span>
+                      ) : (
+                        selectedEngineCodes.map(code => (
+                          <span key={code} style={{ background: C.accent, color: '#fff', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            {code}
+                            <span onClick={(e) => { e.stopPropagation(); handleToggleEngineCode(code); }} style={{ cursor: 'pointer', opacity: 0.8 }}>×</span>
+                          </span>
+                        ))
+                      )}
+                    </div>
+                    <ChevronDown size={18} color={C.muted} />
+                  </div>
+                  {showEngineDropdown && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, background: 'black', border: `1px solid ${C.border}`, borderRadius: 12, marginTop: 4, maxHeight: 350, overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column' }}>
+                      <div style={{ padding: '12px', borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.surface, zIndex: 5 }}>
+                        <div style={{ position: 'relative' }}>
+                          <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.muted }} />
+                          <input style={{ ...inputStyle, paddingLeft: 36, marginBottom: 0 }} value={engineSearchTerm} onChange={e => setEngineSearchTerm(e.target.value)} placeholder="Search part no, line, model..." onClick={e => e.stopPropagation()} />
+                        </div>
+                      </div>
+                      <div style={{ overflowY: 'auto', flex: 1 }}>
+                        {Object.keys(groupedEngineMappings).length === 0 ? (
+                          <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>No engine codes found. Add them in Master Data → Engine Codes.</div>
+                        ) : (
+                          Object.entries(groupedEngineMappings).map(([sheet, items]) => (
+                            <div key={sheet}>
+                              <div style={{ padding: '8px 16px', background: C.surface2, fontSize: 10, fontWeight: 800, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: `1px solid ${C.border}` }}>{sheet}</div>
+                              {items.map(m => {
+                                const isSelected = selectedEngineCodes.includes(m.part_no);
+                                return (
+                                  <div key={m.id} onClick={() => handleToggleEngineCode(m.part_no)} style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', borderBottom: `1px solid ${C.border}`, background: isSelected ? 'rgba(220, 20, 60, 0.05)' : 'transparent' }}>
+                                    <div style={{ width: 18, height: 18, borderRadius: 4, border: `1px solid ${isSelected ? C.accent : C.border}`, background: isSelected ? C.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                      {isSelected && <Check size={12} color="#fff" />}
+                                    </div>
+                                    <div style={{ fontSize: 13, fontWeight: 600, color: C.text, lineHeight: '1.4' }}>
+                                      <span style={{ fontWeight: 800, color: C.accent }}>{m.part_no}</span>
+                                      {m.model_name && (<><span style={{ margin: '0 8px', color: C.muted }}>|</span><span>{m.model_name}</span></>)}
+                                      {m.description && (<><span style={{ margin: '0 8px', color: C.muted }}>|</span><span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>{m.description}</span></>)}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Default AI Configurations (Step 1) */}
               <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 20, padding: 20 }}>
@@ -705,10 +808,10 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               </div>
             </div>
 
-            <button 
-              onClick={handleEnterReview} 
-              disabled={selectedModelCodes.length === 0}
-              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: selectedModelCodes.length === 0 ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+            <button
+              onClick={handleEnterReview}
+              disabled={scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0}
+              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0) ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
             >
               REVIEW MAPPINGS <ChevronRight size={20} />
             </button>
