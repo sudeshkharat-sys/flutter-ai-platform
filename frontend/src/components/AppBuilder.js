@@ -331,6 +331,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const [loading, setLoading] = useState(true);
 
   const [profileName, setProfileName] = useState(existingApp?.name || '');
+  const [scanType, setScanType] = useState(existingApp?.app_settings?.scan_type || 'model');
   const [selectedModelCodes, setSelectedModelCodes] = useState([]); 
   const [showDropdown, setShowDropdown] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -522,9 +523,10 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         package_name: existingApp?.package_name || `com.inspection.${(profileName || 'app').toLowerCase().replace(/\s+/g, '_')}`,
         model_asset_ids: modelAssetIds,
         inspection_tasks: finalTasks,
-        app_settings: { 
-          ...(existingApp?.app_settings || {}), 
-          app_type: 'sequential', 
+        app_settings: {
+          ...(existingApp?.app_settings || {}),
+          app_type: 'sequential',
+          scan_type: scanType,
           model_codes: selectedModelCodes,
           model_code: selectedModelCodes[0],
           default_configs: defaultAIConfigs
@@ -574,6 +576,18 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               <div>
                 <label style={labelStyle}>App Name</label>
                 <input style={inputStyle} value={profileName} onChange={e => setProfileName(e.target.value)} placeholder="e.g. Bumper Inspection" />
+              </div>
+
+              <div>
+                <label style={labelStyle}>Scan Type</label>
+                <select
+                  style={{ ...inputStyle, cursor: 'pointer' }}
+                  value={scanType}
+                  onChange={e => setScanType(e.target.value)}
+                >
+                  <option value="model">Model Code (VIN barcode)</option>
+                  <option value="engine">Engine Code (Part No + Serial)</option>
+                </select>
               </div>
 
               <div style={{ position: 'relative' }}>
