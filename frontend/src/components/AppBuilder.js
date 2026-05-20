@@ -808,10 +808,10 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               </div>
             </div>
 
-            <button 
-              onClick={handleEnterReview} 
-              disabled={selectedModelCodes.length === 0}
-              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: selectedModelCodes.length === 0 ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+            <button
+              onClick={handleEnterReview}
+              disabled={scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0}
+              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0) ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
             >
               REVIEW MAPPINGS <ChevronRight size={20} />
             </button>
