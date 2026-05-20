@@ -107,7 +107,8 @@ def convert_model_to_tflite(self, model_asset_id: str):
                     try:
                         return _orig_correction(*args, **kwargs)
                     except Exception:
-                        pass
+                        # Return original tensors unchanged when correction fails
+                        return kwargs.get('input_tensor_1'), kwargs.get('input_tensor_2')
                 _onnx2tf_cf.correction_process_for_accuracy_errors = _safe_correction
             except Exception:
                 pass
