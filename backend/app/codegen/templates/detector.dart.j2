@@ -188,7 +188,7 @@ class ModelManager {
   }
 
   static List<DetectionResult> _parseGenericYolo(List<dynamic> output, List<String> labels, double threshold, int inputSize, List<int> shape) {
-    final results = <DetectionResult>();
+    final results = <DetectionResult>[];
 
     // Check if output is [4+N, 8400] or [8400, 4+N]
     bool isTransposed = shape[1] < shape[2];
