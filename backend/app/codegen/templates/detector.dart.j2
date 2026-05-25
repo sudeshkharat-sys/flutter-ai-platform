@@ -40,21 +40,14 @@ class ModelManager {
       _labels = [];
     }
 
-    // Try GPU delegate first, fall back to CPU if it fails
+    // Force CPU inference on all devices for consistent results.
+    // GpuDelegateV2 silently produces wrong output on many mid/low-range
+    // Android GPUs — all class predictions flip — so we avoid it entirely.
     try {
-      final options = InterpreterOptions();
-      if (Platform.isAndroid) {
-        options.addDelegate(GpuDelegateV2());
-      }
-      _interpreter = await Interpreter.fromAsset(modelPath, options: options);
+      _interpreter = await Interpreter.fromAsset(modelPath);
     } catch (e) {
-      debugPrint('GPU delegate failed, falling back to CPU: $e');
-      try {
-        _interpreter = await Interpreter.fromAsset(modelPath);
-      } catch (e2) {
-        debugPrint('Error loading model: $e2');
-        return;
-      }
+      debugPrint('Error loading model: $e');
+      return;
     }
 
     _currentModelPath = modelPath;
