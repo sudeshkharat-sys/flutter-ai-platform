@@ -15,7 +15,7 @@ class ScanScreen extends StatefulWidget {
 
 class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _isProcessing = false;
-  List<dynamic> _masterData = [];
+  List<dynamic> _scanData = [];
 
   final MobileScannerController _scannerController = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
@@ -26,18 +26,22 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadMasterData();
+    _loadScanData();
   }
 
-  Future<void> _loadMasterData() async {
+  Future<void> _loadScanData() async {
     try {
+{% if scan_type == 'engine' %}
+      final String jsonStr = await rootBundle.loadString('assets/engine_data.json');
+{% else %}
       final String jsonStr = await rootBundle.loadString('assets/master_data.json');
+{% endif %}
       final List<dynamic> data = json.decode(jsonStr);
       if (mounted) {
-        setState(() => _masterData = data);
+        setState(() => _scanData = data);
       }
     } catch (e) {
-      debugPrint('Could not load master_data.json: $e');
+      debugPrint('Could not load scan data: $e');
     }
   }
 
@@ -55,40 +59,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     } else if (state == AppLifecycleState.inactive) {
       _scannerController.stop();
     }
-  }
-
-  /// Returns true if [candidate] matches any model_code in master_data
-  /// (case-insensitive comparison).
-  bool _isKnownModelCode(String candidate) {
-    if (candidate.isEmpty || _masterData.isEmpty) return false;
-    final upper = candidate.toUpperCase();
-    return _masterData.any(
-      (m) => (m['model_code'] as String? ?? '').toUpperCase() == upper,
-    );
-  }
-
-  /// Resolves the correct model code from the raw suffix (everything after
-  /// the 17-char VIN).
-  ///
-  /// Strip strategy (tried in order, first match wins):
-  ///   strip-2 → THAR, THAR ROXX, SCORPIO  (remove last 2 chars)
-  ///   strip-1 → ARMY                        (remove last 1 char)
-  ///   strip-0 → fallback, use full suffix
-  ///
-  /// If none match the master data, defaults to strip-2 (or the full
-  /// suffix when it is too short to strip).
-  String _resolveModelCode(String suffix) {
-    for (final strip in [2, 1, 0]) {
-      if (suffix.length > strip) {
-        final candidate = suffix.substring(0, suffix.length - strip);
-        if (_isKnownModelCode(candidate)) {
-          return candidate;
-        }
-      }
-    }
-    // No match in master data — fall back to strip-2, or full suffix if too short
-    if (suffix.length > 2) return suffix.substring(0, suffix.length - 2);
-    return suffix;
   }
 
   void _showErrorDialog(String message) {
@@ -115,6 +85,97 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
   }
 
+{% if scan_type == 'engine' %}
+  // ── Engine Code Scan Logic ────────────────────────────────────────────────
+  // Barcode format: "PART_NO SERIAL_NO"  (split at first space)
+  // Left  → match against engine_data.json (part_no field)
+  // Right → engine serial number → saved to history
+
+  bool _isKnownEngineCode(String candidate) {
+    if (candidate.isEmpty || _scanData.isEmpty) return false;
+    final upper = candidate.toUpperCase();
+    return _scanData.any(
+      (m) => (m['part_no'] as String? ?? '').toUpperCase() == upper,
+    );
+  }
+
+  Future<void> _onDetect(BarcodeCapture capture) async {
+    if (_isProcessing) return;
+
+    final List<Barcode> barcodes = capture.barcodes;
+    if (barcodes.isNotEmpty) {
+      final String? code = barcodes.first.rawValue;
+      if (code == null) return;
+
+      final String raw = code.trim();
+      final int spaceIdx = raw.indexOf(' ');
+
+      if (spaceIdx == -1) {
+        setState(() => _isProcessing = true);
+        _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
+        return;
+      }
+
+      setState(() => _isProcessing = true);
+
+      final String partNo = raw.substring(0, spaceIdx).trim();
+      final String engineSerial = raw.substring(spaceIdx + 1).trim();
+
+      if (!_isKnownEngineCode(partNo)) {
+        _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+        return;
+      }
+
+      if (!mounted) return;
+      _scannerController.stop();
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => HomeScreen(
+            vin: engineSerial,
+            modelCode: partNo,
+            cameras: [],
+          ),
+        ),
+      ).then((_) {
+        if (mounted) {
+          setState(() => _isProcessing = false);
+          _scannerController.start();
+        }
+      });
+    }
+  }
+
+{% else %}
+  // ── Model Code Scan Logic ─────────────────────────────────────────────────
+  // Barcode format: [17-char VIN][suffix]
+  // VIN    → stored in history
+  // Suffix → stripped and matched against master_data.json (model_code field)
+
+  bool _isKnownModelCode(String candidate) {
+    if (candidate.isEmpty || _scanData.isEmpty) return false;
+    final upper = candidate.toUpperCase();
+    return _scanData.any(
+      (m) => (m['model_code'] as String? ?? '').toUpperCase() == upper,
+    );
+  }
+
+  /// Strip strategy (tried in order, first match wins):
+  ///   strip-2 → remove last 2 chars
+  ///   strip-1 → remove last 1 char
+  ///   strip-0 → use full suffix
+  String _resolveModelCode(String suffix) {
+    for (final strip in [2, 1, 0]) {
+      if (suffix.length > strip) {
+        final candidate = suffix.substring(0, suffix.length - strip);
+        if (_isKnownModelCode(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    if (suffix.length > 2) return suffix.substring(0, suffix.length - 2);
+    return suffix;
+  }
+
   Future<void> _onDetect(BarcodeCapture capture) async {
     if (_isProcessing) return;
 
@@ -125,7 +186,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
       final String raw = code.trim();
 
-      // Step 1: Validate total length must be between 30 and 35 (inclusive)
       if (raw.length < 30 || raw.length > 35) {
         setState(() => _isProcessing = true);
         _showErrorDialog('Please scan the right VIN model code.');
@@ -134,16 +194,10 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
       setState(() => _isProcessing = true);
 
-      // VIN: always the first 17 characters
       final String vin = raw.substring(0, 17);
-
-      // Suffix: everything after the VIN (18 chars)
       final String suffix = raw.substring(17);
-
-      // Resolve model code using platform-aware strip strategy
       final String extractedModelCode = _resolveModelCode(suffix);
 
-      // Step 2: Validate model code exists in master data
       if (!_isKnownModelCode(extractedModelCode)) {
         _showErrorDialog('Model code is not present, please add code and rebuild app.');
         return;
@@ -167,6 +221,8 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       });
     }
   }
+
+{% endif %}
 
   @override
   Widget build(BuildContext context) {
@@ -210,7 +266,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                     controller: _scannerController,
                     onDetect: _onDetect,
                   ),
-                  // Scanner frame overlay
                   Center(
                     child: Container(
                       width: 250,

@@ -108,7 +108,7 @@ def update_app(app_id: str, data: AppProjectUpdate, db: StateDBConnector = Depen
     current_canvas = parse_json_field(app.get("canvas_state"), [])
     current_settings = parse_json_field(app.get("app_settings"), {})
 
-    # Update fields
+    # Update fields — use incoming value when provided, fall back to current DB value
     name = data.name if data.name is not None else app["name"]
     package_name = data.package_name if data.package_name is not None else app["package_name"]
     model_asset_id = data.model_asset_id if data.model_asset_id is not None else app.get("model_asset_id")
@@ -121,6 +121,10 @@ def update_app(app_id: str, data: AppProjectUpdate, db: StateDBConnector = Depen
     if data.app_settings is not None:
         app_settings = {**app_settings, **data.app_settings}
 
+    build_status = data.build_status if data.build_status is not None else app.get("build_status", "idle")
+    build_step = data.build_step if data.build_step is not None else app.get("build_step", "")
+    build_log = data.build_log if data.build_log is not None else app.get("build_log", "")
+
     params = {
         "id": app_id,
         "name": name,
@@ -130,9 +134,9 @@ def update_app(app_id: str, data: AppProjectUpdate, db: StateDBConnector = Depen
         "inspection_tasks": json.dumps(inspection_tasks),
         "canvas_state": json.dumps(canvas_state),
         "app_settings": json.dumps(app_settings),
-        "build_status": app.get("build_status", "idle"),
-        "build_log": app.get("build_log", ""),
-        "build_step": app.get("build_step", ""),
+        "build_status": build_status,
+        "build_log": build_log,
+        "build_step": build_step,
         "apk_path": app.get("apk_path", "")
     }
 

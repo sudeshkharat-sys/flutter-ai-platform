@@ -44,6 +44,21 @@ class MasterDataQueries:
     """
     DELETE_MAPPING = "DELETE FROM master_model_mappings WHERE id = :id"
 
+class EngineDataQueries:
+    GET_ALL_MAPPINGS = "SELECT * FROM engine_model_mappings ORDER BY created_at DESC"
+    GET_MAPPING_BY_ID = "SELECT * FROM engine_model_mappings WHERE id = :id"
+    INSERT_MAPPING = """
+        INSERT INTO engine_model_mappings (id, sheet_name, part_no, model_name, description, created_at)
+        VALUES (:id, :sheet_name, :part_no, :model_name, :description, CURRENT_TIMESTAMP)
+        RETURNING id
+    """
+    UPDATE_MAPPING = """
+        UPDATE engine_model_mappings
+        SET sheet_name = :sheet_name, part_no = :part_no, model_name = :model_name, description = :description
+        WHERE id = :id
+    """
+    DELETE_MAPPING = "DELETE FROM engine_model_mappings WHERE id = :id"
+
 class ResultQueries:
     INSERT_RESULT = """
         INSERT INTO inspection_results (id, app_id, vin, model_code, results, overall_success, inspector_notes, created_at)

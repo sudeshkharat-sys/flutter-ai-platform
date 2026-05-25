@@ -40,21 +40,14 @@ class ModelManager {
       _labels = [];
     }
 
-    // Try GPU delegate first, fall back to CPU if it fails
+    // Force CPU inference on all devices for consistent results.
+    // GpuDelegateV2 silently produces wrong output on many mid/low-range
+    // Android GPUs — all class predictions flip — so we avoid it entirely.
     try {
-      final options = InterpreterOptions();
-      if (Platform.isAndroid) {
-        options.addDelegate(GpuDelegateV2());
-      }
-      _interpreter = await Interpreter.fromAsset(modelPath, options: options);
+      _interpreter = await Interpreter.fromAsset(modelPath);
     } catch (e) {
-      debugPrint('GPU delegate failed, falling back to CPU: $e');
-      try {
-        _interpreter = await Interpreter.fromAsset(modelPath);
-      } catch (e2) {
-        debugPrint('Error loading model: $e2');
-        return;
-      }
+      debugPrint('Error loading model: $e');
+      return;
     }
 
     _currentModelPath = modelPath;
@@ -70,7 +63,7 @@ class ModelManager {
   /// Converts an already-decoded, EXIF-corrected [img.Image] into a flat
   /// [Float32List] of shape [1, inputSize, inputSize, 3] ready for TFLite.
   /// Using a typed flat buffer instead of nested [List.generate] calls is
-  /// ~5–10× faster because it avoids Dart object allocation overhead.
+  /// ~5-10x faster because it avoids Dart object allocation overhead.
   static Float32List _imageToFloat32(img.Image image, int inputSize) {
     final resized = img.copyResize(
       image,
@@ -163,7 +156,7 @@ class ModelManager {
 
     // Apply EXIF orientation before inference. Android's takePicture() often
     // returns a landscape JPEG with an EXIF rotation tag. Flutter's Image
-    // widget handles this automatically, but img.decodeImage does not — so
+    // widget handles this automatically, but img.decodeImage does not - so
     // without this fix the model runs on a landscape frame while the display
     // shows a portrait one, causing x/y axes to be effectively swapped.
     baseImage = img.bakeOrientation(baseImage);
@@ -198,7 +191,7 @@ class ModelManager {
     // Auto-detect whether coordinates are absolute pixels [0, inputSize]
     // or already normalized [0, 1]. Sample the first few valid cx values:
     // any absolute-pixel coord from a real detection will be > 1.5, whereas
-    // normalized coords are always ≤ 1.0.
+    // normalized coords are always <= 1.0.
     double maxSampledCoord = 0.0;
     final sampleCount = numBoxes < 200 ? numBoxes : 200;
     for (int i = 0; i < sampleCount; i++) {
@@ -207,14 +200,14 @@ class ModelManager {
       if (cx > maxSampledCoord) maxSampledCoord = cx;
       if (cy > maxSampledCoord) maxSampledCoord = cy;
     }
-    // If max sampled coord is ≤ 1.5 the model outputs normalized [0,1] coords;
+    // If max sampled coord is <= 1.5 the model outputs normalized [0,1] coords;
     // skip the /inputSize division so bboxes are placed correctly.
     final double coordScale = maxSampledCoord > 1.5 ? inputSize.toDouble() : 1.0;
 
     for (int i = 0; i < numBoxes; i++) {
       double maxClassScore = -1.0;
       int classId = -1;
-      
+
       // Class scores start at index 4
       for (int j = 4; j < numElements; j++) {
         double score = isTransposed ? output[j][i] : output[i][j];

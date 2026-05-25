@@ -23,7 +23,7 @@ def _update_status(db, app_id, status=None, step=None, error=None, apk_path=None
     
     new_status = status if status is not None else app.get("build_status")
     new_step = step if step is not None else app.get("build_step")
-    new_error = error if error is not None else None # we might not have a specific column for error
+    new_error = error if error is not None else None
     new_apk_path = apk_path if apk_path is not None else app.get("apk_path")
     
     current_log = app.get("build_log", "") or ""
@@ -32,8 +32,6 @@ def _update_status(db, app_id, status=None, step=None, error=None, apk_path=None
             try: log_append = str(log_append)
             except: log_append = "[Encoding Error]"
         
-        # Aggressively strip non-ASCII characters to prevent DB 'UntranslatableCharacter' errors
-        # This replaces symbols like ✓ with a space.
         sanitized_append = "".join(c if ord(c) < 128 else " " for c in log_append)
         current_log += sanitized_append
 
@@ -78,7 +76,6 @@ def _run_command_streaming(db, app_id, cmd, cwd, env):
 
     for line in process.stdout:
         batch.append(line)
-        # Update every 2 seconds or 20 lines
         if time.time() - last_update > 2 or len(batch) >= 20:
             _update_status(db, app_id, log_append="".join(batch))
             batch = []
@@ -94,28 +91,29 @@ def _safe_extract(zip_bytes, extract_path):
         for member in zf.infolist():
             zf.extract(member, extract_path)
 
+def _find_project_dir(extract_path: Path) -> Path:
+    """
+    Return the Flutter project root inside extract_path.
+
+    We search for pubspec.yaml rather than relying on next(iterdir())
+    because iterdir() order is OS-dependent and any extra file landing
+    at the root level (e.g. __MACOSX metadata) would cause the wrong
+    directory to be used, making every subsequent flutter command fail
+    with "No pubspec.yaml file found".
+    """
+    candidates = list(extract_path.rglob("pubspec.yaml"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"Extracted ZIP contains no pubspec.yaml under {extract_path}. "
+            "Template generation may have failed."
+        )
+    # Pick the shallowest pubspec.yaml (the project root, not a sub-package).
+    candidates.sort(key=lambda p: len(p.parts))
+    return candidates[0].parent
+
 def _force_delete_dir(path: Path, log_fn=None):
     """
     Reliably delete a directory on Windows, including long-path scenarios.
-
-    Two compounding problems on Windows:
-      1. shutil.rmtree(ignore_errors=True) silently fails when Gradle holds
-         file locks → stale .flutter-plugins-dependencies survives → next build
-         reuses the old plugin list (e.g. jni) → "package X does not exist".
-      2. Gradle creates deeply nested intermediates such as:
-           .../permission_handler_android/intermediates/javac/release/classes/
-             com/baseflow/permissionhandler/PermissionManagerShouldShowRequest...
-         These paths exceed Windows MAX_PATH (260 chars).  Both shutil.rmtree
-         and 'rd /s /q' fail with [WinError 3] on such paths.
-
-    Strategy (Windows):
-      1. Stop Gradle daemon via 'gradlew --stop' to release build-dir locks.
-      2. Kill remaining java.exe and wait for handles to close.
-      3. Use robocopy /MIR to mirror an empty temp dir over the target —
-         robocopy uses the \\?\ long-path prefix internally, so it can empty
-         directories that exceed MAX_PATH where rmtree/rd cannot.
-      4. Now that the directory is empty, 'rd /s /q' removes the shell.
-      5. Raise clearly (not silently) if the directory still exists.
     """
     if not path.exists():
         return
@@ -124,7 +122,6 @@ def _force_delete_dir(path: Path, log_fn=None):
         if log_fn:
             log_fn(msg)
 
-    # 1. Ask the Gradle daemon to stop so it releases its locks.
     gradlew = path / "android" / "gradlew.bat"
     if gradlew.exists():
         try:
@@ -138,31 +135,21 @@ def _force_delete_dir(path: Path, log_fn=None):
         except Exception:
             pass
 
-    # 2. Kill java.exe (covers any daemon that ignored --stop).
     try:
         subprocess.run(["taskkill", "/F", "/IM", "java.exe"], capture_output=True)
-        time.sleep(2)  # Give Windows time to release file handles
+        time.sleep(2)
     except Exception:
         pass
 
     abs_path = str(path.resolve())
 
     if os.name == "nt":
-        # 3. robocopy /MIR: mirror an empty directory over the target.
-        #    This is the standard Windows trick for deleting trees with paths
-        #    longer than MAX_PATH — robocopy handles \\?\ prefixes internally.
         try:
             with tempfile.TemporaryDirectory() as empty_dir:
                 subprocess.run(
                     [
                         "robocopy", empty_dir, abs_path,
-                        "/MIR",   # mirror (delete everything in target)
-                        "/NFL",   # no file list
-                        "/NDL",   # no directory list
-                        "/NJH",   # no job header
-                        "/NJS",   # no job summary
-                        "/NC",    # no class
-                        "/NS",    # no size
+                        "/MIR", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS",
                     ],
                     capture_output=True,
                     timeout=120,
@@ -170,7 +157,6 @@ def _force_delete_dir(path: Path, log_fn=None):
         except Exception as exc:
             _log(f"robocopy step failed (non-fatal): {exc}\n")
 
-        # 4. Remove the now-empty directory shell.
         try:
             subprocess.run(
                 ["cmd", "/c", "rd", "/s", "/q", abs_path],
@@ -181,7 +167,6 @@ def _force_delete_dir(path: Path, log_fn=None):
         except Exception:
             pass
     else:
-        # Non-Windows: plain rmtree is fine.
         shutil.rmtree(path, ignore_errors=True)
 
     if path.exists():
@@ -225,10 +210,6 @@ def build_apk_task(self, app_id: str):
         _update_status(db, app_id, step="Preparing project workspace...", log_append="Cleaning previous build workspace...\n")
         export_root = Path(settings.exports_dir) / app_id
 
-        # Force-delete the old directory so no stale files survive.
-        # shutil.rmtree(ignore_errors=True) silently fails on Windows when
-        # Gradle holds file locks, leaving old .flutter-plugins-dependencies
-        # and Gradle caches that cause "package jni does not exist" errors.
         _force_delete_dir(
             export_root,
             log_fn=lambda msg: _update_status(db, app_id, log_append=msg),
@@ -237,7 +218,13 @@ def build_apk_task(self, app_id: str):
         export_root.mkdir(parents=True, exist_ok=True)
         _update_status(db, app_id, step="Preparing project workspace...", log_append="Extracting project files...\n")
         _safe_extract(zip_bytes, export_root)
-        project_dir = next(export_root.iterdir())
+
+        # Locate the Flutter project root by finding pubspec.yaml.
+        # Using next(iterdir()) was unreliable: OS-dependent ordering or any
+        # extra file at the top level would pick the wrong directory and cause
+        # every subsequent flutter command to fail with "No pubspec.yaml found".
+        project_dir = _find_project_dir(export_root)
+        _update_status(db, app_id, log_append=f"Project root: {project_dir.name}\n")
         
         # 3. Copy model assets
         if all_model_assets:
@@ -265,28 +252,19 @@ def build_apk_task(self, app_id: str):
         env["PATH"] = f"C:\\jdk-17.0.14+7\\bin;C:\\flutter\\bin;C:\\android-sdk\\cmdline-tools\\latest\\bin;C:\\android-sdk\\platform-tools;{env.get('PATH', '')}"
         env["FLUTTER_ROOT"] = "C:\\flutter"
 
-        # flutter clean — wipe any Gradle / Dart build caches that may have
-        # survived an incomplete previous cleanup (e.g. cross-drive .gradle dirs).
-        # This is fast on a freshly extracted project but is a critical safety net.
         _update_status(db, app_id, step="Fetching dependencies...", log_append="Running 'flutter clean'...\n")
         _run_command_streaming(db, app_id, [flutter_path, "clean"], project_dir, env)
 
-        # flutter pub get — must succeed to generate .flutter-plugins-dependencies
-        # (which Gradle reads to produce GeneratedPluginRegistrant.java).
-        # If it fails silently the subsequent Gradle build will reference packages
-        # that don't exist in the compile classpath → "package X does not exist".
         _update_status(db, app_id, step="Fetching dependencies...", log_append="Running 'flutter pub get'...\n")
         ret_pub = _run_command_streaming(db, app_id, [flutter_path, "pub", "get"], project_dir, env)
         if ret_pub != 0: raise Exception(f"'flutter pub get' failed with exit code {ret_pub}. Check pubspec.yaml and network access.")
 
-        # dart run build_runner
         dart_path = r"C:\flutter\bin\dart.bat"
         if not os.path.exists(dart_path): dart_path = "dart"
         _update_status(db, app_id, step="Generating database code...", log_append="\nRunning 'dart run build_runner build'...\n")
         ret_gen = _run_command_streaming(db, app_id, [dart_path, "run", "build_runner", "build", "--delete-conflicting-outputs"], project_dir, env)
         if ret_gen != 0: raise Exception(f"Code generation failed with exit code {ret_gen}")
 
-        # flutter build apk
         _update_status(db, app_id, step="Compiling APK...", log_append="\nRunning final compilation...\n")
         ret_build = _run_command_streaming(db, app_id, [
             flutter_path, "build", "apk", "--release", "--no-pub", "--android-skip-build-dependency-validation"
