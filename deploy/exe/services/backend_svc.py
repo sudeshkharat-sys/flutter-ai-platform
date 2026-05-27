@@ -26,6 +26,10 @@ def configure_env(base_dir: Path, db_user: str, db_password: str, db_name: str,
     os.environ["EXPORTS_DIR"] = str(data_dir / "exports")
     os.environ["REFERENCE_IMAGES_DIR"] = str(data_dir / "reference_images")
 
+    # Disable ultralytics network calls — Zscaler / offline environments
+    os.environ["ULTRALYTICS_AUTOUPDATE"] = "False"
+    os.environ["YOLO_VERBOSE"] = "False"
+
     # Signal EXE mode and where the bundled React frontend lives
     os.environ["EXE_MODE"] = "true"
     if hasattr(sys, "_MEIPASS"):
