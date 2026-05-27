@@ -1,6 +1,9 @@
+import io
 import json
+import pickle
 import shutil
 import traceback
+import zipfile
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from app.connectors.state_db import StateDBConnector
 from app.queries import ModelAssetQueries
@@ -26,10 +29,20 @@ def list_models(db: StateDBConnector = Depends(get_db_connector)):
 
 def extract_classes_from_pt(pt_path: str) -> list[str]:
     """
-    Extract class names from a YOLO .pt checkpoint.
-    Uses torch.load directly — works in PyInstaller EXE without full YOLO init.
+    Extract YOLO class names from a .pt checkpoint.
+
+    Three-stage fallback:
+      1. Safe-unpickle: reads data.pkl directly from the zip archive using a
+         custom Unpickler that substitutes _Placeholder for any class it
+         cannot import.  Works even when ultralytics is not fully importable
+         inside a PyInstaller bundle.
+      2. torch.load (weights_only=False): standard full load.
+      3. YOLO() constructor — last resort.
     """
-    import torch
+
+    # ------------------------------------------------------------------ #
+    # Helpers shared by all three methods
+    # ------------------------------------------------------------------ #
 
     def _names_to_list(names) -> list[str]:
         if isinstance(names, dict):
@@ -38,52 +51,107 @@ def extract_classes_from_pt(pt_path: str) -> list[str]:
             return list(names)
         return []
 
-    try:
-        ckpt = torch.load(pt_path, map_location="cpu", weights_only=False)
-
-        # 1. Top-level 'names' key
-        if isinstance(ckpt, dict) and "names" in ckpt:
-            result = _names_to_list(ckpt["names"])
+    def _find_names(obj, depth: int = 0) -> list[str]:
+        """Recursively search obj for a 'names' dict/list."""
+        if depth > 6:
+            return []
+        names_val = None
+        if isinstance(obj, dict):
+            names_val = obj.get("names")
+        if names_val is None and hasattr(obj, "__dict__"):
+            names_val = obj.__dict__.get("names")
+        if names_val is not None:
+            result = _names_to_list(names_val)
             if result:
-                print(f"[classes] Found {len(result)} classes via ckpt['names']")
                 return result
+        # Recurse into known sub-keys
+        for key in ("model", "ema", "train_args", "module"):
+            child = None
+            if isinstance(obj, dict):
+                child = obj.get(key)
+            elif hasattr(obj, "__dict__"):
+                child = obj.__dict__.get(key)
+            if child is not None:
+                result = _find_names(child, depth + 1)
+                if result:
+                    return result
+        return []
 
-        # 2. model.names
-        model_obj = None
-        if isinstance(ckpt, dict):
-            model_obj = ckpt.get("model") or ckpt.get("ema")
-        else:
-            model_obj = ckpt
+    # ------------------------------------------------------------------ #
+    # Safe-unpickle infrastructure
+    # ------------------------------------------------------------------ #
 
-        if model_obj is not None:
-            for attr in ("names", "module.names"):
-                obj = model_obj
-                for part in attr.split("."):
-                    obj = getattr(obj, part, None)
-                    if obj is None:
-                        break
-                if obj is not None:
-                    result = _names_to_list(obj)
+    class _Placeholder:
+        """Stand-in for any class that can't be imported during unpickling."""
+        def __new__(cls, *a, **kw):
+            return object.__new__(cls)
+        def __init__(self, *a, **kw):
+            pass
+        def __setstate__(self, state):
+            if isinstance(state, dict):
+                self.__dict__.update(state)
+
+    class _SafeUnpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            try:
+                return super().find_class(module, name)
+            except Exception:
+                # Unique class per type so __dict__ isn't accidentally shared
+                return type(f"_PH_{name}", (_Placeholder,), {})
+        def persistent_load(self, pid):
+            # Tensors live in separate zip entries; we don't need them
+            return None
+
+    # ------------------------------------------------------------------ #
+    # Method 1 — safe unpickle directly from zip (no ultralytics needed)
+    # ------------------------------------------------------------------ #
+    try:
+        if zipfile.is_zipfile(pt_path):
+            with zipfile.ZipFile(pt_path, "r") as zf:
+                pkl_entries = [n for n in zf.namelist() if n.endswith("data.pkl")]
+                if pkl_entries:
+                    with zf.open(pkl_entries[0]) as fh:
+                        raw = fh.read()
+                    ckpt = _SafeUnpickler(io.BytesIO(raw)).load()
+                    result = _find_names(ckpt)
                     if result:
-                        print(f"[classes] Found {len(result)} classes via model.{attr}")
+                        print(f"[classes] Found {len(result)} classes via safe-unpickle")
                         return result
-
-        print(f"[classes] torch.load found no names, trying YOLO fallback...")
-
-        # 3. YOLO fallback
-        try:
-            from ultralytics import YOLO
-            yolo = YOLO(pt_path)
-            if hasattr(yolo, "names") and yolo.names:
-                result = _names_to_list(yolo.names)
-                print(f"[classes] Found {len(result)} classes via YOLO")
-                return result
-        except Exception as yolo_err:
-            print(f"[classes] YOLO fallback error: {yolo_err}")
-
+                    print("[classes] safe-unpickle: loaded but no names found")
+                else:
+                    print("[classes] safe-unpickle: no data.pkl entry in zip")
+        else:
+            print("[classes] not a zip archive, skipping safe-unpickle")
     except Exception as e:
-        print(f"[classes] extract_classes_from_pt error: {e}")
+        print(f"[classes] safe-unpickle error: {e}")
         traceback.print_exc()
+
+    # ------------------------------------------------------------------ #
+    # Method 2 — full torch.load (requires ultralytics classes importable)
+    # ------------------------------------------------------------------ #
+    try:
+        import torch
+        ckpt = torch.load(pt_path, map_location="cpu", weights_only=False)
+        result = _find_names(ckpt)
+        if result:
+            print(f"[classes] Found {len(result)} classes via torch.load")
+            return result
+        print("[classes] torch.load: no names found")
+    except Exception as e:
+        print(f"[classes] torch.load error: {e}")
+
+    # ------------------------------------------------------------------ #
+    # Method 3 — YOLO() constructor (last resort)
+    # ------------------------------------------------------------------ #
+    try:
+        from ultralytics import YOLO
+        yolo = YOLO(pt_path)
+        if hasattr(yolo, "names") and yolo.names:
+            result = _names_to_list(yolo.names)
+            print(f"[classes] Found {len(result)} classes via YOLO()")
+            return result
+    except Exception as e:
+        print(f"[classes] YOLO fallback error: {e}")
 
     print("[classes] Could not extract classes, returning []")
     return []
@@ -93,11 +161,11 @@ def extract_classes_from_pt(pt_path: str) -> list[str]:
 def extract_classes_from_file(file: UploadFile = File(...)):
     if not file.filename.endswith(".pt"):
         raise HTTPException(status_code=422, detail="Only .pt model files are supported.")
-    
+
     temp_id = str(uuid.uuid4())
     temp_path = settings.models_dir / f"temp_{temp_id}.pt"
     settings.models_dir.mkdir(parents=True, exist_ok=True)
-    
+
     try:
         with open(temp_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
@@ -136,7 +204,9 @@ def upload_model(
     class_list = []
     if classes:
         try:
-            class_list = json.loads(classes)
+            parsed = json.loads(classes)
+            if isinstance(parsed, list):
+                class_list = parsed
         except Exception:
             raise HTTPException(status_code=422, detail="classes must be a JSON array.")
 
@@ -146,13 +216,18 @@ def upload_model(
     pt_path = model_dir / "model.pt"
     print(f"[upload] Saving file to {pt_path}")
 
-    with open(pt_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-    print(f"[upload] File saved ({pt_path.stat().st_size} bytes)")
+    try:
+        with open(pt_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        print(f"[upload] File saved ({pt_path.stat().st_size} bytes)")
+    except Exception as e:
+        print(f"[upload] File save FAILED: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"File save error: {e}")
 
     if not class_list:
         class_list = extract_classes_from_pt(str(pt_path))
-    print(f"[upload] Classes: {class_list}")
+    print(f"[upload] Classes ({len(class_list)}): {class_list}")
 
     params = {
         "id": asset_id,
@@ -186,9 +261,18 @@ def upload_model(
     except Exception as e:
         print(f"[upload] Celery queue warning: {e}")
 
-    rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": asset_id})
-    print(f"[upload] Upload complete for {asset_id}")
-    return rows[0]
+    try:
+        rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": asset_id})
+        if not rows:
+            raise HTTPException(status_code=500, detail="Upload succeeded but model not found in DB")
+        print(f"[upload] Upload complete for {asset_id}")
+        return rows[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[upload] Final query FAILED: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Post-insert query error: {e}")
 
 
 @router.get("/{model_asset_id}", response_model=ModelAssetResponse)
