@@ -5,6 +5,7 @@ Flutter AI Studio — Windows EXE Launcher
 from __future__ import annotations
 
 import configparser
+import logging
 import os
 import signal
 import socket
@@ -22,33 +23,51 @@ else:
 sys.path.insert(0, str(Path(__file__).parent))
 
 # ---------------------------------------------------------------------------
-# Tee stdout + stderr to a log file so logs survive after the window closes
+# Logging setup — captures BOTH print() and logging.XXX() calls
 # ---------------------------------------------------------------------------
 _log_dir = BASE_DIR / "logs"
 _log_dir.mkdir(parents=True, exist_ok=True)
 _log_path = _log_dir / "app.log"
+
+# 1. File handle for the tee (captures print())
 _log_file = open(_log_path, "w", buffering=1, encoding="utf-8")
 
+
 class _Tee:
+    """Mirror every write to two streams and flush immediately."""
     def __init__(self, *streams):
         self._streams = streams
+
     def write(self, data):
         for s in self._streams:
             try:
                 s.write(data)
+                s.flush()          # force-flush so nothing is lost on kill
             except Exception:
                 pass
+
     def flush(self):
         for s in self._streams:
             try:
                 s.flush()
             except Exception:
                 pass
+
     def isatty(self):
         return False
 
+
 sys.stdout = _Tee(sys.__stdout__, _log_file)
 sys.stderr = _Tee(sys.__stderr__, _log_file)
+
+# 2. FileHandler for the Python logging module (captures uvicorn/celery logs)
+_file_log_handler = logging.FileHandler(_log_path, mode="a", encoding="utf-8")
+_file_log_handler.setLevel(logging.DEBUG)
+_file_log_handler.setFormatter(
+    logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+)
+logging.root.addHandler(_file_log_handler)
+logging.root.setLevel(logging.DEBUG)
 
 print(f"[log] Writing logs to {_log_path}")
 
@@ -116,11 +135,11 @@ def main() -> None:
     cfg = load_config()
     c = cfg["flutterai"]
 
-    pg_port    = int(c["postgres_port"])
-    redis_port = int(c["redis_port"])
-    api_port   = int(c["api_port"])
-    db_name    = c["db_name"]
-    db_user    = c["db_user"]
+    pg_port     = int(c["postgres_port"])
+    redis_port  = int(c["redis_port"])
+    api_port    = int(c["api_port"])
+    db_name     = c["db_name"]
+    db_user     = c["db_user"]
     db_password = c["db_password"]
     open_browser = c.getboolean("open_browser", fallback=True)
 
@@ -168,7 +187,10 @@ def main() -> None:
     def _on_signal(sig, frame):
         print("\n[launcher] Shutdown signal received.")
         _shutdown(pg, redis, celery)
+        _file_log_handler.flush()
+        _file_log_handler.close()
         _log_file.flush()
+        _log_file.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _on_signal)
