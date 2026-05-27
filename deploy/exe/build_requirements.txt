@@ -7,7 +7,7 @@ psycopg2-binary
 aiosqlite
 celery[redis]
 redis
-ultralytics==8.3.0
+ultralytics
 onnxruntime
 onnx
 onnxslim
