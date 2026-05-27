@@ -133,8 +133,8 @@ echo.
 echo [6/6] Running PyInstaller...
 cd /d "%DEPLOY_DIR%"
 
-set "PYI_WORK=D:\flutterai-build-temp\work"
-set "PYI_DIST=D:\FlutterAI-App"
+set "PYI_WORK=C:\flutterai-build-temp\work"
+set "PYI_DIST=C:\FlutterAI-App"
 
 echo      Output: %PYI_DIST%\FlutterAI\flutterai.exe
 
@@ -148,11 +148,11 @@ if errorlevel 1 (
 echo.
 echo ============================================================
 echo  BUILD COMPLETE
-echo  Output: D:\FlutterAI-App\FlutterAI\flutterai.exe
+echo  Output: C:\FlutterAI-App\FlutterAI\flutterai.exe
 echo ============================================================
 echo.
 echo To run:
-echo   cd D:\FlutterAI-App\FlutterAI
+echo   cd C:\FlutterAI-App\FlutterAI
 echo   flutterai.exe
 
 endlocal
