@@ -22,16 +22,66 @@ def list_models(db: StateDBConnector = Depends(get_db_connector)):
     rows = db.execute_query(ModelAssetQueries.GET_ALL_MODELS)
     return rows
 
+
 def extract_classes_from_pt(pt_path: str) -> list[str]:
-    """Helper to load a .pt model and extract class names."""
-    from ultralytics import YOLO
+    """
+    Extract class names from a YOLO .pt checkpoint.
+
+    Uses torch.load directly so it works inside PyInstaller EXE bundles
+    without needing to fully initialise the ultralytics YOLO engine
+    (which can fail in offline / Zscaler environments).
+    """
+    import torch
+
+    def _names_to_list(names) -> list[str]:
+        if isinstance(names, dict):
+            return [names[i] for i in sorted(names.keys())]
+        if isinstance(names, (list, tuple)):
+            return list(names)
+        return []
+
     try:
-        model = YOLO(pt_path)
-        if hasattr(model, 'names') and model.names:
-            return [model.names[i] for i in sorted(model.names.keys())]
+        ckpt = torch.load(pt_path, map_location="cpu", weights_only=False)
+
+        # 1. Top-level 'names' key (some export formats)
+        if isinstance(ckpt, dict) and "names" in ckpt:
+            result = _names_to_list(ckpt["names"])
+            if result:
+                return result
+
+        # 2. model.names  (standard ultralytics checkpoint)
+        model_obj = None
+        if isinstance(ckpt, dict):
+            model_obj = ckpt.get("model") or ckpt.get("ema")
+        else:
+            model_obj = ckpt  # sometimes the checkpoint IS the model object
+
+        if model_obj is not None:
+            for attr in ("names", "module.names"):
+                obj = model_obj
+                for part in attr.split("."):
+                    obj = getattr(obj, part, None)
+                    if obj is None:
+                        break
+                if obj is not None:
+                    result = _names_to_list(obj)
+                    if result:
+                        return result
+
+        # 3. Fallback to full YOLO load (only if torch.load did not give names)
+        try:
+            from ultralytics import YOLO
+            yolo = YOLO(pt_path)
+            if hasattr(yolo, "names") and yolo.names:
+                return _names_to_list(yolo.names)
+        except Exception as yolo_err:
+            print(f"[classes] YOLO fallback failed: {yolo_err}")
+
     except Exception as e:
-        print(f"Error extracting classes: {e}")
+        print(f"[classes] extract_classes_from_pt error: {e}")
+
     return []
+
 
 @router.post("/extract-classes")
 def extract_classes_from_file(file: UploadFile = File(...)):
@@ -41,6 +91,7 @@ def extract_classes_from_file(file: UploadFile = File(...)):
     
     temp_id = str(uuid.uuid4())
     temp_path = settings.models_dir / f"temp_{temp_id}.pt"
+    settings.models_dir.mkdir(parents=True, exist_ok=True)
     
     try:
         with open(temp_path, "wb") as f:
@@ -63,11 +114,6 @@ def detect_model_classes(model_asset_id: str, db: StateDBConnector = Depends(get
         raise HTTPException(status_code=404, detail="Model asset missing pt_path")
 
     classes = extract_classes_from_pt(asset["pt_path"])
-    if classes:
-        # We need an update query for classes if we want to save it, 
-        # but for now we can just return it. To properly save, we'd need an update query.
-        pass
-    
     return {"classes": classes}
 
 @router.post("/upload", response_model=ModelAssetResponse)
