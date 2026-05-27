@@ -1,10 +1,28 @@
+import sys
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from app.api import models_router, apps_router, export_router, master_router
 from app.api import assets_router
 from app.config import settings
 from app.connectors.state_db import StateDBManager
+
+
+def _find_frontend_build() -> Path | None:
+    """Locate the React build directory (works both in dev and PyInstaller bundle)."""
+    candidates = [
+        # PyInstaller bundle: next to the EXE
+        Path(sys.executable).parent / "frontend_build",
+        # Dev: relative to repo root
+        Path(__file__).parent.parent.parent / "frontend" / "build",
+    ]
+    for p in candidates:
+        if (p / "index.html").exists():
+            return p
+    return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,3 +72,14 @@ app.include_router(assets_router.router, prefix="/api/v1")
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "flutter-ai-studio"}
+
+
+# ── Serve React frontend (standalone EXE mode) ────────────────────────────────
+_frontend = _find_frontend_build()
+if _frontend:
+    app.mount("/static", StaticFiles(directory=str(_frontend / "static")), name="static")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """Catch-all: serve index.html for any non-API route (React SPA routing)."""
+        return FileResponse(str(_frontend / "index.html"))
