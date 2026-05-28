@@ -46,6 +46,7 @@ onnxscript
 onnx2tf>1.17.5,<=1.22.3   # ONNX → TensorFlow/TFLite conversion
 sng4onnx>=1.0.1            # used by onnx2tf
 onnx_graphsurgeon>=0.3.26  # used by onnx2tf
+tensorflow-cpu             # required by onnx2tf / TFLite export (CPU-only, ~500 MB)
 tf_keras                   # required by onnx2tf / TFLite export
 botocore                   # optional ultralytics cloud dep — bundle to silence warning
 tensorboard                # optional ultralytics training dep — bundle to silence warning
