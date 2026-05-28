@@ -42,7 +42,7 @@ def convert_model_to_tflite(self, model_asset_id: str):
     import json
     
     print(f"DEBUG TASK: Starting conversion for {model_asset_id}")
-    print(f"DEBUG TASK: DB URL = {db.settings.postgres_url}")
+    print(f"DEBUG TASK: DB URL = {db.settings.database_url}")
     
     try:
         # Check if record exists

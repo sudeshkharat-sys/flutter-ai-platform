@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import zipfile
 import io
@@ -10,6 +11,44 @@ from pathlib import Path
 from app.tasks.celery_app import celery_app
 from app.config import settings
 from app.codegen.generator import generate_flutter_project
+
+
+def _get_app_base() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent.parent.parent.parent
+
+
+def _get_tool_paths():
+    base = _get_app_base()
+    flutter = base / "flutter" / "bin" / "flutter.bat"
+    dart = base / "flutter" / "bin" / "dart.bat"
+    java_home = base / "jdk-17"
+    android_home = base / "android-sdk"
+
+    # Fall back to system PATH if bundled paths don't exist
+    flutter_cmd = str(flutter) if flutter.exists() else "flutter"
+    dart_cmd = str(dart) if dart.exists() else "dart"
+
+    env = os.environ.copy()
+    if java_home.exists():
+        env["JAVA_HOME"] = str(java_home)
+        env["PATH"] = str(java_home / "bin") + os.pathsep + env.get("PATH", "")
+    if android_home.exists():
+        env["ANDROID_HOME"] = str(android_home)
+        env["PATH"] = (
+            str(android_home / "cmdline-tools" / "latest" / "bin")
+            + os.pathsep
+            + str(android_home / "platform-tools")
+            + os.pathsep
+            + env.get("PATH", "")
+        )
+    flutter_root = base / "flutter"
+    if flutter_root.exists():
+        env["FLUTTER_ROOT"] = str(flutter_root)
+        env["PATH"] = str(flutter_root / "bin") + os.pathsep + env.get("PATH", "")
+
+    return flutter_cmd, dart_cmd, env
 
 def _get_db():
     from app.connectors.state_db import StateDBConnector
@@ -243,14 +282,7 @@ def build_apk_task(self, app_id: str):
                     (assets_dir / f"labels_{idx}.txt").write_text(labels_content)
         
         # 4. Run Flutter build
-        flutter_path = r"C:\flutter\bin\flutter.bat"
-        if not os.path.exists(flutter_path): flutter_path = "flutter"
-
-        env = os.environ.copy()
-        env["JAVA_HOME"] = r"C:\jdk-17.0.14+7"
-        env["ANDROID_HOME"] = r"C:\android-sdk"
-        env["PATH"] = f"C:\\jdk-17.0.14+7\\bin;C:\\flutter\\bin;C:\\android-sdk\\cmdline-tools\\latest\\bin;C:\\android-sdk\\platform-tools;{env.get('PATH', '')}"
-        env["FLUTTER_ROOT"] = "C:\\flutter"
+        flutter_path, dart_path, env = _get_tool_paths()
 
         _update_status(db, app_id, step="Fetching dependencies...", log_append="Running 'flutter clean'...\n")
         _run_command_streaming(db, app_id, [flutter_path, "clean"], project_dir, env)
@@ -259,8 +291,6 @@ def build_apk_task(self, app_id: str):
         ret_pub = _run_command_streaming(db, app_id, [flutter_path, "pub", "get"], project_dir, env)
         if ret_pub != 0: raise Exception(f"'flutter pub get' failed with exit code {ret_pub}. Check pubspec.yaml and network access.")
 
-        dart_path = r"C:\flutter\bin\dart.bat"
-        if not os.path.exists(dart_path): dart_path = "dart"
         _update_status(db, app_id, step="Generating database code...", log_append="\nRunning 'dart run build_runner build'...\n")
         ret_gen = _run_command_streaming(db, app_id, [dart_path, "run", "build_runner", "build", "--delete-conflicting-outputs"], project_dir, env)
         if ret_gen != 0: raise Exception(f"Code generation failed with exit code {ret_gen}")

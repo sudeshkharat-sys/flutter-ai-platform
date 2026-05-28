@@ -44,13 +44,12 @@ def trigger_build(app_id: str, db: StateDBConnector = Depends(get_db_connector))
         "app_settings": json.dumps(app.get("app_settings", {})),
         "build_status": "building",
         "build_log": "Build triggered via UI.\n",
-        "build_step": "Starting Celery task...",
+        "build_step": "Starting background task...",
         "apk_path": ""
     }
-    
+
     db.execute_update(ProjectQueries.UPDATE_PROJECT, params)
 
-    # In a real environment with Celery worker running:
     build_apk_task.delay(app_id)
     
     return {"status": "building", "message": "APK build started in background"}

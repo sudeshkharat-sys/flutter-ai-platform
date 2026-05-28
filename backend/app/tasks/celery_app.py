@@ -1,33 +1,46 @@
-from celery import Celery
-from celery.signals import worker_process_init
-from app.config import settings
+"""
+Thread-based task executor — replaces Celery so no Redis broker is needed.
+"""
+import threading
+import logging
 
-celery_app = Celery(
-    "flutter_studio",
-    broker=settings.celery_broker_url,
-    backend=settings.celery_result_backend,
-    include=["app.tasks.convert_model", "app.tasks.build_apk"],
-)
+logger = logging.getLogger(__name__)
 
-celery_app.conf.update(
-    task_serializer="json",
-    result_serializer="json",
-    accept_content=["json"],
-    timezone="UTC",
-    enable_utc=True,
-    worker_prefetch_multiplier=1,
-    task_track_started=True,
-    broker_connection_retry_on_startup=True,
-    worker_pool="solo",
-)
 
-# Windows uses 'spawn' for multiprocessing (not 'fork'), so child worker
-# processes start fresh and Celery's setup_worker_optimizations() may not
-# run before the first task arrives, leaving _loc=[] and causing:
-#   ValueError: not enough values to unpack (expected 3, got 0)
-# Explicitly calling it here via worker_process_init guarantees _loc is
-# populated in every child process before any task executes.
-@worker_process_init.connect
-def _init_worker_process(sender=None, **kwargs):
-    from celery.app.trace import setup_worker_optimizations
-    setup_worker_optimizations(celery_app)
+class _MockRequest:
+    id = "local-task"
+
+
+class SimpleTask:
+    """Wraps a function so .delay() runs it in a background thread."""
+
+    def __init__(self, func):
+        self.func = func
+        self.request = _MockRequest()
+
+    def delay(self, *args, **kwargs):
+        def run():
+            try:
+                self.func(self, *args, **kwargs)
+            except Exception as exc:
+                logger.error(f"Background task error: {exc}", exc_info=True)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return type("AsyncResult", (), {"id": "local"})()
+
+    def __call__(self, *args, **kwargs):
+        return self.func(self, *args, **kwargs)
+
+
+class _CeleryCompat:
+    """Minimal shim so @celery_app.task(bind=True, name=...) still compiles."""
+
+    @staticmethod
+    def task(bind=True, name=None):
+        def decorator(func):
+            return SimpleTask(func)
+        return decorator
+
+
+celery_app = _CeleryCompat()
