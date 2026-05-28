@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import configparser
 import logging
+import multiprocessing
 import os
 import signal
 import socket
 import sys
 import time
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -110,7 +112,14 @@ def port_in_use(port: int) -> bool:
 def assert_port_free(port: int, service: str) -> None:
     if port_in_use(port):
         print(f"\n[ERROR] Port {port} is already in use — cannot start {service}.")
-        print(f"        Close whatever is using port {port} and try again.")
+        print(f"        A previous FlutterAI process may still be running.")
+        print(f"        Please close all FlutterAI windows, wait a few seconds,")
+        print(f"        then try again. (Task Manager → find flutterai.exe → End Task)")
+        print("\nPress Enter to close this window...")
+        try:
+            input()
+        except Exception:
+            time.sleep(5)
         sys.exit(1)
 
 
@@ -166,6 +175,11 @@ def main() -> None:
         print("[ERROR] Backend did not become healthy within 120 s.")
         print(f"[log]   Check {_log_path} for details.")
         _shutdown(pg, redis, None)
+        print("\nPress Enter to close this window...")
+        try:
+            input()
+        except Exception:
+            pass
         sys.exit(1)
     print("[backend] Ready.")
 
@@ -223,4 +237,26 @@ def _shutdown(pg, redis, celery) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Required for Windows PyInstaller frozen executables that use multiprocessing.
+    multiprocessing.freeze_support()
+
+    try:
+        main()
+    except SystemExit:
+        raise                 # let sys.exit() pass through normally
+    except Exception as exc:
+        print("\n" + "=" * 60)
+        print("  [FATAL ERROR] Flutter AI Studio failed to start")
+        print("=" * 60)
+        print(f"\n  {exc}\n")
+        traceback.print_exc()
+        try:
+            print(f"\n  Log file: {_log_path}")
+        except Exception:
+            pass
+        print("\n  Press Enter to close this window...")
+        try:
+            input()
+        except Exception:
+            time.sleep(10)
+        sys.exit(1)

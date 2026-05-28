@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const api = axios.create({ baseURL: 'http://localhost:8001/api/v1' });
+// In EXE mode build.bat bakes REACT_APP_API_URL=http://localhost:8000/api/v1.
+// In dev mode the fallback keeps the original localhost:8001 dev-server URL.
+const _API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8001/api/v1';
+const api = axios.create({ baseURL: _API_BASE });
 
 /**
  * Upload a .pt model file with its class list.
@@ -63,7 +66,7 @@ export const uploadReferenceImage = (file) => {
   });
 };
 export const getReferenceImageUrl = (filename) =>
-  `http://localhost:8001/api/v1/assets/reference-image/${filename}`;
+  `${_API_BASE}/assets/reference-image/${filename}`;
 
 // ── Master Data ──────────────────────────────────────────────────────────────
 export const getMasterMappings = () => api.get('/master-data');
