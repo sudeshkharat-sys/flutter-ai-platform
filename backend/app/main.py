@@ -1,5 +1,3 @@
-import os
-from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -26,6 +24,7 @@ async def lifespan(app: FastAPI):
         from sqlalchemy import text
         engine = db_manager._get_engine(settings.POSTGRES_DB)
         with engine.connect() as conn:
+            # PostgreSQL specific check for column existence
             check_sql = "SELECT column_name FROM information_schema.columns WHERE table_name='app_projects' AND column_name='model_asset_id'"
             res = conn.execute(text(check_sql)).fetchone()
             if not res:
@@ -57,10 +56,3 @@ app.include_router(engine_router.router, prefix="/api/v1")
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "flutter-ai-studio"}
-
-# EXE mode: serve the bundled React frontend for all unmatched paths.
-# FRONTEND_BUILD_DIR is set by deploy/exe/services/backend_svc.py before uvicorn starts.
-_exe_frontend = os.environ.get("FRONTEND_BUILD_DIR", "")
-if _exe_frontend and Path(_exe_frontend).is_dir():
-    from fastapi.staticfiles import StaticFiles
-    app.mount("/", StaticFiles(directory=_exe_frontend, html=True), name="frontend")
