@@ -1,10 +1,20 @@
+import os
 import re
+import sys
 import zipfile
 import io
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+def _resolve_templates_dir() -> Path:
+    """Return templates dir, handling PyInstaller --onedir bundles."""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "backend" / "app" / "codegen" / "templates"
+    return Path(__file__).parent / "templates"
+
+
+TEMPLATES_DIR = _resolve_templates_dir()
 
 
 def _get_jinja_env() -> Environment:
@@ -121,6 +131,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         except:
             canvas_state = []
 
+    # SDK paths injected by the EXE launcher; fall back to legacy hardcoded
+    # values so the generator still works in a plain dev environment.
+    _android_sdk = os.environ.get("ANDROID_HOME", "C:/android-sdk").replace("\\", "/")
+    _flutter_sdk = os.environ.get("FLUTTER_ROOT", "C:/flutter").replace("\\", "/")
+    _gradle_zip  = os.environ.get("GRADLE_ZIP_PATH", "C:/gradle/gradle-8.10.2-all.zip").replace("\\", "/")
+
     ctx = {
         "app_name": app_name,
         "app_name_slug": _dart_slug(app_name),
@@ -145,6 +161,10 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "app_type": settings.get("app_type", "sequential"),
         "scan_type": settings.get("scan_type", "model"),
         "app_settings": settings,
+        # SDK tool paths baked into the generated Android project
+        "android_sdk_path": _android_sdk,
+        "flutter_sdk_path": _flutter_sdk,
+        "gradle_zip_path":  _gradle_zip,
     }
 
     # Map of zip path -> template name
