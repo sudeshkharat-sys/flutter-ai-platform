@@ -21,6 +21,22 @@ async def lifespan(app: FastAPI):
     db_manager.initialize_database()
     db_manager.create_tables_if_not_exists()
 
+    # Schema auto-repair: add model_asset_id column if missing
+    try:
+        from sqlalchemy import text, create_engine
+        engine = create_engine(settings.postgres_url + "?client_encoding=utf8")
+        with engine.connect() as conn:
+            res = conn.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='app_projects' AND column_name='model_asset_id'"
+            )).fetchone()
+            if not res:
+                conn.execute(text("ALTER TABLE app_projects ADD COLUMN model_asset_id VARCHAR"))
+                conn.commit()
+        engine.dispose()
+    except Exception as e:
+        print(f"Schema repair skip: {e}")
+
     yield
 
 
@@ -48,15 +64,12 @@ async def health():
 
 
 def _find_frontend_build() -> Path | None:
-    """Locate the React production build regardless of how the app is launched."""
     candidates = []
     if getattr(sys, "frozen", False):
-        # PyInstaller bundle: data files land inside _MEIPASS
         candidates.append(Path(sys._MEIPASS) / "frontend" / "build")
         candidates.append(Path(sys.executable).parent / "frontend" / "build")
     else:
         candidates.append(Path(__file__).parent.parent.parent / "frontend" / "build")
-
     for p in candidates:
         if p.is_dir():
             return p

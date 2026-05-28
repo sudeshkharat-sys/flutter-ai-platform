@@ -1,23 +1,19 @@
 """
-SQLite database connector — no server required.
+PostgreSQL State Database Connector
 """
 
 import logging
 from typing import Any, Dict, List
-from sqlalchemy import create_engine, text, event
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import QueuePool
 from contextlib import contextmanager
 
 from app.config import get_settings
-from app.queries import CommonQueries
+from app.queries import CommonQueries, DatabaseQueries, QueryValidator
 from app.connectors.table_creation import metadata
 
 logger = logging.getLogger(__name__)
-
-
-def _enable_wal(dbapi_conn, _):
-    dbapi_conn.execute("PRAGMA journal_mode=WAL")
-    dbapi_conn.execute("PRAGMA foreign_keys=ON")
 
 
 class StateDBConnector:
@@ -29,18 +25,21 @@ class StateDBConnector:
 
     def _connect(self):
         try:
+            url = self.settings.postgres_url + "?client_encoding=utf8"
             self.engine = create_engine(
-                self.settings.database_url,
-                connect_args={"check_same_thread": False},
+                url,
+                poolclass=QueuePool,
+                pool_size=5,
+                max_overflow=10,
+                pool_pre_ping=True,
                 echo=False,
             )
-            event.listen(self.engine, "connect", _enable_wal)
             self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
             with self.engine.connect() as conn:
                 conn.execute(text(CommonQueries.TEST_CONNECTION))
-            logger.info("Connected to SQLite database")
+            logger.info(f"Connected to PostgreSQL at {self.settings.POSTGRES_HOST}:{self.settings.POSTGRES_PORT}")
         except Exception as e:
-            logger.error(f"Database connection failed: {e}")
+            logger.error(f"Failed to connect to PostgreSQL: {e}")
             raise
 
     @contextmanager
@@ -94,23 +93,41 @@ class StateDBConnector:
             try:
                 self.engine.dispose()
             except Exception as e:
-                logger.error(f"Error closing connection: {e}")
+                logger.error(f"Error closing: {e}")
 
 
 class StateDBManager:
     def __init__(self):
         self.settings = get_settings()
 
+    def _get_engine(self, database: str = "postgres"):
+        url = (
+            f"postgresql://{self.settings.POSTGRES_USER}"
+            f"@{self.settings.POSTGRES_HOST}:{self.settings.POSTGRES_PORT}/{database}"
+            f"?client_encoding=utf8"
+        )
+        return create_engine(url, isolation_level="AUTOCOMMIT")
+
     def initialize_database(self):
-        pass  # SQLite creates the file automatically on first connect
+        try:
+            db_name = self.settings.POSTGRES_DB
+            QueryValidator.validate_identifier(db_name, "database name")
+            engine = self._get_engine()
+            with engine.connect() as conn:
+                exists = conn.execute(
+                    text(DatabaseQueries.CHECK_DATABASE_EXISTS), {"db_name": db_name}
+                ).fetchone()
+                if not exists:
+                    logger.info(f"Creating database: {db_name}")
+                    conn.execute(text(DatabaseQueries.get_create_database_query(db_name)))
+            engine.dispose()
+        except Exception as e:
+            logger.error(f"Error initializing database: {e}")
+            raise
 
     def create_tables_if_not_exists(self):
         try:
-            engine = create_engine(
-                self.settings.database_url,
-                connect_args={"check_same_thread": False},
-            )
-            event.listen(engine, "connect", _enable_wal)
+            engine = self._get_engine(self.settings.POSTGRES_DB)
             metadata.create_all(engine, checkfirst=True)
             engine.dispose()
             logger.info("Database tables ready")

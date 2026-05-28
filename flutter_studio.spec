@@ -1,12 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Flutter AI Studio portable package.
-# Run from the repo root:  pyinstaller flutter_studio.spec
+# Run from repo root:  pyinstaller flutter_studio.spec
 
-import os
 from pathlib import Path
 
-ROOT = Path(SPECPATH)
-BACKEND = ROOT / "backend"
+ROOT           = Path(SPECPATH)
+BACKEND        = ROOT / "backend"
 FRONTEND_BUILD = ROOT / "frontend" / "build"
 
 block_cipher = None
@@ -16,13 +14,11 @@ a = Analysis(
     pathex=[str(BACKEND)],
     binaries=[],
     datas=[
-        # Jinja2 code-generation templates
         (str(BACKEND / "app" / "codegen" / "templates"), "app/codegen/templates"),
-        # React production build (served as static files)
         (str(FRONTEND_BUILD), "frontend/build"),
     ],
     hiddenimports=[
-        # uvicorn internals
+        # uvicorn
         "uvicorn.logging",
         "uvicorn.loops",
         "uvicorn.loops.auto",
@@ -33,25 +29,38 @@ a = Analysis(
         "uvicorn.protocols.websockets.auto",
         "uvicorn.lifespan",
         "uvicorn.lifespan.on",
-        # SQLite / SQLAlchemy
-        "aiosqlite",
-        "sqlalchemy.dialects.sqlite",
-        # App routers (imported dynamically via string in main.py)
+        # SQLAlchemy PostgreSQL driver
+        "sqlalchemy.dialects.postgresql",
+        "psycopg2",
+        # Celery internals
+        "celery",
+        "celery.app",
+        "celery.app.trace",
+        "celery.__main__",
+        "celery.bin.worker",
+        "celery.concurrency",
+        "celery.concurrency.solo",
+        "kombu",
+        "kombu.transport",
+        "kombu.transport.redis",
+        "redis",
+        # App routers
         "app.api.models_router",
         "app.api.apps_router",
         "app.api.export_router",
         "app.api.master_router",
         "app.api.assets_router",
         "app.api.engine_router",
+        # Tasks
+        "app.tasks.build_apk",
+        "app.tasks.convert_model",
         # Misc
         "multipart",
         "passlib.handlers.bcrypt",
     ],
     hookspath=[],
     runtime_hooks=[],
-    excludes=["psycopg2", "celery", "redis", "tkinter"],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
+    excludes=["tkinter"],
     cipher=block_cipher,
     noarchive=False,
 )
@@ -68,7 +77,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,   # keep console so users can see build logs
+    console=True,
     icon=None,
 )
 

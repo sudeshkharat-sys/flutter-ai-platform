@@ -1,10 +1,13 @@
 """
 Database Queries
-SQL queries for the Flutter AI Studio platform.
 """
 
 class DatabaseQueries:
-    pass  # SQLite creates the file automatically — no server-side DB creation needed
+    CHECK_DATABASE_EXISTS = "SELECT 1 FROM pg_database WHERE datname = :db_name"
+
+    @staticmethod
+    def get_create_database_query(db_name: str) -> str:
+        return f'CREATE DATABASE "{db_name}"'
 
 class CommonQueries:
     TEST_CONNECTION = "SELECT 1"
@@ -15,6 +18,7 @@ class ProjectQueries:
     INSERT_PROJECT = """
         INSERT INTO app_projects (id, name, package_name, model_asset_id, model_asset_ids, inspection_tasks, canvas_state, app_settings, build_status, build_log, build_step, apk_path, created_at, updated_at)
         VALUES (:id, :name, :package_name, :model_asset_id, :model_asset_ids, :inspection_tasks, :canvas_state, :app_settings, :build_status, :build_log, :build_step, :apk_path, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING id
     """
     UPDATE_PROJECT = """
         UPDATE app_projects
@@ -29,6 +33,7 @@ class MasterDataQueries:
     INSERT_MAPPING = """
         INSERT INTO master_model_mappings (id, platform_name, model_code, description, created_at)
         VALUES (:id, :platform_name, :model_code, :description, CURRENT_TIMESTAMP)
+        RETURNING id
     """
     UPDATE_MAPPING = """
         UPDATE master_model_mappings
@@ -43,6 +48,7 @@ class EngineDataQueries:
     INSERT_MAPPING = """
         INSERT INTO engine_model_mappings (id, sheet_name, part_no, model_name, description, created_at)
         VALUES (:id, :sheet_name, :part_no, :model_name, :description, CURRENT_TIMESTAMP)
+        RETURNING id
     """
     UPDATE_MAPPING = """
         UPDATE engine_model_mappings
@@ -55,6 +61,7 @@ class ResultQueries:
     INSERT_RESULT = """
         INSERT INTO inspection_results (id, app_id, vin, model_code, results, overall_success, inspector_notes, created_at)
         VALUES (:id, :app_id, :vin, :model_code, :results, :overall_success, :inspector_notes, CURRENT_TIMESTAMP)
+        RETURNING id
     """
     GET_RESULTS_BY_APP = "SELECT * FROM inspection_results WHERE app_id = :app_id ORDER BY created_at DESC"
 
@@ -64,6 +71,7 @@ class ModelAssetQueries:
     INSERT_MODEL = """
         INSERT INTO model_assets (id, vision_project_id, vision_project_name, model_type, classes, pt_path, tflite_path, labels_path, status, error_message, conversion_log, input_size, vision_platform_url, vision_platform_token, created_at)
         VALUES (:id, :vision_project_id, :vision_project_name, :model_type, :classes, :pt_path, :tflite_path, :labels_path, :status, :error_message, :conversion_log, :input_size, :vision_platform_url, :vision_platform_token, CURRENT_TIMESTAMP)
+        RETURNING id
     """
     UPDATE_MODEL_STATUS = """
         UPDATE model_assets

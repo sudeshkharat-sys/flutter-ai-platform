@@ -11,13 +11,6 @@ def _get_app_base() -> Path:
     return Path(__file__).parent.parent.parent
 
 
-def _default_db_path() -> str:
-    db_env = os.environ.get("SQLITE_DB_PATH")
-    if db_env:
-        return db_env
-    return str(_get_app_base() / "data" / "flutter_studio.db")
-
-
 class Settings(BaseSettings):
     vision_platform_url: str = "http://localhost:8000"
     vision_platform_token: str = ""
@@ -26,13 +19,29 @@ class Settings(BaseSettings):
     exports_dir: Path = Path("./data/exports")
     reference_images_dir: Path = Path("./data/reference_images")
 
-    sqlite_db_path: str = ""
+    # PostgreSQL — set automatically by launcher from bundled PG
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = ""
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: str = "5432"
+    POSTGRES_DB: str = "flutter_studio"
+
+    # Redis / Celery — set automatically by launcher from bundled Redis
+    REDIS_URL: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: str = "redis://localhost:6379/3"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/4"
 
     @property
-    def database_url(self) -> str:
-        path = self.sqlite_db_path or _default_db_path()
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        return f"sqlite:///{path}"
+    def postgres_url(self) -> str:
+        if self.POSTGRES_PASSWORD:
+            return (
+                f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+                f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+            )
+        return (
+            f"postgresql://{self.POSTGRES_USER}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
 
     model_config = {
         "env_file": ".env",

@@ -1,41 +1,28 @@
-"""
-Thread-based task executor — no Redis or Celery required.
-"""
-import threading
-import logging
+from celery import Celery
+from celery.signals import worker_process_init
+from app.config import settings
 
-logger = logging.getLogger(__name__)
+celery_app = Celery(
+    "flutter_studio",
+    broker=settings.CELERY_BROKER_URL,
+    backend=settings.CELERY_RESULT_BACKEND,
+    include=["app.tasks.convert_model", "app.tasks.build_apk"],
+)
 
-
-class _MockRequest:
-    id = "local-task"
-
-
-class SimpleTask:
-    def __init__(self, func):
-        self.func = func
-        self.request = _MockRequest()
-
-    def delay(self, *args, **kwargs):
-        def run():
-            try:
-                self.func(self, *args, **kwargs)
-            except Exception as exc:
-                logger.error(f"Task error: {exc}", exc_info=True)
-
-        threading.Thread(target=run, daemon=True).start()
-        return type("AsyncResult", (), {"id": "local"})()
-
-    def __call__(self, *args, **kwargs):
-        return self.func(self, *args, **kwargs)
+celery_app.conf.update(
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    timezone="UTC",
+    enable_utc=True,
+    worker_prefetch_multiplier=1,
+    task_track_started=True,
+    broker_connection_retry_on_startup=True,
+    worker_pool="solo",
+)
 
 
-class _CeleryCompat:
-    @staticmethod
-    def task(bind=True, name=None):
-        def decorator(func):
-            return SimpleTask(func)
-        return decorator
-
-
-celery_app = _CeleryCompat()
+@worker_process_init.connect
+def _init_worker_process(sender=None, **kwargs):
+    from celery.app.trace import setup_worker_optimizations
+    setup_worker_optimizations(celery_app)
