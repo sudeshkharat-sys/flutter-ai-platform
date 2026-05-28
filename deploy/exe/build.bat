@@ -127,7 +127,7 @@ if exist "resources\redis\redis-server.exe" (
 )
 
 :: --------------------------------------------------------------------------
-:: Step 6 - Run PyInstaller
+:: Step 6 - Run PyInstaller  (output shown live AND saved to build_log.txt)
 :: --------------------------------------------------------------------------
 echo.
 echo [6/6] Running PyInstaller...
@@ -135,14 +135,32 @@ cd /d "%DEPLOY_DIR%"
 
 set "PYI_WORK=C:\flutterai-build-temp\work"
 set "PYI_DIST=C:\FlutterAI-App"
+set "BUILD_LOG=%DEPLOY_DIR%build_log.txt"
 
-echo      Output: %PYI_DIST%\FlutterAI\flutterai.exe
+echo      Output:   %PYI_DIST%\FlutterAI\flutterai.exe
+echo      Build log: %BUILD_LOG%
+echo.
 
-python -m PyInstaller launcher.spec --noconfirm --workpath "%PYI_WORK%" --distpath "%PYI_DIST%"
+:: PowerShell Tee-Object mirrors output to screen AND file simultaneously.
+powershell -ExecutionPolicy Bypass -Command ^
+  "$w='%PYI_WORK%'; $d='%PYI_DIST%'; $l='%BUILD_LOG%';" ^
+  "& python -m PyInstaller launcher.spec --noconfirm --workpath $w --distpath $d 2>&1 | Tee-Object -FilePath $l"
+
 if errorlevel 1 (
+    echo.
     echo [ERROR] PyInstaller failed.
+    echo.
+    echo ---- Warnings and errors from build_log.txt ----
+    findstr /i "warning error missing not.found failed import" "%BUILD_LOG%"
+    echo ---- Full log saved to: %BUILD_LOG% ----
     exit /b 1
 )
+
+:: Always print a filtered summary of warnings after a successful build too
+echo.
+echo ---- Build warnings summary (missing modules etc.) ----
+findstr /i "warning.*module\|not found\|missing\|no module" "%BUILD_LOG%"
+echo ---- Full log: %BUILD_LOG% ----
 
 :: --------------------------------------------------------------------------
 echo.
