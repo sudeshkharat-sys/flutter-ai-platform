@@ -141,17 +141,17 @@ echo      Output:   %PYI_DIST%\FlutterAI\flutterai.exe
 echo      Build log: %BUILD_LOG%
 echo.
 
-:: PowerShell Tee-Object mirrors output to screen AND file simultaneously.
+:: PowerShell Tee-Object mirrors output to screen AND saves to UTF-8 file.
 powershell -ExecutionPolicy Bypass -Command ^
   "$w='%PYI_WORK%'; $d='%PYI_DIST%'; $l='%BUILD_LOG%';" ^
-  "& python -m PyInstaller launcher.spec --noconfirm --workpath $w --distpath $d 2>&1 | Tee-Object -FilePath $l"
+  "& python -m PyInstaller launcher.spec --noconfirm --workpath $w --distpath $d 2>&1 | Tee-Object -FilePath $l -Encoding UTF8"
 
 if errorlevel 1 (
     echo.
     echo [ERROR] PyInstaller failed.
     echo.
-    echo ---- Warnings and errors from build_log.txt ----
-    findstr /i "warning error missing not.found failed import" "%BUILD_LOG%"
+    echo ---- Last 60 lines of build log ----
+    powershell -Command "Get-Content '%BUILD_LOG%' -Encoding UTF8 | Select-Object -Last 60"
     echo ---- Full log saved to: %BUILD_LOG% ----
     exit /b 1
 )
@@ -159,7 +159,7 @@ if errorlevel 1 (
 :: Always print a filtered summary of warnings after a successful build too
 echo.
 echo ---- Build warnings summary (missing modules etc.) ----
-findstr /i "warning.*module\|not found\|missing\|no module" "%BUILD_LOG%"
+powershell -Command "Get-Content '%BUILD_LOG%' -Encoding UTF8 | Select-String 'WARNING.*module|not found|missing|No module' | Select-Object -Last 40"
 echo ---- Full log: %BUILD_LOG% ----
 
 :: --------------------------------------------------------------------------
