@@ -1,5 +1,5 @@
 """
-Thread-based task executor — replaces Celery so no Redis broker is needed.
+Thread-based task executor — no Redis or Celery required.
 """
 import threading
 import logging
@@ -12,8 +12,6 @@ class _MockRequest:
 
 
 class SimpleTask:
-    """Wraps a function so .delay() runs it in a background thread."""
-
     def __init__(self, func):
         self.func = func
         self.request = _MockRequest()
@@ -23,10 +21,9 @@ class SimpleTask:
             try:
                 self.func(self, *args, **kwargs)
             except Exception as exc:
-                logger.error(f"Background task error: {exc}", exc_info=True)
+                logger.error(f"Task error: {exc}", exc_info=True)
 
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
+        threading.Thread(target=run, daemon=True).start()
         return type("AsyncResult", (), {"id": "local"})()
 
     def __call__(self, *args, **kwargs):
@@ -34,8 +31,6 @@ class SimpleTask:
 
 
 class _CeleryCompat:
-    """Minimal shim so @celery_app.task(bind=True, name=...) still compiles."""
-
     @staticmethod
     def task(bind=True, name=None):
         def decorator(func):

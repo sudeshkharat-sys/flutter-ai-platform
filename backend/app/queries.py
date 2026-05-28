@@ -4,7 +4,7 @@ SQL queries for the Flutter AI Studio platform.
 """
 
 class DatabaseQueries:
-    pass  # SQLite creates the DB file automatically — no server-side creation needed
+    pass  # SQLite creates the file automatically — no server-side DB creation needed
 
 class CommonQueries:
     TEST_CONNECTION = "SELECT 1"

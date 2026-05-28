@@ -1,10 +1,10 @@
 """
-SQLite State Database Connector
+SQLite database connector — no server required.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
-from sqlalchemy import create_engine, inspect, text, event
+from typing import Any, Dict, List
+from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 
@@ -15,7 +15,7 @@ from app.connectors.table_creation import metadata
 logger = logging.getLogger(__name__)
 
 
-def _enable_wal(dbapi_conn, connection_record):
+def _enable_wal(dbapi_conn, _):
     dbapi_conn.execute("PRAGMA journal_mode=WAL")
     dbapi_conn.execute("PRAGMA foreign_keys=ON")
 
@@ -35,14 +35,12 @@ class StateDBConnector:
                 echo=False,
             )
             event.listen(self.engine, "connect", _enable_wal)
-            self.SessionLocal = sessionmaker(
-                autocommit=False, autoflush=False, bind=self.engine
-            )
+            self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
             with self.engine.connect() as conn:
                 conn.execute(text(CommonQueries.TEST_CONNECTION))
             logger.info("Connected to SQLite database")
         except Exception as e:
-            logger.error(f"Failed to connect to SQLite: {e}")
+            logger.error(f"Database connection failed: {e}")
             raise
 
     @contextmanager
@@ -62,19 +60,17 @@ class StateDBConnector:
         try:
             with self.get_session() as session:
                 result = session.execute(text(query), params or {})
-                rows = result.fetchall()
-                return [dict(row._mapping) for row in rows]
+                return [dict(row._mapping) for row in result.fetchall()]
         except Exception as e:
-            logger.error(f"Error executing query: {e}")
+            logger.error(f"Query error: {e}")
             raise
 
     def execute_insert(self, query: str, params: Dict[str, Any] = None) -> Any:
         try:
             with self.get_session() as session:
                 session.execute(text(query), params or {})
-                return None
         except Exception as e:
-            logger.error(f"Error executing insert: {e}")
+            logger.error(f"Insert error: {e}")
             raise
 
     def execute_update(self, query: str, params: Dict[str, Any] = None) -> int:
@@ -83,7 +79,7 @@ class StateDBConnector:
                 result = session.execute(text(query), params or {})
                 return result.rowcount
         except Exception as e:
-            logger.error(f"Error executing update/delete: {e}")
+            logger.error(f"Update error: {e}")
             raise
 
     def test_connection(self) -> bool:
@@ -106,7 +102,7 @@ class StateDBManager:
         self.settings = get_settings()
 
     def initialize_database(self):
-        pass  # SQLite creates the file automatically
+        pass  # SQLite creates the file automatically on first connect
 
     def create_tables_if_not_exists(self):
         try:

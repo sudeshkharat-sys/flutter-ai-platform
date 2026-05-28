@@ -6,7 +6,6 @@ from pydantic_settings import BaseSettings
 
 
 def _get_app_base() -> Path:
-    """Return the directory where the app is rooted (exe dir or repo root)."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path(__file__).parent.parent.parent
