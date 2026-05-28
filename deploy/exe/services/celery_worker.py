@@ -25,6 +25,8 @@ class CeleryWorker:
             sys.path.insert(0, backend_path)
 
         def run_worker():
+            import os
+            os.environ.setdefault("MPLBACKEND", "Agg")  # prevent matplotlib GUI in EXE
             from app.tasks.celery_app import celery_app
             argv = [
                 "worker",

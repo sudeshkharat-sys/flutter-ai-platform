@@ -51,6 +51,7 @@ for pkg in [
     "PIL",
     "cv2",
     "torch", "torchvision",
+    "matplotlib",       # ultralytics imports matplotlib internally during YOLO load
 ]:
     try:
         d, b, h = collect_all(pkg)
@@ -134,6 +135,10 @@ hiddenimports += [
     "passlib.utils.binary",
     "passlib.utils.binary",
     "passlib.crypto.digest",
+    # matplotlib backends — ultralytics imports these transitively
+    "matplotlib",
+    "matplotlib.pyplot",
+    "matplotlib.backends.backend_agg",
 ]
 
 # ---------------------------------------------------------------------------
@@ -146,7 +151,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "notebook", "IPython", "transformers"],
+    excludes=["tkinter", "notebook", "IPython", "transformers"],
     noarchive=False,
 )
 

@@ -30,6 +30,10 @@ def configure_env(base_dir: Path, db_user: str, db_password: str, db_name: str,
     os.environ["ULTRALYTICS_AUTOUPDATE"] = "False"
     os.environ["YOLO_VERBOSE"] = "False"
 
+    # Force matplotlib to use a non-interactive backend so it never tries to
+    # open a GUI window when ultralytics imports it inside the EXE service.
+    os.environ.setdefault("MPLBACKEND", "Agg")
+
     # Signal EXE mode and where the bundled React frontend lives
     os.environ["EXE_MODE"] = "true"
     if hasattr(sys, "_MEIPASS"):
