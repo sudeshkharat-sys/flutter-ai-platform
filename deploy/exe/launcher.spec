@@ -165,7 +165,13 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "notebook", "IPython", "transformers"],
+    excludes=[
+        "tkinter", "notebook", "IPython", "transformers",
+        # torch distributed training — absent in CPU-only wheel, not needed for inference
+        "torch.distributed._shard",
+        "torch.distributed._sharded_tensor",
+        "torch.distributed._sharding_spec",
+    ],
     noarchive=False,
 )
 
