@@ -49,3 +49,15 @@ Thumbs.db
 *.wmv
 
 data/
+
+# Environment files with credentials
+backend/.env
+.env
+
+# Python virtual environment
+.venv/
+venv/
+
+# PyInstaller build artifacts
+build_work/
+_downloads/
