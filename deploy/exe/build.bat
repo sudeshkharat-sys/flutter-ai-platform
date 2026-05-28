@@ -142,9 +142,10 @@ echo      Build log: %BUILD_LOG%
 echo.
 
 :: PowerShell Tee-Object mirrors output to screen AND saves to UTF-8 file.
+:: --clean forces full re-analysis (important after installing new packages like TF)
 powershell -ExecutionPolicy Bypass -Command ^
   "$w='%PYI_WORK%'; $d='%PYI_DIST%'; $l='%BUILD_LOG%';" ^
-  "& python -m PyInstaller launcher.spec --noconfirm --workpath $w --distpath $d 2>&1 | Tee-Object -FilePath $l -Encoding UTF8"
+  "& python -m PyInstaller launcher.spec --noconfirm --clean --workpath $w --distpath $d 2>&1 | Tee-Object -FilePath $l -Encoding UTF8"
 
 if errorlevel 1 (
     echo.
