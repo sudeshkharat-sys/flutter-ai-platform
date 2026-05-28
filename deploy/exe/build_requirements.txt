@@ -1,28 +1,51 @@
+# ── Build tool ───────────────────────────────────────────────────────────────
 pyinstaller
-fastapi
-uvicorn[standard]
-sqlalchemy[asyncio]
+
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.12
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+email-validator
+websockets
+httpx==0.27.2
+aiofiles==24.1.0
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy[asyncio]==2.0.36
 asyncpg
-psycopg2-binary
-aiosqlite
-celery[redis]
-redis
-ultralytics
-onnxruntime
-onnx
-onnxslim
-Pillow
-opencv-python-headless
+psycopg2-binary==2.9.9
+aiosqlite==0.20.0
+
+# ── Task queue ────────────────────────────────────────────────────────────────
+celery[redis]==5.4.0
+redis==5.1.1
+
+# ── Data / config ─────────────────────────────────────────────────────────────
+pydantic==2.9.2
+pydantic-settings==2.5.2
+jinja2==3.1.4
 pyyaml
 python-dotenv
-pydantic
-pydantic-settings
-passlib[bcrypt]
-python-jose[cryptography]
-python-multipart
-websockets
-httpx
-aiofiles
-jinja2
 loguru
-email-validator
+
+# ── Image / Vision ────────────────────────────────────────────────────────────
+Pillow>=10.0.0
+opencv-python-headless
+matplotlib                 # ultralytics imports this at load time
+
+# ── AI / Model conversion (.pt -> TFLite pipeline) ───────────────────────────
+# NOTE: torch + torchvision are installed separately in build.bat
+#       (CPU-only wheel from PyTorch index)
+ultralytics==8.3.0
+onnxruntime                # CPU inference + needed by ultralytics export
+onnx>=1.17.0
+onnxslim>=0.1.31
+onnxscript
+onnx2tf>1.17.5,<=1.22.3   # ONNX → TensorFlow/TFLite conversion
+sng4onnx>=1.0.1            # used by onnx2tf
+onnx_graphsurgeon>=0.3.26  # used by onnx2tf
+tf_keras                   # required by onnx2tf / TFLite export
+botocore                   # optional ultralytics cloud dep — bundle to silence warning
+tensorboard                # optional ultralytics training dep — bundle to silence warning

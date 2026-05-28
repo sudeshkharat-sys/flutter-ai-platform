@@ -48,10 +48,16 @@ for pkg in [
     "celery", "redis", "kombu", "billiard",
     "ultralytics",
     "onnxruntime",
+    "onnx",
+    "onnx2tf",
     "PIL",
     "cv2",
     "torch", "torchvision",
     "matplotlib",       # ultralytics imports matplotlib internally during YOLO load
+    "tf_keras",         # required by onnx2tf / TFLite export
+    "tensorflow",       # pulled in by tf_keras / onnx2tf
+    "botocore",         # optional ultralytics cloud dep
+    "tensorboard",      # optional ultralytics training dep
 ]:
     try:
         d, b, h = collect_all(pkg)
@@ -139,6 +145,14 @@ hiddenimports += [
     "matplotlib",
     "matplotlib.pyplot",
     "matplotlib.backends.backend_agg",
+    # ONNX / TFLite conversion pipeline
+    "onnx",
+    "onnxslim",
+    "onnxscript",
+    "onnx_graphsurgeon",
+    "sng4onnx",
+    "onnx2tf",
+    "tf_keras",
 ]
 
 # ---------------------------------------------------------------------------
