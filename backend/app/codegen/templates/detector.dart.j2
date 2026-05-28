@@ -15,7 +15,7 @@ class ModelManager {
   List<String> _labels = [];
   String? _currentModelPath;
   bool _isLoaded = false;
-  double confidenceThreshold = 0.3;
+  double confidenceThreshold = {{ confidence_threshold }};
 
   bool get isLoaded => _isLoaded;
 
