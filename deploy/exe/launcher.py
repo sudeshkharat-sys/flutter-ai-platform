@@ -27,9 +27,12 @@ import webbrowser
 from pathlib import Path
 
 if hasattr(sys, "_MEIPASS"):
-    BASE_DIR = Path(sys.executable).parent
+    # PyInstaller 6.x: bundled files land in _internal\ next to the EXE
+    BUNDLE_DIR = Path(sys._MEIPASS)          # _internal\ — read-only bundled assets
+    DATA_DIR   = Path(sys.executable).parent  # FlutterAI\ — config, db, logs
 else:
-    BASE_DIR = Path(__file__).parent
+    BUNDLE_DIR = Path(__file__).parent
+    DATA_DIR   = Path(__file__).parent
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -42,7 +45,7 @@ import sdk_check
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-CFG_FILE = BASE_DIR / "flutterai.cfg"
+CFG_FILE = DATA_DIR / "flutterai.cfg"
 
 DEFAULTS = {
     "postgres_port":  "5433",
@@ -119,11 +122,11 @@ def main() -> None:
     open_browser  = c.getboolean("open_browser", fallback=True)
     skip_sdk      = c.getboolean("skip_sdk_check", fallback=False)
 
-    # Bundled tool paths (relative to EXE, version-locked)
-    flutter_root  = BASE_DIR / "flutter"
-    java_home     = BASE_DIR / "jdk"
-    android_home  = BASE_DIR / "android-sdk"
-    gradle_zip    = BASE_DIR / "gradle" / "gradle-8.10.2-all.zip"
+    # Bundled tool paths (inside _internal\ in PyInstaller 6.x)
+    flutter_root  = BUNDLE_DIR / "flutter"
+    java_home     = BUNDLE_DIR / "jdk"
+    android_home  = BUNDLE_DIR / "android-sdk"
+    gradle_zip    = BUNDLE_DIR / "gradle" / "gradle-8.10.2-all.zip"
 
     # ------------------------------------------------------------------
     # Step 1 — Build tools check
@@ -132,7 +135,7 @@ def main() -> None:
     if skip_sdk:
         print("[sdk] Skipping SDK check (skip_sdk_check=true in config).")
     else:
-        sdk_status = sdk_check.verify(BASE_DIR)
+        sdk_status = sdk_check.verify(BUNDLE_DIR)
         sdk_status.print_report()
         if not sdk_status.all_ok:
             print("\n[WARNING] Some build tools are missing.")
@@ -151,7 +154,7 @@ def main() -> None:
     print("\n[Step 2/5] Starting PostgreSQL...")
     assert_port_free(pg_port, "PostgreSQL")
 
-    pg = PostgresManager(BASE_DIR, db_name, db_user, db_password, pg_port)
+    pg = PostgresManager(BUNDLE_DIR, DATA_DIR, db_name, db_user, db_password, pg_port)
     if not pg.is_initialized():
         pg.initialize()
     pg.start()
@@ -163,7 +166,7 @@ def main() -> None:
     print("\n[Step 3/5] Starting Redis...")
     assert_port_free(redis_port, "Redis")
 
-    redis = RedisManager(BASE_DIR, redis_port)
+    redis = RedisManager(BUNDLE_DIR, DATA_DIR, redis_port)
     redis.start()
 
     # ------------------------------------------------------------------
@@ -173,7 +176,7 @@ def main() -> None:
     assert_port_free(api_port, "Backend API")
 
     backend_svc.configure_env(
-        BASE_DIR,
+        DATA_DIR,
         db_user, db_password, db_name,
         pg_port, redis_port,
         flutter_root, java_home, android_home, gradle_zip,

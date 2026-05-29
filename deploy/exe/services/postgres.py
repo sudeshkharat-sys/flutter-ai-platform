@@ -7,16 +7,15 @@ from pathlib import Path
 
 
 class PostgresManager:
-    def __init__(self, base_dir: Path, db_name: str, db_user: str, db_password: str, port: int):
-        self.base_dir = base_dir
+    def __init__(self, bundle_dir: Path, data_dir: Path, db_name: str, db_user: str, db_password: str, port: int):
         self.db_name = db_name
         self.db_user = db_user
         self.db_password = db_password
         self.port = port
 
-        self.pg_bin = base_dir / "postgres" / "bin"
-        self.pg_data = base_dir / "data" / "pgdata"
-        self.pg_log = base_dir / "logs" / "postgres.log"
+        self.pg_bin  = bundle_dir / "postgres" / "bin"  # read-only bundled binaries
+        self.pg_data = data_dir   / "data"     / "pgdata"  # writable user data
+        self.pg_log  = data_dir   / "logs"     / "postgres.log"
         self._process = None
 
     def _bin(self, name: str) -> str:

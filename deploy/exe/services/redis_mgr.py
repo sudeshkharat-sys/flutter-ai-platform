@@ -7,12 +7,11 @@ from pathlib import Path
 
 
 class RedisManager:
-    def __init__(self, base_dir: Path, port: int):
-        self.base_dir = base_dir
+    def __init__(self, bundle_dir: Path, data_dir: Path, port: int):
         self.port = port
-        self.redis_exe = base_dir / "redis" / "redis-server.exe"
-        self.redis_dir = base_dir / "data" / "redis"
-        self.redis_log = base_dir / "logs" / "redis.log"
+        self.redis_exe = bundle_dir / "redis" / "redis-server.exe"  # bundled binary
+        self.redis_dir = data_dir   / "data"  / "redis"             # writable data
+        self.redis_log = data_dir   / "logs"  / "redis.log"
         self._process = None
 
     def start(self) -> None:
