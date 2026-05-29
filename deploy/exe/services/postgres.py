@@ -61,6 +61,7 @@ class PostgresManager:
 
     def start(self) -> None:
         print(f"[postgres] Starting on port {self.port} ...")
+        sys.stdout.flush()
         self.pg_log.parent.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             [
@@ -70,13 +71,16 @@ class PostgresManager:
                 "-l", str(self.pg_log),
                 "-o", f"-p {self.port}",
                 "-w",
+                "-t", "120",   # wait up to 120 seconds
             ],
-            capture_output=True,
-            text=True,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"pg_ctl start failed:\n{result.stderr}\n{result.stdout}")
+            raise RuntimeError(
+                f"pg_ctl start failed (exit {result.returncode}). "
+                f"Check log: {self.pg_log}"
+            )
         print("[postgres] Started.")
+        sys.stdout.flush()
 
     def create_db(self) -> None:
         env_pg = {
