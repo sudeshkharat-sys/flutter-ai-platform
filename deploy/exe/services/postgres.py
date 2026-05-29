@@ -1,7 +1,9 @@
 """Manages embedded portable PostgreSQL for the EXE deployment."""
 
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -29,22 +31,29 @@ class PostgresManager:
         self.pg_data.mkdir(parents=True, exist_ok=True)
         self.pg_log.parent.mkdir(parents=True, exist_ok=True)
 
-        result = subprocess.run(
-            [
-                self._bin("initdb.exe"),
-                "-D", str(self.pg_data),
-                "-U", self.db_user,
-                "--encoding=UTF8",
-                "--auth=md5",
-                f"--pwfile=-",
-            ],
-            input=self.db_password,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"initdb failed:\n{result.stderr}")
-        print("[postgres] Cluster initialized.")
+        # --pwfile=- (stdin) doesn't work on Windows; use a temp file instead
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as pwf:
+            pwf.write(self.db_password + "\n")
+            pwfile_path = pwf.name
+
+        try:
+            result = subprocess.run(
+                [
+                    self._bin("initdb.exe"),
+                    "-D", str(self.pg_data),
+                    "-U", self.db_user,
+                    "--encoding=UTF8",
+                    "--auth=md5",
+                    f"--pwfile={pwfile_path}",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"initdb failed:\n{result.stderr}")
+            print("[postgres] Cluster initialized.")
+        finally:
+            os.unlink(pwfile_path)
 
     def start(self) -> None:
         print(f"[postgres] Starting on port {self.port} ...")
