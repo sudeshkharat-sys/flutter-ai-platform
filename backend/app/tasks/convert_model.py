@@ -80,8 +80,9 @@ def convert_model_to_tflite(self, model_asset_id: str):
         sys.stdout = log_capture
 
         try:
-            os.environ["ULTRALYTICS_AUTOUPDATE"]   = "False"
-            os.environ["ULTRALYTICS_AUTOINSTALL"]  = "False"
+            os.environ["ULTRALYTICS_AUTOUPDATE"]              = "False"
+            os.environ["YOLO_AUTOINSTALL"]                    = "false"
+            os.environ["ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS"] = "1"
             
             log_txt = asset.get("conversion_log", "")
             log_txt += f"Device: {'cuda' if torch.cuda.is_available() else 'cpu'}\n"

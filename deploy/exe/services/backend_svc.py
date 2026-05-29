@@ -50,8 +50,9 @@ def configure_env(
             # Prevent Ultralytics from spawning pip install subprocesses.
             # In frozen EXE sys.executable=flutterai.exe, so auto-install
             # would relaunch the entire app in a loop.
-            "ULTRALYTICS_AUTOINSTALL": "False",
-            "ULTRALYTICS_AUTOUPDATE":  "False",
+            "ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS": "1",  # skip all checks entirely
+            "YOLO_AUTOINSTALL":   "false",                # correct env var name
+            "ULTRALYTICS_AUTOUPDATE": "False",
         }
     )
 
