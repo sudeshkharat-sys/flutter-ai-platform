@@ -111,6 +111,67 @@ def _find_project_dir(extract_path: Path) -> Path:
     candidates.sort(key=lambda p: len(p.parts))
     return candidates[0].parent
 
+_ANDROID_LICENSE_HASHES = {
+    # Hashes written by `sdkmanager --licenses` when user accepts each license.
+    "android-sdk-license": [
+        "24333f8a63b6825ea9c5514f83c2829b004d1fee",
+        "8933bad161af4178b1185d1a37fbf41ea5269c55",
+        "d56f5187479451eabf01fb78af6dfcb131a6481e",
+    ],
+    "android-sdk-preview-license": [
+        "84831b9409646a918e30573bab4c9c91346d8abd",
+        "504667f4c0de7af1a06de9f4b1727b84351f2910",
+    ],
+    "android-ndk-license": [
+        "592e0e6e5b9b49b0e6b6b0b5e8e5b9b49b0e6b6b",
+    ],
+    "android-ndk-sxs-license": [
+        "04f7f4b1a2c676b90e2b7c70a82a0fefd05af7f2",
+    ],
+    "intel-android-extra-license": [
+        "d975f751698a77b662f1254ddbeed3901e976f5a",
+    ],
+    "google-gdk-license": [
+        "33b6a2b64607f11b759f320ef9dff4ae5c47d97a",
+    ],
+}
+
+def _accept_android_licenses(android_home: str) -> None:
+    """Pre-accept all Android SDK/NDK licenses by writing hash files."""
+    import re
+    licenses_dir = Path(android_home) / "licenses"
+    licenses_dir.mkdir(parents=True, exist_ok=True)
+    for filename, hashes in _ANDROID_LICENSE_HASHES.items():
+        lic_file = licenses_dir / filename
+        existing: set = set()
+        if lic_file.exists():
+            existing = {h.strip() for h in lic_file.read_text().splitlines() if h.strip()}
+        all_hashes = existing | set(hashes)
+        lic_file.write_text("\n".join(sorted(all_hashes)) + "\n")
+
+def _fix_android_sdk_folders(android_home: str) -> None:
+    """Rename PyInstaller's '-2' suffixed folders back to their correct names.
+
+    PyInstaller appends '-2' (or '-3', etc.) to destination directory names
+    when it detects a naming conflict during the bundle collection phase.
+    This breaks Android SDK tools that expect exact directory names like
+    'build-tools/34.0.0' or 'platforms/android-34'.
+    """
+    import re
+    android_path = Path(android_home)
+    for subdir in ("build-tools", "platforms", "platform-tools", "cmdline-tools"):
+        parent = android_path / subdir
+        if not parent.exists():
+            continue
+        for folder in sorted(parent.iterdir()):
+            if not folder.is_dir():
+                continue
+            corrected = re.sub(r"-\d+$", "", folder.name)
+            if corrected != folder.name:
+                target = parent / corrected
+                if not target.exists():
+                    folder.rename(target)
+
 def _force_delete_dir(path: Path, log_fn=None):
     """
     Reliably delete a directory on Windows, including long-path scenarios.
@@ -267,6 +328,10 @@ def build_apk_task(self, app_id: str):
             f"{android_home}\\platform-tools;"
             f"{env.get('PATH', '')}"
         )
+
+        # Fix PyInstaller folder rename issue and pre-accept SDK/NDK licenses.
+        _fix_android_sdk_folders(android_home)
+        _accept_android_licenses(android_home)
 
         _update_status(db, app_id, step="Fetching dependencies...", log_append="Running 'flutter clean'...\n")
         _run_command_streaming(db, app_id, [flutter_path, "clean"], project_dir, env)

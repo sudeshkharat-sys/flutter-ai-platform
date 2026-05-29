@@ -27,17 +27,34 @@ import time
 import webbrowser
 from pathlib import Path
 
-# Suppress console windows for ALL child processes spawned by this EXE
-# (covers Ultralytics, ONNX, TFLite conversion, and any other subprocess).
-# Skip processes already marked DETACHED_PROCESS (e.g. postgres.exe).
+# Suppress console windows for ALL child processes spawned by this EXE.
+# Ultralytics/onnxsim/onnx2tf call sys.executable -c "..." during export,
+# which on a frozen EXE re-launches flutterai.exe. The CREATE_NO_WINDOW flag
+# prevents the OS from allocating a console for the child process.
+# STARTF_USESHOWWINDOW+SW_HIDE hides any window the child tries to create.
+# Both flags are needed: CREATE_NO_WINDOW handles direct Popen calls;
+# STARTUPINFO handles GUI windows spawned by the child.
 if sys.platform == "win32":
     _orig_popen = subprocess.Popen.__init__
     def _no_window_popen(self, *args, **kwargs):
         flags = kwargs.get("creationflags", 0)
         if not (flags & subprocess.DETACHED_PROCESS):
             kwargs["creationflags"] = flags | subprocess.CREATE_NO_WINDOW
+            si = kwargs.get("startupinfo")
+            if si is None:
+                si = subprocess.STARTUPINFO()
+                kwargs["startupinfo"] = si
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0  # SW_HIDE
         _orig_popen(self, *args, **kwargs)
     subprocess.Popen.__init__ = _no_window_popen
+
+    # os.system() bypasses Popen entirely and always shows a cmd window.
+    # Redirect it through subprocess so our patched Popen handles it.
+    _orig_os_system = os.system
+    def _no_window_os_system(cmd):
+        return subprocess.run(cmd, shell=True).returncode
+    os.system = _no_window_os_system
 
 if hasattr(sys, "_MEIPASS"):
     # PyInstaller 6.x: bundled files land in _internal\ next to the EXE
@@ -258,8 +275,9 @@ def _shutdown(pg: PostgresManager, redis: RedisManager, celery: CeleryWorker | N
 
 
 if __name__ == "__main__":
-    # Guard: Ultralytics (and other libs) call sys.executable -m pip install ...
-    # which relaunches this EXE. Detect and exit immediately.
-    if len(sys.argv) > 1 and sys.argv[1] == "-m":
+    # Guard: libraries (Ultralytics, onnxsim, pip) call sys.executable with
+    # -m or -c flags, which on a frozen EXE re-launches this entire app.
+    # Any invocation with these flags is a library subprocess — exit immediately.
+    if len(sys.argv) > 1 and sys.argv[1] in ("-m", "-c"):
         sys.exit(1)
     main()
