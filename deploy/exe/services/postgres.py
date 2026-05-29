@@ -1,6 +1,7 @@
 """Manages embedded portable PostgreSQL for the EXE deployment."""
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,9 @@ class PostgresManager:
 
     def initialize(self) -> None:
         print(f"[postgres] Initializing database cluster at {self.pg_data} ...")
+        # Remove any partial init from a previous failed run
+        if self.pg_data.exists() and not self.is_initialized():
+            shutil.rmtree(self.pg_data)
         self.pg_data.mkdir(parents=True, exist_ok=True)
         self.pg_log.parent.mkdir(parents=True, exist_ok=True)
 
