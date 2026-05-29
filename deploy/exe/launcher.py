@@ -21,10 +21,23 @@ import configparser
 import os
 import signal
 import socket
+import subprocess
 import sys
 import time
 import webbrowser
 from pathlib import Path
+
+# Suppress console windows for ALL child processes spawned by this EXE
+# (covers Ultralytics, ONNX, TFLite conversion, and any other subprocess).
+# Skip processes already marked DETACHED_PROCESS (e.g. postgres.exe).
+if sys.platform == "win32":
+    _orig_popen = subprocess.Popen.__init__
+    def _no_window_popen(self, *args, **kwargs):
+        flags = kwargs.get("creationflags", 0)
+        if not (flags & subprocess.DETACHED_PROCESS):
+            kwargs["creationflags"] = flags | subprocess.CREATE_NO_WINDOW
+        _orig_popen(self, *args, **kwargs)
+    subprocess.Popen.__init__ = _no_window_popen
 
 if hasattr(sys, "_MEIPASS"):
     # PyInstaller 6.x: bundled files land in _internal\ next to the EXE
