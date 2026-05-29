@@ -76,8 +76,15 @@ def convert_model_to_tflite(self, model_asset_id: str):
         sys.stdout = log_capture
 
         try:
-            # ── Fix: Disable AutoUpdate and requirement checks ───────────────────
+            # Disable Ultralytics auto-update and requirements installation.
+            # In frozen EXE, sys.executable is the EXE itself — Ultralytics
+            # calling "flutterai.exe -m pip install ..." opens new terminals.
             os.environ["ULTRALYTICS_AUTOUPDATE"] = "False"
+            try:
+                import ultralytics.utils.checks as _uc
+                _uc.check_requirements = lambda *a, **kw: None
+            except Exception:
+                pass
             
             log_txt = asset.get("conversion_log", "")
             log_txt += f"Device: {'cuda' if torch.cuda.is_available() else 'cpu'}\n"
