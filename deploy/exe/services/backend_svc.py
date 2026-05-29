@@ -47,6 +47,11 @@ def configure_env(
                 f"{android_home}\\platform-tools;"
                 + os.environ.get("PATH", "")
             ),
+            # Prevent Ultralytics from spawning pip install subprocesses.
+            # In frozen EXE sys.executable=flutterai.exe, so auto-install
+            # would relaunch the entire app in a loop.
+            "ULTRALYTICS_AUTOINSTALL": "False",
+            "ULTRALYTICS_AUTOUPDATE":  "False",
         }
     )
 
