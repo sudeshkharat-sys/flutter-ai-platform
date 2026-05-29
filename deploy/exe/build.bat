@@ -68,8 +68,12 @@ pip install pyinstaller ^
     onnx onnxruntime onnx2tf tf_keras ^
     Pillow pyyaml python-dotenv ^
     pydantic pydantic-settings "passlib[bcrypt]" "python-jose[cryptography]" ^
-    python-multipart aiofiles httpx
+    python-multipart aiofiles httpx ^
+    sng4onnx ai-edge-litert
 if errorlevel 1 ( echo [ERROR] pip install failed. & exit /b 1 )
+
+pip install onnx-graphsurgeon --extra-index-url https://pypi.ngc.nvidia.com
+if errorlevel 1 ( echo [WARN] onnx-graphsurgeon install failed - continuing anyway. )
 
 :: --------------------------------------------------------------------------
 :: Step 5 - Check for portable binaries and build tools

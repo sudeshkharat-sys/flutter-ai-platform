@@ -258,4 +258,8 @@ def _shutdown(pg: PostgresManager, redis: RedisManager, celery: CeleryWorker | N
 
 
 if __name__ == "__main__":
+    # Guard: Ultralytics (and other libs) call sys.executable -m pip install ...
+    # which relaunches this EXE. Detect and exit immediately.
+    if len(sys.argv) > 1 and sys.argv[1] == "-m":
+        sys.exit(1)
     main()
