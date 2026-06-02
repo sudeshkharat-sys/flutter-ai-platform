@@ -177,7 +177,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    console=False,
     icon=str(REPO_ROOT / "frontend" / "public" / "favicon.ico")
         if (REPO_ROOT / "frontend" / "public" / "favicon.ico").exists() else None,
 )

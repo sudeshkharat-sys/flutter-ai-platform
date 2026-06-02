@@ -16,24 +16,51 @@ first run with sensible defaults).
 """
 
 from __future__ import annotations
+import sys
 
+# ── Subprocess re-launch guard ────────────────────────────────────────────────
+# Libraries (Ultralytics, onnxsim, onnx2tf, TF, pip) call sys.executable -c
+# or -m to check imports or run pip. In a frozen EXE sys.executable IS this
+# app. Exit HERE — before any imports, before any I/O, zero side effects.
+# This must be the very first executable statement in the file.
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] in ("-m", "-c"):
+    sys.exit(1)
+
+# ── Standard imports ──────────────────────────────────────────────────────────
 import configparser
 import os
 import signal
 import socket
 import subprocess
-import sys
 import time
 import webbrowser
 from pathlib import Path
 
-# Suppress console windows for ALL child processes spawned by this EXE.
-# Ultralytics/onnxsim/onnx2tf call sys.executable -c "..." during export,
-# which on a frozen EXE re-launches flutterai.exe. The CREATE_NO_WINDOW flag
-# prevents the OS from allocating a console for the child process.
-# STARTF_USESHOWWINDOW+SW_HIDE hides any window the child tries to create.
-# Both flags are needed: CREATE_NO_WINDOW handles direct Popen calls;
-# STARTUPINFO handles GUI windows spawned by the child.
+# ── Log redirect for windowed (console=False) frozen EXE ─────────────────────
+# With console=False in the PyInstaller spec, sys.stdout/stderr are None when
+# the app runs without a parent terminal. Redirect to a log file so startup
+# messages are preserved. In dev mode (not frozen) this block is skipped and
+# stdout works normally.
+if hasattr(sys, "_MEIPASS") and sys.stdout is None:
+    import datetime as _dt
+    _log_dir = Path(sys.executable).parent / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _log_fh = open(
+        _log_dir / "launcher.log", "a", buffering=1, encoding="utf-8", errors="replace"
+    )
+    sys.stdout = _log_fh
+    sys.stderr = _log_fh
+    print(f"\n{'='*60}")
+    print(f"  Flutter AI Studio — {_dt.datetime.now():%Y-%m-%d %H:%M:%S}")
+    print(f"{'='*60}")
+
+# ── Suppress console windows for ALL child processes ─────────────────────────
+# Ultralytics, onnxsim, onnx2tf, and other libraries call sys.executable -c
+# "..." during model export. In a frozen EXE this re-launches flutterai.exe.
+# With console=False in the spec, flutterai.exe is a Windows-subsystem (GUI)
+# app and Windows never allocates a console for it regardless of how it is
+# spawned — even via cmd.exe. CREATE_NO_WINDOW + SW_HIDE are belt-and-suspenders
+# for any other subprocess (Gradle, Flutter, Redis, etc.).
 if sys.platform == "win32":
     _orig_popen = subprocess.Popen.__init__
     def _no_window_popen(self, *args, **kwargs):
@@ -50,14 +77,12 @@ if sys.platform == "win32":
     subprocess.Popen.__init__ = _no_window_popen
 
     # os.system() bypasses Popen entirely and always shows a cmd window.
-    # Redirect it through subprocess so our patched Popen handles it.
-    _orig_os_system = os.system
     def _no_window_os_system(cmd):
         return subprocess.run(cmd, shell=True).returncode
     os.system = _no_window_os_system
 
+# ── PyInstaller 6.x path split ───────────────────────────────────────────────
 if hasattr(sys, "_MEIPASS"):
-    # PyInstaller 6.x: bundled files land in _internal\ next to the EXE
     BUNDLE_DIR = Path(sys._MEIPASS)          # _internal\ — read-only bundled assets
     DATA_DIR   = Path(sys.executable).parent  # FlutterAI\ — config, db, logs
 else:
@@ -275,9 +300,4 @@ def _shutdown(pg: PostgresManager, redis: RedisManager, celery: CeleryWorker | N
 
 
 if __name__ == "__main__":
-    # Guard: libraries (Ultralytics, onnxsim, pip) call sys.executable with
-    # -m or -c flags, which on a frozen EXE re-launches this entire app.
-    # Any invocation with these flags is a library subprocess — exit immediately.
-    if len(sys.argv) > 1 and sys.argv[1] in ("-m", "-c"):
-        sys.exit(1)
     main()
