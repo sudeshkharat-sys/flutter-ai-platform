@@ -37,25 +37,27 @@ def _update_asset(db, asset_id, **kwargs):
 @celery_app.task(bind=True, name="convert_model_to_tflite")
 def convert_model_to_tflite(self, model_asset_id: str):
     """Convert an uploaded .pt file to .tflite using Ultralytics."""
-    db = _get_db()
+    db = None
+    try:
+        db = _get_db()
+    except Exception as exc:
+        print(f"[convert_model] FATAL: could not connect to DB for {model_asset_id}: {exc}")
+        raise
+
     from app.queries import ModelAssetQueries
     import json
-    
-    print(f"DEBUG TASK: Starting conversion for {model_asset_id}")
-    print(f"DEBUG TASK: DB URL = {db.settings.postgres_url}")
-    
+
+    print(f"[convert_model] Starting conversion for {model_asset_id}")
+
     try:
         # Check if record exists
         rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})
         if not rows:
-            print(f"DEBUG TASK: Record {model_asset_id} NOT FOUND in database.")
-            # List some IDs to see what's in there
-            all_ids = db.execute_query("SELECT id FROM model_assets LIMIT 5")
-            print(f"DEBUG TASK: Existing IDs in model_assets: {all_ids}")
+            print(f"[convert_model] ModelAsset {model_asset_id} not found in DB.")
             return {"error": f"ModelAsset {model_asset_id} not found"}
-        
+
         asset = dict(rows[0])
-        print(f"DEBUG TASK: Found asset: {asset['vision_project_name']}")
+        print(f"[convert_model] Processing: {asset['vision_project_name']}")
         pt_path = Path(asset["pt_path"])
         if not pt_path.exists():
             _update_asset(db, model_asset_id, status="error", error_message=f"Uploaded model file not found at {pt_path}.")
@@ -136,7 +138,12 @@ def convert_model_to_tflite(self, model_asset_id: str):
         return {"status": "ready", "tflite_path": str(tflite_path)}
 
     except Exception as exc:
-        _update_asset(db, model_asset_id, status="error", error_message=str(exc)[:500])
+        if db is not None:
+            try:
+                _update_asset(db, model_asset_id, status="error", error_message=str(exc)[:500])
+            except Exception as inner:
+                print(f"[convert_model] Failed to write error status for {model_asset_id}: {inner}")
         raise
     finally:
-        db.close()
+        if db is not None:
+            db.close()

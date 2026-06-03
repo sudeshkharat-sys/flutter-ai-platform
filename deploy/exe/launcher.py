@@ -331,12 +331,23 @@ def main() -> None:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
+    _celery_restarts = 0
+    _MAX_CELERY_RESTARTS = 3
     while True:
         time.sleep(1)
         if not uvicorn_thread.is_alive():
             print("[ERROR] Uvicorn thread exited unexpectedly. Shutting down.")
             _shutdown(pg, redis, celery)
             sys.exit(1)
+        # Celery runs in a daemon thread (EXE mode). If it crashes, tasks sit
+        # in Redis forever and the UI gets stuck at "processing". Restart it.
+        if hasattr(celery, "_thread") and celery._thread is not None and not celery._thread.is_alive():
+            _celery_restarts += 1
+            if _celery_restarts <= _MAX_CELERY_RESTARTS:
+                print(f"[WARNING] Celery worker thread died — restarting ({_celery_restarts}/{_MAX_CELERY_RESTARTS}). Check logs/celery_crash.log")
+                celery.start()
+            else:
+                print(f"[ERROR] Celery worker thread has crashed {_celery_restarts - 1} times. Model conversions and APK builds will not work. Check logs/celery_crash.log")
 
 
 def _shutdown(pg: PostgresManager, redis: RedisManager, celery: CeleryWorker | None) -> None:

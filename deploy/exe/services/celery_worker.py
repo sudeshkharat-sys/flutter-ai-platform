@@ -1,9 +1,11 @@
 """Starts the Celery worker for EXE deployment."""
 
+import datetime
 import os
 import subprocess
 import sys
 import threading
+import traceback
 from pathlib import Path
 
 
@@ -51,16 +53,36 @@ class CeleryWorker:
 
     @staticmethod
     def _run_in_thread() -> None:
-        from app.tasks.celery_app import celery_app
-        celery_app.worker_main([
-            "worker",
-            "--loglevel=info",
-            "--pool=solo",
-            "-Q", "celery",
-            "--without-gossip",
-            "--without-mingle",
-            "--without-heartbeat",
-        ])
+        try:
+            from app.tasks.celery_app import celery_app
+            celery_app.worker_main([
+                "worker",
+                "--loglevel=info",
+                "--pool=solo",
+                "-Q", "celery",
+                "--without-gossip",
+                "--without-mingle",
+                "--without-heartbeat",
+            ])
+        except Exception:
+            tb = traceback.format_exc()
+            print(f"[celery] Worker thread crashed:\n{tb}", flush=True)
+            try:
+                if hasattr(sys, "_MEIPASS"):
+                    log_path = Path(sys.executable).parent / "logs" / "celery_crash.log"
+                else:
+                    log_path = Path(__file__).parent.parent / "logs" / "celery_crash.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] CRASH:\n{tb}\n")
+            except Exception:
+                pass
+        finally:
+            print("[celery] Worker thread exiting.", flush=True)
+
+    def is_alive(self) -> bool:
+        """Return True if the in-process worker thread is still running."""
+        return self._thread is not None and self._thread.is_alive()
 
     def stop(self) -> None:
         if self._process and self._process.poll() is None:
