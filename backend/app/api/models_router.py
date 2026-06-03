@@ -135,14 +135,36 @@ def get_model_status(model_asset_id: str, db: StateDBConnector = Depends(get_db_
     rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})
     if not rows:
         raise HTTPException(status_code=404, detail="Model asset not found")
-    
+
     asset = rows[0]
     return ModelAssetStatus(
         id=asset["id"],
         status=asset["status"],
         error_message=asset["error_message"],
+        conversion_log=asset.get("conversion_log") or "",
         tflite_path=asset["tflite_path"],
     )
+
+@router.post("/{model_asset_id}/reset")
+def reset_model_conversion(model_asset_id: str, db: StateDBConnector = Depends(get_db_connector)):
+    """Reset a stuck model back to pending and re-queue the conversion task."""
+    rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})
+    if not rows:
+        raise HTTPException(status_code=404, detail="Model asset not found")
+
+    asset = rows[0]
+    if asset["status"] == "ready":
+        return {"status": "ready", "message": "Model is already converted."}
+
+    db.execute_update(
+        """UPDATE model_assets SET status='pending', error_message=NULL,
+           conversion_log='Reset and re-queued.\n', tflite_path=NULL, labels_path=NULL
+           WHERE id=:id""",
+        {"id": model_asset_id},
+    )
+    from app.tasks.convert_model import convert_model_to_tflite
+    convert_model_to_tflite.delay(model_asset_id)
+    return {"status": "pending", "message": "Conversion re-queued."}
 
 @router.delete("/{model_asset_id}")
 def delete_model(model_asset_id: str, db: StateDBConnector = Depends(get_db_connector)):
