@@ -24,6 +24,15 @@ import sys
 # app. Exit HERE — before any imports, before any I/O, zero side effects.
 # This must be the very first executable statement in the file.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] in ("-m", "-c"):
+    try:
+        import datetime as _ddt
+        from pathlib import Path as _P
+        _gl = _P(sys.executable).parent / "logs" / "spawn_debug.log"
+        _gl.parent.mkdir(parents=True, exist_ok=True)
+        with open(_gl, "a", encoding="utf-8") as _gf:
+            _gf.write(f"[{_ddt.datetime.now():%H:%M:%S.%f}] GUARD HIT: {sys.argv}\n")
+    except Exception:
+        pass
     sys.exit(1)
 
 # ── Standard imports ──────────────────────────────────────────────────────────
@@ -62,8 +71,27 @@ if hasattr(sys, "_MEIPASS") and sys.stdout is None:
 # spawned — even via cmd.exe. CREATE_NO_WINDOW + SW_HIDE are belt-and-suspenders
 # for any other subprocess (Gradle, Flutter, Redis, etc.).
 if sys.platform == "win32":
+    # Debug log: records every subprocess spawned so we can identify
+    # what is creating terminal windows. Remove once root cause is fixed.
+    _spawn_log = (
+        Path(sys.executable).parent / "logs" / "spawn_debug.log"
+        if hasattr(sys, "_MEIPASS")
+        else Path(__file__).parent / "logs" / "spawn_debug.log"
+    )
+    try:
+        _spawn_log.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
     _orig_popen = subprocess.Popen.__init__
     def _no_window_popen(self, *args, **kwargs):
+        try:
+            import datetime as _ddt
+            _cmd = args[0] if args else kwargs.get("args", "?")
+            with open(_spawn_log, "a", encoding="utf-8", errors="replace") as _sf:
+                _sf.write(f"[{_ddt.datetime.now():%H:%M:%S.%f}] {_cmd}\n")
+        except Exception:
+            pass
         flags = kwargs.get("creationflags", 0)
         if not (flags & subprocess.DETACHED_PROCESS):
             kwargs["creationflags"] = flags | subprocess.CREATE_NO_WINDOW
@@ -78,6 +106,12 @@ if sys.platform == "win32":
 
     # os.system() bypasses Popen entirely and always shows a cmd window.
     def _no_window_os_system(cmd):
+        try:
+            import datetime as _ddt
+            with open(_spawn_log, "a", encoding="utf-8", errors="replace") as _sf:
+                _sf.write(f"[{_ddt.datetime.now():%H:%M:%S.%f}] OS.SYSTEM: {cmd}\n")
+        except Exception:
+            pass
         return subprocess.run(cmd, shell=True).returncode
     os.system = _no_window_os_system
 
