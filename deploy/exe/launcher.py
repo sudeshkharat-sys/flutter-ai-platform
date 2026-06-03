@@ -18,6 +18,27 @@ first run with sensible defaults).
 from __future__ import annotations
 import sys
 
+# ── Single-instance guard (Windows mutex) ────────────────────────────────────
+# Prevents a second copy of the EXE from starting when the user clicks the
+# icon again while the app is already running.  A duplicate launch would try
+# to bind the same ports and fail noisily; instead we just open the browser
+# to the running instance and exit silently.
+# Runs before any side-effectful imports.
+if sys.platform == "win32" and getattr(sys, "_MEIPASS", None):
+    import ctypes as _ct
+    _MUTEX_NAME = "Global\\FlutterAIStudio_SingleInstance"
+    _mutex_handle = _ct.windll.kernel32.CreateMutexW(None, True, _MUTEX_NAME)
+    if _ct.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        try:
+            import subprocess as _sp
+            _sp.run(
+                ["cmd", "/c", "start", "", "http://127.0.0.1:8001"],
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+        except Exception:
+            pass
+        sys.exit(0)
+
 # ── Subprocess re-launch guard ────────────────────────────────────────────────
 # Libraries (Ultralytics, onnxsim, onnx2tf, TF, pip) call sys.executable -c
 # or -m to check imports or run pip. In a frozen EXE sys.executable IS this
@@ -93,14 +114,17 @@ if sys.platform == "win32":
         except Exception:
             pass
         flags = kwargs.get("creationflags", 0)
-        if not (flags & subprocess.DETACHED_PROCESS):
-            kwargs["creationflags"] = flags | subprocess.CREATE_NO_WINDOW
-            si = kwargs.get("startupinfo")
-            if si is None:
-                si = subprocess.STARTUPINFO()
-                kwargs["startupinfo"] = si
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0  # SW_HIDE
+        # Unconditionally add CREATE_NO_WINDOW and SW_HIDE for every subprocess,
+        # including those that also use DETACHED_PROCESS.  The two flags are
+        # compatible: DETACHED_PROCESS detaches from the parent console while
+        # CREATE_NO_WINDOW suppresses any new console window being allocated.
+        kwargs["creationflags"] = flags | subprocess.CREATE_NO_WINDOW
+        si = kwargs.get("startupinfo")
+        if si is None:
+            si = subprocess.STARTUPINFO()
+            kwargs["startupinfo"] = si
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
         _orig_popen(self, *args, **kwargs)
     subprocess.Popen.__init__ = _no_window_popen
 

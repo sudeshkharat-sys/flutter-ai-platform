@@ -67,13 +67,13 @@ class PostgresManager:
         sys.stdout.flush()
         self.pg_log.parent.mkdir(parents=True, exist_ok=True)
 
-        # CREATE_NO_WINDOW: suppresses the console window for postgres.exe and,
-        # critically, allows our launcher's STARTUPINFO(SW_HIDE) to propagate so
-        # postgres's own C-spawned workers (bgwriter, checkpointer, etc.) also
-        # start hidden.  CREATE_NEW_PROCESS_GROUP isolates signal delivery so a
-        # Ctrl+C in any parent console can't reach postgres.
-        # (DETACHED_PROCESS was used previously but it bypassed our Popen patch's
-        # SW_HIDE injection, causing ~4 visible terminal windows during startup.)
+        # Three flags together for maximum isolation:
+        # - DETACHED_PROCESS: fully disconnects from any parent console so
+        #   Ctrl+C signals can't reach postgres or its worker processes.
+        # - CREATE_NO_WINDOW: suppresses any console window for postgres.exe
+        #   and allows our launcher's STARTUPINFO(SW_HIDE) to propagate to
+        #   postgres's C-spawned workers (bgwriter, checkpointer, etc.).
+        # - CREATE_NEW_PROCESS_GROUP: puts postgres in its own signal group.
         pg_exe = self.pg_bin / "postgres.exe"
         log_fh = open(str(self.pg_log), "a")
         self._process = subprocess.Popen(
@@ -81,7 +81,9 @@ class PostgresManager:
             stdout=log_fh,
             stderr=log_fh,
             creationflags=(
-                subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+                subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NO_WINDOW
+                | subprocess.CREATE_NEW_PROCESS_GROUP
             ) if sys.platform == "win32" else 0,
         )
 
