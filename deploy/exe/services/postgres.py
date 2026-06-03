@@ -77,7 +77,9 @@ class PostgresManager:
             stdout=log_fh,
             stderr=log_fh,
             creationflags=(
-                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW
             ) if sys.platform == "win32" else 0,
         )
 
@@ -137,6 +139,8 @@ class PostgresManager:
             subprocess.run(
                 [self._bin("pg_ctl.exe"), "stop", "-D", str(self.pg_data), "-m", "fast"],
                 capture_output=True,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+                creationflags=(
+                    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+                ) if sys.platform == "win32" else 0,
             )
         print("[postgres] Stopped.")

@@ -18,6 +18,27 @@ first run with sensible defaults).
 from __future__ import annotations
 import sys
 
+# ── Single-instance guard (Windows mutex) ────────────────────────────────────
+# Prevents a second copy of the EXE from launching when the user clicks the
+# file again while the app is already running.  Must run before any imports
+# that might have side-effects.
+if sys.platform == "win32" and getattr(sys, "_MEIPASS", None):
+    import ctypes
+    _MUTEX_NAME = "Global\\FlutterAIStudio_SingleInstance"
+    _mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, True, _MUTEX_NAME)
+    _last_err = ctypes.windll.kernel32.GetLastError()
+    if _last_err == 183:  # ERROR_ALREADY_EXISTS — another instance is running
+        # Try to bring the existing window to the foreground and exit silently.
+        try:
+            import subprocess as _sp
+            _sp.run(
+                ["cmd", "/c", "start", "", "http://127.0.0.1:8001"],
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+        except Exception:
+            pass
+        sys.exit(0)
+
 # ── Subprocess re-launch guard ────────────────────────────────────────────────
 # Libraries (Ultralytics, onnxsim, onnx2tf, TF, pip) call sys.executable -c
 # or -m to check imports or run pip. In a frozen EXE sys.executable IS this
@@ -93,14 +114,15 @@ if sys.platform == "win32":
         except Exception:
             pass
         flags = kwargs.get("creationflags", 0)
-        if not (flags & subprocess.DETACHED_PROCESS):
-            kwargs["creationflags"] = flags | subprocess.CREATE_NO_WINDOW
-            si = kwargs.get("startupinfo")
-            if si is None:
-                si = subprocess.STARTUPINFO()
-                kwargs["startupinfo"] = si
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0  # SW_HIDE
+        # Always suppress console windows — CREATE_NO_WINDOW is compatible with
+        # DETACHED_PROCESS and CREATE_NEW_PROCESS_GROUP.
+        kwargs["creationflags"] = flags | subprocess.CREATE_NO_WINDOW
+        si = kwargs.get("startupinfo")
+        if si is None:
+            si = subprocess.STARTUPINFO()
+            kwargs["startupinfo"] = si
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
         _orig_popen(self, *args, **kwargs)
     subprocess.Popen.__init__ = _no_window_popen
 
