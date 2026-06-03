@@ -67,9 +67,13 @@ class PostgresManager:
         sys.stdout.flush()
         self.pg_log.parent.mkdir(parents=True, exist_ok=True)
 
-        # Start postgres.exe directly with DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP
-        # so it is fully isolated from the launcher console and won't receive
-        # Ctrl+C signals that kill the background worker processes (0xC000013A).
+        # CREATE_NO_WINDOW: suppresses the console window for postgres.exe and,
+        # critically, allows our launcher's STARTUPINFO(SW_HIDE) to propagate so
+        # postgres's own C-spawned workers (bgwriter, checkpointer, etc.) also
+        # start hidden.  CREATE_NEW_PROCESS_GROUP isolates signal delivery so a
+        # Ctrl+C in any parent console can't reach postgres.
+        # (DETACHED_PROCESS was used previously but it bypassed our Popen patch's
+        # SW_HIDE injection, causing ~4 visible terminal windows during startup.)
         pg_exe = self.pg_bin / "postgres.exe"
         log_fh = open(str(self.pg_log), "a")
         self._process = subprocess.Popen(
@@ -77,7 +81,7 @@ class PostgresManager:
             stdout=log_fh,
             stderr=log_fh,
             creationflags=(
-                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
             ) if sys.platform == "win32" else 0,
         )
 
@@ -124,6 +128,7 @@ class PostgresManager:
                     self.db_name,
                 ],
                 env={**os.environ, **env_pg},
+                capture_output=True,
                 check=True,
             )
             print(f"[postgres] Database '{self.db_name}' created.")
