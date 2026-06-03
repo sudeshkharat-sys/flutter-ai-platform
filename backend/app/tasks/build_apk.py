@@ -333,6 +333,22 @@ def build_apk_task(self, app_id: str):
         _fix_android_sdk_folders(android_home)
         _accept_android_licenses(android_home)
 
+        # Prevent Gradle from spawning a separate daemon JVM process.
+        # Without this, Gradle creates a daemon via CreateProcess with no console
+        # flags; since its parent (java.exe) has no console, Windows allocates a
+        # new visible console window for the daemon — causing blank terminal popups.
+        # Disabling the daemon makes all Gradle work run in the initial JVM which
+        # already inherits our no-console/SW_HIDE startup state.
+        env["GRADLE_OPTS"] = (
+            env.get("GRADLE_OPTS", "")
+            + " -Dorg.gradle.daemon=false"
+        ).strip()
+        # Prevent any Java AWT/Swing windows from appearing during the build.
+        env["JAVA_TOOL_OPTIONS"] = (
+            env.get("JAVA_TOOL_OPTIONS", "")
+            + " -Djava.awt.headless=true"
+        ).strip()
+
         _update_status(db, app_id, step="Fetching dependencies...", log_append="Running 'flutter clean'...\n")
         _run_command_streaming(db, app_id, [flutter_path, "clean"], project_dir, env)
 
