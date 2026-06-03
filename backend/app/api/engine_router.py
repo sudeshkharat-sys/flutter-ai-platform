@@ -1,13 +1,13 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
-from app.connectors.state_db import StateDBConnector
+from app.connectors.state_db import StateDBConnector, get_shared_connector
 from app.queries import EngineDataQueries
 from app.schemas.base import EngineMappingCreate, EngineMappingUpdate, EngineMappingResponse
 
 router = APIRouter(prefix="/engine-data", tags=["engine"])
 
 def get_db_connector():
-    connector = StateDBConnector()
+    connector = get_shared_connector()
     try:
         yield connector
     finally:

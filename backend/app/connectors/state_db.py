@@ -16,6 +16,25 @@ from app.connectors.table_creation import metadata
 
 logger = logging.getLogger(__name__)
 
+# Module-level singleton — created once, shared by all API requests.
+# Previously every request called StateDBConnector() which opened a brand-new
+# connection pool (pool_size=5) and then disposed it after the request.  On
+# Windows, each physical postgres connection spawns a new backend process; with
+# DETACHED_PROCESS postgres had no console so each backend got its own new
+# visible console window — one per request click.  A shared engine means
+# connections are reused from the pool instead of being opened and closed
+# constantly.
+_shared_connector: "StateDBConnector | None" = None
+
+
+def get_shared_connector() -> "StateDBConnector":
+    """Return the process-wide shared DB connector, creating it on first call."""
+    global _shared_connector
+    if _shared_connector is None:
+        _shared_connector = StateDBConnector()
+    return _shared_connector
+
+
 class StateDBConnector:
     """
     Manages PostgreSQL database connections
@@ -41,8 +60,8 @@ class StateDBConnector:
             self.engine = create_engine(
                 url,
                 poolclass=QueuePool,
-                pool_size=5,
-                max_overflow=10,
+                pool_size=2,
+                max_overflow=3,
                 pool_pre_ping=True,
                 echo=False,
             )

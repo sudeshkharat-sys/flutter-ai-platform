@@ -3,7 +3,7 @@ import io
 import os
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse, FileResponse
-from app.connectors.state_db import StateDBConnector
+from app.connectors.state_db import StateDBConnector, get_shared_connector
 from app.queries import ProjectQueries, ModelAssetQueries
 from app.codegen.generator import generate_flutter_project
 from app.tasks.build_apk import build_apk_task
@@ -11,7 +11,7 @@ from app.tasks.build_apk import build_apk_task
 router = APIRouter(prefix="/apps", tags=["export"])
 
 def get_db_connector():
-    connector = StateDBConnector()
+    connector = get_shared_connector()
     try:
         yield connector
     finally:

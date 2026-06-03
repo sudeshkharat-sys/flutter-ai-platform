@@ -2,14 +2,14 @@ import uuid
 import json
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends
-from app.connectors.state_db import StateDBConnector
+from app.connectors.state_db import StateDBConnector, get_shared_connector
 from app.queries import ProjectQueries
 from app.schemas.base import AppProjectCreate, AppProjectUpdate, AppProjectResponse
 
 router = APIRouter(prefix="/apps", tags=["apps"])
 
 def get_db_connector():
-    connector = StateDBConnector()
+    connector = get_shared_connector()
     try:
         yield connector
     finally:

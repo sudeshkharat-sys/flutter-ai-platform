@@ -1,7 +1,7 @@
 import json
 import shutil
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from app.connectors.state_db import StateDBConnector
+from app.connectors.state_db import StateDBConnector, get_shared_connector
 from app.queries import ModelAssetQueries
 from app.schemas.base import ModelAssetResponse, ModelAssetStatus
 from app.tasks.convert_model import convert_model_to_tflite
@@ -11,7 +11,7 @@ import uuid
 router = APIRouter(prefix="/models", tags=["models"])
 
 def get_db_connector():
-    connector = StateDBConnector()
+    connector = get_shared_connector()
     try:
         yield connector
     finally:
