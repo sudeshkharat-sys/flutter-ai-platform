@@ -124,6 +124,25 @@ hiddenimports += [
     # Celery tasks
     "app.tasks.convert_model",
     "app.tasks.build_apk",
+    "app.tasks.celery_app",
+    # Core app modules (lazy-imported inside functions — not caught by static analysis)
+    "app.config",
+    "app.database",
+    "app.queries",
+    # Connectors
+    "app.connectors.state_db",
+    "app.connectors.table_creation",
+    # Models
+    "app.models",
+    "app.models.app_project",
+    "app.models.master_mapping",
+    "app.models.model_asset",
+    # Schemas
+    "app.schemas",
+    "app.schemas.base",
+    # Codegen (imported inside build_apk.py function body)
+    "app.codegen",
+    "app.codegen.generator",
     # API modules
     "app.api.models_router",
     "app.api.apps_router",
