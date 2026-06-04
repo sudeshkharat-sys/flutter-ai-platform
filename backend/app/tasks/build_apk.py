@@ -287,7 +287,11 @@ def build_apk_task(self, app_id: str):
         # every subsequent flutter command to fail with "No pubspec.yaml found".
         project_dir = _find_project_dir(export_root)
         _update_status(db, app_id, log_append=f"Project root: {project_dir.name}\n")
-        
+
+        # Ensure reference_images dir exists — pubspec.yaml always declares it
+        # and Flutter errors if the directory is missing even when empty.
+        (project_dir / "assets" / "reference_images").mkdir(parents=True, exist_ok=True)
+
         # 3. Copy model assets
         if all_model_assets:
             _update_status(db, app_id, step="Embedding AI models...", log_append=f"Copying {len(all_model_assets)} models...\n")
