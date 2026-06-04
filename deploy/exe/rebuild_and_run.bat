@@ -30,7 +30,7 @@ popd
 
 :: Rebuild EXE
 echo [4] Rebuilding EXE...
-call conda activate flutterai
+call conda activate flutter-ai
 cd /d "%~dp0"
 call .\build.bat
 if errorlevel 1 ( echo [ERROR] Build failed. & exit /b 1 )
