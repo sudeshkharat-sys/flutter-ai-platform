@@ -52,12 +52,22 @@ class CeleryWorker:
         print("[celery] Worker started.")
 
     @staticmethod
+    def _celery_log_path() -> str:
+        if hasattr(sys, "_MEIPASS"):
+            log_dir = Path(sys.executable).parent / "logs"
+        else:
+            log_dir = Path(__file__).parent.parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return str(log_dir / "celery_worker.log")
+
+    @staticmethod
     def _run_in_thread() -> None:
         try:
             from app.tasks.celery_app import celery_app
             celery_app.worker_main([
                 "worker",
                 "--loglevel=info",
+                "--logfile", CeleryWorker._celery_log_path(),
                 "--pool=solo",
                 "-Q", "celery",
                 "--without-gossip",
