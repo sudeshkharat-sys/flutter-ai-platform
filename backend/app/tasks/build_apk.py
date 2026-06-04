@@ -61,10 +61,11 @@ def _run_command_streaming(db, app_id, cmd, cwd, env):
         cmd,
         cwd=str(cwd),
         env=env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        bufsize=1, 
+        bufsize=1,
         universal_newlines=True,
         encoding='utf-8',
         errors='replace'
