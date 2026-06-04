@@ -1,10 +1,27 @@
 """Starts the Celery worker for EXE deployment."""
 
+import datetime
 import os
 import subprocess
 import sys
 import threading
+import traceback
 from pathlib import Path
+
+
+def _celery_log_path() -> str:
+    """Return an absolute path for the Celery worker log file.
+
+    Celery's WatchedFileHandler crashes if --logfile is None, which happens
+    in a frozen EXE where sys.stdout/stderr are redirected and Celery's log
+    detection returns None instead of falling back to stdout.
+    """
+    if hasattr(sys, "_MEIPASS"):
+        log_dir = Path(sys.executable).parent / "logs"
+    else:
+        log_dir = Path(__file__).parent.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return str(log_dir / "celery_worker.log")
 
 
 class CeleryWorker:
@@ -51,16 +68,32 @@ class CeleryWorker:
 
     @staticmethod
     def _run_in_thread() -> None:
-        from app.tasks.celery_app import celery_app
-        celery_app.worker_main([
-            "worker",
-            "--loglevel=info",
-            "--pool=solo",
-            "-Q", "celery",
-            "--without-gossip",
-            "--without-mingle",
-            "--without-heartbeat",
-        ])
+        try:
+            from app.tasks.celery_app import celery_app
+            celery_app.worker_main([
+                "worker",
+                "--loglevel=info",
+                "--logfile", _celery_log_path(),
+                "--pool=solo",
+                "-Q", "celery",
+                "--without-gossip",
+                "--without-mingle",
+                "--without-heartbeat",
+            ])
+        except Exception:
+            tb = traceback.format_exc()
+            print(f"[celery] Worker thread crashed:\n{tb}", flush=True)
+            try:
+                crash_log = _celery_log_path().replace("celery_worker.log", "celery_crash.log")
+                with open(crash_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] CRASH:\n{tb}\n")
+            except Exception:
+                pass
+        finally:
+            print("[celery] Worker thread exiting.", flush=True)
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     def stop(self) -> None:
         if self._process and self._process.poll() is None:
