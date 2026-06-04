@@ -339,6 +339,7 @@ def main() -> None:
 
     _celery_restarts = 0
     _MAX_CELERY_RESTARTS = 3
+    _celery_gave_up = False
     while True:
         time.sleep(1)
         if not uvicorn_thread.is_alive():
@@ -347,13 +348,14 @@ def main() -> None:
             sys.exit(1)
         # Celery runs in a daemon thread (EXE mode). If it crashes, tasks sit
         # in Redis forever and the UI gets stuck at "processing". Restart it.
-        if hasattr(celery, "_thread") and celery._thread is not None and not celery._thread.is_alive():
+        if not _celery_gave_up and hasattr(celery, "_thread") and celery._thread is not None and not celery._thread.is_alive():
             _celery_restarts += 1
             if _celery_restarts <= _MAX_CELERY_RESTARTS:
                 print(f"[WARNING] Celery worker thread died — restarting ({_celery_restarts}/{_MAX_CELERY_RESTARTS}). Check logs/celery_crash.log")
                 celery.start()
             else:
-                print(f"[ERROR] Celery worker thread has crashed {_celery_restarts - 1} times. Model conversions and APK builds will not work. Check logs/celery_crash.log")
+                print("[ERROR] Celery worker crashed too many times. Model conversions will not work. Check logs/celery_crash.log")
+                _celery_gave_up = True
 
 
 def _shutdown(pg: PostgresManager, redis: RedisManager, celery: CeleryWorker | None) -> None:

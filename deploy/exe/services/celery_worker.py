@@ -73,7 +73,6 @@ class CeleryWorker:
                 "--without-gossip",
                 "--without-mingle",
                 "--without-heartbeat",
-                "--quiet",
             ])
         except Exception:
             tb = traceback.format_exc()
