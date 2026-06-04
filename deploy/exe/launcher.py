@@ -84,6 +84,12 @@ if hasattr(sys, "_MEIPASS") and sys.stdout is None:
     print(f"  Flutter AI Studio — {_dt.datetime.now():%Y-%m-%d %H:%M:%S}")
     print(f"{'='*60}")
 
+# sys.stdin is also None in windowed EXE mode. Celery's banner code calls
+# sys.stdin.isatty() which crashes with AttributeError. Point it at devnull.
+if hasattr(sys, "_MEIPASS") and sys.stdin is None:
+    import io as _io
+    sys.stdin = _io.StringIO()
+
 # ── Suppress console windows for ALL child processes ─────────────────────────
 # Ultralytics, onnxsim, onnx2tf, and other libraries call sys.executable -c
 # "..." during model export. In a frozen EXE this re-launches flutterai.exe.
