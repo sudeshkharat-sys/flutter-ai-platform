@@ -51,6 +51,7 @@ export const exportApp = (id) =>
   api.post(`/apps/${id}/export`, {}, { responseType: 'blob' });
 
 export const buildAPK = (id) => api.post(`/apps/${id}/build`);
+export const cancelBuild = (id) => api.post(`/apps/${id}/cancel-build`);
 
 export const downloadAPK = (id) =>
   api.get(`/apps/${id}/apk`, { responseType: 'blob' });

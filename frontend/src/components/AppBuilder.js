@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
+import { getApp, getModels, buildAPK, cancelBuild, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -70,7 +70,7 @@ export default function AppBuilder() {
   };
 
   const handleResetBuild = async () => {
-    await updateApp(id, { build_status: 'idle', build_step: '' });
+    try { await cancelBuild(id); } catch { await updateApp(id, { build_status: 'idle', build_step: '' }); }
     loadData();
   };
 

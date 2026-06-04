@@ -156,3 +156,14 @@ def preview_export(app_id: str, db: StateDBConnector = Depends(get_db_connector)
         "input_size": input_size,
         "model_name": model_name,
     }
+
+@router.post("/{app_id}/cancel-build")
+def cancel_build(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
+    """Purge all queued Celery tasks and reset build status to idle."""
+    from app.tasks.celery_app import celery_app
+    celery_app.control.purge()
+    db.execute_update(
+        "UPDATE app_projects SET build_status='idle', build_step='', build_log='' WHERE id=:id",
+        {"id": app_id},
+    )
+    return {"status": "cancelled"}

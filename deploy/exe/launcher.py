@@ -316,6 +316,15 @@ def main() -> None:
     celery = CeleryWorker()
     celery.start()
 
+    # Purge any stale queued tasks left over from a previous crashed session.
+    # Without this, Celery picks up old build/conversion tasks on restart.
+    try:
+        from app.tasks.celery_app import celery_app as _ca
+        _ca.control.purge()
+        print("[celery] Stale task queue purged.")
+    except Exception as _e:
+        print(f"[celery] Queue purge skipped: {_e}")
+
     # ------------------------------------------------------------------
     # All services up
     # ------------------------------------------------------------------
