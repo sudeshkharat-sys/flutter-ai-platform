@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart' as drift;
 import 'inspection_camera_screen.dart';
@@ -116,6 +118,56 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  String _getShift(DateTime dt) {
+    final h = dt.hour;
+    if (h >= 7 && h < 15) return 'A';
+    if (h >= 15 && h < 24) return 'B';
+    return 'C';
+  }
+
+  Future<void> _appendToCsv(int inspectionId, String vin, String modelCode) async {
+    try {
+      Directory? extDir;
+      try {
+        extDir = await getExternalStorageDirectory();
+        extDir = extDir?.parent.parent.parent.parent;
+      } catch (_) {}
+      final root = extDir?.path ?? (await getApplicationDocumentsDirectory()).path;
+      final appFolder = Directory('$root/MAI App Data/{{ app_name }}');
+      await appFolder.create(recursive: true);
+
+      final now = DateTime.now();
+      final monthTag = '${now.year}_${now.month.toString().padLeft(2, '0')}';
+      final csvFile = File('${appFolder.path}/inspection_history_$monthTag.csv');
+
+      const header = 'inspection_id,vin,model_code,date,shift,task_name,class_detected,confidence,pass_fail,image_filename\n';
+      if (!await csvFile.exists()) await csvFile.writeAsString(header);
+
+      final dateStr = '${now.year}-${now.month.toString().padLeft(2,'0')}-${now.day.toString().padLeft(2,'0')}';
+      final shift = _getShift(now);
+      final buffer = StringBuffer();
+
+      for (int i = 0; i < _tasks.length; i++) {
+        final task = _tasks[i];
+        final result = _taskResults[i] ?? {};
+        final taskName = (task['name'] as String? ?? 'task').replaceAll(',', ' ');
+        final className = (result['className'] as String? ?? 'None').replaceAll(',', ' ');
+        final confidence = result['confidence'] != null
+            ? '${((result['confidence'] as double) * 100).toStringAsFixed(1)}%'
+            : '-';
+        final passFail = (result['success'] as bool? ?? false) ? 'PASS' : 'FAIL';
+        final imagePath = result['imagePath'] as String?;
+        final imageFilename = imagePath != null ? imagePath.split('/').last : '-';
+
+        buffer.writeln('$inspectionId,$vin,$modelCode,$dateStr,$shift,$taskName,$className,$confidence,$passFail,$imageFilename');
+      }
+
+      await csvFile.writeAsString(buffer.toString(), mode: FileMode.append, flush: true);
+    } catch (e) {
+      debugPrint('CSV export failed: $e');
+    }
+  }
+
   void _submitInspection() async {
     if (_taskResults.length < _tasks.length) {
       showDialog(
@@ -161,6 +213,9 @@ class _HomeScreenState extends State<HomeScreen> {
         detectionsJson: drift.Value(result['detectionsJson'] as String?),
       ));
     }
+
+    // Append to monthly CSV in MAI App Data folder
+    await _appendToCsv(inspectionId, widget.vin ?? 'UNKNOWN', widget.modelCode ?? 'UNKNOWN');
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
