@@ -836,7 +836,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                   {reviewData.map((row, rowIndex) => (
                     <tr key={row.id} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={tdStyle}><div style={{ fontWeight: 700, fontSize: 13 }}>{row.platform_name}</div></td>
-                      <td style={tdStyle}><span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span></td>
+                      <td style={tdStyle}>
+                        <span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span>
+                        {row.description && (
+                          <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.4, wordBreak: 'break-word', maxWidth: 120 }}>{row.description}</div>
+                        )}
+                      </td>
                       <td colSpan={6} style={{ padding: 0 }}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
                           {row.selectedAIModels.map((ai, aiIdx) => (
