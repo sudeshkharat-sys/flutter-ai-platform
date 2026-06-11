@@ -509,16 +509,34 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                               ),
                             if (isDone)
-                              Icon(
-                                _taskResults[index]?['success'] == true
-                                    ? Icons.check_circle
-                                    : Icons.cancel,
-                                color: _taskResults[index]?['success'] == true
-                                    ? Colors.green
-                                    : Colors.red,
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  border: Border.all(
+                                    color: _taskResults[index]?['success'] == true ? Colors.green : Colors.red,
+                                    width: 2,
+                                  ),
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Text(
+                                  _taskResults[index]?['success'] == true ? 'OK' : 'NOT OK',
+                                  style: TextStyle(
+                                    color: _taskResults[index]?['success'] == true ? Colors.green : Colors.red,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
                               )
                             else
-                              const Icon(Icons.camera_alt, size: 20, color: Color(0xFFDC143C)),
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: const [
+                                  Icon(Icons.camera_alt, size: 18, color: Color(0xFFDC143C)),
+                                  SizedBox(height: 2),
+                                  Text('PENDING', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 9)),
+                                ],
+                              ),
                           ],
                         ),
                       ),
