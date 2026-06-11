@@ -1,36 +1,22 @@
 import re
-import subprocess
 import zipfile
 import io
+import os
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-# Fallback if auto-detection fails
 _KOTLIN_FALLBACK = "2.1.20"
 
 
 def _detect_kotlin_version() -> str:
-    """Return the Kotlin version bundled with the local Flutter SDK.
-
-    Flutter ships a gradle-settings template that declares the kotlin.android
-    plugin version it was built against.  We read that file so the generated
-    project always matches the installed toolchain, avoiding metadata-version
-    mismatches without any manual updates.
-    """
     flutter_roots = [r"C:\flutter", "/flutter", "/usr/local/flutter"]
-    env_root = None
-    try:
-        import os
-        env_root = os.environ.get("FLUTTER_ROOT") or os.environ.get("FLUTTER_HOME")
-    except Exception:
-        pass
+    env_root = os.environ.get("FLUTTER_ROOT") or os.environ.get("FLUTTER_HOME")
     if env_root:
         flutter_roots.insert(0, env_root)
 
     for root in flutter_roots:
-        # Flutter >= 3.19: version pinned in flutter_tools gradle plugin
         candidates = [
             Path(root) / "packages" / "flutter_tools" / "gradle" / "src" / "main" / "groovy" / "flutter.groovy",
             Path(root) / "packages" / "flutter_tools" / "gradle" / "flutter.groovy",
@@ -41,15 +27,6 @@ def _detect_kotlin_version() -> str:
                 m = re.search(r'kotlin[_\-]?version\s*[=:]\s*["\']?([\d.]+)', text, re.IGNORECASE)
                 if m:
                     return m.group(1)
-
-    # Last resort: ask kotlinc directly
-    try:
-        out = subprocess.check_output(["kotlinc", "-version"], stderr=subprocess.STDOUT, timeout=10).decode()
-        m = re.search(r"(\d+\.\d+\.\d+)", out)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
 
     return _KOTLIN_FALLBACK
 
