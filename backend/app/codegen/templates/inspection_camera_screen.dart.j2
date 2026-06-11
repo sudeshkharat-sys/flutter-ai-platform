@@ -584,17 +584,16 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                           padding: const EdgeInsets.symmetric(
                               horizontal: 16, vertical: 8),
                           decoration: BoxDecoration(
-                            color: badgeGreen ? Colors.green : Colors.red,
+                            color: Colors.white,
+                            border: Border.all(
+                                color: badgeGreen ? Colors.green : Colors.red,
+                                width: 2),
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
-                            badgeGreen
-                                ? '✓ ${_bestResult!.className}'
-                                : overlayResult != null
-                                    ? '✗ ${overlayResult.className}'
-                                    : 'NOT FOUND',
-                            style: const TextStyle(
-                                color: Colors.white,
+                            badgeGreen ? 'OK' : 'NOT OK',
+                            style: TextStyle(
+                                color: badgeGreen ? Colors.green : Colors.red,
                                 fontWeight: FontWeight.bold,
                                 fontSize: 13),
                           ),
@@ -756,8 +755,18 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                   offset: Offset(0, 4))
                             ],
                           ),
-                          child: const Icon(Icons.camera_alt,
-                              color: Colors.white, size: 40),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: const [
+                              Icon(Icons.camera_alt, color: Colors.white, size: 30),
+                              SizedBox(height: 4),
+                              Text('PENDING',
+                                  style: TextStyle(
+                                      color: Colors.orange,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 10)),
+                            ],
+                          ),
                         ),
                       )
                     : Row(
