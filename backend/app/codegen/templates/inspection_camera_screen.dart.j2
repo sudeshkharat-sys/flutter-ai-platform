@@ -260,14 +260,22 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
       String? savedImagePath;
       try {
-        // Request storage permission if needed (Android < 10)
-        final status = await Permission.storage.request();
+        // Request storage permission (photos for Android 13+, storage for older)
+        PermissionStatus status = await Permission.photos.request();
+        if (!status.isGranted) {
+          status = await Permission.storage.request();
+        }
 
-        // Resolve base directory: external if permitted, else app documents
-        Directory? baseDir = await getExternalStorageDirectory();
-        baseDir ??= await getApplicationDocumentsDirectory();
+        // Save to public Pictures folder — visible in Gallery and Files app
+        // Path: /storage/emulated/0/Pictures/MAI/{AppName}/Inspections/{VIN}/{TaskName}/
+        final List<Directory>? extDirs = await getExternalStorageDirectories(
+          type: StorageDirectory.pictures,
+        );
+        Directory? baseDir = extDirs != null && extDirs.isNotEmpty ? extDirs.first : null;
+        // Fallback: construct public Pictures path manually
+        baseDir ??= Directory('/storage/emulated/0/Pictures');
+        if (!await baseDir.exists()) await baseDir.create(recursive: true);
 
-        // Folder: MAI/{AppName}/Inspections/{VIN}/{TaskName}/
         final safeVin = widget.vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
         final safeTask = (currentTask['name'] as String? ?? 'task')
             .replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
@@ -284,7 +292,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             : 'no_detection';
         final isPass = filtered.isNotEmpty;
 
-        // Filename: {TaskName}_{OK|NOT_OK}_{YYYY-MM-DD_HH-mm-ss}.jpg
+        // Filename: {TaskName}_{label}_{OK|NOT_OK}_{YYYY-MM-DD_HH-mm-ss}.jpg
         final now = DateTime.now();
         final dateStr =
             '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
