@@ -301,43 +301,49 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         final resultBadge = isPass ? 'OK' : 'NOT_OK';
         savedImagePath = '${imgDir.path}/${safeTask}_${resultLabel}_${resultBadge}_${dateStr}_$timeStr.jpg';
 
-        // Decode, annotate, then compress and save
+        // Decode, draw bounding boxes + labels, then compress and save
         final decoded = img.decodeImage(bytes);
         List<int> compressed;
         if (decoded != null) {
-          // Annotation stamp at bottom of image
-          final stampLines = [
-            'VIN: ${widget.vin}',
-            'Task: ${currentTask['name'] ?? safeTask}',
-            'Result: $resultBadge  |  $resultLabel',
-            'Date: $dateStr  Time: ${timeStr.replaceAll('-', ':')}',
-          ];
-          final stampHeight = 28 * stampLines.length + 16;
-          final bgColor = isPass
-              ? img.ColorRgb8(0, 120, 0)
-              : img.ColorRgb8(180, 0, 0);
-          final textColor = img.ColorRgb8(255, 255, 255);
+          final iw = decoded.width.toDouble();
+          final ih = decoded.height.toDouble();
 
-          // Draw background bar at bottom
-          img.fillRect(
-            decoded,
-            x1: 0,
-            y1: decoded.height - stampHeight,
-            x2: decoded.width,
-            y2: decoded.height,
-            color: bgColor,
-          );
-
-          // Draw each line of annotation text
-          for (int i = 0; i < stampLines.length; i++) {
-            img.drawString(
-              decoded,
-              stampLines[i],
-              font: img.arial14,
-              x: 10,
-              y: decoded.height - stampHeight + 8 + (i * 28),
-              color: textColor,
+          // Draw each detection — green for target (pass), red for others
+          for (final det in allDetections) {
+            final isTarget = targetClasses.any(
+              (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
             );
+            final boxColor = isTarget
+                ? img.ColorRgb8(0, 200, 0)
+                : img.ColorRgb8(220, 0, 0);
+
+            // Convert normalized bbox to pixel coords
+            final x1 = (det.bbox.left * iw).toInt().clamp(0, decoded.width - 1);
+            final y1 = (det.bbox.top * ih).toInt().clamp(0, decoded.height - 1);
+            final x2 = (det.bbox.right * iw).toInt().clamp(0, decoded.width - 1);
+            final y2 = (det.bbox.bottom * ih).toInt().clamp(0, decoded.height - 1);
+
+            // Draw bounding box (3px thick)
+            for (int t = 0; t < 3; t++) {
+              img.drawRect(decoded,
+                x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t,
+                color: boxColor);
+            }
+
+            // Label background
+            final label =
+                '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%';
+            final labelY = (y1 - 20).clamp(0, decoded.height - 20);
+            img.fillRect(decoded,
+                x1: x1, y1: labelY, x2: x1 + label.length * 8 + 6, y2: labelY + 18,
+                color: boxColor);
+
+            // Label text
+            img.drawString(decoded, label,
+                font: img.arial14,
+                x: x1 + 3,
+                y: labelY + 2,
+                color: img.ColorRgb8(255, 255, 255));
           }
 
           compressed = img.encodeJpg(decoded, quality: 60);
