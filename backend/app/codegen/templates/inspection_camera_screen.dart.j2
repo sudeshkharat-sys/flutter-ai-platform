@@ -260,13 +260,29 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       String? savedImagePath;
       try {
         final dir = await getApplicationDocumentsDirectory();
-        final imgDir = Directory('${dir.path}/inspection_images');
+        // Folder: inspection_images/{VIN}/{taskName}/
+        final safeVin = widget.vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final safeTask = (currentTask['name'] as String? ?? 'task')
+            .replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final imgDir = Directory('${dir.path}/inspection_images/$safeVin/$safeTask');
         await imgDir.create(recursive: true);
-        savedImagePath =
-            '${imgDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
-        await File(savedImagePath).writeAsBytes(bytes, flush: true);
+
+        // Determine label from detection result
+        final topDetection = filtered.isNotEmpty ? filtered.first : (allDetections.isNotEmpty ? allDetections.first : null);
+        final label = topDetection != null
+            ? topDetection.className.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')
+            : 'no_detection';
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        savedImagePath = '${imgDir.path}/${label}_$timestamp.jpg';
+
+        // Compress image before saving (quality 60 to reduce disk size)
+        final decoded = img.decodeImage(bytes);
+        final compressed = decoded != null
+            ? img.encodeJpg(decoded, quality: 60)
+            : bytes;
+        await File(savedImagePath).writeAsBytes(compressed, flush: true);
         final savedLen = await File(savedImagePath).length();
-        _addLog("Image saved: ${savedLen}B -> $savedImagePath");
+        _addLog("Image saved (${savedLen}B): $savedImagePath");
       } catch (e) {
         _addLog("Image save FAILED: $e");
         savedImagePath = null;
