@@ -287,11 +287,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         }
 
         // Save to public Pictures folder — visible in Gallery and Files app
-        final List<Directory>? extDirs = await getExternalStorageDirectories(
-          type: StorageDirectory.pictures,
-        );
-        Directory? baseDir = extDirs != null && extDirs.isNotEmpty ? extDirs.first : null;
-        baseDir ??= Directory('/storage/emulated/0/Pictures');
+        // Directly use /storage/emulated/0/Pictures/ (public, always accessible)
+        final baseDir = Directory('/storage/emulated/0/Pictures');
         if (!await baseDir.exists()) await baseDir.create(recursive: true);
 
         final safeVin = widget.vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
