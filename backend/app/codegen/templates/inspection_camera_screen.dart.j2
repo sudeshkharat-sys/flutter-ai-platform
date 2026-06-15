@@ -267,11 +267,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         Directory? baseDir = await getExternalStorageDirectory();
         baseDir ??= await getApplicationDocumentsDirectory();
 
-        // Folder: {AppName}/Inspections/{VIN}/{TaskName}/
+        // Folder: MAI/{AppName}/Inspections/{VIN}/{TaskName}/
         final safeVin = widget.vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
         final safeTask = (currentTask['name'] as String? ?? 'task')
             .replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-        final imgDir = Directory('${baseDir.path}/Inspections/$safeVin/$safeTask');
+        const appName = '{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final imgDir = Directory('${baseDir.path}/MAI/$appName/Inspections/$safeVin/$safeTask');
         await imgDir.create(recursive: true);
 
         // Determine result label
