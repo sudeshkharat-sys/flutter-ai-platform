@@ -260,6 +260,26 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
       String? savedImagePath;
       try {
+        // placeholder — path assigned below after filtered is computed
+      } catch (e) {
+        _addLog("Image save FAILED: $e");
+        savedImagePath = null;
+      }
+
+      _addLog("Detections: ${allDetections.length}");
+      for (final d in allDetections) {
+        _addLog(
+            "  ${d.className} ${(d.confidence * 100).toStringAsFixed(1)}%");
+      }
+
+      final filtered = allDetections
+          .where((d) => targetClasses.any((tc) =>
+              d.className.toLowerCase().trim() == tc.toLowerCase().trim()))
+          .toList();
+      _addLog("Matched target: ${filtered.length}");
+
+      // Save image with bounding boxes after filtered is known
+      try {
         // Request storage permission (photos for Android 13+, storage for older)
         PermissionStatus status = await Permission.photos.request();
         if (!status.isGranted) {
@@ -267,19 +287,17 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         }
 
         // Save to public Pictures folder — visible in Gallery and Files app
-        // Path: /storage/emulated/0/Pictures/MAI/{AppName}/Inspections/{VIN}/{TaskName}/
         final List<Directory>? extDirs = await getExternalStorageDirectories(
           type: StorageDirectory.pictures,
         );
         Directory? baseDir = extDirs != null && extDirs.isNotEmpty ? extDirs.first : null;
-        // Fallback: construct public Pictures path manually
         baseDir ??= Directory('/storage/emulated/0/Pictures');
         if (!await baseDir.exists()) await baseDir.create(recursive: true);
 
         final safeVin = widget.vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
         final safeTask = (currentTask['name'] as String? ?? 'task')
             .replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-        const appName = '{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final appName = '{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
         final imgDir = Directory('${baseDir.path}/MAI/$appName/Inspections/$safeVin/$safeTask');
         await imgDir.create(recursive: true);
 
@@ -308,7 +326,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           final iw = decoded.width.toDouble();
           final ih = decoded.height.toDouble();
 
-          // Draw each detection — green for target (pass), red for others
           for (final det in allDetections) {
             final isTarget = targetClasses.any(
               (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
@@ -317,28 +334,23 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                 ? img.ColorRgb8(0, 200, 0)
                 : img.ColorRgb8(220, 0, 0);
 
-            // Convert normalized bbox to pixel coords
             final x1 = (det.bbox.left * iw).toInt().clamp(0, decoded.width - 1);
             final y1 = (det.bbox.top * ih).toInt().clamp(0, decoded.height - 1);
             final x2 = (det.bbox.right * iw).toInt().clamp(0, decoded.width - 1);
             final y2 = (det.bbox.bottom * ih).toInt().clamp(0, decoded.height - 1);
 
-            // Draw bounding box (3px thick)
             for (int t = 0; t < 3; t++) {
               img.drawRect(decoded,
-                x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t,
-                color: boxColor);
+                  x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t,
+                  color: boxColor);
             }
 
-            // Label background
             final label =
                 '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%';
             final labelY = (y1 - 20).clamp(0, decoded.height - 20);
             img.fillRect(decoded,
                 x1: x1, y1: labelY, x2: x1 + label.length * 8 + 6, y2: labelY + 18,
                 color: boxColor);
-
-            // Label text
             img.drawString(decoded, label,
                 font: img.arial14,
                 x: x1 + 3,
@@ -358,18 +370,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         _addLog("Image save FAILED: $e");
         savedImagePath = null;
       }
-
-      _addLog("Detections: ${allDetections.length}");
-      for (final d in allDetections) {
-        _addLog(
-            "  ${d.className} ${(d.confidence * 100).toStringAsFixed(1)}%");
-      }
-
-      final filtered = allDetections
-          .where((d) => targetClasses.any((tc) =>
-              d.className.toLowerCase().trim() == tc.toLowerCase().trim()))
-          .toList();
-      _addLog("Matched target: ${filtered.length}");
 
       setState(() {
         if (filtered.isNotEmpty) {
