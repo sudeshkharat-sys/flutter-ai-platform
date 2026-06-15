@@ -301,11 +301,49 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         final resultBadge = isPass ? 'OK' : 'NOT_OK';
         savedImagePath = '${imgDir.path}/${safeTask}_${resultLabel}_${resultBadge}_${dateStr}_$timeStr.jpg';
 
-        // Compress image (quality 60) to reduce disk size
+        // Decode, annotate, then compress and save
         final decoded = img.decodeImage(bytes);
-        final compressed = decoded != null
-            ? img.encodeJpg(decoded, quality: 60)
-            : bytes;
+        List<int> compressed;
+        if (decoded != null) {
+          // Annotation stamp at bottom of image
+          final stampLines = [
+            'VIN: ${widget.vin}',
+            'Task: ${currentTask['name'] ?? safeTask}',
+            'Result: $resultBadge  |  $resultLabel',
+            'Date: $dateStr  Time: ${timeStr.replaceAll('-', ':')}',
+          ];
+          final stampHeight = 28 * stampLines.length + 16;
+          final bgColor = isPass
+              ? img.ColorRgb8(0, 120, 0)
+              : img.ColorRgb8(180, 0, 0);
+          final textColor = img.ColorRgb8(255, 255, 255);
+
+          // Draw background bar at bottom
+          img.fillRect(
+            decoded,
+            x1: 0,
+            y1: decoded.height - stampHeight,
+            x2: decoded.width,
+            y2: decoded.height,
+            color: bgColor,
+          );
+
+          // Draw each line of annotation text
+          for (int i = 0; i < stampLines.length; i++) {
+            img.drawString(
+              decoded,
+              stampLines[i],
+              font: img.arial14,
+              x: 10,
+              y: decoded.height - stampHeight + 8 + (i * 28),
+              color: textColor,
+            );
+          }
+
+          compressed = img.encodeJpg(decoded, quality: 60);
+        } else {
+          compressed = bytes;
+        }
         await File(savedImagePath).writeAsBytes(compressed, flush: true);
         final savedLen = await File(savedImagePath).length();
         _addLog("Image saved (${savedLen}B): $savedImagePath");
