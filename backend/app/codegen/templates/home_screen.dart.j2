@@ -131,14 +131,16 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // Show confirmation modal with task summary
-    final bool? confirmed = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => _buildSubmitConfirmDialog(),
-    );
-
-    if (confirmed != true) return;
+    // If any task failed, show confirmation dialog before submitting
+    final bool allOk = _taskResults.values.every((r) => r['success'] == true);
+    if (!allOk) {
+      final bool? confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => _buildSubmitConfirmDialog(),
+      );
+      if (confirmed != true) return;
+    }
 
     // Persist to local DB
     final inspectionId = await db.saveInspection(InspectionsCompanion.insert(
@@ -445,21 +447,30 @@ class _HomeScreenState extends State<HomeScreen> {
                       margin: const EdgeInsets.only(bottom: 12),
                       child: ElevatedButton(
                         onPressed: () async {
+                          // Retake: only this single task. First time: full chain from this index.
+                          final bool isRetake = _taskResults.containsKey(index);
                           final result = await Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (context) => InspectionCameraScreen(
                                 vin: widget.vin ?? "MANUAL_SCAN",
-                                modelCode: widget.modelCode ?? "", 
-                                tasks: _tasks,
-                                initialIndex: index,
+                                modelCode: widget.modelCode ?? "",
+                                tasks: isRetake ? [_tasks[index]] : _tasks,
+                                initialIndex: isRetake ? 0 : index,
                               ),
                             ),
                           );
-                          
+
                           if (result != null && result is Map<int, dynamic>) {
                             setState(() {
-                              _taskResults.addAll(result);
+                              if (isRetake) {
+                                // Remap single-task result (key 0) back to original index
+                                if (result.containsKey(0)) {
+                                  _taskResults[index] = result[0];
+                                }
+                              } else {
+                                _taskResults.addAll(result);
+                              }
                             });
                           }
                         },
