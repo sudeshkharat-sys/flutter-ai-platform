@@ -259,6 +259,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       setState(() => _allDetections = allDetections);
 
       String? savedImagePath;
+      String? savedBackupPath;
       try {
         // placeholder — path assigned below after filtered is computed
       } catch (e) {
@@ -363,6 +364,27 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         final savedLen = await File(savedImagePath).length();
         _addLog("Image saved (${savedLen}B): $savedImagePath");
         _addLog("Storage status: $status");
+
+        // Save a heavily compressed backup to internal app storage so the
+        // history screen can still show an image if the user deletes the
+        // Pictures copy from the gallery.
+        try {
+          final appDir = await getApplicationSupportDirectory();
+          final backupDir = Directory('${appDir.path}/inspection_backups/$safeVin/$safeTask');
+          await backupDir.create(recursive: true);
+          final backupFile = File('${backupDir.path}/${safeTask}_${resultLabel}_${resultBadge}_${dateStr}_$timeStr.jpg');
+          if (decoded != null) {
+            // Resize to max 480px wide and compress hard — thumbnail only
+            final thumb = img.copyResize(decoded, width: 480);
+            await backupFile.writeAsBytes(img.encodeJpg(thumb, quality: 15), flush: true);
+          } else {
+            await backupFile.writeAsBytes(compressed, flush: true);
+          }
+          savedBackupPath = backupFile.path;
+          _addLog("Backup saved: $savedBackupPath");
+        } catch (e) {
+          _addLog("Backup save FAILED: $e");
+        }
       } catch (e) {
         _addLog("Image save FAILED: $e");
         savedImagePath = null;
@@ -379,6 +401,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             'className': _bestResult!.className,
             'success': pass,
             'imagePath': savedImagePath,
+            'backupImagePath': savedBackupPath,
             'detectionsJson': jsonEncode([_bestResult!.toJson()]),
           };
         } else {
@@ -397,6 +420,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             'className': bestDetected?.className ?? 'None',
             'success': false,
             'imagePath': savedImagePath,
+            'backupImagePath': savedBackupPath,
             'detectionsJson': bestDetected != null
                 ? jsonEncode([bestDetected.toJson()])
                 : jsonEncode([]),

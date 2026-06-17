@@ -99,6 +99,7 @@ class _HomeScreenState extends State<HomeScreen> {
               'className': res.className,
               'success': res.success,
               'imagePath': res.imagePath,
+              'backupImagePath': res.backupImagePath,
               'detectionsJson': res.detectionsJson,
             };
           }
@@ -160,6 +161,7 @@ class _HomeScreenState extends State<HomeScreen> {
         confidence: 0.0,
         success: success,
         imagePath: drift.Value(result['imagePath'] as String?),
+        backupImagePath: drift.Value(result['backupImagePath'] as String?),
         detectionsJson: drift.Value(result['detectionsJson'] as String?),
       ));
     }

@@ -63,6 +63,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     'detectedPart': tr.className,
                     'success': tr.success,
                     'imagePath': tr.imagePath,
+                    'backupImagePath': tr.backupImagePath,
                     'detectionsJson': tr.detectionsJson,
                   })
               .toList(),
@@ -614,6 +615,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               const Divider(height: 1),
               ...tasks.map((task) {
                 final String? imgPath = task['imagePath'] as String?;
+                final String? backupImgPath = task['backupImagePath'] as String?;
                 final bool taskSuccess = task['success'] as bool? ?? false;
                 final String? detectionsRaw = task['detectionsJson'] as String?;
                 List<DetectionResult> detections = [];
@@ -661,16 +663,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         ],
                       ),
                     ),
-                    if (imgPath != null)
+                    if (imgPath != null || backupImgPath != null)
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
                           child: _HistoryImageWithOverlay(
                             imagePath: imgPath,
+                            backupImagePath: backupImgPath,
                             detections: detections,
-                            // Match bbox color to the pass/fail result so
-                            // green = matched target, red = not ok / mismatch.
                             taskSuccess: taskSuccess,
                           ),
                         ),
@@ -690,12 +691,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
 // -- Image + overlay helper ---------------------------------------------------
 
 class _HistoryImageWithOverlay extends StatefulWidget {
-  final String imagePath;
+  final String? imagePath;
+  final String? backupImagePath;
   final List<DetectionResult> detections;
   final bool taskSuccess;
 
   const _HistoryImageWithOverlay({
     required this.imagePath,
+    required this.backupImagePath,
     required this.detections,
     required this.taskSuccess,
   });
@@ -707,6 +710,7 @@ class _HistoryImageWithOverlay extends StatefulWidget {
 
 class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
   Size? _imageSize;
+  String? _resolvedPath;
 
   @override
   void initState() {
@@ -714,24 +718,50 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
     _loadSize();
   }
 
+  // Pick the primary path if the file exists, fall back to backup.
+  Future<String?> _resolvePath() async {
+    if (widget.imagePath != null && await File(widget.imagePath!).exists()) {
+      return widget.imagePath;
+    }
+    if (widget.backupImagePath != null && await File(widget.backupImagePath!).exists()) {
+      return widget.backupImagePath;
+    }
+    return null;
+  }
+
   Future<void> _loadSize() async {
     try {
-      final bytes = await File(widget.imagePath).readAsBytes();
+      final path = await _resolvePath();
+      if (path == null) return;
+      final bytes = await File(path).readAsBytes();
       final decoded = img.decodeImage(bytes);
       if (decoded != null && mounted) {
         final oriented = img.bakeOrientation(decoded);
-        setState(() =>
-            _imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble()));
+        setState(() {
+          _resolvedPath = path;
+          _imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble());
+        });
       }
     } catch (_) {}
   }
 
   @override
   Widget build(BuildContext context) {
-    final file = File(widget.imagePath);
-    // Bbox color mirrors the prediction result: green = pass, red = fail.
-    final Color overlayColor =
-        widget.taskSuccess ? Colors.green : Colors.red;
+    if (_resolvedPath == null) {
+      return Container(
+        height: 80,
+        decoration: BoxDecoration(
+          color: Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: const Center(
+          child: Icon(Icons.broken_image_outlined, color: Colors.grey, size: 32),
+        ),
+      );
+    }
+
+    final file = File(_resolvedPath!);
+    final Color overlayColor = widget.taskSuccess ? Colors.green : Colors.red;
 
     if (_imageSize == null) {
       return ConstrainedBox(
