@@ -138,6 +138,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
         ),
       ).then((_) async {
         if (mounted) {
+          await _scannerController.stop();
           await _scannerController.start();
           setState(() => _isProcessing = false);
         }
@@ -215,6 +216,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
         ),
       ).then((_) async {
         if (mounted) {
+          await _scannerController.stop();
           await _scannerController.start();
           setState(() => _isProcessing = false);
         }
