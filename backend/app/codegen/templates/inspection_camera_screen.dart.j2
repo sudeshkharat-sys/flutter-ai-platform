@@ -590,13 +590,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                         width: _capturedImageSize!.width,
                                         height: _capturedImageSize!.height,
                                       ),
-                                      if (overlayResult != null)
+                                      if (_allDetections.isNotEmpty)
                                         DetectionOverlay(
-                                          results: [overlayResult],
+                                          results: _allDetections,
                                           previewSize: _capturedImageSize!,
-                                          overrideColor: badgeGreen
-                                              ? Colors.green
-                                              : Colors.red,
+                                          mandatoryClasses: mandatoryClasses,
                                         ),
                                     ],
                                   ),

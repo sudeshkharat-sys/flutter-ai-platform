@@ -863,22 +863,11 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
         child: SizedBox(
           width: _imageSize!.width,
           height: _imageSize!.height,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.file(
-                file,
-                fit: BoxFit.fill,
-                width: _imageSize!.width,
-                height: _imageSize!.height,
-              ),
-              if (widget.detections.isNotEmpty)
-                DetectionOverlay(
-                  results: widget.detections,
-                  previewSize: _imageSize!,
-                  overrideColor: overlayColor,
-                ),
-            ],
+          child: Image.file(
+            file,
+            fit: BoxFit.fill,
+            width: _imageSize!.width,
+            height: _imageSize!.height,
           ),
         ),
       ),
