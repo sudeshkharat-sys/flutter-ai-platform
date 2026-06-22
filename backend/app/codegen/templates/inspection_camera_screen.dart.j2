@@ -88,10 +88,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     return targetClasses.any((tc) => tc.toLowerCase().trim() == cn);
   }
 
-  // Returns true only if ALL mandatory classes were detected with a passing result
-  bool _allMandatoryPassed(Map<String, DetectionResult?> mandatory) {
+  // Returns true only if ALL mandatory classes were detected AND no "not ok" class in image
+  bool _allMandatoryPassed(Map<String, DetectionResult?> mandatory, List<DetectionResult> allDetections) {
     if (mandatory.isEmpty) return false;
-    return mandatory.values.every((r) => r != null && !_isNotOkClass(r.className));
+    if (allDetections.any((d) => _isNotOkClass(d.className))) return false;
+    return mandatory.values.every((r) => r != null);
   }
 
   Future<void> _loadCurrentModel() async {
@@ -286,7 +287,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         _addLog("  [$mc] → ${mandatoryResults[mc]?.className ?? 'NOT FOUND'}");
       }
 
-      final bool overallPass = _allMandatoryPassed(mandatoryResults);
+      final bool overallPass = _allMandatoryPassed(mandatoryResults, allDetections);
 
       String? savedImagePath;
       String? savedBackupPath;
@@ -472,8 +473,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         List<String>.from(currentTask['mandatoryClasses'] ?? currentTask['classes'] ?? []);
 
     final bool badgeGreen = _mandatoryClassResults.isNotEmpty
-        ? _allMandatoryPassed(_mandatoryClassResults)
-        : (_bestResult != null && !_isNotOkClass(_bestResult!.className));
+        ? _allMandatoryPassed(_mandatoryClassResults, _allDetections)
+        : (_bestResult != null && !_isNotOkClass(_bestResult!.className) && !_allDetections.any((d) => _isNotOkClass(d.className)));
 
     final DetectionResult? overlayResult = _bestResult;
 
