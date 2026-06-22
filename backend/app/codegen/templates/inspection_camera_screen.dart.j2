@@ -47,9 +47,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   bool _isFlashOn = false;
 
   List<DetectionResult> _allDetections = [];
-  // Only the single best non-target detection is kept to avoid showing
-  // multiple rows of the same class at different confidences.
   List<DetectionResult> _detectedNonTargetClasses = [];
+  // Maps mandatory class name -> best DetectionResult found (null = not detected)
+  Map<String, DetectionResult?> _mandatoryClassResults = {};
   int _currentIndex = 0;
   final Map<int, dynamic> _results = {};
 
@@ -86,6 +86,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     if (_isNotOkClass(className)) return false;
     final cn = className.toLowerCase().trim();
     return targetClasses.any((tc) => tc.toLowerCase().trim() == cn);
+  }
+
+  // Returns true only if ALL mandatory classes were detected with a passing result
+  bool _allMandatoryPassed(Map<String, DetectionResult?> mandatory) {
+    if (mandatory.isEmpty) return false;
+    return mandatory.values.every((r) => r != null && !_isNotOkClass(r.className));
   }
 
   Future<void> _loadCurrentModel() async {
@@ -244,51 +250,52 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       setState(() {
         _isAnalyzing = true;
         _bestResult = null;
+        _mandatoryClassResults = {};
         _capturedImageBytes = bytes;
         _capturedImageSize = imageSize;
       });
 
       final currentTask = widget.tasks[_currentIndex];
-      final List<String> targetClasses =
-          List<String>.from(currentTask['classes'] ?? []);
-      _addLog("Target: ${targetClasses.join(', ')}");
+      final List<String> mandatoryClasses =
+          List<String>.from(currentTask['mandatoryClasses'] ?? []);
+      // Fall back to legacy 'classes' field if mandatoryClasses not set
+      final List<String> targetClasses = mandatoryClasses.isNotEmpty
+          ? mandatoryClasses
+          : List<String>.from(currentTask['classes'] ?? []);
+      _addLog("Mandatory: ${targetClasses.join(', ')}");
 
       final allDetections = orientedImage != null
           ? await ModelManager().predictImage(orientedImage)
           : await ModelManager().predictBytes(bytes);
       setState(() => _allDetections = allDetections);
 
+      _addLog("Detections: ${allDetections.length}");
+      for (final d in allDetections) {
+        _addLog("  ${d.className} ${(d.confidence * 100).toStringAsFixed(1)}%");
+      }
+
+      // For each mandatory class, find the best (highest confidence) detection
+      final Map<String, DetectionResult?> mandatoryResults = {};
+      for (final mc in targetClasses) {
+        final matches = allDetections.where((d) =>
+            d.className.toLowerCase().trim() == mc.toLowerCase().trim() &&
+            !_isNotOkClass(d.className));
+        mandatoryResults[mc] = matches.isNotEmpty
+            ? (matches.toList()..sort((a, b) => b.confidence.compareTo(a.confidence))).first
+            : null;
+        _addLog("  [$mc] → ${mandatoryResults[mc]?.className ?? 'NOT FOUND'}");
+      }
+
+      final bool overallPass = _allMandatoryPassed(mandatoryResults);
+
       String? savedImagePath;
       String? savedBackupPath;
       try {
-        // placeholder — path assigned below after filtered is computed
-      } catch (e) {
-        _addLog("Image save FAILED: $e");
-        savedImagePath = null;
-      }
-
-      _addLog("Detections: ${allDetections.length}");
-      for (final d in allDetections) {
-        _addLog(
-            "  ${d.className} ${(d.confidence * 100).toStringAsFixed(1)}%");
-      }
-
-      final filtered = allDetections
-          .where((d) => targetClasses.any((tc) =>
-              d.className.toLowerCase().trim() == tc.toLowerCase().trim()))
-          .toList();
-      _addLog("Matched target: ${filtered.length}");
-
-      // Save image with bounding boxes after filtered is known
-      try {
-        // Request storage permission (photos for Android 13+, storage for older)
         PermissionStatus status = await Permission.photos.request();
         if (!status.isGranted) {
           status = await Permission.storage.request();
         }
 
-        // Save to public Pictures folder — visible in Gallery and Files app
-        // Directly use /storage/emulated/0/Pictures/ (public, always accessible)
         final baseDir = Directory('/storage/emulated/0/Pictures');
         if (!await baseDir.exists()) await baseDir.create(recursive: true);
 
@@ -299,25 +306,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         final imgDir = Directory('${baseDir.path}/MAI/$appName/Inspections/$safeVin/$safeTask');
         await imgDir.create(recursive: true);
 
-        // Determine result label
-        final topDetection = filtered.isNotEmpty
-            ? filtered.first
-            : (allDetections.isNotEmpty ? allDetections.first : null);
-        final resultLabel = topDetection != null
-            ? topDetection.className.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')
-            : 'no_detection';
-        final isPass = filtered.isNotEmpty;
-
-        // Filename: {TaskName}_{label}_{OK|NOT_OK}_{YYYY-MM-DD_HH-mm-ss}.jpg
         final now = DateTime.now();
         final dateStr =
             '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
         final timeStr =
             '${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}';
-        final resultBadge = isPass ? 'OK' : 'NOT_OK';
-        savedImagePath = '${imgDir.path}/${safeTask}_${resultLabel}_${resultBadge}_${dateStr}_$timeStr.jpg';
+        final resultBadge = overallPass ? 'OK' : 'NOT_OK';
+        savedImagePath = '${imgDir.path}/${safeTask}_${resultBadge}_${dateStr}_$timeStr.jpg';
 
-        // Decode, draw bounding boxes + labels, then compress and save
+        // Draw bounding boxes: green if mandatory class detected, red if mandatory but missing or non-mandatory
         final decoded = img.decodeImage(bytes);
         List<int> compressed;
         if (decoded != null) {
@@ -325,10 +322,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           final ih = decoded.height.toDouble();
 
           for (final det in allDetections) {
-            final isTarget = targetClasses.any(
+            final isMandatory = targetClasses.any(
               (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
             );
-            final boxColor = isTarget
+            // Reuse existing color logic: mandatory & not "not ok" = green, else red
+            final boxColor = (isMandatory && !_isNotOkClass(det.className))
                 ? img.ColorRgb8(0, 200, 0)
                 : img.ColorRgb8(220, 0, 0);
 
@@ -363,18 +361,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         await File(savedImagePath).writeAsBytes(compressed, flush: true);
         final savedLen = await File(savedImagePath).length();
         _addLog("Image saved (${savedLen}B): $savedImagePath");
-        _addLog("Storage status: $status");
 
-        // Save a heavily compressed backup to internal app storage so the
-        // history screen can still show an image if the user deletes the
-        // Pictures copy from the gallery.
         try {
           final appDir = await getApplicationSupportDirectory();
           final backupDir = Directory('${appDir.path}/inspection_backups/$safeVin/$safeTask');
           await backupDir.create(recursive: true);
-          final backupFile = File('${backupDir.path}/${safeTask}_${resultLabel}_${resultBadge}_${dateStr}_$timeStr.jpg');
+          final backupFile = File('${backupDir.path}/${safeTask}_${resultBadge}_${dateStr}_$timeStr.jpg');
           if (decoded != null) {
-            // Resize to max 480px wide and compress hard — thumbnail only
             final thumb = img.copyResize(decoded, width: 480);
             await backupFile.writeAsBytes(img.encodeJpg(thumb, quality: 15), flush: true);
           } else {
@@ -391,41 +384,20 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       }
 
       setState(() {
-        if (filtered.isNotEmpty) {
-          filtered.sort((a, b) => b.confidence.compareTo(a.confidence));
-          _bestResult = filtered.first;
-          final pass = _isPass(_bestResult!.className, targetClasses);
-          _addLog("WINNER: ${_bestResult!.className} | pass=$pass");
+        _mandatoryClassResults = mandatoryResults;
+        // Keep _bestResult as the highest-confidence mandatory detection (for overlay compat)
+        final found = mandatoryResults.values.whereType<DetectionResult>().toList()
+          ..sort((a, b) => b.confidence.compareTo(a.confidence));
+        _bestResult = found.isNotEmpty ? found.first : null;
 
-          _results[_currentIndex] = {
-            'className': _bestResult!.className,
-            'success': pass,
-            'imagePath': savedImagePath,
-            'backupImagePath': savedBackupPath,
-            'detectionsJson': jsonEncode([_bestResult!.toJson()]),
-          };
-        } else {
-          // Keep only the single best non-target detection.
-          // Taking more than 1 caused repeated rows of the same class
-          // (e.g. "not ok 85%, not ok 72%, not ok 63%") which confused users.
-          final nonTarget = List<DetectionResult>.from(allDetections)
-            ..sort((a, b) => b.confidence.compareTo(a.confidence));
-          _detectedNonTargetClasses = nonTarget.take(1).toList();
-          final bestDetected = _detectedNonTargetClasses.isNotEmpty
-              ? _detectedNonTargetClasses.first
-              : null;
-          _addLog("NON-TARGET: ${bestDetected?.className ?? 'nothing'}");
-
-          _results[_currentIndex] = {
-            'className': bestDetected?.className ?? 'None',
-            'success': false,
-            'imagePath': savedImagePath,
-            'backupImagePath': savedBackupPath,
-            'detectionsJson': bestDetected != null
-                ? jsonEncode([bestDetected.toJson()])
-                : jsonEncode([]),
-          };
-        }
+        _results[_currentIndex] = {
+          'className': overallPass ? 'OK' : 'NOT OK',
+          'success': overallPass,
+          'imagePath': savedImagePath,
+          'backupImagePath': savedBackupPath,
+          'mandatoryResults': mandatoryResults.map((k, v) => MapEntry(k, v != null ? v.toJson() : null)),
+          'detectionsJson': jsonEncode(allDetections.map((d) => d.toJson()).toList()),
+        };
         _isAnalyzing = false;
       });
     } catch (e) {
@@ -457,6 +429,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       _capturedImageBytes = null;
       _capturedImageSize = null;
       _bestResult = null;
+      _mandatoryClassResults = {};
       _isAnalyzing = false;
       _allDetections = [];
       _detectedNonTargetClasses = [];
@@ -483,6 +456,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       _currentIndex = nextIdx;
       _capturedImageBytes = null;
       _bestResult = null;
+      _mandatoryClassResults = {};
       _detectedNonTargetClasses = [];
     });
     _loadCurrentModel();
@@ -494,16 +468,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       return Scaffold(body: Center(child: Text('Error: $_error')));
     }
     final currentTask = widget.tasks[_currentIndex];
-    final List<String> taskClasses =
-        List<String>.from(currentTask['classes'] ?? []);
+    final List<String> mandatoryClasses =
+        List<String>.from(currentTask['mandatoryClasses'] ?? currentTask['classes'] ?? []);
 
-    final bool badgeGreen =
-        _bestResult != null && _isPass(_bestResult!.className, taskClasses);
+    final bool badgeGreen = _mandatoryClassResults.isNotEmpty
+        ? _allMandatoryPassed(_mandatoryClassResults)
+        : (_bestResult != null && !_isNotOkClass(_bestResult!.className));
 
-    final DetectionResult? overlayResult = _bestResult ??
-        (_detectedNonTargetClasses.isNotEmpty
-            ? _detectedNonTargetClasses.first
-            : null);
+    final DetectionResult? overlayResult = _bestResult;
 
     return Scaffold(
       body: Container(
@@ -684,6 +656,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                           ),
                         ),
                       ),
+                    // Overall OK / NOT OK badge
                     if (!_isAnalyzing && _capturedImageBytes != null)
                       Positioned(
                         top: 16,
@@ -696,11 +669,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
-                            badgeGreen
-                                ? '✓ ${_bestResult!.className}'
-                                : overlayResult != null
-                                    ? '✗ ${overlayResult.className}'
-                                    : 'NOT FOUND',
+                            badgeGreen ? '✓ OK' : '✗ NOT OK',
                             style: const TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.bold,
@@ -708,9 +677,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                           ),
                         ),
                       ),
+                    // Mandatory class checklist shown after capture
                     if (!_isAnalyzing &&
                         _capturedImageBytes != null &&
-                        _bestResult == null &&
+                        _mandatoryClassResults.isNotEmpty &&
                         !_showDebugConsole)
                       Positioned(
                         bottom: 0,
@@ -728,61 +698,52 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                             mainAxisSize: MainAxisSize.min,
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(children: [
-                                const Icon(Icons.cancel,
-                                    color: Colors.red, size: 16),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    "Target not found: ${taskClasses.join(', ')}",
-                                    style: const TextStyle(
-                                        color: Colors.red,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                              ]),
-                              if (_detectedNonTargetClasses.isNotEmpty) ...[
-                                const SizedBox(height: 10),
-                                const Text('Detected instead:',
-                                    style: TextStyle(
-                                        color: Colors.white54,
-                                        fontSize: 11)),
-                                const SizedBox(height: 6),
-                                ..._detectedNonTargetClasses
-                                    .map((d) => Padding(
-                                          padding: const EdgeInsets.only(
-                                              bottom: 4),
-                                          child: Row(children: [
-                                            const Icon(Icons.close,
-                                                color: Colors.orange,
-                                                size: 14),
-                                            const SizedBox(width: 6),
-                                            Text(
-                                              d.className,
-                                              style: const TextStyle(
-                                                  color: Colors.orange,
-                                                  fontSize: 13,
-                                                  fontWeight:
-                                                      FontWeight.w600),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Text(
-                                              "${(d.confidence * 100).toStringAsFixed(0)}%",
-                                              style: const TextStyle(
-                                                  color: Colors.white54,
-                                                  fontSize: 12),
-                                            ),
-                                          ]),
-                                        )),
-                              ] else ...[
-                                const SizedBox(height: 8),
-                                const Text('Nothing detected.',
-                                    style: TextStyle(
-                                        color: Colors.white54,
-                                        fontSize: 12)),
-                              ],
+                              Text(
+                                badgeGreen ? 'All required classes detected' : 'Missing required classes',
+                                style: TextStyle(
+                                    color: badgeGreen ? Colors.greenAccent : Colors.red,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
+                              ),
+                              const SizedBox(height: 10),
+                              ..._mandatoryClassResults.entries.map((entry) {
+                                final detected = entry.value != null;
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 6),
+                                  child: Row(children: [
+                                    Icon(
+                                      detected ? Icons.check_circle : Icons.cancel,
+                                      color: detected ? Colors.green : Colors.red,
+                                      size: 16,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        entry.key,
+                                        style: TextStyle(
+                                            color: detected ? Colors.white : Colors.red[300],
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w600),
+                                      ),
+                                    ),
+                                    if (detected)
+                                      Text(
+                                        "${(entry.value!.confidence * 100).toStringAsFixed(0)}%",
+                                        style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 12),
+                                      ),
+                                    if (!detected)
+                                      const Text(
+                                        'NOT FOUND',
+                                        style: TextStyle(
+                                            color: Colors.red,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                  ]),
+                                );
+                              }),
                             ],
                           ),
                         ),

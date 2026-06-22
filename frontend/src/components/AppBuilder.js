@@ -340,7 +340,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [engineSearchTerm, setEngineSearchTerm] = useState('');
 
-  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', instruction: '' }]);
+  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', mandatoryClasses: [], instruction: '' }]);
 
   const [isReviewing, setIsReviewing] = useState(startAtReview);
   const [reviewData, setReviewData] = useState([]); 
@@ -374,7 +374,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         }
 
         if (existingApp.app_settings?.default_configs) {
-          setDefaultAIConfigs(existingApp.app_settings.default_configs);
+          // Migrate old single-class format to mandatoryClasses array
+          const migrated = existingApp.app_settings.default_configs.map(c => ({
+            ...c,
+            mandatoryClasses: c.mandatoryClasses || (c.class ? [c.class] : []),
+          }));
+          setDefaultAIConfigs(migrated);
         }
 
         if (existingApp.inspection_tasks && existingApp.inspection_tasks.length > 0) {
@@ -427,7 +432,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleAddDefaultAI = () => {
-    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', class: '', instruction: '' }]);
+    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', mandatoryClasses: [], instruction: '' }]);
   };
 
   const handleRemoveDefaultAI = (index) => {
@@ -438,9 +443,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newConfigs = [...defaultAIConfigs];
     newConfigs[index][field] = value;
     if (field === 'modelId') {
-      const m = models.find(mod => mod.id === value);
-      newConfigs[index].class = m?.classes[0] || '';
+      newConfigs[index].mandatoryClasses = [];
     }
+    setDefaultAIConfigs(newConfigs);
+  };
+
+  const handleToggleMandatoryClass = (index, cls) => {
+    const newConfigs = [...defaultAIConfigs];
+    const current = newConfigs[index].mandatoryClasses || [];
+    newConfigs[index].mandatoryClasses = current.includes(cls)
+      ? current.filter(c => c !== cls)
+      : [...current, cls];
     setDefaultAIConfigs(newConfigs);
   };
 
@@ -450,7 +463,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         alert("Please select at least one Engine Code.");
         return;
       }
-      const validAI = defaultAIConfigs.filter(c => c.modelId && c.class);
+      const validAI = defaultAIConfigs.filter(c => c.modelId && c.mandatoryClasses?.length > 0);
       const newReviewData = selectedEngineCodes.map(partNo => {
         const mapping = engineMappings.find(m => m.part_no === partNo) || { part_no: partNo, sheet_name: 'Unknown', description: '' };
         return {
@@ -467,7 +480,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         alert("Please select at least one Vehicle Model Code.");
         return;
       }
-      const validAI = defaultAIConfigs.filter(c => c.modelId && c.class);
+      const validAI = defaultAIConfigs.filter(c => c.modelId && c.mandatoryClasses?.length > 0);
       const newReviewData = selectedModelCodes.map(code => {
         const mapping = masterMappings.find(m => m.model_code === code);
         return {
@@ -487,9 +500,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newData = [...reviewData];
     newData[rowIndex].selectedAIModels[aiIdx][field] = value;
     if (field === 'modelId') {
-      const m = models.find(mod => mod.id === value);
-      newData[rowIndex].selectedAIModels[aiIdx].class = m?.classes[0] || '';
+      newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = [];
     }
+    setReviewData(newData);
+  };
+
+  const handleToggleRowMandatoryClass = (rowIndex, aiIdx, cls) => {
+    const newData = [...reviewData];
+    const current = newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses || [];
+    newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = current.includes(cls)
+      ? current.filter(c => c !== cls)
+      : [...current, cls];
     setReviewData(newData);
   };
 
@@ -533,7 +554,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             modelId: ai.modelId,
             taskName: ai.instruction || `${row.model_code} - ${model.vision_project_name}`,
             modelName: model.vision_project_name,
-            classes: [ai.class],
+            classes: model.classes,
+            mandatoryClasses: ai.mandatoryClasses || [],
             tflitePath: model.tflite_path,
             labelsPath: model.labels_path,
             vehicleCode: row.model_code,
@@ -783,13 +805,22 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                           </select>
                         </div>
                         <div>
-                          <label style={labelStyle}>Detection Class</label>
-                          <select style={inputStyle} value={config.class} onChange={(e) => handleUpdateDefaultAI(idx, 'class', e.target.value)} disabled={!config.modelId}>
-                            <option value="">Select Class...</option>
-                            {models.find(m => m.id === config.modelId)?.classes.map(c => (
-                              <option key={c} value={c}>{c}</option>
-                            ))}
-                          </select>
+                          <label style={labelStyle}>Mandatory Classes (must all be detected for OK)</label>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '8px 0' }}>
+                            {config.modelId
+                              ? models.find(m => m.id === config.modelId)?.classes.map(c => {
+                                  const selected = (config.mandatoryClasses || []).includes(c);
+                                  return (
+                                    <span
+                                      key={c}
+                                      onClick={() => handleToggleMandatoryClass(idx, c)}
+                                      style={{ cursor: 'pointer', padding: '4px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600, background: selected ? 'var(--accent)' : C.border, color: selected ? '#fff' : C.muted, border: `1px solid ${selected ? 'var(--accent)' : C.border}`, userSelect: 'none' }}
+                                    >{c}</span>
+                                  );
+                                })
+                              : <span style={{ fontSize: 12, color: C.muted }}>Select a model first</span>
+                            }
+                          </div>
                         </div>
                       </div>
                       <div>
@@ -857,16 +888,21 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                 </select>
                               </div>
                               <div style={{ padding: '12px 16px' }}>
-                                <select 
-                                  style={{ ...miniSelectStyle, width: '100%' }} 
-                                  value={ai.class} 
-                                  onChange={(e) => handleUpdateRowAI(rowIndex, aiIdx, 'class', e.target.value)}
-                                  disabled={!ai.modelId}
-                                >
-                                  {models.find(m => m.id === ai.modelId)?.classes.map(c => (
-                                    <option key={c} value={c}>{c}</option>
-                                  ))}
-                                </select>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                  {ai.modelId
+                                    ? models.find(m => m.id === ai.modelId)?.classes.map(c => {
+                                        const sel = (ai.mandatoryClasses || []).includes(c);
+                                        return (
+                                          <span
+                                            key={c}
+                                            onClick={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
+                                            style={{ cursor: 'pointer', padding: '3px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: sel ? 'var(--accent)' : '#eee', color: sel ? '#fff' : '#555', userSelect: 'none' }}
+                                          >{c}</span>
+                                        );
+                                      })
+                                    : <span style={{ fontSize: 11, color: '#aaa' }}>Select model</span>
+                                  }
+                                </div>
                               </div>
                               <div style={{ padding: '12px 16px' }}>
                                 <input
