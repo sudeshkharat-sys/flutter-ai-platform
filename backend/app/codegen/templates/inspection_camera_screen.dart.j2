@@ -315,8 +315,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         final resultBadge = overallPass ? 'OK' : 'NOT_OK';
         savedImagePath = '${imgDir.path}/${safeTask}_${resultBadge}_${dateStr}_$timeStr.jpg';
 
-        // Draw bounding boxes: green if mandatory class detected, red if mandatory but missing or non-mandatory
-        final decoded = img.decodeImage(bytes);
+        // Use orientedImage so boxes align with model inference coordinates
+        final decoded = orientedImage ?? img.decodeImage(bytes);
         List<int> compressed;
         if (decoded != null) {
           final iw = decoded.width.toDouble();
@@ -326,10 +326,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             final isMandatory = targetClasses.any(
               (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
             );
-            // Reuse existing color logic: mandatory & not "not ok" = green, else red
-            final boxColor = (isMandatory && !_isNotOkClass(det.className))
-                ? img.ColorRgb8(0, 200, 0)
-                : img.ColorRgb8(220, 0, 0);
+            // 3-color logic: green=mandatory found, orange=non-mandatory, red=not ok
+            final img.Color boxColor;
+            if (_isNotOkClass(det.className)) {
+              boxColor = img.ColorRgb8(220, 0, 0);       // red — defect
+            } else if (isMandatory) {
+              boxColor = img.ColorRgb8(0, 200, 0);       // green — mandatory found
+            } else {
+              boxColor = img.ColorRgb8(255, 165, 0);     // orange — detected but not required
+            }
 
             final x1 = (det.bbox.left * iw).toInt().clamp(0, decoded.width - 1);
             final y1 = (det.bbox.top * ih).toInt().clamp(0, decoded.height - 1);
@@ -700,7 +705,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                badgeGreen ? 'All required classes detected' : 'Missing required classes',
+                                () {
+                                  if (badgeGreen) return 'All parts detected';
+                                  if (_allDetections.isEmpty) return 'Nothing detected — retake image';
+                                  if (_allDetections.any((d) => _isNotOkClass(d.className))) return 'Defect detected';
+                                  final missing = _mandatoryClassResults.values.where((r) => r == null).length;
+                                  return missing == 1 ? '1 part not found' : '$missing parts not found';
+                                }(),
                                 style: TextStyle(
                                     color: badgeGreen ? Colors.greenAccent : Colors.red,
                                     fontWeight: FontWeight.bold,
