@@ -89,19 +89,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   }
 
   // Returns true only if:
-  //  1. ALL mandatory classes are detected
-  //  2. NO "not ok" class is detected (hard block)
-  //  3. NO extra (non-mandatory) classes are detected
+  //  1. ALL target (mandatory) classes are detected
+  //  2. NO "not ok" class is detected (hard block — always fails regardless)
   bool _allMandatoryPassed(Map<String, DetectionResult?> mandatory, List<DetectionResult> allDetections) {
     if (mandatory.isEmpty) return false;
     // Hard block: any "not ok" detection → always fail
     if (allDetections.any((d) => _isNotOkClass(d.className))) return false;
-    // All mandatory classes must be present
-    if (!mandatory.values.every((r) => r != null)) return false;
-    // No unexpected (non-mandatory) classes should be detected
-    final mandatoryNames = mandatory.keys.map((k) => k.toLowerCase().trim()).toSet();
-    if (allDetections.any((d) => !mandatoryNames.contains(d.className.toLowerCase().trim()))) return false;
-    return true;
+    // All target classes must be present (extra non-target detections are ignored)
+    return mandatory.values.every((r) => r != null);
   }
 
   Future<void> _loadCurrentModel() async {
@@ -717,10 +712,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                   if (_allDetections.any((d) => _isNotOkClass(d.className))) return 'Defect detected';
                                   final missing = _mandatoryClassResults.values.where((r) => r == null).length;
                                   if (missing > 0) return missing == 1 ? '1 part not found' : '$missing parts not found';
-                                  // All mandatory found but unexpected classes present
-                                  final mandatoryNames = _mandatoryClassResults.keys.map((k) => k.toLowerCase().trim()).toSet();
-                                  final extra = _allDetections.where((d) => !mandatoryNames.contains(d.className.toLowerCase().trim())).map((d) => d.className).toSet();
-                                  if (extra.isNotEmpty) return 'Unexpected part detected: ${extra.join(', ')}';
                                 }(),
                                 style: TextStyle(
                                     color: badgeGreen ? Colors.greenAccent : Colors.red,
