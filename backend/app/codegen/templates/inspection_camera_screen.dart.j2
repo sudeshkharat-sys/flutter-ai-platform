@@ -50,6 +50,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   List<DetectionResult> _detectedNonTargetClasses = [];
   // Maps mandatory class name -> best DetectionResult found (null = not detected)
   Map<String, DetectionResult?> _mandatoryClassResults = {};
+  // Unchecked classes for current task — detecting any of these = fail
+  List<String> _failClasses = [];
   int _currentIndex = 0;
   final Map<int, dynamic> _results = {};
 
@@ -89,13 +91,21 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   }
 
   // Returns true only if:
-  //  1. ALL target (mandatory) classes are detected
-  //  2. NO "not ok" class is detected (hard block — always fails regardless)
-  bool _allMandatoryPassed(Map<String, DetectionResult?> mandatory, List<DetectionResult> allDetections) {
+  //  1. ALL pass (checked) classes are detected
+  //  2. NO "not ok" class detected (hard block — always fails)
+  //  3. NO fail (unchecked) class detected — unchecked classes are fail conditions
+  bool _allMandatoryPassed(
+    Map<String, DetectionResult?> mandatory,
+    List<DetectionResult> allDetections,
+    List<String> failClasses,
+  ) {
     if (mandatory.isEmpty) return false;
     // Hard block: any "not ok" detection → always fail
     if (allDetections.any((d) => _isNotOkClass(d.className))) return false;
-    // All target classes must be present (extra non-target detections are ignored)
+    // Any unchecked (fail) class detected → fail
+    final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
+    if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return false;
+    // All pass classes must be detected
     return mandatory.values.every((r) => r != null);
   }
 
@@ -261,13 +271,19 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       });
 
       final currentTask = widget.tasks[_currentIndex];
+      final List<String> allModelClasses =
+          List<String>.from(currentTask['classes'] ?? []);
       final List<String> mandatoryClasses =
           List<String>.from(currentTask['mandatoryClasses'] ?? []);
-      // Fall back to legacy 'classes' field if mandatoryClasses not set
+      // Pass classes = checked by user. Fail classes = everything else in the model.
       final List<String> targetClasses = mandatoryClasses.isNotEmpty
           ? mandatoryClasses
-          : List<String>.from(currentTask['classes'] ?? []);
-      _addLog("Mandatory: ${targetClasses.join(', ')}");
+          : allModelClasses;
+      final List<String> failClasses = mandatoryClasses.isNotEmpty
+          ? allModelClasses.where((c) => !mandatoryClasses.any(
+              (m) => m.toLowerCase().trim() == c.toLowerCase().trim())).toList()
+          : [];
+      _addLog("Pass: ${targetClasses.join(', ')}  Fail: ${failClasses.join(', ')}");
 
       final allDetections = orientedImage != null
           ? await ModelManager().predictImage(orientedImage)
@@ -290,7 +306,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         _addLog("  [$mc] → ${mandatoryResults[mc]?.className ?? 'NOT FOUND'}");
       }
 
-      final bool overallPass = _allMandatoryPassed(mandatoryResults, allDetections);
+      final bool overallPass = _allMandatoryPassed(mandatoryResults, allDetections, failClasses);
 
       String? savedImagePath;
       String? savedBackupPath;
@@ -394,6 +410,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
       setState(() {
         _mandatoryClassResults = mandatoryResults;
+        _failClasses = failClasses;
         // Keep _bestResult as the highest-confidence mandatory detection (for overlay compat)
         final found = mandatoryResults.values.whereType<DetectionResult>().toList()
           ..sort((a, b) => b.confidence.compareTo(a.confidence));
@@ -481,7 +498,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         List<String>.from(currentTask['mandatoryClasses'] ?? currentTask['classes'] ?? []);
 
     final bool badgeGreen = _mandatoryClassResults.isNotEmpty
-        ? _allMandatoryPassed(_mandatoryClassResults, _allDetections)
+        ? _allMandatoryPassed(_mandatoryClassResults, _allDetections, _failClasses)
         : (_bestResult != null && !_isNotOkClass(_bestResult!.className) && !_allDetections.any((d) => _isNotOkClass(d.className)));
 
     final DetectionResult? overlayResult = _bestResult;
@@ -710,8 +727,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                   if (badgeGreen) return 'All parts detected';
                                   if (_allDetections.isEmpty) return 'Nothing detected — retake image';
                                   if (_allDetections.any((d) => _isNotOkClass(d.className))) return 'Defect detected';
+                                  // Fail class (unchecked) was detected
+                                  final failNamesLower = _failClasses.map((c) => c.toLowerCase().trim()).toSet();
+                                  final detectedFail = _allDetections.where((d) => failNamesLower.contains(d.className.toLowerCase().trim())).map((d) => d.className).toSet();
+                                  if (detectedFail.isNotEmpty) return 'Wrong part detected: ${detectedFail.join(', ')}';
                                   final missing = _mandatoryClassResults.values.where((r) => r == null).length;
                                   if (missing > 0) return missing == 1 ? '1 part not found' : '$missing parts not found';
+                                  return 'Check failed';
                                 }(),
                                 style: TextStyle(
                                     color: badgeGreen ? Colors.greenAccent : Colors.red,
