@@ -807,22 +807,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                         <div>
                           {(() => {
                             const modelClasses = models.find(m => m.id === config.modelId)?.classes || [];
-                            const isOkNotOkModel = modelClasses.length > 0 && modelClasses.every(c => {
-                              const l = c.toLowerCase().replace(/_|-/g, ' ');
-                              return l.includes('ok');
-                            });
                             if (!config.modelId) {
                               return <><label style={labelStyle}>Mandatory Classes</label><span style={{ fontSize: 12, color: C.muted }}>Select a model first</span></>;
-                            }
-                            if (isOkNotOkModel) {
-                              return <>
-                                <label style={labelStyle}>Target Class (OK = pass)</label>
-                                <select style={inputStyle} value={(config.mandatoryClasses || [])[0] || ''} onChange={e => handleUpdateDefaultAI(idx, 'mandatoryClasses', e.target.value ? [e.target.value] : [])}>
-                                  <option value="">Select target class...</option>
-                                  {modelClasses.filter(c => !c.toLowerCase().replace(/_|-/g, ' ').includes('not')).map(c => <option key={c} value={c}>{c}</option>)}
-                                </select>
-                                <span style={{ fontSize: 11, color: C.muted }}>OK/NOT OK model — select the passing class</span>
-                              </>;
                             }
                             return <>
                               <label style={labelStyle}>Mandatory Classes (all must be detected for OK)</label>
@@ -911,16 +897,6 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                 {(() => {
                                   if (!ai.modelId) return <span style={{ fontSize: 11, color: '#aaa' }}>Select model</span>;
                                   const mc = models.find(m => m.id === ai.modelId)?.classes || [];
-                                  const isOkNotOk = mc.length > 0 && mc.every(c => c.toLowerCase().replace(/_|-/g, ' ').includes('ok'));
-                                  if (isOkNotOk) {
-                                    const passing = mc.filter(c => !c.toLowerCase().replace(/_|-/g, ' ').includes('not'));
-                                    return <select style={{ ...miniSelectStyle, width: '100%', fontSize: 11 }}
-                                      value={(ai.mandatoryClasses || [])[0] || ''}
-                                      onChange={e => { const nd = [...reviewData]; nd[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = e.target.value ? [e.target.value] : []; setReviewData(nd); }}>
-                                      <option value="">Select OK class...</option>
-                                      {passing.map(c => <option key={c} value={c}>{c}</option>)}
-                                    </select>;
-                                  }
                                   return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                                     {mc.map(c => {
                                       const isNotOk = c.toLowerCase().replace(/_|-/g, ' ').includes('not') && c.toLowerCase().includes('ok');
