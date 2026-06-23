@@ -104,7 +104,8 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             if model_for_task:
                 model_classes = get_attr(model_for_task, "classes", []) or []
                 if model_classes:
-                    valid = [c for c in task_classes if c in model_classes]
+                    model_classes_lower_set = {c.lower().strip() for c in model_classes}
+                    valid = [c for c in task_classes if c.lower().strip() in model_classes_lower_set]
                     if not valid:
                         print(
                             f"[generator] WARNING: task '{task.get('taskName')}' "
@@ -116,9 +117,11 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             mandatory_classes = task.get("mandatoryClasses", [])
             print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_raw={mandatory_classes} allClasses={task_classes}")
             # Validate mandatory classes against model — remove any that don't exist
+            # Use case-insensitive comparison to match Flutter's toLowerCase().trim() logic
             if model_for_task and mandatory_classes:
                 model_classes = get_attr(model_for_task, "classes", []) or []
-                mandatory_classes = [c for c in mandatory_classes if c in model_classes]
+                model_classes_lower = {c.lower().strip() for c in model_classes}
+                mandatory_classes = [c for c in mandatory_classes if c.lower().strip() in model_classes_lower]
             print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_final={mandatory_classes}")
 
             ref_img = task.get("referenceImage")
