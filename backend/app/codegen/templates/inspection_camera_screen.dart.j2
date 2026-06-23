@@ -279,8 +279,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       final Map<String, DetectionResult?> mandatoryResults = {};
       for (final mc in targetClasses) {
         final matches = allDetections.where((d) =>
-            d.className.toLowerCase().trim() == mc.toLowerCase().trim() &&
-            !_isNotOkClass(d.className));
+            d.className.toLowerCase().trim() == mc.toLowerCase().trim());
         mandatoryResults[mc] = matches.isNotEmpty
             ? (matches.toList()..sort((a, b) => b.confidence.compareTo(a.confidence))).first
             : null;
