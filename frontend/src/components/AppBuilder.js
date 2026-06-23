@@ -811,15 +811,24 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                               return <><label style={labelStyle}>Mandatory Classes</label><span style={{ fontSize: 12, color: C.muted }}>Select a model first</span></>;
                             }
                             return <>
-                              <label style={labelStyle}>Mandatory Classes (all must be detected for OK)</label>
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '8px 0' }}>
+                              <label style={labelStyle}>Pass Classes — check which must be detected for OK badge</label>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: '8px 0' }}>
                                 {modelClasses.map(c => {
                                   const selected = (config.mandatoryClasses || []).includes(c);
                                   return (
-                                    <span key={c}
-                                      onClick={() => handleToggleMandatoryClass(idx, c)}
-                                      style={{ cursor: 'pointer', padding: '4px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600, background: selected ? 'var(--accent)' : C.border, color: selected ? '#fff' : C.muted, border: `1px solid ${selected ? 'var(--accent)' : C.border}`, userSelect: 'none' }}
-                                    >{c}</span>
+                                    <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={selected}
+                                        onChange={() => handleToggleMandatoryClass(idx, c)}
+                                        style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                      />
+                                      <span style={{ fontSize: 12, fontWeight: 600, color: selected ? 'var(--accent)' : C.muted }}>{c}</span>
+                                      {selected
+                                        ? <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>
+                                        : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                      }
+                                    </label>
                                   );
                                 })}
                               </div>
@@ -895,13 +904,23 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                 {(() => {
                                   if (!ai.modelId) return <span style={{ fontSize: 11, color: '#aaa' }}>Select model</span>;
                                   const mc = models.find(m => m.id === ai.modelId)?.classes || [];
-                                  return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                  return <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                    <span style={{ fontSize: 10, color: '#aaa', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>✓ Check = Pass class (must be detected for OK)</span>
                                     {mc.map(c => {
                                       const sel = (ai.mandatoryClasses || []).includes(c);
-                                      return <span key={c}
-                                        onClick={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
-                                        style={{ cursor: 'pointer', padding: '3px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: sel ? 'var(--accent)' : '#eee', color: sel ? '#fff' : '#555', userSelect: 'none' }}
-                                      >{c}</span>;
+                                      return <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={sel}
+                                          onChange={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
+                                          style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                        />
+                                        <span style={{ fontSize: 12, fontWeight: 600, color: sel ? 'var(--accent)' : '#aaa' }}>{c}</span>
+                                        {sel
+                                          ? <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>
+                                          : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                        }
+                                      </label>;
                                     })}
                                   </div>;
                                 })()}
