@@ -113,10 +113,17 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                         )
                         task_classes = model_classes
 
+            mandatory_classes = task.get("mandatoryClasses", [])
+            # Validate mandatory classes against model — remove any that don't exist
+            if model_for_task and mandatory_classes:
+                model_classes = get_attr(model_for_task, "classes", []) or []
+                mandatory_classes = [c for c in mandatory_classes if c in model_classes]
+
             ref_img = task.get("referenceImage")
             models_manifest.append({
                 "name": task.get("taskName") or task.get("modelName"),
                 "classes": task_classes,
+                "mandatoryClasses": mandatory_classes,
                 "tflite_path": paths.get("tflite", "assets/models/model_0.tflite"),
                 "labels_path": paths.get("labels", "assets/models/labels_0.txt"),
                 "vehicle_code": task.get("vehicleCode"),
