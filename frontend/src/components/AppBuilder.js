@@ -815,6 +815,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: '8px 0' }}>
                                 {modelClasses.map(c => {
                                   const selected = (config.mandatoryClasses || []).includes(c);
+                                  const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
+                                  const isNotOk = cn.includes('not') && cn.includes('ok');
                                   return (
                                     <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
                                       <input
@@ -823,9 +825,11 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                         onChange={() => handleToggleMandatoryClass(idx, c)}
                                         style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
                                       />
-                                      <span style={{ fontSize: 12, fontWeight: 600, color: selected ? 'var(--accent)' : C.muted }}>{c}</span>
+                                      <span style={{ fontSize: 12, fontWeight: 600, color: selected ? (isNotOk ? '#e74c3c' : 'var(--accent)') : C.muted }}>{c}</span>
                                       {selected
-                                        ? <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>
+                                        ? (isNotOk
+                                            ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                            : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
                                         : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
                                       }
                                     </label>
@@ -908,6 +912,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                     <span style={{ fontSize: 10, color: '#aaa', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>✓ Check = Pass class (must be detected for OK)</span>
                                     {mc.map(c => {
                                       const sel = (ai.mandatoryClasses || []).includes(c);
+                                      const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
+                                      const isNotOk = cn.includes('not') && cn.includes('ok');
                                       return <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
                                         <input
                                           type="checkbox"
@@ -915,9 +921,11 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                           onChange={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
                                           style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
                                         />
-                                        <span style={{ fontSize: 12, fontWeight: 600, color: sel ? 'var(--accent)' : '#aaa' }}>{c}</span>
+                                        <span style={{ fontSize: 12, fontWeight: 600, color: sel ? (isNotOk ? '#e74c3c' : 'var(--accent)') : '#aaa' }}>{c}</span>
                                         {sel
-                                          ? <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>
+                                          ? (isNotOk
+                                              ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                              : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
                                           : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
                                         }
                                       </label>;
