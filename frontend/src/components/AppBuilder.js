@@ -814,13 +814,11 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                               <label style={labelStyle}>Mandatory Classes (all must be detected for OK)</label>
                               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '8px 0' }}>
                                 {modelClasses.map(c => {
-                                  const isNotOk = c.toLowerCase().replace(/_|-/g, ' ').includes('not') && c.toLowerCase().includes('ok');
                                   const selected = (config.mandatoryClasses || []).includes(c);
                                   return (
                                     <span key={c}
-                                      onClick={() => !isNotOk && handleToggleMandatoryClass(idx, c)}
-                                      title={isNotOk ? '"not ok" cannot be mandatory — it always forces red' : ''}
-                                      style={{ cursor: isNotOk ? 'not-allowed' : 'pointer', padding: '4px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600, background: isNotOk ? '#eee' : selected ? 'var(--accent)' : C.border, color: isNotOk ? '#bbb' : selected ? '#fff' : C.muted, border: `1px solid ${isNotOk ? '#ddd' : selected ? 'var(--accent)' : C.border}`, userSelect: 'none', textDecoration: isNotOk ? 'line-through' : 'none' }}
+                                      onClick={() => handleToggleMandatoryClass(idx, c)}
+                                      style={{ cursor: 'pointer', padding: '4px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600, background: selected ? 'var(--accent)' : C.border, color: selected ? '#fff' : C.muted, border: `1px solid ${selected ? 'var(--accent)' : C.border}`, userSelect: 'none' }}
                                     >{c}</span>
                                   );
                                 })}
@@ -899,12 +897,10 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                   const mc = models.find(m => m.id === ai.modelId)?.classes || [];
                                   return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                                     {mc.map(c => {
-                                      const isNotOk = c.toLowerCase().replace(/_|-/g, ' ').includes('not') && c.toLowerCase().includes('ok');
                                       const sel = (ai.mandatoryClasses || []).includes(c);
                                       return <span key={c}
-                                        onClick={() => !isNotOk && handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
-                                        title={isNotOk ? '"not ok" cannot be mandatory' : ''}
-                                        style={{ cursor: isNotOk ? 'not-allowed' : 'pointer', padding: '3px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: isNotOk ? '#eee' : sel ? 'var(--accent)' : '#eee', color: isNotOk ? '#bbb' : sel ? '#fff' : '#555', userSelect: 'none', textDecoration: isNotOk ? 'line-through' : 'none' }}
+                                        onClick={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
+                                        style={{ cursor: 'pointer', padding: '3px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: sel ? 'var(--accent)' : '#eee', color: sel ? '#fff' : '#555', userSelect: 'none' }}
                                       >{c}</span>;
                                     })}
                                   </div>;
