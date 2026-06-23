@@ -114,10 +114,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                         task_classes = model_classes
 
             mandatory_classes = task.get("mandatoryClasses", [])
+            print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_raw={mandatory_classes} allClasses={task_classes}")
             # Validate mandatory classes against model — remove any that don't exist
             if model_for_task and mandatory_classes:
                 model_classes = get_attr(model_for_task, "classes", []) or []
                 mandatory_classes = [c for c in mandatory_classes if c in model_classes]
+            print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_final={mandatory_classes}")
 
             ref_img = task.get("referenceImage")
             models_manifest.append({
