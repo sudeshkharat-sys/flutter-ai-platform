@@ -388,7 +388,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             if (!acc[code]) acc[code] = [];
             acc[code].push({
               modelId: t.modelId,
-              mandatoryClasses: t.mandatoryClasses || (t.classes ? t.classes.filter(c => c) : []),
+              mandatoryClasses: t.mandatoryClasses || [],
               instruction: t.instruction || t.taskName || '',
               referenceImage: t.referenceImage || null,
             });
