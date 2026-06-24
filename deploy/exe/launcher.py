@@ -169,7 +169,7 @@ CFG_FILE = DATA_DIR / "flutterai.cfg"
 DEFAULTS = {
     "postgres_port":  "5433",
     "redis_port":     "6380",
-    "api_port":       "8001",
+    "api_port":       "8002",
     "db_name":        "flutter_studio",
     "db_user":        "flutterai",
     "db_password":    "flutterai_local_pass",

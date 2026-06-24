@@ -51,7 +51,7 @@ if not exist node_modules (
     if errorlevel 1 ( echo [ERROR] npm install failed. & exit /b 1 )
 )
 
-set REACT_APP_API_URL=http://localhost:8001/api/v1
+set REACT_APP_API_URL=http://localhost:8002
 call npm run build
 if errorlevel 1 ( echo [ERROR] React build failed. & exit /b 1 )
 echo      Frontend built successfully.

@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const api = axios.create({ baseURL: 'http://localhost:8001/api/v1' });
+const BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+const api = axios.create({ baseURL: `${BASE_URL}/api/v1` });
 
 /**
  * Upload a .pt model file with its class list.
@@ -65,7 +66,7 @@ export const uploadReferenceImage = (file) => {
   });
 };
 export const getReferenceImageUrl = (filename) =>
-  `http://localhost:8001/api/v1/assets/reference-image/${filename}`;
+  `${BASE_URL}/api/v1/assets/reference-image/${filename}`;
 
 // ── Master Data ──────────────────────────────────────────────────────────────
 export const getMasterMappings = () => api.get('/master-data');
