@@ -58,7 +58,7 @@ class _BoundingBoxPainter extends CustomPainter {
     if (mandatoryClasses.any((m) => m.toLowerCase().trim() == className.toLowerCase().trim())) {
       return const Color(0xFF43A047); // green — mandatory
     }
-    return const Color(0xFFF5A623); // orange — non-mandatory
+    return const Color(0xFFE53935); // red — unchecked/fail class detected
   }
 
   _BoundingBoxPainter({
