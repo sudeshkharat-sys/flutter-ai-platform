@@ -64,7 +64,7 @@ def configure_env(
     (base_dir / "logs").mkdir(parents=True, exist_ok=True)
 
 
-def start(host: str = "127.0.0.1", port: int = 8001) -> threading.Thread:
+def start(host: str = "127.0.0.1", port: int = 8002) -> threading.Thread:
     """Start uvicorn in a daemon thread. Returns the thread."""
 
     if hasattr(sys, "_MEIPASS"):

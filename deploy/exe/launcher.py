@@ -32,7 +32,7 @@ if sys.platform == "win32" and getattr(sys, "_MEIPASS", None):
         try:
             import subprocess as _sp
             _sp.run(
-                ["cmd", "/c", "start", "", "http://127.0.0.1:8001"],
+                ["cmd", "/c", "start", "", "http://127.0.0.1:8002"],
                 creationflags=0x08000000,  # CREATE_NO_WINDOW
             )
         except Exception:

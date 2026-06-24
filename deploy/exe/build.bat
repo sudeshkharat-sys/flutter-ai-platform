@@ -188,6 +188,6 @@ echo On first launch, the app will:
 echo   - Verify all bundled build tools
 echo   - Initialize the PostgreSQL database
 echo   - Start all services
-echo   - Open your browser at http://localhost:8001
+echo   - Open your browser at http://localhost:8002
 
 endlocal
