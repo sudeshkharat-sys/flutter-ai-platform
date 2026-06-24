@@ -186,6 +186,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "app_type": settings.get("app_type", "sequential"),
         "scan_type": settings.get("scan_type", "model"),
         "app_settings": settings,
+        "gradle_zip_path": os.environ.get("GRADLE_ZIP_PATH", "").replace("\\", "/"),
     }
 
     # Map of zip path -> template name
