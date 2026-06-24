@@ -170,7 +170,7 @@ DEFAULTS = {
     "postgres_port":  "5433",
     "redis_port":     "6380",
     "api_port":       "8002",
-    "db_name":        "flutter_studio",
+    "db_name":        "flutterai_prod",
     "db_user":        "flutterai",
     "db_password":    "flutterai_local_pass",
     "open_browser":   "true",
