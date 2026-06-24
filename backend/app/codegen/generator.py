@@ -102,7 +102,9 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 (ma for ma in models_list if get_attr(ma, "id") == mid), None
             )
             if model_for_task:
-                model_classes = get_attr(model_for_task, "classes", []) or []
+                _raw = get_attr(model_for_task, "classes", []) or []
+                import json as _json
+                model_classes = _json.loads(_raw) if isinstance(_raw, str) else _raw
                 if model_classes:
                     model_classes_lower_set = {c.lower().strip() for c in model_classes}
                     valid = [c for c in task_classes if c.lower().strip() in model_classes_lower_set]
@@ -116,10 +118,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
 
             mandatory_classes = task.get("mandatoryClasses", [])
             print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_raw={mandatory_classes} allClasses={task_classes}")
-            # Validate mandatory classes against model — remove any that don't exist
-            # Use case-insensitive comparison to match Flutter's toLowerCase().trim() logic
+            # Validate mandatory classes against model — skip any not in the model's class list.
+            # model_classes from DB may be a JSON string; parse it first, then compare case-insensitively.
             if model_for_task and mandatory_classes:
-                model_classes = get_attr(model_for_task, "classes", []) or []
+                _raw = get_attr(model_for_task, "classes", []) or []
+                import json as _json
+                model_classes = _json.loads(_raw) if isinstance(_raw, str) else _raw
                 model_classes_lower = {c.lower().strip() for c in model_classes}
                 mandatory_classes = [c for c in mandatory_classes if c.lower().strip() in model_classes_lower]
             print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_final={mandatory_classes}")
