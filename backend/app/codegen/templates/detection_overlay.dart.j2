@@ -5,12 +5,14 @@ class DetectionOverlay extends StatelessWidget {
   final List<DetectionResult> results;
   final Size previewSize;
   final Color? overrideColor;
+  final List<String> mandatoryClasses;
 
   const DetectionOverlay({
     super.key,
     required this.results,
     required this.previewSize,
     this.overrideColor,
+    this.mandatoryClasses = const [],
   });
 
   @override
@@ -20,6 +22,7 @@ class DetectionOverlay extends StatelessWidget {
         results: results,
         previewSize: previewSize,
         overrideColor: overrideColor,
+        mandatoryClasses: mandatoryClasses,
         {% if show_labels %}showLabels: true,{% else %}showLabels: false,{% endif %}
         {% if show_confidence %}showConfidence: true,{% else %}showConfidence: false,{% endif %}
       ),
@@ -43,17 +46,26 @@ class _BoundingBoxPainter extends CustomPainter {
     Color(0xFFFF6B9D),
   ];
 
-  static Color _colorForClass(String className, int index) {
-    final lower = className.toLowerCase();
-    if (lower.contains('not ok')) return const Color(0xFFE53935);
-    if (lower.contains('ok')) return const Color(0xFF43A047);
-    return _fallbackColors[index % _fallbackColors.length];
+  final List<String> mandatoryClasses;
+
+  static bool _isNotOk(String className) {
+    final cn = className.toLowerCase().replaceAll('_', ' ').replaceAll('-', ' ');
+    return cn.contains('not') && cn.contains('ok');
+  }
+
+  Color _colorForClass(String className, int index) {
+    if (_isNotOk(className)) return const Color(0xFFE53935); // red — defect
+    if (mandatoryClasses.any((m) => m.toLowerCase().trim() == className.toLowerCase().trim())) {
+      return const Color(0xFF43A047); // green — mandatory
+    }
+    return const Color(0xFFE53935); // red — unchecked/fail class detected
   }
 
   _BoundingBoxPainter({
     required this.results,
     required this.previewSize,
     this.overrideColor,
+    this.mandatoryClasses = const [],
     this.showLabels = true,
     this.showConfidence = true,
   });

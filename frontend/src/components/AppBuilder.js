@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, cancelBuild, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
+import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -70,7 +70,7 @@ export default function AppBuilder() {
   };
 
   const handleResetBuild = async () => {
-    try { await cancelBuild(id); } catch { await updateApp(id, { build_status: 'idle', build_step: '' }); }
+    await updateApp(id, { build_status: 'idle', build_step: '' });
     loadData();
   };
 
@@ -340,7 +340,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [engineSearchTerm, setEngineSearchTerm] = useState('');
 
-  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', instruction: '' }]);
+  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', mandatoryClasses: [], instruction: '' }]);
 
   const [isReviewing, setIsReviewing] = useState(startAtReview);
   const [reviewData, setReviewData] = useState([]); 
@@ -374,7 +374,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         }
 
         if (existingApp.app_settings?.default_configs) {
-          setDefaultAIConfigs(existingApp.app_settings.default_configs);
+          // Migrate old single-class format to mandatoryClasses array
+          const migrated = existingApp.app_settings.default_configs.map(c => ({
+            ...c,
+            mandatoryClasses: c.mandatoryClasses || (c.class ? [c.class] : []),
+          }));
+          setDefaultAIConfigs(migrated);
         }
 
         if (existingApp.inspection_tasks && existingApp.inspection_tasks.length > 0) {
@@ -383,7 +388,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             if (!acc[code]) acc[code] = [];
             acc[code].push({
               modelId: t.modelId,
-              class: t.classes?.[0] || '',
+              mandatoryClasses: t.mandatoryClasses || [],
               instruction: t.instruction || t.taskName || '',
               referenceImage: t.referenceImage || null,
             });
@@ -427,7 +432,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleAddDefaultAI = () => {
-    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', class: '', instruction: '' }]);
+    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', mandatoryClasses: [], instruction: '' }]);
   };
 
   const handleRemoveDefaultAI = (index) => {
@@ -438,9 +443,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newConfigs = [...defaultAIConfigs];
     newConfigs[index][field] = value;
     if (field === 'modelId') {
-      const m = models.find(mod => mod.id === value);
-      newConfigs[index].class = m?.classes[0] || '';
+      newConfigs[index].mandatoryClasses = [];
     }
+    setDefaultAIConfigs(newConfigs);
+  };
+
+  const handleToggleMandatoryClass = (index, cls) => {
+    const newConfigs = [...defaultAIConfigs];
+    const current = newConfigs[index].mandatoryClasses || [];
+    newConfigs[index].mandatoryClasses = current.includes(cls)
+      ? current.filter(c => c !== cls)
+      : [...current, cls];
     setDefaultAIConfigs(newConfigs);
   };
 
@@ -450,7 +463,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         alert("Please select at least one Engine Code.");
         return;
       }
-      const validAI = defaultAIConfigs.filter(c => c.modelId && c.class);
+      const validAI = defaultAIConfigs.filter(c => c.modelId && c.mandatoryClasses?.length > 0);
       const newReviewData = selectedEngineCodes.map(partNo => {
         const mapping = engineMappings.find(m => m.part_no === partNo) || { part_no: partNo, sheet_name: 'Unknown', description: '' };
         return {
@@ -467,7 +480,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         alert("Please select at least one Vehicle Model Code.");
         return;
       }
-      const validAI = defaultAIConfigs.filter(c => c.modelId && c.class);
+      const validAI = defaultAIConfigs.filter(c => c.modelId && c.mandatoryClasses?.length > 0);
       const newReviewData = selectedModelCodes.map(code => {
         const mapping = masterMappings.find(m => m.model_code === code);
         return {
@@ -487,9 +500,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newData = [...reviewData];
     newData[rowIndex].selectedAIModels[aiIdx][field] = value;
     if (field === 'modelId') {
-      const m = models.find(mod => mod.id === value);
-      newData[rowIndex].selectedAIModels[aiIdx].class = m?.classes[0] || '';
+      newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = [];
     }
+    setReviewData(newData);
+  };
+
+  const handleToggleRowMandatoryClass = (rowIndex, aiIdx, cls) => {
+    const newData = [...reviewData];
+    const current = newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses || [];
+    newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = current.includes(cls)
+      ? current.filter(c => c !== cls)
+      : [...current, cls];
     setReviewData(newData);
   };
 
@@ -509,7 +530,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   const handleAddRowAI = (rowIndex) => {
     const newData = [...reviewData];
-    newData[rowIndex].selectedAIModels.push({ modelId: '', class: '', instruction: '', referenceImage: null });
+    newData[rowIndex].selectedAIModels.push({ modelId: '', mandatoryClasses: [], instruction: '', referenceImage: null });
     setReviewData(newData);
   };
 
@@ -533,7 +554,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             modelId: ai.modelId,
             taskName: ai.instruction || `${row.model_code} - ${model.vision_project_name}`,
             modelName: model.vision_project_name,
-            classes: [ai.class],
+            classes: model.classes,
+            mandatoryClasses: ai.mandatoryClasses || [],
             tflitePath: model.tflite_path,
             labelsPath: model.labels_path,
             vehicleCode: row.model_code,
@@ -783,13 +805,39 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                           </select>
                         </div>
                         <div>
-                          <label style={labelStyle}>Detection Class</label>
-                          <select style={inputStyle} value={config.class} onChange={(e) => handleUpdateDefaultAI(idx, 'class', e.target.value)} disabled={!config.modelId}>
-                            <option value="">Select Class...</option>
-                            {models.find(m => m.id === config.modelId)?.classes.map(c => (
-                              <option key={c} value={c}>{c}</option>
-                            ))}
-                          </select>
+                          {(() => {
+                            const modelClasses = models.find(m => m.id === config.modelId)?.classes || [];
+                            if (!config.modelId) {
+                              return <><label style={labelStyle}>Mandatory Classes</label><span style={{ fontSize: 12, color: C.muted }}>Select a model first</span></>;
+                            }
+                            return <>
+                              <label style={labelStyle}>Pass Classes — check which must be detected for OK badge</label>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: '8px 0' }}>
+                                {modelClasses.map(c => {
+                                  const selected = (config.mandatoryClasses || []).includes(c);
+                                  const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
+                                  const isNotOk = cn.includes('not') && cn.includes('ok');
+                                  return (
+                                    <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={selected}
+                                        onChange={() => handleToggleMandatoryClass(idx, c)}
+                                        style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                      />
+                                      <span style={{ fontSize: 12, fontWeight: 600, color: selected ? (isNotOk ? '#e74c3c' : 'var(--accent)') : C.muted }}>{c}</span>
+                                      {selected
+                                        ? (isNotOk
+                                            ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                            : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
+                                        : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                      }
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </>;
+                          })()}
                         </div>
                       </div>
                       <div>
@@ -836,7 +884,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                   {reviewData.map((row, rowIndex) => (
                     <tr key={row.id} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={tdStyle}><div style={{ fontWeight: 700, fontSize: 13 }}>{row.platform_name}</div></td>
-                      <td style={tdStyle}><span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span></td>
+                      <td style={tdStyle}>
+                        <span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span>
+                        {row.description && (
+                          <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.4, wordBreak: 'break-word', maxWidth: 120 }}>{row.description}</div>
+                        )}
+                      </td>
                       <td colSpan={6} style={{ padding: 0 }}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
                           {row.selectedAIModels.map((ai, aiIdx) => (
@@ -852,16 +905,33 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                 </select>
                               </div>
                               <div style={{ padding: '12px 16px' }}>
-                                <select 
-                                  style={{ ...miniSelectStyle, width: '100%' }} 
-                                  value={ai.class} 
-                                  onChange={(e) => handleUpdateRowAI(rowIndex, aiIdx, 'class', e.target.value)}
-                                  disabled={!ai.modelId}
-                                >
-                                  {models.find(m => m.id === ai.modelId)?.classes.map(c => (
-                                    <option key={c} value={c}>{c}</option>
-                                  ))}
-                                </select>
+                                {(() => {
+                                  if (!ai.modelId) return <span style={{ fontSize: 11, color: '#aaa' }}>Select model</span>;
+                                  const mc = models.find(m => m.id === ai.modelId)?.classes || [];
+                                  return <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                    <span style={{ fontSize: 10, color: '#aaa', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>✓ Check = Pass class (must be detected for OK)</span>
+                                    {mc.map(c => {
+                                      const sel = (ai.mandatoryClasses || []).includes(c);
+                                      const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
+                                      const isNotOk = cn.includes('not') && cn.includes('ok');
+                                      return <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={sel}
+                                          onChange={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
+                                          style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                        />
+                                        <span style={{ fontSize: 12, fontWeight: 600, color: sel ? (isNotOk ? '#e74c3c' : 'var(--accent)') : '#aaa' }}>{c}</span>
+                                        {sel
+                                          ? (isNotOk
+                                              ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                              : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
+                                          : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                        }
+                                      </label>;
+                                    })}
+                                  </div>;
+                                })()}
                               </div>
                               <div style={{ padding: '12px 16px' }}>
                                 <input

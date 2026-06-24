@@ -40,21 +40,14 @@ class ModelManager {
       _labels = [];
     }
 
-    // Try GPU delegate first, fall back to CPU if it fails
+    // Force CPU inference on all devices for consistent results.
+    // GpuDelegateV2 silently produces wrong output on many mid/low-range
+    // Android GPUs — all class predictions flip — so we avoid it entirely.
     try {
-      final options = InterpreterOptions();
-      if (Platform.isAndroid) {
-        options.addDelegate(GpuDelegateV2());
-      }
-      _interpreter = await Interpreter.fromAsset(modelPath, options: options);
+      _interpreter = await Interpreter.fromAsset(modelPath);
     } catch (e) {
-      debugPrint('GPU delegate failed, falling back to CPU: $e');
-      try {
-        _interpreter = await Interpreter.fromAsset(modelPath);
-      } catch (e2) {
-        debugPrint('Error loading model: $e2');
-        return;
-      }
+      debugPrint('Error loading model: $e');
+      return;
     }
 
     _currentModelPath = modelPath;
@@ -190,15 +183,10 @@ class ModelManager {
   static List<DetectionResult> _parseGenericYolo(List<dynamic> output, List<String> labels, double threshold, int inputSize, List<int> shape) {
     final results = <DetectionResult>[];
 
-    // Check if output is [4+N, 8400] or [8400, 4+N]
     bool isTransposed = shape[1] < shape[2];
     int numElements = isTransposed ? shape[1] : shape[2];
     int numBoxes = isTransposed ? shape[2] : shape[1];
 
-    // Auto-detect whether coordinates are absolute pixels [0, inputSize]
-    // or already normalized [0, 1]. Sample the first few valid cx values:
-    // any absolute-pixel coord from a real detection will be > 1.5, whereas
-    // normalized coords are always <= 1.0.
     double maxSampledCoord = 0.0;
     final sampleCount = numBoxes < 200 ? numBoxes : 200;
     for (int i = 0; i < sampleCount; i++) {
@@ -207,15 +195,12 @@ class ModelManager {
       if (cx > maxSampledCoord) maxSampledCoord = cx;
       if (cy > maxSampledCoord) maxSampledCoord = cy;
     }
-    // If max sampled coord is <= 1.5 the model outputs normalized [0,1] coords;
-    // skip the /inputSize division so bboxes are placed correctly.
     final double coordScale = maxSampledCoord > 1.5 ? inputSize.toDouble() : 1.0;
 
     for (int i = 0; i < numBoxes; i++) {
       double maxClassScore = -1.0;
       int classId = -1;
 
-      // Class scores start at index 4
       for (int j = 4; j < numElements; j++) {
         double score = isTransposed ? output[j][i] : output[i][j];
         if (score > maxClassScore) {
@@ -242,6 +227,44 @@ class ModelManager {
         ));
       }
     }
-    return results;
+    return _applyNMS(results, iouThreshold: 0.45);
+  }
+
+  // Non-Max Suppression: removes duplicate overlapping boxes, keeps highest confidence per object
+  static List<DetectionResult> _applyNMS(List<DetectionResult> detections, {double iouThreshold = 0.45}) {
+    if (detections.isEmpty) return detections;
+
+    // Sort by confidence descending
+    final sorted = List<DetectionResult>.from(detections)
+      ..sort((a, b) => b.confidence.compareTo(a.confidence));
+
+    final kept = <DetectionResult>[];
+    final suppressed = List<bool>.filled(sorted.length, false);
+
+    for (int i = 0; i < sorted.length; i++) {
+      if (suppressed[i]) continue;
+      kept.add(sorted[i]);
+      for (int j = i + 1; j < sorted.length; j++) {
+        if (suppressed[j]) continue;
+        if (sorted[i].className == sorted[j].className &&
+            _iou(sorted[i].bbox, sorted[j].bbox) > iouThreshold) {
+          suppressed[j] = true;
+        }
+      }
+    }
+    return kept;
+  }
+
+  static double _iou(Rect a, Rect b) {
+    final interLeft = a.left > b.left ? a.left : b.left;
+    final interTop = a.top > b.top ? a.top : b.top;
+    final interRight = a.right < b.right ? a.right : b.right;
+    final interBottom = a.bottom < b.bottom ? a.bottom : b.bottom;
+
+    if (interRight <= interLeft || interBottom <= interTop) return 0.0;
+
+    final interArea = (interRight - interLeft) * (interBottom - interTop);
+    final unionArea = a.width * a.height + b.width * b.height - interArea;
+    return unionArea <= 0 ? 0.0 : interArea / unionArea;
   }
 }

@@ -1,20 +1,34 @@
-import os
 import re
-import sys
 import zipfile
 import io
+import os
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-def _resolve_templates_dir() -> Path:
-    """Return templates dir, handling PyInstaller --onedir bundles."""
-    if hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS) / "backend" / "app" / "codegen" / "templates"
-    return Path(__file__).parent / "templates"
+_KOTLIN_FALLBACK = "2.1.20"
 
 
-TEMPLATES_DIR = _resolve_templates_dir()
+def _detect_kotlin_version() -> str:
+    flutter_roots = [r"C:\flutter", "/flutter", "/usr/local/flutter"]
+    env_root = os.environ.get("FLUTTER_ROOT") or os.environ.get("FLUTTER_HOME")
+    if env_root:
+        flutter_roots.insert(0, env_root)
+
+    for root in flutter_roots:
+        candidates = [
+            Path(root) / "packages" / "flutter_tools" / "gradle" / "src" / "main" / "groovy" / "flutter.groovy",
+            Path(root) / "packages" / "flutter_tools" / "gradle" / "flutter.groovy",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                text = candidate.read_text(errors="replace")
+                m = re.search(r'kotlin[_\-]?version\s*[=:]\s*["\']?([\d.]+)', text, re.IGNORECASE)
+                if m:
+                    return m.group(1)
+
+    return _KOTLIN_FALLBACK
 
 
 def _get_jinja_env() -> Environment:
@@ -88,9 +102,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 (ma for ma in models_list if get_attr(ma, "id") == mid), None
             )
             if model_for_task:
-                model_classes = get_attr(model_for_task, "classes", []) or []
+                _raw = get_attr(model_for_task, "classes", []) or []
+                import json as _json
+                model_classes = _json.loads(_raw) if isinstance(_raw, str) else _raw
                 if model_classes:
-                    valid = [c for c in task_classes if c in model_classes]
+                    model_classes_lower_set = {c.lower().strip() for c in model_classes}
+                    valid = [c for c in task_classes if c.lower().strip() in model_classes_lower_set]
                     if not valid:
                         print(
                             f"[generator] WARNING: task '{task.get('taskName')}' "
@@ -99,10 +116,23 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                         )
                         task_classes = model_classes
 
+            mandatory_classes = task.get("mandatoryClasses", [])
+            print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_raw={mandatory_classes} allClasses={task_classes}")
+            # Validate mandatory classes against model — skip any not in the model's class list.
+            # model_classes from DB may be a JSON string; parse it first, then compare case-insensitively.
+            if model_for_task and mandatory_classes:
+                _raw = get_attr(model_for_task, "classes", []) or []
+                import json as _json
+                model_classes = _json.loads(_raw) if isinstance(_raw, str) else _raw
+                model_classes_lower = {c.lower().strip() for c in model_classes}
+                mandatory_classes = [c for c in mandatory_classes if c.lower().strip() in model_classes_lower]
+            print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_final={mandatory_classes}")
+
             ref_img = task.get("referenceImage")
             models_manifest.append({
                 "name": task.get("taskName") or task.get("modelName"),
                 "classes": task_classes,
+                "mandatoryClasses": mandatory_classes,
                 "tflite_path": paths.get("tflite", "assets/models/model_0.tflite"),
                 "labels_path": paths.get("labels", "assets/models/labels_0.txt"),
                 "vehicle_code": task.get("vehicleCode"),
@@ -131,13 +161,8 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         except:
             canvas_state = []
 
-    # SDK paths injected by the EXE launcher; fall back to legacy hardcoded
-    # values so the generator still works in a plain dev environment.
-    _android_sdk = os.environ.get("ANDROID_HOME", "C:/android-sdk").replace("\\", "/")
-    _flutter_sdk = os.environ.get("FLUTTER_ROOT", "C:/flutter").replace("\\", "/")
-    _gradle_zip  = os.environ.get("GRADLE_ZIP_PATH", "C:/gradle/gradle-8.10.2-all.zip").replace("\\", "/")
-
     ctx = {
+        "kotlin_version": _detect_kotlin_version(),
         "app_name": app_name,
         "app_name_slug": _dart_slug(app_name),
         "package_name": package_name,
@@ -161,10 +186,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "app_type": settings.get("app_type", "sequential"),
         "scan_type": settings.get("scan_type", "model"),
         "app_settings": settings,
-        # SDK tool paths baked into the generated Android project
-        "android_sdk_path": _android_sdk,
-        "flutter_sdk_path": _flutter_sdk,
-        "gradle_zip_path":  _gradle_zip,
     }
 
     # Map of zip path -> template name

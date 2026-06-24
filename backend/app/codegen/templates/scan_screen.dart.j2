@@ -136,10 +136,11 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
             cameras: [],
           ),
         ),
-      ).then((_) {
+      ).then((_) async {
         if (mounted) {
+          await _scannerController.stop();
+          await _scannerController.start();
           setState(() => _isProcessing = false);
-          _scannerController.start();
         }
       });
     }
@@ -213,10 +214,11 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
             cameras: [],
           ),
         ),
-      ).then((_) {
+      ).then((_) async {
         if (mounted) {
+          await _scannerController.stop();
+          await _scannerController.start();
           setState(() => _isProcessing = false);
-          _scannerController.start();
         }
       });
     }

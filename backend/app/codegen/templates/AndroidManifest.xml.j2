@@ -16,7 +16,7 @@
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
     <application
-        android:label="{{ app_name }}"
+        android:label="{{ app_name | e }}"
         android:icon="@mipmap/ic_launcher"
         android:name="${applicationName}"
         android:requestLegacyExternalStorage="true">

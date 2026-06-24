@@ -33,11 +33,31 @@ class HistoryScreen extends StatefulWidget {
 class _HistoryScreenState extends State<HistoryScreen> {
   List<Map<String, dynamic>> _groupedHistory = [];
   bool _loading = true;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
     _loadHistoryFromDb();
+    _searchController.addListener(() {
+      setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  List<Map<String, dynamic>> get _filteredHistory {
+    if (_searchQuery.isEmpty) return _groupedHistory;
+    return _groupedHistory.where((item) {
+      final vin = (item['vin'] as String? ?? '').toLowerCase();
+      final model = (item['modelCode'] as String? ?? '').toLowerCase();
+      return vin.contains(_searchQuery) || model.contains(_searchQuery);
+    }).toList();
   }
 
   Future<void> _loadHistoryFromDb() async {
@@ -63,6 +83,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     'detectedPart': tr.className,
                     'success': tr.success,
                     'imagePath': tr.imagePath,
+                    'backupImagePath': tr.backupImagePath,
                     'detectionsJson': tr.detectionsJson,
                   })
               .toList(),
@@ -477,16 +498,65 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Widget _buildHistoryTab() {
-    if (_groupedHistory.isEmpty) {
-      return const Center(
-        child: Text('No history found', style: TextStyle(color: Colors.grey)),
-      );
-    }
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _groupedHistory.length,
-      itemBuilder: (context, index) {
-        final item = _groupedHistory[index];
+    final filtered = _filteredHistory;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              hintText: '{% if scan_type == "engine" %}Search by Serial or Engine Code...{% else %}Search by VIN or Model Code...{% endif %}',
+              hintStyle: const TextStyle(fontSize: 13, color: Colors.grey),
+              prefixIcon: const Icon(Icons.search, color: Color(0xFFDC143C)),
+              suffixIcon: _searchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear, color: Colors.grey),
+                      onPressed: () => _searchController.clear(),
+                    )
+                  : null,
+              filled: true,
+              fillColor: Colors.white,
+              contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: Color(0xFFD4AF37)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: Color(0xFFD4AF37)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: Color(0xFFDC143C), width: 1.5),
+              ),
+            ),
+          ),
+        ),
+        if (_searchQuery.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '${filtered.length} result${filtered.length == 1 ? '' : 's'} found',
+                style: const TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+            ),
+          ),
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Text(
+                    _searchQuery.isEmpty ? 'No history found' : 'No results for "$_searchQuery"',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  itemCount: filtered.length,
+                  itemBuilder: (context, index) {
+                    final item = filtered[index];
         final bool overallSuccess = item['overallSuccess'] ?? false;
         final DateTime date = DateTime.parse(item['timestamp']);
         final List<dynamic> tasks = item['tasks'] ?? [];
@@ -614,6 +684,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               const Divider(height: 1),
               ...tasks.map((task) {
                 final String? imgPath = task['imagePath'] as String?;
+                final String? backupImgPath = task['backupImagePath'] as String?;
                 final bool taskSuccess = task['success'] as bool? ?? false;
                 final String? detectionsRaw = task['detectionsJson'] as String?;
                 List<DetectionResult> detections = [];
@@ -661,16 +732,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         ],
                       ),
                     ),
-                    if (imgPath != null)
+                    if (imgPath != null || backupImgPath != null)
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
                           child: _HistoryImageWithOverlay(
                             imagePath: imgPath,
+                            backupImagePath: backupImgPath,
                             detections: detections,
-                            // Match bbox color to the pass/fail result so
-                            // green = matched target, red = not ok / mismatch.
                             taskSuccess: taskSuccess,
                           ),
                         ),
@@ -678,24 +748,29 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   ],
                 );
               }).toList(),
-              const SizedBox(height: 8),
-            ],
+                      const SizedBox(height: 8),
+                    ],
+                  ),
+                );
+              },
+            ),
           ),
-        );
-      },
-    );
+        ],
+      );
   }
 }
 
 // -- Image + overlay helper ---------------------------------------------------
 
 class _HistoryImageWithOverlay extends StatefulWidget {
-  final String imagePath;
+  final String? imagePath;
+  final String? backupImagePath;
   final List<DetectionResult> detections;
   final bool taskSuccess;
 
   const _HistoryImageWithOverlay({
     required this.imagePath,
+    required this.backupImagePath,
     required this.detections,
     required this.taskSuccess,
   });
@@ -707,6 +782,7 @@ class _HistoryImageWithOverlay extends StatefulWidget {
 
 class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
   Size? _imageSize;
+  String? _resolvedPath;
 
   @override
   void initState() {
@@ -714,24 +790,50 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
     _loadSize();
   }
 
+  // Pick the primary path if the file exists, fall back to backup.
+  Future<String?> _resolvePath() async {
+    if (widget.imagePath != null && await File(widget.imagePath!).exists()) {
+      return widget.imagePath;
+    }
+    if (widget.backupImagePath != null && await File(widget.backupImagePath!).exists()) {
+      return widget.backupImagePath;
+    }
+    return null;
+  }
+
   Future<void> _loadSize() async {
     try {
-      final bytes = await File(widget.imagePath).readAsBytes();
+      final path = await _resolvePath();
+      if (path == null) return;
+      final bytes = await File(path).readAsBytes();
       final decoded = img.decodeImage(bytes);
       if (decoded != null && mounted) {
         final oriented = img.bakeOrientation(decoded);
-        setState(() =>
-            _imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble()));
+        setState(() {
+          _resolvedPath = path;
+          _imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble());
+        });
       }
     } catch (_) {}
   }
 
   @override
   Widget build(BuildContext context) {
-    final file = File(widget.imagePath);
-    // Bbox color mirrors the prediction result: green = pass, red = fail.
-    final Color overlayColor =
-        widget.taskSuccess ? Colors.green : Colors.red;
+    if (_resolvedPath == null) {
+      return Container(
+        height: 80,
+        decoration: BoxDecoration(
+          color: Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: const Center(
+          child: Icon(Icons.broken_image_outlined, color: Colors.grey, size: 32),
+        ),
+      );
+    }
+
+    final file = File(_resolvedPath!);
+    final Color overlayColor = widget.taskSuccess ? Colors.green : Colors.red;
 
     if (_imageSize == null) {
       return ConstrainedBox(
@@ -761,22 +863,11 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
         child: SizedBox(
           width: _imageSize!.width,
           height: _imageSize!.height,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.file(
-                file,
-                fit: BoxFit.fill,
-                width: _imageSize!.width,
-                height: _imageSize!.height,
-              ),
-              if (widget.detections.isNotEmpty)
-                DetectionOverlay(
-                  results: widget.detections,
-                  previewSize: _imageSize!,
-                  overrideColor: overlayColor,
-                ),
-            ],
+          child: Image.file(
+            file,
+            fit: BoxFit.fill,
+            width: _imageSize!.width,
+            height: _imageSize!.height,
           ),
         ),
       ),
