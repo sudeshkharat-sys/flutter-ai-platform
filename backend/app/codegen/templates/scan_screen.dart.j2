@@ -17,6 +17,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _isProcessing = false;
   List<dynamic> _scanData = [];
   String? _pendingBarcode;
+  bool _manualMode = true; // true = manual SCAN button, false = auto scan
 
   final MobileScannerController _scannerController = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
@@ -62,16 +63,21 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     }
   }
 
-  // Called by MobileScanner continuously — only stores the latest raw value,
-  // no validation or navigation happens here.
   void _onDetect(BarcodeCapture capture) {
     if (_isProcessing) return;
     final List<Barcode> barcodes = capture.barcodes;
-    if (barcodes.isNotEmpty) {
-      final String? code = barcodes.first.rawValue;
-      if (code != null && code.trim().isNotEmpty && code.trim() != _pendingBarcode) {
+    if (barcodes.isEmpty) return;
+    final String? code = barcodes.first.rawValue;
+    if (code == null || code.trim().isEmpty) return;
+
+    if (_manualMode) {
+      // Manual mode: just store, wait for user to tap SCAN
+      if (code.trim() != _pendingBarcode) {
         setState(() => _pendingBarcode = code.trim());
       }
+    } else {
+      // Auto mode: process immediately (original behaviour)
+      _runValidation(code.trim());
     }
   }
 
@@ -116,12 +122,10 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _processScan() async {
-    final raw = _pendingBarcode;
-    if (raw == null || _isProcessing) return;
+  void _runValidation(String raw) {
+    if (_isProcessing) return;
 
     final int spaceIdx = raw.indexOf(' ');
-
     if (spaceIdx == -1) {
       setState(() => _isProcessing = true);
       _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
@@ -160,6 +164,12 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     });
   }
 
+  void _processScan() {
+    final raw = _pendingBarcode;
+    if (raw == null) return;
+    _runValidation(raw);
+  }
+
 {% else %}
   // ── Model Code Scan Logic ─────────────────────────────────────────────────
   // Barcode format: [17-char VIN][suffix]
@@ -191,9 +201,8 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     return suffix;
   }
 
-  Future<void> _processScan() async {
-    final raw = _pendingBarcode;
-    if (raw == null || _isProcessing) return;
+  void _runValidation(String raw) {
+    if (_isProcessing) return;
 
     if (raw.length < 30 || raw.length > 35) {
       setState(() => _isProcessing = true);
@@ -234,12 +243,20 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     });
   }
 
+  void _processScan() {
+    final raw = _pendingBarcode;
+    if (raw == null) return;
+    _runValidation(raw);
+  }
+
 {% endif %}
 
   @override
   Widget build(BuildContext context) {
     final bool barcodeReady = _pendingBarcode != null && !_isProcessing;
-    final Color frameColor = barcodeReady ? Colors.green : const Color(0xFFDC143C);
+    final Color frameColor = (_manualMode && barcodeReady)
+        ? Colors.green
+        : const Color(0xFFDC143C);
 
     return Scaffold(
       body: Container(
@@ -259,7 +276,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
               child: SafeArea(
                 bottom: false,
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const Expanded(
                       child: Text(
@@ -279,6 +295,48 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                     ),
                   ],
                 ),
+              ),
+            ),
+            // Mode toggle row
+            Container(
+              color: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    _manualMode ? 'Manual Scan' : 'Auto Scan',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                  Row(
+                    children: [
+                      Text(
+                        'Auto',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: !_manualMode ? const Color(0xFFDC143C) : Colors.grey,
+                          fontWeight: !_manualMode ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                      Switch(
+                        value: _manualMode,
+                        onChanged: (val) => setState(() {
+                          _manualMode = val;
+                          _pendingBarcode = null;
+                        }),
+                        activeColor: const Color(0xFFDC143C),
+                      ),
+                      Text(
+                        'Manual',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: _manualMode ? const Color(0xFFDC143C) : Colors.grey,
+                          fontWeight: _manualMode ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
             Expanded(
@@ -309,34 +367,47 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                           ),
                         ),
                         const SizedBox(height: 12),
-                        AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 250),
-                          child: barcodeReady
-                              ? Container(
-                                  key: const ValueKey('detected'),
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: Colors.green.withOpacity(0.85),
-                                    borderRadius: BorderRadius.circular(6),
+                        if (_manualMode)
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 250),
+                            child: barcodeReady
+                                ? Container(
+                                    key: const ValueKey('detected'),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: Colors.green.withOpacity(0.85),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Text(
+                                      'Barcode detected — tap SCAN to confirm',
+                                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                                    ),
+                                  )
+                                : Container(
+                                    key: const ValueKey('waiting'),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black54,
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Text(
+                                      'Aim at barcode to detect',
+                                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                                    ),
                                   ),
-                                  child: const Text(
-                                    'Barcode detected — tap SCAN to confirm',
-                                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
-                                  ),
-                                )
-                              : Container(
-                                  key: const ValueKey('waiting'),
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: Colors.black54,
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: const Text(
-                                    'Aim at barcode to detect',
-                                    style: TextStyle(color: Colors.white70, fontSize: 13),
-                                  ),
-                                ),
-                        ),
+                          )
+                        else
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text(
+                              'Point camera at barcode',
+                              style: TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -350,24 +421,27 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                 ],
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
-              child: SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: barcodeReady ? _processScan : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: barcodeReady ? const Color(0xFFDC143C) : Colors.grey.shade400,
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.grey.shade400,
-                    disabledForegroundColor: Colors.white70,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            if (_manualMode)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: barcodeReady ? _processScan : null,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: barcodeReady ? const Color(0xFFDC143C) : Colors.grey.shade400,
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: Colors.grey.shade400,
+                      disabledForegroundColor: Colors.white70,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    child: const Text('SCAN', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, letterSpacing: 1.2)),
                   ),
-                  child: const Text('SCAN', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, letterSpacing: 1.2)),
                 ),
-              ),
-            ),
+              )
+            else
+              const SizedBox(height: 24),
           ],
         ),
       ),
