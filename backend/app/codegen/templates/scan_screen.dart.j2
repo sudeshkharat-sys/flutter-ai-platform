@@ -16,6 +16,7 @@ class ScanScreen extends StatefulWidget {
 class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _isProcessing = false;
   List<dynamic> _scanData = [];
+  String? _pendingBarcode;
 
   final MobileScannerController _scannerController = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
@@ -99,50 +100,51 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _onDetect(BarcodeCapture capture) async {
+  void _onDetect(BarcodeCapture capture) {
     if (_isProcessing) return;
-
-    final List<Barcode> barcodes = capture.barcodes;
-    if (barcodes.isNotEmpty) {
-      final String? code = barcodes.first.rawValue;
-      if (code == null) return;
-
-      final String raw = code.trim();
-      final int spaceIdx = raw.indexOf(' ');
-
-      if (spaceIdx == -1) {
-        setState(() => _isProcessing = true);
-        _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
-        return;
-      }
-
-      setState(() => _isProcessing = true);
-
-      final String partNo = raw.substring(0, spaceIdx).trim();
-      final String engineSerial = raw.substring(spaceIdx + 1).trim();
-
-      if (!_isKnownEngineCode(partNo)) {
-        _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
-        return;
-      }
-
-      if (!mounted) return;
-      _scannerController.stop();
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => HomeScreen(
-            vin: engineSerial,
-            modelCode: partNo,
-            cameras: [],
-          ),
-        ),
-      ).then((_) {
-        if (mounted) {
-          setState(() => _isProcessing = false);
-          _scannerController.start();
-        }
-      });
+    final code = capture.barcodes.firstOrNull?.rawValue;
+    if (code != null && code.trim() != _pendingBarcode) {
+      setState(() => _pendingBarcode = code.trim());
     }
+  }
+
+  Future<void> _onScanPressed() async {
+    if (_isProcessing || _pendingBarcode == null) return;
+    final String raw = _pendingBarcode!;
+    final int spaceIdx = raw.indexOf(' ');
+
+    if (spaceIdx == -1) {
+      setState(() => _isProcessing = true);
+      _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
+      return;
+    }
+
+    setState(() => _isProcessing = true);
+
+    final String partNo = raw.substring(0, spaceIdx).trim();
+    final String engineSerial = raw.substring(spaceIdx + 1).trim();
+
+    if (!_isKnownEngineCode(partNo)) {
+      _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+      return;
+    }
+
+    if (!mounted) return;
+    _scannerController.stop();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => HomeScreen(
+          vin: engineSerial,
+          modelCode: partNo,
+          cameras: [],
+        ),
+      ),
+    ).then((_) {
+      if (mounted) {
+        setState(() { _isProcessing = false; _pendingBarcode = null; });
+        _scannerController.start();
+      }
+    });
   }
 
 {% else %}
@@ -176,50 +178,51 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     return suffix;
   }
 
-  Future<void> _onDetect(BarcodeCapture capture) async {
+  void _onDetect(BarcodeCapture capture) {
     if (_isProcessing) return;
-
-    final List<Barcode> barcodes = capture.barcodes;
-    if (barcodes.isNotEmpty) {
-      final String? code = barcodes.first.rawValue;
-      if (code == null) return;
-
-      final String raw = code.trim();
-
-      if (raw.length < 30 || raw.length > 35) {
-        setState(() => _isProcessing = true);
-        _showErrorDialog('Please scan the right VIN model code.');
-        return;
-      }
-
-      setState(() => _isProcessing = true);
-
-      final String vin = raw.substring(0, 17);
-      final String suffix = raw.substring(17);
-      final String extractedModelCode = _resolveModelCode(suffix);
-
-      if (!_isKnownModelCode(extractedModelCode)) {
-        _showErrorDialog('Model code is not present, please add code and rebuild app.');
-        return;
-      }
-
-      if (!mounted) return;
-      _scannerController.stop();
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => HomeScreen(
-            vin: vin,
-            modelCode: extractedModelCode,
-            cameras: [],
-          ),
-        ),
-      ).then((_) {
-        if (mounted) {
-          setState(() => _isProcessing = false);
-          _scannerController.start();
-        }
-      });
+    final code = capture.barcodes.firstOrNull?.rawValue;
+    if (code != null && code.trim() != _pendingBarcode) {
+      setState(() => _pendingBarcode = code.trim());
     }
+  }
+
+  Future<void> _onScanPressed() async {
+    if (_isProcessing || _pendingBarcode == null) return;
+    final String raw = _pendingBarcode!;
+
+    if (raw.length < 30 || raw.length > 35) {
+      setState(() => _isProcessing = true);
+      _showErrorDialog('Please scan the right VIN model code.');
+      return;
+    }
+
+    setState(() => _isProcessing = true);
+
+    final String vin = raw.substring(0, 17);
+    final String suffix = raw.substring(17);
+    final String extractedModelCode = _resolveModelCode(suffix);
+
+    if (!_isKnownModelCode(extractedModelCode)) {
+      _showErrorDialog('Model code is not present, please add code and rebuild app.');
+      return;
+    }
+
+    if (!mounted) return;
+    _scannerController.stop();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => HomeScreen(
+          vin: vin,
+          modelCode: extractedModelCode,
+          cameras: [],
+        ),
+      ),
+    ).then((_) {
+      if (mounted) {
+        setState(() { _isProcessing = false; _pendingBarcode = null; });
+        _scannerController.start();
+      }
+    });
   }
 
 {% endif %}
@@ -267,20 +270,65 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                     onDetect: _onDetect,
                   ),
                   Center(
-                    child: Container(
-                      width: 250,
-                      height: 250,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: const Color(0xFFDC143C), width: 2),
-                      ),
-                      child: Stack(
-                        children: [
-                          _bracket(top: 0, left: 0, isTop: true, isLeft: true),
-                          _bracket(top: 0, right: 0, isTop: true, isLeft: false),
-                          _bracket(bottom: 0, left: 0, isTop: false, isLeft: true),
-                          _bracket(bottom: 0, right: 0, isTop: false, isLeft: false),
-                        ],
-                      ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 250,
+                          height: 250,
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: _pendingBarcode != null ? Colors.green : const Color(0xFFDC143C),
+                              width: 2,
+                            ),
+                          ),
+                          child: Stack(
+                            children: [
+                              _bracket(top: 0, left: 0, isTop: true, isLeft: true),
+                              _bracket(top: 0, right: 0, isTop: true, isLeft: false),
+                              _bracket(bottom: 0, left: 0, isTop: false, isLeft: true),
+                              _bracket(bottom: 0, right: 0, isTop: false, isLeft: false),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        if (_pendingBarcode != null)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.green.withOpacity(0.85),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text('Barcode detected — tap SCAN to confirm',
+                              style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                          )
+                        else
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.5),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text('Aim camera at barcode',
+                              style: TextStyle(color: Colors.white70, fontSize: 12)),
+                          ),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          width: 160,
+                          height: 52,
+                          child: ElevatedButton(
+                            onPressed: _pendingBarcode != null && !_isProcessing ? _onScanPressed : null,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFDC143C),
+                              disabledBackgroundColor: Colors.grey.shade600,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                              elevation: 4,
+                            ),
+                            child: const Text('SCAN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2)),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   if (_isProcessing)
