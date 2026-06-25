@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
+{% if ocr_enabled %}
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+{% endif %}
 import 'detection_result.dart';
 
 class ModelManager {
@@ -20,6 +23,48 @@ class ModelManager {
   bool get isLoaded => _isLoaded;
 
   int get labelsCount => _labels.length;
+
+{% if ocr_enabled %}
+  static const String _ocrTarget = '{{ ocr_target_text }}';
+
+  /// Crops [source] to the given normalized [bbox], runs ML Kit OCR on the
+  /// crop, and returns the DetectionResult with ocrText + isOcrMatch filled in.
+  static Future<DetectionResult> _runOcrOnBbox(
+    DetectionResult det,
+    img.Image source,
+  ) async {
+    final int x = (det.bbox.left * source.width).round().clamp(0, source.width - 1);
+    final int y = (det.bbox.top * source.height).round().clamp(0, source.height - 1);
+    final int w = (det.bbox.width * source.width).round().clamp(1, source.width - x);
+    final int h = (det.bbox.height * source.height).round().clamp(1, source.height - y);
+
+    final cropped = img.copyCrop(source, x: x, y: y, width: w, height: h);
+    final pngBytes = Uint8List.fromList(img.encodePng(cropped));
+
+    final tempDir = await Directory.systemTemp.createTemp('ocr_');
+    final tempFile = File('${tempDir.path}/crop.png');
+    await tempFile.writeAsBytes(pngBytes);
+
+    String extractedText = '';
+    try {
+      final inputImage = InputImage.fromFilePath(tempFile.path);
+      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final result = await recognizer.processImage(inputImage);
+      extractedText = result.text.replaceAll('\n', ' ').trim();
+      recognizer.close();
+    } catch (e) {
+      debugPrint('[OCR] error: $e');
+    } finally {
+      await tempDir.delete(recursive: true);
+    }
+
+    final bool matched = _normalizeOcr(extractedText) == _normalizeOcr(_ocrTarget);
+    return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
+  }
+
+  static String _normalizeOcr(String s) =>
+      s.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+{% endif %}
 
   Future<void> loadModel(String modelPath, String labelsPath) async {
     if (_currentModelPath == modelPath && _isLoaded) return;
@@ -90,13 +135,22 @@ class ModelManager {
     if (!_isLoaded || _interpreter == null) return [];
 
     final inputData = _imageToFloat32(orientedImage, {{ input_size }});
-    return compute(_runInference, {
+    final detections = await compute(_runInference, {
       'inputData': inputData,
       'interpreter_address': _interpreter!.address,
       'labels': _labels,
       'inputSize': {{ input_size }},
       'threshold': confidenceThreshold,
     });
+{% if ocr_enabled %}
+    final List<DetectionResult> withOcr = [];
+    for (final det in detections) {
+      withOcr.add(await _runOcrOnBbox(det, orientedImage));
+    }
+    return withOcr;
+{% else %}
+    return detections;
+{% endif %}
   }
 
   /// Fallback path: accepts raw JPEG bytes when a pre-decoded image is not
@@ -104,13 +158,25 @@ class ModelManager {
   Future<List<DetectionResult>> predictBytes(Uint8List bytes) async {
     if (!_isLoaded || _interpreter == null) return [];
 
-    return compute(_runInferenceBytes, {
+    final detections = await compute(_runInferenceBytes, {
       'bytes': bytes,
       'interpreter_address': _interpreter!.address,
       'labels': _labels,
       'inputSize': {{ input_size }},
       'threshold': confidenceThreshold,
     });
+{% if ocr_enabled %}
+    img.Image? decoded = img.decodeImage(bytes);
+    if (decoded == null) return detections;
+    decoded = img.bakeOrientation(decoded);
+    final List<DetectionResult> withOcr = [];
+    for (final det in detections) {
+      withOcr.add(await _runOcrOnBbox(det, decoded));
+    }
+    return withOcr;
+{% else %}
+    return detections;
+{% endif %}
   }
 
   /// Inference isolate entry-point for the fast path (pre-processed Float32List).

@@ -18,13 +18,13 @@ class ProjectQueries:
     GET_ALL_PROJECTS = "SELECT * FROM app_projects ORDER BY created_at DESC"
     GET_PROJECT_BY_ID = "SELECT * FROM app_projects WHERE id = :id"
     INSERT_PROJECT = """
-        INSERT INTO app_projects (id, name, package_name, model_asset_id, model_asset_ids, inspection_tasks, canvas_state, app_settings, build_status, build_log, build_step, apk_path, created_at, updated_at)
-        VALUES (:id, :name, :package_name, :model_asset_id, :model_asset_ids, :inspection_tasks, :canvas_state, :app_settings, :build_status, :build_log, :build_step, :apk_path, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO app_projects (id, name, package_name, model_asset_id, model_asset_ids, inspection_tasks, canvas_state, app_settings, build_status, build_log, build_step, apk_path, ocr_enabled, ocr_target_text, created_at, updated_at)
+        VALUES (:id, :name, :package_name, :model_asset_id, :model_asset_ids, :inspection_tasks, :canvas_state, :app_settings, :build_status, :build_log, :build_step, :apk_path, :ocr_enabled, :ocr_target_text, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
     """
     UPDATE_PROJECT = """
         UPDATE app_projects
-        SET name = :name, package_name = :package_name, model_asset_id = :model_asset_id, model_asset_ids = :model_asset_ids, inspection_tasks = :inspection_tasks, canvas_state = :canvas_state, app_settings = :app_settings, build_status = :build_status, build_log = :build_log, build_step = :build_step, apk_path = :apk_path, updated_at = CURRENT_TIMESTAMP
+        SET name = :name, package_name = :package_name, model_asset_id = :model_asset_id, model_asset_ids = :model_asset_ids, inspection_tasks = :inspection_tasks, canvas_state = :canvas_state, app_settings = :app_settings, build_status = :build_status, build_log = :build_log, build_step = :build_step, apk_path = :apk_path, ocr_enabled = :ocr_enabled, ocr_target_text = :ocr_target_text, updated_at = CURRENT_TIMESTAMP
         WHERE id = :id
     """
     DELETE_PROJECT = "DELETE FROM app_projects WHERE id = :id"

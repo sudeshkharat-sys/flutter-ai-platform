@@ -64,7 +64,9 @@ def create_app(data: AppProjectCreate, db: StateDBConnector = Depends(get_db_con
         "build_status": "idle",
         "build_log": "",
         "build_step": "",
-        "apk_path": ""
+        "apk_path": "",
+        "ocr_enabled": data.ocr_enabled or False,
+        "ocr_target_text": data.ocr_target_text or "",
     }
     
     db.execute_insert(ProjectQueries.INSERT_PROJECT, params)
@@ -124,6 +126,8 @@ def update_app(app_id: str, data: AppProjectUpdate, db: StateDBConnector = Depen
     build_status = data.build_status if data.build_status is not None else app.get("build_status", "idle")
     build_step = data.build_step if data.build_step is not None else app.get("build_step", "")
     build_log = data.build_log if data.build_log is not None else app.get("build_log", "")
+    ocr_enabled = data.ocr_enabled if data.ocr_enabled is not None else app.get("ocr_enabled", False)
+    ocr_target_text = data.ocr_target_text if data.ocr_target_text is not None else app.get("ocr_target_text", "")
 
     params = {
         "id": app_id,
@@ -137,7 +141,9 @@ def update_app(app_id: str, data: AppProjectUpdate, db: StateDBConnector = Depen
         "build_status": build_status,
         "build_log": build_log,
         "build_step": build_step,
-        "apk_path": app.get("apk_path", "")
+        "apk_path": app.get("apk_path", ""),
+        "ocr_enabled": ocr_enabled,
+        "ocr_target_text": ocr_target_text,
     }
 
     db.execute_update(ProjectQueries.UPDATE_PROJECT, params)

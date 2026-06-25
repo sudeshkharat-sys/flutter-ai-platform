@@ -27,6 +27,10 @@ class AppProject(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # OCR settings
+    ocr_enabled: Mapped[bool] = mapped_column(String, nullable=True, default=False)
+    ocr_target_text: Mapped[str] = mapped_column(String, nullable=True)
+
     # Build status
     build_status: Mapped[str] = mapped_column(String, nullable=True, default="none") # none, building, ready, error
     build_step: Mapped[str] = mapped_column(String, nullable=True)

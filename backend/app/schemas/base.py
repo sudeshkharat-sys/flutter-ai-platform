@@ -51,6 +51,8 @@ class AppProjectCreate(BaseModel):
     model_asset_ids: Optional[List[str]] = []
     inspection_tasks: Optional[List[Any]] = []
     app_settings: Optional[dict] = None
+    ocr_enabled: Optional[bool] = False
+    ocr_target_text: Optional[str] = None
 
 
 class AppProjectUpdate(BaseModel):
@@ -64,6 +66,8 @@ class AppProjectUpdate(BaseModel):
     build_status: Optional[str] = None
     build_step: Optional[str] = None
     build_log: Optional[str] = None
+    ocr_enabled: Optional[bool] = None
+    ocr_target_text: Optional[str] = None
 
 
 class AppProjectResponse(BaseModel):
@@ -82,6 +86,8 @@ class AppProjectResponse(BaseModel):
     build_log: Optional[str] = None
     apk_path: Optional[str] = None
     build_error: Optional[str] = None
+    ocr_enabled: Optional[bool] = False
+    ocr_target_text: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

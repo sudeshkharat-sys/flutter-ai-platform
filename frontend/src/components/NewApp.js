@@ -67,6 +67,8 @@ export default function NewApp() {
   const [existingModels, setExistingModels] = useState([]);
   const [appName, setAppName] = useState('');
   const [packageName, setPackageName] = useState('');
+  const [ocrEnabled, setOcrEnabled] = useState(false);
+  const [ocrTargetText, setOcrTargetText] = useState('');
 
   const pollRef = useRef(null);
   const logEndRef = useRef(null);
@@ -152,6 +154,8 @@ export default function NewApp() {
         package_name: packageName,
         model_asset_ids: selectedModelIds,
         app_settings: { app_type: 'sequential', confidence_threshold: 0.5 },
+        ocr_enabled: ocrEnabled,
+        ocr_target_text: ocrEnabled ? ocrTargetText : '',
       });
       navigate(`/apps/${r.data.id}`);
     } catch {
@@ -284,6 +288,34 @@ export default function NewApp() {
                 onChange={e => setPackageName(e.target.value)}
               />
             </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+              <input
+                type="checkbox"
+                id="ocr-toggle"
+                checked={ocrEnabled}
+                onChange={e => setOcrEnabled(e.target.checked)}
+              />
+              <label htmlFor="ocr-toggle" className="section-label" style={{ margin: 0, cursor: 'pointer' }}>
+                Enable OCR — verify text inside detected bounding box
+              </label>
+            </div>
+
+            {ocrEnabled && (
+              <div>
+                <label className="section-label">Target Text (OCR must match this)</label>
+                <input
+                  className="field-input"
+                  value={ocrTargetText}
+                  onChange={e => setOcrTargetText(e.target.value)}
+                  placeholder="e.g. AB-1234 or V6-TDI"
+                />
+                <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+                  OCR will crop each bounding box, read the text, and compare it to this value. Shows OK / FAIL on the box.
+                </div>
+              </div>
+            )}
+
             <div className="newapp-step-nav">
               <button className="newapp-back-btn" onClick={() => setStep(1)}>← Back</button>
               <button className="newapp-create-btn" onClick={handleCreate}>

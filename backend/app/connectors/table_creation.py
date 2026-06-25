@@ -119,6 +119,8 @@ create_dynamic_table(
         Column("build_log", String, nullable=True),
         Column("build_step", String, nullable=True),
         Column("apk_path", String, nullable=True),
+        Column("ocr_enabled", Boolean, default=False),
+        Column("ocr_target_text", String, nullable=True),
         Column("created_at", DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False),
         Column("updated_at", DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=text("CURRENT_TIMESTAMP")),
     ]

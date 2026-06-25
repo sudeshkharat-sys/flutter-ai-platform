@@ -186,6 +186,8 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "app_type": settings.get("app_type", "sequential"),
         "scan_type": settings.get("scan_type", "model"),
         "app_settings": settings,
+        "ocr_enabled": bool(get_attr(app_project, "ocr_enabled", False)),
+        "ocr_target_text": get_attr(app_project, "ocr_target_text", "") or "",
     }
 
     # Map of zip path -> template name
