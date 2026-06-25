@@ -25,14 +25,22 @@ class ModelManager {
   int get labelsCount => _labels.length;
 
 {% if ocr_enabled %}
-  static const String _ocrTarget = '{{ ocr_target_text }}';
+  /// Per-class OCR config: className -> target text (empty string = no OCR for that class)
+  static const Map<String, String> _classOcrTargets = {
+{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.ocrEnabled and cfg.ocrTargetText %}
+    '{{ cls }}': '{{ cfg.ocrTargetText }}',
+{% endif %}{% endfor %}{% endfor %}
+  };
 
   /// Crops [source] to the given normalized [bbox], runs ML Kit OCR on the
   /// crop, and returns the DetectionResult with ocrText + isOcrMatch filled in.
+  /// Returns det unchanged if this class has no OCR target configured.
   static Future<DetectionResult> _runOcrOnBbox(
     DetectionResult det,
     img.Image source,
   ) async {
+    final String? target = _classOcrTargets[det.className];
+    if (target == null || target.isEmpty) return det;
     final int x = (det.bbox.left * source.width).round().clamp(0, source.width - 1);
     final int y = (det.bbox.top * source.height).round().clamp(0, source.height - 1);
     final int w = (det.bbox.width * source.width).round().clamp(1, source.width - x);
@@ -58,7 +66,7 @@ class ModelManager {
       await tempDir.delete(recursive: true);
     }
 
-    final bool matched = _normalizeOcr(extractedText) == _normalizeOcr(_ocrTarget);
+    final bool matched = _normalizeOcr(extractedText) == _normalizeOcr(target);
     return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
   }
 

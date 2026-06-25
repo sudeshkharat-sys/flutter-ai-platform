@@ -432,7 +432,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleAddDefaultAI = () => {
-    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', mandatoryClasses: [], instruction: '' }]);
+    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', mandatoryClasses: [], classOcrConfig: {}, instruction: '' }]);
   };
 
   const handleRemoveDefaultAI = (index) => {
@@ -444,6 +444,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     newConfigs[index][field] = value;
     if (field === 'modelId') {
       newConfigs[index].mandatoryClasses = [];
+      newConfigs[index].classOcrConfig = {};
     }
     setDefaultAIConfigs(newConfigs);
   };
@@ -454,6 +455,26 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     newConfigs[index].mandatoryClasses = current.includes(cls)
       ? current.filter(c => c !== cls)
       : [...current, cls];
+    setDefaultAIConfigs(newConfigs);
+  };
+
+  const handleToggleClassOcr = (index, cls) => {
+    const newConfigs = [...defaultAIConfigs];
+    const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
+    if (ocr[cls]?.ocrEnabled) {
+      ocr[cls] = { ocrEnabled: false, ocrTargetText: '' };
+    } else {
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '' };
+    }
+    newConfigs[index].classOcrConfig = ocr;
+    setDefaultAIConfigs(newConfigs);
+  };
+
+  const handleClassOcrText = (index, cls, text) => {
+    const newConfigs = [...defaultAIConfigs];
+    const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrTargetText: text };
+    newConfigs[index].classOcrConfig = ocr;
     setDefaultAIConfigs(newConfigs);
   };
 
@@ -501,6 +522,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     newData[rowIndex].selectedAIModels[aiIdx][field] = value;
     if (field === 'modelId') {
       newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = [];
+      newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = {};
     }
     setReviewData(newData);
   };
@@ -511,6 +533,26 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = current.includes(cls)
       ? current.filter(c => c !== cls)
       : [...current, cls];
+    setReviewData(newData);
+  };
+
+  const handleToggleRowClassOcr = (rowIndex, aiIdx, cls) => {
+    const newData = [...reviewData];
+    const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
+    if (ocr[cls]?.ocrEnabled) {
+      ocr[cls] = { ocrEnabled: false, ocrTargetText: '' };
+    } else {
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '' };
+    }
+    newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
+    setReviewData(newData);
+  };
+
+  const handleRowClassOcrText = (rowIndex, aiIdx, cls, text) => {
+    const newData = [...reviewData];
+    const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrTargetText: text };
+    newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
     setReviewData(newData);
   };
 
@@ -556,6 +598,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             modelName: model.vision_project_name,
             classes: model.classes,
             mandatoryClasses: ai.mandatoryClasses || [],
+            classOcrConfig: ai.classOcrConfig || {},
             tflitePath: model.tflite_path,
             labelsPath: model.labels_path,
             vehicleCode: row.model_code,
@@ -817,22 +860,44 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                   const selected = (config.mandatoryClasses || []).includes(c);
                                   const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
                                   const isNotOk = cn.includes('not') && cn.includes('ok');
+                                  const ocrCfg = (config.classOcrConfig || {})[c] || {};
                                   return (
-                                    <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
-                                      <input
-                                        type="checkbox"
-                                        checked={selected}
-                                        onChange={() => handleToggleMandatoryClass(idx, c)}
-                                        style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
-                                      />
-                                      <span style={{ fontSize: 12, fontWeight: 600, color: selected ? (isNotOk ? '#e74c3c' : 'var(--accent)') : C.muted }}>{c}</span>
-                                      {selected
-                                        ? (isNotOk
-                                            ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
-                                            : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
-                                        : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
-                                      }
-                                    </label>
+                                    <div key={c} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={selected}
+                                          onChange={() => handleToggleMandatoryClass(idx, c)}
+                                          style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                        />
+                                        <span style={{ fontSize: 12, fontWeight: 600, color: selected ? (isNotOk ? '#e74c3c' : 'var(--accent)') : C.muted }}>{c}</span>
+                                        {selected
+                                          ? (isNotOk
+                                              ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                              : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
+                                          : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                        }
+                                      </label>
+                                      {selected && !isNotOk && (
+                                        <div style={{ marginLeft: 23, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={!!ocrCfg.ocrEnabled}
+                                            onChange={() => handleToggleClassOcr(idx, c)}
+                                            style={{ width: 13, height: 13, accentColor: '#f0a500', cursor: 'pointer' }}
+                                          />
+                                          <span style={{ fontSize: 11, color: '#f0a500' }}>OCR verify</span>
+                                          {ocrCfg.ocrEnabled && (
+                                            <input
+                                              style={{ ...inputStyle, padding: '3px 8px', fontSize: 11, width: 160 }}
+                                              placeholder="Target text e.g. AB-1234"
+                                              value={ocrCfg.ocrTargetText || ''}
+                                              onChange={e => handleClassOcrText(idx, c, e.target.value)}
+                                            />
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
                                   );
                                 })}
                               </div>
@@ -914,21 +979,43 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                       const sel = (ai.mandatoryClasses || []).includes(c);
                                       const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
                                       const isNotOk = cn.includes('not') && cn.includes('ok');
-                                      return <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
-                                        <input
-                                          type="checkbox"
-                                          checked={sel}
-                                          onChange={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
-                                          style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
-                                        />
-                                        <span style={{ fontSize: 12, fontWeight: 600, color: sel ? (isNotOk ? '#e74c3c' : 'var(--accent)') : '#aaa' }}>{c}</span>
-                                        {sel
-                                          ? (isNotOk
-                                              ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
-                                              : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
-                                          : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
-                                        }
-                                      </label>;
+                                      const ocrCfg = (ai.classOcrConfig || {})[c] || {};
+                                      return <div key={c} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={sel}
+                                            onChange={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
+                                            style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                          />
+                                          <span style={{ fontSize: 12, fontWeight: 600, color: sel ? (isNotOk ? '#e74c3c' : 'var(--accent)') : '#aaa' }}>{c}</span>
+                                          {sel
+                                            ? (isNotOk
+                                                ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                                : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
+                                            : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                          }
+                                        </label>
+                                        {sel && !isNotOk && (
+                                          <div style={{ marginLeft: 23, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                            <input
+                                              type="checkbox"
+                                              checked={!!ocrCfg.ocrEnabled}
+                                              onChange={() => handleToggleRowClassOcr(rowIndex, aiIdx, c)}
+                                              style={{ width: 12, height: 12, accentColor: '#f0a500', cursor: 'pointer' }}
+                                            />
+                                            <span style={{ fontSize: 10, color: '#f0a500' }}>OCR</span>
+                                            {ocrCfg.ocrEnabled && (
+                                              <input
+                                                style={{ padding: '2px 6px', fontSize: 10, width: 110, borderRadius: 4, border: '1px solid #444', background: '#111', color: '#fff' }}
+                                                placeholder="Target text"
+                                                value={ocrCfg.ocrTargetText || ''}
+                                                onChange={e => handleRowClassOcrText(rowIndex, aiIdx, c, e.target.value)}
+                                              />
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>;
                                     })}
                                   </div>;
                                 })()}
