@@ -16,6 +16,7 @@ class ScanScreen extends StatefulWidget {
 class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _isProcessing = false;
   List<dynamic> _scanData = [];
+  String? _pendingBarcode;
 
   final MobileScannerController _scannerController = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
@@ -61,6 +62,19 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     }
   }
 
+  // Called by MobileScanner continuously — only stores the latest raw value,
+  // no validation or navigation happens here.
+  void _onDetect(BarcodeCapture capture) {
+    if (_isProcessing) return;
+    final List<Barcode> barcodes = capture.barcodes;
+    if (barcodes.isNotEmpty) {
+      final String? code = barcodes.first.rawValue;
+      if (code != null && code.trim().isNotEmpty && code.trim() != _pendingBarcode) {
+        setState(() => _pendingBarcode = code.trim());
+      }
+    }
+  }
+
   void _showErrorDialog(String message) {
     _scannerController.stop();
     showDialog(
@@ -74,7 +88,10 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
             onPressed: () {
               Navigator.of(ctx).pop();
               if (mounted) {
-                setState(() => _isProcessing = false);
+                setState(() {
+                  _isProcessing = false;
+                  _pendingBarcode = null;
+                });
                 _scannerController.start();
               }
             },
@@ -99,51 +116,48 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _onDetect(BarcodeCapture capture) async {
-    if (_isProcessing) return;
+  Future<void> _processScan() async {
+    final raw = _pendingBarcode;
+    if (raw == null || _isProcessing) return;
 
-    final List<Barcode> barcodes = capture.barcodes;
-    if (barcodes.isNotEmpty) {
-      final String? code = barcodes.first.rawValue;
-      if (code == null) return;
+    final int spaceIdx = raw.indexOf(' ');
 
-      final String raw = code.trim();
-      final int spaceIdx = raw.indexOf(' ');
-
-      if (spaceIdx == -1) {
-        setState(() => _isProcessing = true);
-        _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
-        return;
-      }
-
+    if (spaceIdx == -1) {
       setState(() => _isProcessing = true);
-
-      final String partNo = raw.substring(0, spaceIdx).trim();
-      final String engineSerial = raw.substring(spaceIdx + 1).trim();
-
-      if (!_isKnownEngineCode(partNo)) {
-        _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
-        return;
-      }
-
-      if (!mounted) return;
-      _scannerController.stop();
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => HomeScreen(
-            vin: engineSerial,
-            modelCode: partNo,
-            cameras: [],
-          ),
-        ),
-      ).then((_) async {
-        if (mounted) {
-          await _scannerController.stop();
-          await _scannerController.start();
-          setState(() => _isProcessing = false);
-        }
-      });
+      _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
+      return;
     }
+
+    setState(() => _isProcessing = true);
+
+    final String partNo = raw.substring(0, spaceIdx).trim();
+    final String engineSerial = raw.substring(spaceIdx + 1).trim();
+
+    if (!_isKnownEngineCode(partNo)) {
+      _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+      return;
+    }
+
+    if (!mounted) return;
+    _scannerController.stop();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => HomeScreen(
+          vin: engineSerial,
+          modelCode: partNo,
+          cameras: [],
+        ),
+      ),
+    ).then((_) async {
+      if (mounted) {
+        await _scannerController.stop();
+        await _scannerController.start();
+        setState(() {
+          _isProcessing = false;
+          _pendingBarcode = null;
+        });
+      }
+    });
   }
 
 {% else %}
@@ -177,57 +191,56 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     return suffix;
   }
 
-  Future<void> _onDetect(BarcodeCapture capture) async {
-    if (_isProcessing) return;
+  Future<void> _processScan() async {
+    final raw = _pendingBarcode;
+    if (raw == null || _isProcessing) return;
 
-    final List<Barcode> barcodes = capture.barcodes;
-    if (barcodes.isNotEmpty) {
-      final String? code = barcodes.first.rawValue;
-      if (code == null) return;
-
-      final String raw = code.trim();
-
-      if (raw.length < 30 || raw.length > 35) {
-        setState(() => _isProcessing = true);
-        _showErrorDialog('Please scan the right VIN model code.');
-        return;
-      }
-
+    if (raw.length < 30 || raw.length > 35) {
       setState(() => _isProcessing = true);
-
-      final String vin = raw.substring(0, 17);
-      final String suffix = raw.substring(17);
-      final String extractedModelCode = _resolveModelCode(suffix);
-
-      if (!_isKnownModelCode(extractedModelCode)) {
-        _showErrorDialog('Model code is not present, please add code and rebuild app.');
-        return;
-      }
-
-      if (!mounted) return;
-      _scannerController.stop();
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => HomeScreen(
-            vin: vin,
-            modelCode: extractedModelCode,
-            cameras: [],
-          ),
-        ),
-      ).then((_) async {
-        if (mounted) {
-          await _scannerController.stop();
-          await _scannerController.start();
-          setState(() => _isProcessing = false);
-        }
-      });
+      _showErrorDialog('Please scan the right VIN model code.');
+      return;
     }
+
+    setState(() => _isProcessing = true);
+
+    final String vin = raw.substring(0, 17);
+    final String suffix = raw.substring(17);
+    final String extractedModelCode = _resolveModelCode(suffix);
+
+    if (!_isKnownModelCode(extractedModelCode)) {
+      _showErrorDialog('Model code is not present, please add code and rebuild app.');
+      return;
+    }
+
+    if (!mounted) return;
+    _scannerController.stop();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => HomeScreen(
+          vin: vin,
+          modelCode: extractedModelCode,
+          cameras: [],
+        ),
+      ),
+    ).then((_) async {
+      if (mounted) {
+        await _scannerController.stop();
+        await _scannerController.start();
+        setState(() {
+          _isProcessing = false;
+          _pendingBarcode = null;
+        });
+      }
+    });
   }
 
 {% endif %}
 
   @override
   Widget build(BuildContext context) {
+    final bool barcodeReady = _pendingBarcode != null && !_isProcessing;
+    final Color frameColor = barcodeReady ? Colors.green : const Color(0xFFDC143C);
+
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(
@@ -246,16 +259,23 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
               child: SafeArea(
                 bottom: false,
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: const [
-                    Text(
-                      'SCAN BARCODE',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.5,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'SCAN BARCODE',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.5,
+                        ),
                       ),
+                    ),
+                    GestureDetector(
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())),
+                      child: const Icon(Icons.history, color: Colors.white, size: 26),
                     ),
                   ],
                 ),
@@ -269,20 +289,55 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                     onDetect: _onDetect,
                   ),
                   Center(
-                    child: Container(
-                      width: 250,
-                      height: 250,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: const Color(0xFFDC143C), width: 2),
-                      ),
-                      child: Stack(
-                        children: [
-                          _bracket(top: 0, left: 0, isTop: true, isLeft: true),
-                          _bracket(top: 0, right: 0, isTop: true, isLeft: false),
-                          _bracket(bottom: 0, left: 0, isTop: false, isLeft: true),
-                          _bracket(bottom: 0, right: 0, isTop: false, isLeft: false),
-                        ],
-                      ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          width: 250,
+                          height: 250,
+                          decoration: BoxDecoration(
+                            border: Border.all(color: frameColor, width: 2),
+                          ),
+                          child: Stack(
+                            children: [
+                              _bracket(top: 0, left: 0, isTop: true, isLeft: true, color: frameColor),
+                              _bracket(top: 0, right: 0, isTop: true, isLeft: false, color: frameColor),
+                              _bracket(bottom: 0, left: 0, isTop: false, isLeft: true, color: frameColor),
+                              _bracket(bottom: 0, right: 0, isTop: false, isLeft: false, color: frameColor),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 250),
+                          child: barcodeReady
+                              ? Container(
+                                  key: const ValueKey('detected'),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green.withOpacity(0.85),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: const Text(
+                                    'Barcode detected — tap SCAN to confirm',
+                                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                                  ),
+                                )
+                              : Container(
+                                  key: const ValueKey('waiting'),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black54,
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: const Text(
+                                    'Aim at barcode to detect',
+                                    style: TextStyle(color: Colors.white70, fontSize: 13),
+                                  ),
+                                ),
+                        ),
+                      ],
                     ),
                   ),
                   if (_isProcessing)
@@ -296,18 +351,20 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
               child: SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())),
+                  onPressed: barcodeReady ? _processScan : null,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFDC143C),
+                    backgroundColor: barcodeReady ? const Color(0xFFDC143C) : Colors.grey.shade400,
                     foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey.shade400,
+                    disabledForegroundColor: Colors.white70,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
-                  child: const Text('VIEW HISTORY', style: TextStyle(fontWeight: FontWeight.bold)),
+                  child: const Text('SCAN', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, letterSpacing: 1.2)),
                 ),
               ),
             ),
@@ -317,7 +374,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _bracket({double? top, double? bottom, double? left, double? right, required bool isTop, required bool isLeft}) {
+  Widget _bracket({double? top, double? bottom, double? left, double? right, required bool isTop, required bool isLeft, required Color color}) {
     return Positioned(
       top: top,
       bottom: bottom,
@@ -328,10 +385,10 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
         height: 30,
         decoration: BoxDecoration(
           border: Border(
-            top: isTop ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
-            bottom: !isTop ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
-            left: isLeft ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
-            right: !isLeft ? const BorderSide(color: Color(0xFFDC143C), width: 3) : BorderSide.none,
+            top: isTop ? BorderSide(color: color, width: 3) : BorderSide.none,
+            bottom: !isTop ? BorderSide(color: color, width: 3) : BorderSide.none,
+            left: isLeft ? BorderSide(color: color, width: 3) : BorderSide.none,
+            right: !isLeft ? BorderSide(color: color, width: 3) : BorderSide.none,
           ),
         ),
       ),
