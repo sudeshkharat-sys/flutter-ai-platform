@@ -45,7 +45,9 @@ def trigger_build(app_id: str, db: StateDBConnector = Depends(get_db_connector))
         "build_status": "building",
         "build_log": "Build triggered via UI.\n",
         "build_step": "Starting Celery task...",
-        "apk_path": ""
+        "apk_path": "",
+        "ocr_enabled": app.get("ocr_enabled", False) or False,
+        "ocr_target_text": app.get("ocr_target_text", "") or "",
     }
     
     db.execute_update(ProjectQueries.UPDATE_PROJECT, params)
