@@ -70,21 +70,45 @@ class ModelManager {
     return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
   }
 
-  static String _normalizeOcr(String s) =>
-      s.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+  /// Strip everything except A-Z and 0-9, also substitute common OCR misreads.
+  static String _normalizeOcr(String s) => s
+      .toUpperCase()
+      .replaceAll('0', 'O')   // zero → O
+      .replaceAll('1', 'I')   // one  → I
+      .replaceAll('5', 'S')   // five → S
+      .replaceAll(RegExp(r'[^A-Z]'), '');
 
-  /// Fuzzy OCR match: exact, contains, or ≥80% character similarity.
-  static bool _ocrMatches(String extracted, String target) {
-    if (extracted == target) return true;
-    if (extracted.contains(target) || target.contains(extracted)) return true;
-    // Levenshtein-like: count matching chars in order
-    if (target.isEmpty || extracted.isEmpty) return false;
-    int matches = 0;
-    int ei = 0;
-    for (int ti = 0; ti < target.length && ei < extracted.length; ti++) {
-      if (target[ti] == extracted[ei]) { matches++; ei++; }
+  /// Slide a window of [target.length] across [extracted] and return the best
+  /// character-match ratio. Handles extra surrounding text, symbols, and
+  /// single-char misreads at the same time.
+  static double _bestWindowScore(String extracted, String target) {
+    if (target.isEmpty) return 1.0;
+    if (extracted.length < target.length) {
+      // extracted is shorter — score it against the start of target
+      int m = 0;
+      for (int i = 0; i < extracted.length; i++) {
+        if (extracted[i] == target[i]) m++;
+      }
+      return m / target.length;
     }
-    return matches / target.length >= 0.8;
+    double best = 0;
+    for (int start = 0; start <= extracted.length - target.length; start++) {
+      int m = 0;
+      for (int i = 0; i < target.length; i++) {
+        if (extracted[start + i] == target[i]) m++;
+      }
+      final double score = m / target.length;
+      if (score > best) best = score;
+    }
+    return best;
+  }
+
+  /// Match if any sliding window of the extracted text is ≥75% similar to
+  /// the target. Robust to: extra surrounding text, symbols, common OCR
+  /// substitutions (0↔O, 1↔I, 5↔S), and up to ~1 char misread per 4 chars.
+  static bool _ocrMatches(String extracted, String target) {
+    if (extracted.isEmpty || target.isEmpty) return false;
+    return _bestWindowScore(extracted, target) >= 0.75;
   }
 {% endif %}
 
