@@ -69,15 +69,18 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     if (barcodes.isEmpty) return;
     final String? code = barcodes.first.rawValue;
     if (code == null || code.trim().isEmpty) return;
+    final String raw = code.trim();
 
     if (_manualMode) {
       // Manual mode: just store, wait for user to tap SCAN
-      if (code.trim() != _pendingBarcode) {
-        setState(() => _pendingBarcode = code.trim());
+      if (raw != _pendingBarcode) {
+        setState(() => _pendingBarcode = raw);
       }
     } else {
-      // Auto mode: process immediately (original behaviour)
-      _runValidation(code.trim());
+      // Auto mode: set flag immediately before validation to block concurrent frames
+      if (_isProcessing) return;
+      _isProcessing = true;
+      _runValidation(raw);
     }
   }
 
