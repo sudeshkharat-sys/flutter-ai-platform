@@ -17,7 +17,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _isProcessing = false;
   List<dynamic> _scanData = [];
   String? _pendingBarcode;
-  bool _manualMode = true; // true = manual SCAN button, false = auto scan
+  bool _manualMode = false; // false = auto scan (original), true = manual SCAN button
 
   final MobileScannerController _scannerController = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
@@ -320,10 +320,15 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                       ),
                       Switch(
                         value: _manualMode,
-                        onChanged: (val) => setState(() {
-                          _manualMode = val;
-                          _pendingBarcode = null;
-                        }),
+                        onChanged: (val) async {
+                          setState(() {
+                            _manualMode = val;
+                            _pendingBarcode = null;
+                          });
+                          // Restart scanner so noDuplicates dedup state is cleared
+                          await _scannerController.stop();
+                          await _scannerController.start();
+                        },
                         activeColor: const Color(0xFFDC143C),
                       ),
                       Text(
