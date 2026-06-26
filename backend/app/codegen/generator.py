@@ -125,7 +125,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 import json as _json
                 model_classes = _json.loads(_raw) if isinstance(_raw, str) else _raw
                 model_classes_lower = {c.lower().strip() for c in model_classes}
-                mandatory_classes = [c for c in mandatory_classes if c.lower().strip() in model_classes_lower]
+                # Only filter if model_classes is non-empty — if empty/parse failed keep original selection
+                if model_classes_lower:
+                    filtered = [c for c in mandatory_classes if c.lower().strip() in model_classes_lower]
+                    if filtered:
+                        mandatory_classes = filtered
+                    # else: filtered everything out (class name mismatch) — keep original to avoid all-mandatory fallback
             print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_final={mandatory_classes}")
 
             ref_img = task.get("referenceImage")

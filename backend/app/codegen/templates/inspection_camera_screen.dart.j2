@@ -279,6 +279,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       final List<String> mandatoryClasses =
           List<String>.from(currentTask['mandatoryClasses'] ?? []);
       // Pass classes = checked by user. Fail classes = everything else in the model.
+      // If mandatoryClasses is empty (nothing checked), treat all classes as mandatory.
       final List<String> targetClasses = mandatoryClasses.isNotEmpty
           ? mandatoryClasses
           : allModelClasses;
@@ -286,6 +287,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           ? allModelClasses.where((c) => !mandatoryClasses.any(
               (m) => m.toLowerCase().trim() == c.toLowerCase().trim())).toList()
           : [];
+      // Safety check: if targetClasses somehow still contains everything, it means
+      // mandatory was not configured — log it for debugging.
+      if (mandatoryClasses.isEmpty) _addLog("WARNING: no mandatoryClasses configured — treating all as mandatory");
       _addLog("Pass: ${targetClasses.join(', ')}  Fail: ${failClasses.join(', ')}");
 
       final allDetections = orientedImage != null
