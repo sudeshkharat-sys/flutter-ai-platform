@@ -204,6 +204,18 @@ def build_apk_task(self, app_id: str):
             params = {f"id{i}": mid for i, mid in enumerate(model_asset_ids)}
             all_model_assets = db.execute_query(query, params)
 
+        # Log task config so mandatory classes are visible in the build log
+        inspection_tasks_raw = app.get("inspection_tasks", [])
+        if isinstance(inspection_tasks_raw, str):
+            try: inspection_tasks_raw = json.loads(inspection_tasks_raw)
+            except: inspection_tasks_raw = []
+        for t in (inspection_tasks_raw or []):
+            _update_status(db, app_id, log_append=(
+                f"[CONFIG] Task: {t.get('taskName','?')} | "
+                f"mandatoryClasses={t.get('mandatoryClasses',[])} | "
+                f"allClasses={t.get('classes',[])}\n"
+            ))
+
         zip_bytes = generate_flutter_project(app, all_model_assets=all_model_assets)
         
         # 2. Extract to export directory
