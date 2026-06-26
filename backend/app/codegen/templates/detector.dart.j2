@@ -27,7 +27,7 @@ class ModelManager {
 {% if ocr_enabled %}
   /// Per-class OCR config: className -> target text (empty string = no OCR for that class)
   static const Map<String, String> _classOcrTargets = {
-{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.ocrEnabled and cfg.ocrTargetText %}
+{% set seen_ocr = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.ocrEnabled and cfg.ocrTargetText and cls not in seen_ocr.keys %}{% set seen_ocr.keys = seen_ocr.keys + [cls] %}
     '{{ cls }}': '{{ cfg.ocrTargetText }}',
 {% endif %}{% endfor %}{% endfor %}
   };
