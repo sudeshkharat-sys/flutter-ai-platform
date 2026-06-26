@@ -63,7 +63,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _onDetect(BarcodeCapture capture) {
+  Future<void> _onDetect(BarcodeCapture capture) async {
     if (_isProcessing) return;
     final List<Barcode> barcodes = capture.barcodes;
     if (barcodes.isEmpty) return;
@@ -77,8 +77,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
         setState(() => _pendingBarcode = raw);
       }
     } else {
-      // Auto mode: set flag immediately before validation to block concurrent frames
-      if (_isProcessing) return;
+      // Auto mode: process immediately
       _isProcessing = true;
       _runValidation(raw);
     }
