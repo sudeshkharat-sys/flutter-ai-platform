@@ -17,11 +17,10 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _isProcessing = false;
   List<dynamic> _scanData = [];
   String? _pendingBarcode;
-  bool _manualMode = false; // false = auto scan, true = manual SCAN button
-  DateTime? _lastDetectedAt;
+  bool _manualMode = false;
 
   final MobileScannerController _scannerController = MobileScannerController(
-    detectionSpeed: DetectionSpeed.normal,
+    detectionSpeed: DetectionSpeed.noDuplicates,
     facing: CameraFacing.back,
   );
 
@@ -64,30 +63,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _onDetect(BarcodeCapture capture) async {
-    if (_isProcessing) return;
-    final List<Barcode> barcodes = capture.barcodes;
-    if (barcodes.isEmpty) return;
-    final String? code = barcodes.first.rawValue;
-    if (code == null || code.trim().isEmpty) return;
-    final String raw = code.trim();
-
-    // Throttle — ignore frames within 500ms of last detection
-    final now = DateTime.now();
-    if (_lastDetectedAt != null &&
-        now.difference(_lastDetectedAt!).inMilliseconds < 500) return;
-    _lastDetectedAt = now;
-
-    if (_manualMode) {
-      // Manual mode: store barcode, show green border + SCAN button
-      // Always update so re-pointing at same barcode works again
-      setState(() => _pendingBarcode = raw);
-    } else {
-      // Auto mode: process immediately
-      _runValidation(raw);
-    }
-  }
-
   void _showErrorDialog(String message) {
     _scannerController.stop();
     showDialog(
@@ -117,9 +92,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
 {% if scan_type == 'engine' %}
   // ── Engine Code Scan Logic ────────────────────────────────────────────────
-  // Barcode format: "PART_NO SERIAL_NO"  (split at first space)
-  // Left  → match against engine_data.json (part_no field)
-  // Right → engine serial number → saved to history
 
   bool _isKnownEngineCode(String candidate) {
     if (candidate.isEmpty || _scanData.isEmpty) return false;
@@ -129,9 +101,20 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _runValidation(String raw) {
+  Future<void> _onDetect(BarcodeCapture capture) async {
     if (_isProcessing) return;
+    final List<Barcode> barcodes = capture.barcodes;
+    if (barcodes.isEmpty) return;
+    final String? code = barcodes.first.rawValue;
+    if (code == null || code.trim().isEmpty) return;
+    final String raw = code.trim();
 
+    if (_manualMode) {
+      setState(() => _pendingBarcode = raw);
+      return;
+    }
+
+    // Auto mode — inline validation exactly as in proven working branch
     final int spaceIdx = raw.indexOf(' ');
     if (spaceIdx == -1) {
       setState(() => _isProcessing = true);
@@ -173,15 +156,49 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
   void _processScan() {
     final raw = _pendingBarcode;
-    if (raw == null) return;
-    _runValidation(raw);
+    if (raw == null || _isProcessing) return;
+
+    final int spaceIdx = raw.indexOf(' ');
+    if (spaceIdx == -1) {
+      setState(() => _isProcessing = true);
+      _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
+      return;
+    }
+
+    setState(() => _isProcessing = true);
+
+    final String partNo = raw.substring(0, spaceIdx).trim();
+    final String engineSerial = raw.substring(spaceIdx + 1).trim();
+
+    if (!_isKnownEngineCode(partNo)) {
+      _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+      return;
+    }
+
+    if (!mounted) return;
+    _scannerController.stop();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => HomeScreen(
+          vin: engineSerial,
+          modelCode: partNo,
+          cameras: [],
+        ),
+      ),
+    ).then((_) async {
+      if (mounted) {
+        await _scannerController.stop();
+        await _scannerController.start();
+        setState(() {
+          _isProcessing = false;
+          _pendingBarcode = null;
+        });
+      }
+    });
   }
 
 {% else %}
   // ── Model Code Scan Logic ─────────────────────────────────────────────────
-  // Barcode format: [17-char VIN][suffix]
-  // VIN    → stored in history
-  // Suffix → stripped and matched against master_data.json (model_code field)
 
   bool _isKnownModelCode(String candidate) {
     if (candidate.isEmpty || _scanData.isEmpty) return false;
@@ -191,10 +208,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
   }
 
-  /// Strip strategy (tried in order, first match wins):
-  ///   strip-2 → remove last 2 chars
-  ///   strip-1 → remove last 1 char
-  ///   strip-0 → use full suffix
   String _resolveModelCode(String suffix) {
     for (final strip in [2, 1, 0]) {
       if (suffix.length > strip) {
@@ -208,9 +221,20 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     return suffix;
   }
 
-  void _runValidation(String raw) {
+  Future<void> _onDetect(BarcodeCapture capture) async {
     if (_isProcessing) return;
+    final List<Barcode> barcodes = capture.barcodes;
+    if (barcodes.isEmpty) return;
+    final String? code = barcodes.first.rawValue;
+    if (code == null || code.trim().isEmpty) return;
+    final String raw = code.trim();
 
+    if (_manualMode) {
+      setState(() => _pendingBarcode = raw);
+      return;
+    }
+
+    // Auto mode — inline validation exactly as in proven working branch
     if (raw.length < 30 || raw.length > 35) {
       setState(() => _isProcessing = true);
       _showErrorDialog('Please scan the right VIN model code.');
@@ -252,8 +276,45 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
   void _processScan() {
     final raw = _pendingBarcode;
-    if (raw == null) return;
-    _runValidation(raw);
+    if (raw == null || _isProcessing) return;
+
+    if (raw.length < 30 || raw.length > 35) {
+      setState(() => _isProcessing = true);
+      _showErrorDialog('Please scan the right VIN model code.');
+      return;
+    }
+
+    setState(() => _isProcessing = true);
+
+    final String vin = raw.substring(0, 17);
+    final String suffix = raw.substring(17);
+    final String extractedModelCode = _resolveModelCode(suffix);
+
+    if (!_isKnownModelCode(extractedModelCode)) {
+      _showErrorDialog('Model code is not present, please add code and rebuild app.');
+      return;
+    }
+
+    if (!mounted) return;
+    _scannerController.stop();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => HomeScreen(
+          vin: vin,
+          modelCode: extractedModelCode,
+          cameras: [],
+        ),
+      ),
+    ).then((_) async {
+      if (mounted) {
+        await _scannerController.stop();
+        await _scannerController.start();
+        setState(() {
+          _isProcessing = false;
+          _pendingBarcode = null;
+        });
+      }
+    });
   }
 
 {% endif %}
@@ -332,7 +393,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                             _manualMode = val;
                             _pendingBarcode = null;
                           });
-                          // Restart scanner so noDuplicates dedup state is cleared
+                          // Restart scanner to reset noDuplicates dedup state
                           await _scannerController.stop();
                           await _scannerController.start();
                         },
