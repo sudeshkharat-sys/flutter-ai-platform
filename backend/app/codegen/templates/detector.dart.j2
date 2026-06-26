@@ -66,12 +66,26 @@ class ModelManager {
       await tempDir.delete(recursive: true);
     }
 
-    final bool matched = _normalizeOcr(extractedText) == _normalizeOcr(target);
+    final bool matched = _ocrMatches(_normalizeOcr(extractedText), _normalizeOcr(target));
     return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
   }
 
   static String _normalizeOcr(String s) =>
       s.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+  /// Fuzzy OCR match: exact, contains, or ≥80% character similarity.
+  static bool _ocrMatches(String extracted, String target) {
+    if (extracted == target) return true;
+    if (extracted.contains(target) || target.contains(extracted)) return true;
+    // Levenshtein-like: count matching chars in order
+    if (target.isEmpty || extracted.isEmpty) return false;
+    int matches = 0;
+    int ei = 0;
+    for (int ti = 0; ti < target.length && ei < extracted.length; ti++) {
+      if (target[ti] == extracted[ei]) { matches++; ei++; }
+    }
+    return matches / target.length >= 0.8;
+  }
 {% endif %}
 
   Future<void> loadModel(String modelPath, String labelsPath) async {
