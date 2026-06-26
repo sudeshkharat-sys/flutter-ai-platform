@@ -133,6 +133,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 "name": task.get("taskName") or task.get("modelName"),
                 "classes": task_classes,
                 "mandatoryClasses": mandatory_classes,
+                "classOcrConfig": task.get("classOcrConfig", {}),
                 "tflite_path": paths.get("tflite", "assets/models/model_0.tflite"),
                 "labels_path": paths.get("labels", "assets/models/labels_0.txt"),
                 "vehicle_code": task.get("vehicleCode"),
@@ -186,6 +187,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "app_type": settings.get("app_type", "sequential"),
         "scan_type": settings.get("scan_type", "model"),
         "app_settings": settings,
+        "ocr_enabled": any(
+            bool((task.get("classOcrConfig") or {}).get(cls, {}).get("ocrEnabled"))
+            for task in (inspection_tasks or [])
+            for cls in (task.get("mandatoryClasses") or [])
+        ) or bool(get_attr(app_project, "ocr_enabled", False)),
+        "ocr_target_text": get_attr(app_project, "ocr_target_text", "") or "",
     }
 
     # Map of zip path -> template name

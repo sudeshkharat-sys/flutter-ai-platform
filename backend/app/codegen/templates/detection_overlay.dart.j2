@@ -111,13 +111,30 @@ class _BoundingBoxPainter extends CustomPainter {
             ? '${result.className} ${(result.confidence * 100).toStringAsFixed(0)}%'
             : result.className;
 
+{% if ocr_enabled %}
+        final ocrStatus = result.isOcrMatch == true
+            ? ' ✓ OCR OK'
+            : result.isOcrMatch == false
+                ? ' ✗ OCR FAIL'
+                : '';
+        final displayLabel = '$label$ocrStatus';
+        final labelColor = result.isOcrMatch == true
+            ? const Color(0xFF43A047)
+            : result.isOcrMatch == false
+                ? const Color(0xFFE53935)
+                : color;
+{% else %}
+        final displayLabel = label;
+        final labelColor = color;
+{% endif %}
+
         final textSpan = TextSpan(
-          text: ' $label ',
+          text: ' $displayLabel ',
           style: TextStyle(
             color: Colors.white,
             fontSize: 12,
             fontWeight: FontWeight.bold,
-            backgroundColor: color.withOpacity(0.85),
+            backgroundColor: labelColor.withOpacity(0.85),
           ),
         );
         final textPainter = TextPainter(
@@ -130,6 +147,24 @@ class _BoundingBoxPainter extends CustomPainter {
           canvas,
           Offset(rect.left, labelY < 0 ? rect.top + 2 : labelY),
         );
+
+{% if ocr_enabled %}
+        if (result.ocrText != null && result.ocrText!.isNotEmpty) {
+          final ocrSpan = TextSpan(
+            text: ' "${result.ocrText}" ',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 10,
+              backgroundColor: Colors.black.withOpacity(0.7),
+            ),
+          );
+          final ocrPainter = TextPainter(
+            text: ocrSpan,
+            textDirection: TextDirection.ltr,
+          )..layout();
+          ocrPainter.paint(canvas, Offset(rect.left, rect.bottom + 2));
+        }
+{% endif %}
       }
     }
   }

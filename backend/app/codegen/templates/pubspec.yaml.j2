@@ -20,6 +20,9 @@ dependencies:
   sqlite3_flutter_libs: ^0.5.20
   path: ^1.9.0
   zsdk: 5.0.0
+{% if ocr_enabled %}
+  google_mlkit_text_recognition: ^0.13.0
+{% endif %}
 
 dependency_overrides:
   # path_provider_android 2.3.x requires AGP 8.5+; our build uses AGP 8.7.0.
