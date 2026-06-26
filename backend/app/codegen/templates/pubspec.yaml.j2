@@ -43,4 +43,5 @@ flutter:
     - assets/models_manifest.json
     - assets/master_data.json
     - assets/engine_data.json
-    - assets/reference_images/
+{% if models_manifest | selectattr('reference_image') | list %}    - assets/reference_images/
+{% endif %}
