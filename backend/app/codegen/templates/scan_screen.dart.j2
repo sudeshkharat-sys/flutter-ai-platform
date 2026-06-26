@@ -20,7 +20,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _manualMode = false; // false = auto scan (original), true = manual SCAN button
 
   final MobileScannerController _scannerController = MobileScannerController(
-    detectionSpeed: DetectionSpeed.noDuplicates,
+    detectionSpeed: DetectionSpeed.normal,
     facing: CameraFacing.back,
   );
 
