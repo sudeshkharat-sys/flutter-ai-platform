@@ -84,7 +84,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       setState(() => _pendingBarcode = raw);
     } else {
       // Auto mode: process immediately
-      _isProcessing = true;
       _runValidation(raw);
     }
   }
