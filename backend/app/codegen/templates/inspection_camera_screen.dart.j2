@@ -358,14 +358,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             final isMandatory = targetClasses.any(
               (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
             );
-            // 3-color logic: green=mandatory found, orange=non-mandatory, red=not ok
+            // 2-color logic: green=mandatory found, red=not ok or unexpected unchecked
             final img.Color boxColor;
-            if (_isNotOkClass(det.className)) {
-              boxColor = img.ColorRgb8(220, 0, 0);       // red — defect
-            } else if (isMandatory) {
+            if (isMandatory) {
               boxColor = img.ColorRgb8(0, 200, 0);       // green — mandatory found
             } else {
-              boxColor = img.ColorRgb8(255, 165, 0);     // orange — detected but not required
+              boxColor = img.ColorRgb8(220, 0, 0);       // red — unexpected/unchecked or defect
             }
 
             final x1 = (det.bbox.left * iw).toInt().clamp(0, decoded.width - 1);
