@@ -108,7 +108,7 @@ class ModelManager {
   /// substitutions (0↔O, 1↔I, 5↔S), and up to ~1 char misread per 4 chars.
   static bool _ocrMatches(String extracted, String target) {
     if (extracted.isEmpty || target.isEmpty) return false;
-    return _bestWindowScore(extracted, target) >= 0.75;
+    return _bestWindowScore(extracted, target) >= 0.85;
   }
 {% endif %}
 
