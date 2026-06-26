@@ -17,10 +17,11 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _isProcessing = false;
   List<dynamic> _scanData = [];
   String? _pendingBarcode;
-  bool _manualMode = false; // false = auto scan (original), true = manual SCAN button
+  bool _manualMode = false; // false = auto scan, true = manual SCAN button
+  DateTime? _lastDetectedAt;
 
   final MobileScannerController _scannerController = MobileScannerController(
-    detectionSpeed: DetectionSpeed.noDuplicates,
+    detectionSpeed: DetectionSpeed.normal,
     facing: CameraFacing.back,
   );
 
@@ -71,11 +72,16 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     if (code == null || code.trim().isEmpty) return;
     final String raw = code.trim();
 
+    // Throttle — ignore frames within 500ms of last detection
+    final now = DateTime.now();
+    if (_lastDetectedAt != null &&
+        now.difference(_lastDetectedAt!).inMilliseconds < 500) return;
+    _lastDetectedAt = now;
+
     if (_manualMode) {
-      // Manual mode: just store, wait for user to tap SCAN
-      if (raw != _pendingBarcode) {
-        setState(() => _pendingBarcode = raw);
-      }
+      // Manual mode: store barcode, show green border + SCAN button
+      // Always update so re-pointing at same barcode works again
+      setState(() => _pendingBarcode = raw);
     } else {
       // Auto mode: process immediately
       _isProcessing = true;
