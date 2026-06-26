@@ -378,6 +378,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           const migrated = existingApp.app_settings.default_configs.map(c => ({
             ...c,
             mandatoryClasses: c.mandatoryClasses || (c.class ? [c.class] : []),
+            classOcrConfig: c.classOcrConfig || {},
           }));
           setDefaultAIConfigs(migrated);
         }
@@ -389,6 +390,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             acc[code].push({
               modelId: t.modelId,
               mandatoryClasses: t.mandatoryClasses || [],
+              classOcrConfig: t.classOcrConfig || {},
               instruction: t.instruction || t.taskName || '',
               referenceImage: t.referenceImage || null,
             });
