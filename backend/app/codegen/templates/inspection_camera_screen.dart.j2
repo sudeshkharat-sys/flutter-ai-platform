@@ -794,14 +794,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                 return Padding(
                                   padding: const EdgeInsets.only(bottom: 6),
                                   child: Row(children: [
-                                    const Icon(Icons.warning_amber_rounded,
-                                        color: Colors.orange, size: 16),
+                                    const Icon(Icons.cancel, color: Colors.red, size: 16),
                                     const SizedBox(width: 8),
                                     Expanded(
                                       child: Text(
                                         entry.key,
                                         style: const TextStyle(
-                                            color: Colors.orange,
+                                            color: Colors.red,
                                             fontSize: 13,
                                             fontWeight: FontWeight.w600),
                                       ),
@@ -812,7 +811,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                     ),
                                     const SizedBox(width: 4),
                                     const Text('UNEXPECTED',
-                                        style: TextStyle(color: Colors.orange, fontSize: 11, fontWeight: FontWeight.bold)),
+                                        style: TextStyle(color: Colors.red, fontSize: 11, fontWeight: FontWeight.bold)),
                                   ]),
                                 );
                               }),
