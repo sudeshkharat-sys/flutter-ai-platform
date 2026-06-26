@@ -57,6 +57,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      setState(() => _pendingBarcode = null);
       _scannerController.start();
     } else if (state == AppLifecycleState.inactive) {
       _scannerController.stop();
@@ -358,7 +359,10 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                       ),
                     ),
                     GestureDetector(
-                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())),
+                      onTap: () {
+                        setState(() => _pendingBarcode = null);
+                        Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()));
+                      },
                       child: const Icon(Icons.history, color: Colors.white, size: 26),
                     ),
                   ],
