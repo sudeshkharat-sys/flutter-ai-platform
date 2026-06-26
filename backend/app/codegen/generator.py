@@ -94,6 +94,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             mid = task.get("modelId")
             paths = model_id_to_paths.get(mid, {})
             task_classes = task.get("classes", [])
+            import json as _json
+            if isinstance(task_classes, str):
+                try:
+                    task_classes = _json.loads(task_classes)
+                except Exception:
+                    task_classes = []
 
             # Validate task classes against the model's actual trained classes.
             # If none of the configured classes exist in the model, fall back to
@@ -117,6 +123,11 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                         task_classes = model_classes
 
             mandatory_classes = task.get("mandatoryClasses", [])
+            if isinstance(mandatory_classes, str):
+                try:
+                    mandatory_classes = _json.loads(mandatory_classes)
+                except Exception:
+                    mandatory_classes = []
             print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_raw={mandatory_classes} allClasses={task_classes}")
             # Validate mandatory classes against model — skip any not in the model's class list.
             # model_classes from DB may be a JSON string; parse it first, then compare case-insensitively.
