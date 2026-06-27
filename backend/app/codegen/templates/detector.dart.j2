@@ -235,6 +235,43 @@ class ModelManager {
         ));
       }
     }
-    return results;
+    return _applyNMS(results, iouThreshold: 0.45);
+  }
+
+  // Non-Max Suppression: removes duplicate overlapping boxes, keeps highest confidence per object
+  static List<DetectionResult> _applyNMS(List<DetectionResult> detections, {double iouThreshold = 0.45}) {
+    if (detections.isEmpty) return detections;
+
+    final sorted = List<DetectionResult>.from(detections)
+      ..sort((a, b) => b.confidence.compareTo(a.confidence));
+
+    final kept = <DetectionResult>[];
+    final suppressed = List<bool>.filled(sorted.length, false);
+
+    for (int i = 0; i < sorted.length; i++) {
+      if (suppressed[i]) continue;
+      kept.add(sorted[i]);
+      for (int j = i + 1; j < sorted.length; j++) {
+        if (suppressed[j]) continue;
+        if (sorted[i].className == sorted[j].className &&
+            _iou(sorted[i].bbox, sorted[j].bbox) > iouThreshold) {
+          suppressed[j] = true;
+        }
+      }
+    }
+    return kept;
+  }
+
+  static double _iou(Rect a, Rect b) {
+    final interLeft = a.left > b.left ? a.left : b.left;
+    final interTop = a.top > b.top ? a.top : b.top;
+    final interRight = a.right < b.right ? a.right : b.right;
+    final interBottom = a.bottom < b.bottom ? a.bottom : b.bottom;
+
+    if (interRight <= interLeft || interBottom <= interTop) return 0.0;
+
+    final interArea = (interRight - interLeft) * (interBottom - interTop);
+    final unionArea = a.width * a.height + b.width * b.height - interArea;
+    return unionArea <= 0 ? 0.0 : interArea / unionArea;
   }
 }
