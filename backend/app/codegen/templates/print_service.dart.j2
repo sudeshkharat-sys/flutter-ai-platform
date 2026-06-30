@@ -151,7 +151,8 @@ class PrintService {
     buf.writeln('^LL$labelHeight');
 
     // ── Title ─────────────────────────────────────────────────────────────────
-    buf.writeln('^FO50,$y^A0N,62,44^FDINSPECTION REPORT^FS');
+    // Smaller font than before so the longer title fits the 1200-dot width.
+    buf.writeln('^FO50,$y^A0N,46,32^FDDIGITAL EYE INSPECTION REPORT^FS');
     y += 75;
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
     y += 18;
@@ -199,7 +200,7 @@ class PrintService {
     y += 14;
 
     // ── Footer ────────────────────────────────────────────────────────────────
-    buf.writeln('^FO50,$y^A0N,30,22^FDFlutter AI Inspection System^FS');
+    buf.writeln('^FO50,$y^A0N,30,22^FDDigital Eye Inspection System^FS');
 
     buf.writeln('^XZ');
     return buf.toString();
