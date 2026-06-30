@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:zsdk/zsdk.dart';
 
 /// A Bluetooth printer (bonded or discovered via zsdk).
@@ -20,9 +21,24 @@ class PrintService {
 
   // ── Bluetooth discovery ───────────────────────────────────────────────────
 
+  /// Ensure BLUETOOTH_CONNECT is granted before any classic-Bluetooth call.
+  /// On Android 12+ getBondedDevices() silently returns an empty list when
+  /// this permission is missing — which made auto-print and the history print
+  /// button report "No paired printer found" even when a printer was paired.
+  /// permission_handler works without a BuildContext, so callers that have no
+  /// UI (e.g. PrintService) are covered too.
+  Future<bool> _ensureConnectPermission() async {
+    final status = await Permission.bluetoothConnect.request();
+    return status.isGranted;
+  }
+
   /// Return already-paired (bonded) Bluetooth devices.
   Future<List<DiscoveredPrinter>> getBondedPrinters() async {
     try {
+      if (!await _ensureConnectPermission()) {
+        throw Exception(
+            'Bluetooth permission denied — allow it to find paired printers.');
+      }
       final devices = await _zsdk.getBondedDevices();
       return devices
           .map((d) => DiscoveredPrinter(
@@ -42,6 +58,10 @@ class PrintService {
   /// Actively scan for nearby Zebra Bluetooth printers (Android only).
   Future<List<DiscoveredPrinter>> discoverBluetoothPrinters() async {
     try {
+      if (!await _ensureConnectPermission()) {
+        throw Exception(
+            'Bluetooth permission denied — allow it to scan for printers.');
+      }
       final devices = await _zsdk.discoverBluetoothPrinters();
       return devices
           .map((d) => DiscoveredPrinter(
@@ -169,6 +189,10 @@ class PrintService {
     required List<Map<String, dynamic>> tasks,
   }) async {
     try {
+      if (!await _ensureConnectPermission()) {
+        debugPrint('[PrintService] print aborted — BLUETOOTH_CONNECT denied');
+        return false;
+      }
       final zpl = _buildZpl(
         vin: vin,
         modelCode: modelCode,
