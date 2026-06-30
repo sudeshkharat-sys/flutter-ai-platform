@@ -253,8 +253,12 @@ class ModelManager {
       kept.add(sorted[i]);
       for (int j = i + 1; j < sorted.length; j++) {
         if (suppressed[j]) continue;
-        if (sorted[i].className == sorted[j].className &&
-            _iou(sorted[i].bbox, sorted[j].bbox) > iouThreshold) {
+        // Suppress same-class duplicates at normal threshold (0.45)
+        // Also suppress cross-class boxes that nearly fully overlap (0.85)
+        // — handles model detecting same physical object under two class names
+        final iou = _iou(sorted[i].bbox, sorted[j].bbox);
+        if ((sorted[i].className == sorted[j].className && iou > iouThreshold) ||
+            (sorted[i].className != sorted[j].className && iou > 0.85)) {
           suppressed[j] = true;
         }
       }
