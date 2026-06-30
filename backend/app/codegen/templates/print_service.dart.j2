@@ -19,6 +19,10 @@ class PrintService {
 
   final _zsdk = ZSDK();
 
+  /// Human-readable reason the last print failed (null if it succeeded).
+  /// Callers can show this instead of a generic "Print failed" message.
+  String? lastPrintError;
+
   // ── Bluetooth discovery ───────────────────────────────────────────────────
 
   /// Ensure BLUETOOTH_CONNECT is granted before any classic-Bluetooth call.
@@ -188,8 +192,10 @@ class PrintService {
     required bool overallSuccess,
     required List<Map<String, dynamic>> tasks,
   }) async {
+    lastPrintError = null;
     try {
       if (!await _ensureConnectPermission()) {
+        lastPrintError = 'Bluetooth permission denied';
         debugPrint('[PrintService] print aborted — BLUETOOTH_CONNECT denied');
         return false;
       }
@@ -210,9 +216,12 @@ class PrintService {
       if (response.errorCode == ErrorCode.SUCCESS) {
         return true;
       }
-      debugPrint('[PrintService] ZPL BT print failed: ${response.statusInfo?.cause}');
+      lastPrintError = response.statusInfo?.cause?.toString() ??
+          'Printer rejected the job (code ${response.errorCode})';
+      debugPrint('[PrintService] ZPL BT print failed: $lastPrintError');
       return false;
     } catch (e) {
+      lastPrintError = e.toString();
       debugPrint('[PrintService] ZPL BT print error: $e');
       return false;
     }

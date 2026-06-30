@@ -228,8 +228,9 @@ class _HomeScreenState extends State<HomeScreen> {
         SnackBar(
           content: Text(printSuccess
               ? "Report printed to ${printers.first.name}"
-              : "Print failed. Please check the printer."),
+              : "Print failed: ${PrintService.instance.lastPrintError ?? 'check printer is on, in range, and in ZPL mode'}"),
           backgroundColor: printSuccess ? Colors.green : Colors.red,
+          duration: const Duration(seconds: 6),
         ),
       );
     }
