@@ -46,30 +46,34 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
     super.dispose();
   }
 
-  /// Request BLUETOOTH_CONNECT + BLUETOOTH_SCAN at runtime (Android 12+).
-  /// Returns true if permissions are granted.
+  /// Request all Bluetooth + location permissions needed across Android versions.
+  /// Android 12+  → BLUETOOTH_CONNECT + BLUETOOTH_SCAN
+  /// Android < 12 → ACCESS_FINE_LOCATION (required for BT device listing)
   Future<bool> _ensureBluetoothPermissions() async {
     final statuses = await [
       Permission.bluetoothConnect,
       Permission.bluetoothScan,
+      Permission.location,
     ].request();
 
     final connectGranted =
         statuses[Permission.bluetoothConnect]?.isGranted ?? false;
     final scanGranted =
         statuses[Permission.bluetoothScan]?.isGranted ?? false;
+    final locationGranted =
+        statuses[Permission.location]?.isGranted ?? false;
 
-    if (!connectGranted || !scanGranted) {
+    if (!connectGranted || !scanGranted || !locationGranted) {
       if (mounted) {
         setState(() {
           _scanning = false;
           _statusMessage =
-              'Bluetooth permission denied. Grant it in App Settings.';
+              'Bluetooth or location permission denied. Grant in App Settings.';
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text(
-                'Bluetooth permission is required to find printers.'),
+                'Bluetooth & location permissions are required to find printers.'),
             backgroundColor: _crimson,
             action: SnackBarAction(
               label: 'Settings',
@@ -93,16 +97,24 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
 
     if (!await _ensureBluetoothPermissions()) return;
 
-    final bonded = await PrintService.instance.getBondedPrinters();
-
-    if (mounted) {
-      setState(() {
-        _printers.addAll(bonded);
-        _scanning = false;
-        _statusMessage = bonded.isEmpty
-            ? 'No paired devices found'
-            : '${bonded.length} paired device(s)';
-      });
+    try {
+      final bonded = await PrintService.instance.getBondedPrinters();
+      if (mounted) {
+        setState(() {
+          _printers.addAll(bonded);
+          _scanning = false;
+          _statusMessage = bonded.isEmpty
+              ? 'No paired devices found. Pair printer in Android Bluetooth settings first.'
+              : '${bonded.length} paired device(s) found';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _statusMessage = 'Error loading devices: $e';
+        });
+      }
     }
   }
 

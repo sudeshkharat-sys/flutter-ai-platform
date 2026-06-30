@@ -35,7 +35,7 @@ class PrintService {
           .toList();
     } catch (e) {
       debugPrint('[PrintService] getBondedDevices error: $e');
-      return [];
+      rethrow;
     }
   }
 
