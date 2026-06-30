@@ -324,13 +324,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           final iw = decoded.width.toDouble();
           final ih = decoded.height.toDouble();
 
-          for (final det in allDetections) {
-            final isTarget = targetClasses.any(
-              (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
-            );
-            final boxColor = isTarget
-                ? img.ColorRgb8(0, 200, 0)
-                : img.ColorRgb8(220, 0, 0);
+          for (final det in filtered) {
+            final boxColor = img.ColorRgb8(0, 200, 0);
 
             final x1 = (det.bbox.left * iw).toInt().clamp(0, decoded.width - 1);
             final y1 = (det.bbox.top * ih).toInt().clamp(0, decoded.height - 1);
