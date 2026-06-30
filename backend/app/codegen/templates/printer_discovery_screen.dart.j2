@@ -46,34 +46,52 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
     super.dispose();
   }
 
-  /// Request all Bluetooth + location permissions needed across Android versions.
-  /// Android 12+  → BLUETOOTH_CONNECT + BLUETOOTH_SCAN
-  /// Android < 12 → ACCESS_FINE_LOCATION (required for BT device listing)
-  Future<bool> _ensureBluetoothPermissions() async {
-    final statuses = await [
-      Permission.bluetoothConnect,
-      Permission.bluetoothScan,
-      Permission.location,
-    ].request();
+  /// Request the Bluetooth permissions needed for the requested operation.
+  ///
+  /// Listing already-paired devices (getBondedDevices) only needs
+  /// BLUETOOTH_CONNECT on Android 12+, and nothing extra on Android 11-.
+  ///
+  /// Active discovery (startDiscovery) additionally needs BLUETOOTH_SCAN on
+  /// Android 12+ and ACCESS_FINE_LOCATION on Android 11- (a BT scan can be
+  /// used to derive physical location, so the OS gates it behind location).
+  ///
+  /// We therefore only hard-require location/scan when [forScan] is true, so
+  /// denying location never blocks the paired-printer path.
+  Future<bool> _ensureBluetoothPermissions({required bool forScan}) async {
+    final requests = <Permission>[Permission.bluetoothConnect];
+    if (forScan) {
+      requests.add(Permission.bluetoothScan);
+      requests.add(Permission.location);
+    }
+    final statuses = await requests.request();
 
-    final connectGranted =
-        statuses[Permission.bluetoothConnect]?.isGranted ?? false;
-    final scanGranted =
-        statuses[Permission.bluetoothScan]?.isGranted ?? false;
-    final locationGranted =
-        statuses[Permission.location]?.isGranted ?? false;
+    // permission_handler abstracts SDK differences: on Android 11- it returns
+    // granted for bluetoothConnect since no runtime grant is needed there.
+    final connectBlocked =
+        !(statuses[Permission.bluetoothConnect]?.isGranted ?? false);
 
-    if (!connectGranted || !scanGranted || !locationGranted) {
+    bool scanBlocked = false;
+    if (forScan) {
+      final scanGranted =
+          statuses[Permission.bluetoothScan]?.isGranted ?? false;
+      final locationGranted =
+          statuses[Permission.location]?.isGranted ?? false;
+      scanBlocked = !scanGranted || !locationGranted;
+    }
+
+    if (connectBlocked || scanBlocked) {
       if (mounted) {
         setState(() {
           _scanning = false;
-          _statusMessage =
-              'Bluetooth or location permission denied. Grant in App Settings.';
+          _statusMessage = forScan
+              ? 'Bluetooth scan / location permission denied. Grant in App Settings.'
+              : 'Bluetooth permission denied. Grant in App Settings.';
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text(
-                'Bluetooth & location permissions are required to find printers.'),
+            content: Text(forScan
+                ? 'Bluetooth & location permissions are required to scan for printers.'
+                : 'Bluetooth permission is required to list paired printers.'),
             backgroundColor: _crimson,
             action: SnackBarAction(
               label: 'Settings',
@@ -95,7 +113,7 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
       _statusMessage = 'Loading paired devices…';
     });
 
-    if (!await _ensureBluetoothPermissions()) return;
+    if (!await _ensureBluetoothPermissions(forScan: false)) return;
 
     try {
       final bonded = await PrintService.instance.getBondedPrinters();
@@ -125,18 +143,26 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
       _statusMessage = 'Scanning for Zebra printers…';
     });
 
-    if (!await _ensureBluetoothPermissions()) return;
+    if (!await _ensureBluetoothPermissions(forScan: true)) return;
 
-    final found = await PrintService.instance.discoverBluetoothPrinters();
-
-    if (mounted) {
-      setState(() {
-        _printers.addAll(found);
-        _scanning = false;
-        _statusMessage = found.isEmpty
-            ? 'No printers found. Try pairing first.'
-            : '${found.length} printer(s) found';
-      });
+    try {
+      final found = await PrintService.instance.discoverBluetoothPrinters();
+      if (mounted) {
+        setState(() {
+          _printers.addAll(found);
+          _scanning = false;
+          _statusMessage = found.isEmpty
+              ? 'No printers found. Try the "Paired" list or enter MAC manually.'
+              : '${found.length} printer(s) found';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _statusMessage = 'Error scanning: $e';
+        });
+      }
     }
   }
 

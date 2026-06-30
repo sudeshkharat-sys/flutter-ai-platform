@@ -54,7 +54,7 @@ class PrintService {
           .toList();
     } catch (e) {
       debugPrint('[PrintService] discoverBluetoothPrinters error: $e');
-      return [];
+      rethrow;
     }
   }
 
