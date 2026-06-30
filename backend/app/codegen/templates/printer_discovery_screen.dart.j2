@@ -7,6 +7,9 @@ const _crimsonLight = Color(0xFFFFEBEE);
 const _crimsonDark = Color(0xFFB01030);
 
 class PrinterDiscoveryScreen extends StatefulWidget {
+  /// When true the screen only lets the user pick + save a default printer
+  /// (no report is printed). Used for "Select / Change Printer" from settings.
+  final bool selectOnly;
   final String vin;
   final String modelCode;
   final String timestamp;
@@ -15,11 +18,12 @@ class PrinterDiscoveryScreen extends StatefulWidget {
 
   const PrinterDiscoveryScreen({
     super.key,
-    required this.vin,
-    required this.modelCode,
-    required this.timestamp,
-    required this.overallSuccess,
-    required this.tasks,
+    this.selectOnly = false,
+    this.vin = 'UNKNOWN',
+    this.modelCode = 'UNKNOWN',
+    this.timestamp = '',
+    this.overallSuccess = false,
+    this.tasks = const [],
   });
 
   @override
@@ -191,11 +195,22 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
   }
 
   Future<void> _printTo(DiscoveredPrinter printer) async {
-    setState(() => _printing = true);
-
     // Remember this printer so future auto-prints target it directly
     // instead of guessing the first paired Bluetooth device.
     await PrintService.instance.setDefaultPrinter(printer);
+
+    // Selection-only mode: just save the default and return, no printing.
+    if (widget.selectOnly) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Default printer set: ${printer.name}'),
+        backgroundColor: Colors.green[700],
+      ));
+      Navigator.of(context).pop();
+      return;
+    }
+
+    setState(() => _printing = true);
 
     final ok = await PrintService.instance.printInspectionReport(
       printer: printer,
@@ -226,8 +241,8 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
       backgroundColor: const Color(0xFFFFF5F5),
       appBar: AppBar(
         backgroundColor: _crimson,
-        title: const Text('Print Report',
-            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+        title: Text(widget.selectOnly ? 'Select Printer' : 'Print Report',
+            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
         iconTheme: const IconThemeData(color: Colors.white),
         elevation: 0,
       ),
@@ -430,9 +445,14 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
                                         fontSize: 12)),
                                 trailing: ElevatedButton.icon(
                                   onPressed: () => _printTo(p),
-                                  icon: const Icon(Icons.print, size: 15),
-                                  label: const Text('Print',
-                                      style: TextStyle(fontSize: 13)),
+                                  icon: Icon(
+                                      widget.selectOnly
+                                          ? Icons.check
+                                          : Icons.print,
+                                      size: 15),
+                                  label: Text(
+                                      widget.selectOnly ? 'Select' : 'Print',
+                                      style: const TextStyle(fontSize: 13)),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: _crimson,
                                     foregroundColor: Colors.white,
