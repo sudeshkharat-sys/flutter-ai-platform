@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart' as drift;
 import 'inspection_camera_screen.dart';
 import 'history_screen.dart';
+import 'printer_discovery_screen.dart';
 import '../services/print_service.dart';
 import '../database/database.dart';
 
@@ -181,53 +182,63 @@ class _HomeScreenState extends State<HomeScreen> {
       };
     });
 
-    // Auto-print to the first paired Bluetooth printer
-    List<DiscoveredPrinter> printers = [];
+    // Auto-print to the user's chosen default printer (NOT just the first
+    // paired device — that could be a laptop/phone, not the Zebra printer).
+    final overallOk =
+        _taskResults.values.every((r) => r['success'] == true);
+    final timestampNow = DateTime.now().toIso8601String();
+
+    DiscoveredPrinter? defaultPrinter;
     try {
-      printers = await PrintService.instance.getBondedPrinters();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Printer error: $e"),
-          backgroundColor: Colors.orange,
-          duration: const Duration(seconds: 4),
-        ),
-      );
-      if (mounted) Navigator.pop(context);
-      return;
+      defaultPrinter = await PrintService.instance.getDefaultPrinter();
+    } catch (_) {
+      defaultPrinter = null;
     }
     if (!mounted) return;
 
-    if (printers.isEmpty) {
+    if (defaultPrinter == null) {
+      // No printer chosen yet — open the picker so the user selects one once.
+      // Their choice is saved and used automatically next time.
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text("No paired printer found. Please pair a Bluetooth printer in device settings."),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 4),
+          content: Text("Select your printer once — it will be remembered."),
+          backgroundColor: Colors.blue,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PrinterDiscoveryScreen(
+            vin: widget.vin ?? 'UNKNOWN',
+            modelCode: widget.modelCode ?? 'UNKNOWN',
+            timestamp: timestampNow,
+            overallSuccess: overallOk,
+            tasks: printTasks,
+          ),
         ),
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text("Printing to ${printers.first.name}..."),
+          content: Text("Printing to ${defaultPrinter.name}..."),
           backgroundColor: Colors.blue,
           duration: const Duration(seconds: 2),
         ),
       );
       final printSuccess = await PrintService.instance.printInspectionReport(
-        printer: printers.first,
+        printer: defaultPrinter,
         vin: widget.vin ?? 'UNKNOWN',
         modelCode: widget.modelCode ?? 'UNKNOWN',
-        timestamp: DateTime.now().toIso8601String(),
-        overallSuccess: _taskResults.values.every((r) => r['success'] == true),
+        timestamp: timestampNow,
+        overallSuccess: overallOk,
         tasks: printTasks,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(printSuccess
-              ? "Report printed to ${printers.first.name}"
+              ? "Report printed to ${defaultPrinter.name}"
               : "Print failed: ${PrintService.instance.lastPrintError ?? 'check printer is on, in range, and in ZPL mode'}"),
           backgroundColor: printSuccess ? Colors.green : Colors.red,
           duration: const Duration(seconds: 6),

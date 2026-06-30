@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zsdk/zsdk.dart';
 
 /// A Bluetooth printer (bonded or discovered via zsdk).
@@ -22,6 +23,29 @@ class PrintService {
   /// Human-readable reason the last print failed (null if it succeeded).
   /// Callers can show this instead of a generic "Print failed" message.
   String? lastPrintError;
+
+  static const _kDefaultMacKey = 'default_printer_mac';
+  static const _kDefaultNameKey = 'default_printer_name';
+
+  /// Persist the user's chosen printer so auto-print targets it directly
+  /// instead of blindly using the first paired Bluetooth device (which may
+  /// be a laptop/phone, not the Zebra printer).
+  Future<void> setDefaultPrinter(DiscoveredPrinter printer) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kDefaultMacKey, printer.address);
+    await prefs.setString(_kDefaultNameKey, printer.name);
+  }
+
+  /// Returns the saved default printer, or null if none has been chosen yet.
+  Future<DiscoveredPrinter?> getDefaultPrinter() async {
+    final prefs = await SharedPreferences.getInstance();
+    final mac = prefs.getString(_kDefaultMacKey);
+    if (mac == null || mac.isEmpty) return null;
+    return DiscoveredPrinter(
+      name: prefs.getString(_kDefaultNameKey) ?? mac,
+      address: mac,
+    );
+  }
 
   // ── Bluetooth discovery ───────────────────────────────────────────────────
 

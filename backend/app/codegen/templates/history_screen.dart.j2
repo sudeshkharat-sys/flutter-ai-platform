@@ -635,10 +635,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       color: Color(0xFFDC143C), size: 22),
                   tooltip: 'Print Report',
                   onPressed: () async {
-                    List<DiscoveredPrinter> printers = [];
+                    DiscoveredPrinter? printer;
                     try {
-                      printers =
-                          await PrintService.instance.getBondedPrinters();
+                      printer =
+                          await PrintService.instance.getDefaultPrinter();
                     } catch (e) {
                       if (!context.mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -651,11 +651,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       return;
                     }
                     if (!context.mounted) return;
-                    if (printers.isEmpty) {
+                    if (printer == null) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text(
-                              'No paired printer found. Please pair a Bluetooth printer in device settings.'),
+                              'No default printer set. Print once from a new inspection to choose your printer.'),
                           backgroundColor: Colors.orange,
                           duration: Duration(seconds: 4),
                         ),
@@ -664,14 +664,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     }
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text('Printing to ${printers.first.name}...'),
+                        content: Text('Printing to ${printer.name}...'),
                         backgroundColor: Colors.blue,
                         duration: const Duration(seconds: 2),
                       ),
                     );
                     final printSuccess =
                         await PrintService.instance.printInspectionReport(
-                      printer: printers.first,
+                      printer: printer,
                       vin: item['vin'] as String,
                       modelCode: item['modelCode'] as String,
                       timestamp: item['timestamp'] as String,
@@ -682,10 +682,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text(printSuccess
-                            ? 'Report printed to ${printers.first.name}'
-                            : 'Print failed. Please check the printer.'),
+                            ? 'Report printed to ${printer.name}'
+                            : 'Print failed: ${PrintService.instance.lastPrintError ?? 'check the printer'}'),
                         backgroundColor:
                             printSuccess ? Colors.green : Colors.red,
+                        duration: const Duration(seconds: 6),
                       ),
                     );
                   },

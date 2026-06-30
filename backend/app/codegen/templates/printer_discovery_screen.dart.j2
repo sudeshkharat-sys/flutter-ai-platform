@@ -193,6 +193,10 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
   Future<void> _printTo(DiscoveredPrinter printer) async {
     setState(() => _printing = true);
 
+    // Remember this printer so future auto-prints target it directly
+    // instead of guessing the first paired Bluetooth device.
+    await PrintService.instance.setDefaultPrinter(printer);
+
     final ok = await PrintService.instance.printInspectionReport(
       printer: printer,
       vin: widget.vin,
@@ -207,9 +211,10 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
 
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(ok
-          ? 'Report printed successfully!'
-          : 'Print failed. Ensure printer is paired and in range.'),
+          ? 'Report printed — saved as default printer.'
+          : 'Print failed: ${PrintService.instance.lastPrintError ?? 'ensure printer is on, in range, and in ZPL mode'}'),
       backgroundColor: ok ? Colors.green[700] : _crimson,
+      duration: const Duration(seconds: 6),
     ));
 
     if (ok && mounted) Navigator.of(context).pop();
