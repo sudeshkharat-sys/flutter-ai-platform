@@ -49,15 +49,23 @@ class PrintService {
 
   // ── Bluetooth discovery ───────────────────────────────────────────────────
 
-  /// Ensure BLUETOOTH_CONNECT is granted before any classic-Bluetooth call.
-  /// On Android 12+ getBondedDevices() silently returns an empty list when
-  /// this permission is missing — which made auto-print and the history print
-  /// button report "No paired printer found" even when a printer was paired.
-  /// permission_handler works without a BuildContext, so callers that have no
-  /// UI (e.g. PrintService) are covered too.
+  /// Ensure the Bluetooth runtime permissions are granted before any
+  /// classic-Bluetooth call. On Android 12+:
+  ///  - BLUETOOTH_CONNECT → needed for getBondedDevices() (without it the list
+  ///    silently comes back empty even when a printer is paired)
+  ///  - BLUETOOTH_SCAN    → needed because zsdk's print path internally calls
+  ///    BluetoothAdapter.cancelDiscovery(), which throws a SecurityException
+  ///    ("Need BLUETOOTH_SCAN permission ... cancelDiscovery") without it.
+  /// permission_handler works without a BuildContext, so UI-less callers
+  /// (e.g. auto-print) are covered too.
   Future<bool> _ensureConnectPermission() async {
-    final status = await Permission.bluetoothConnect.request();
-    return status.isGranted;
+    final statuses = await [
+      Permission.bluetoothConnect,
+      Permission.bluetoothScan,
+    ].request();
+    final connect = statuses[Permission.bluetoothConnect]?.isGranted ?? false;
+    final scan = statuses[Permission.bluetoothScan]?.isGranted ?? false;
+    return connect && scan;
   }
 
   /// Return already-paired (bonded) Bluetooth devices.
