@@ -16,6 +16,7 @@ ultralytics==8.3.0
 # Unpinned tensorflow/onnx/onnx2tf resolve to newer releases that hit a shape-mismatch
 # bug in onnx2tf's residual-add handling for YOLO's C2f/C3k2 blocks.
 tensorflow==2.16.1
+keras==3.1.1
 tf_keras==2.16.0
 sng4onnx>=1.0.1
 onnx_graphsurgeon>=0.3.26
