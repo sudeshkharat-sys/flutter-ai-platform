@@ -25,6 +25,9 @@ dependency_overrides:
   # path_provider_android 2.3.x requires AGP 8.5+; our build uses AGP 8.7.0.
   # Force the last compatible version here and in settings.gradle.
   path_provider_android: 2.2.22
+  # sqlparser 0.44.6 removed DartPlaceholder.when(), which drift_dev 2.34.0's
+  # query analyzer still calls, breaking build_runner code generation.
+  sqlparser: 0.44.5
 
 dev_dependencies:
   flutter_test:
