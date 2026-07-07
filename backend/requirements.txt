@@ -12,11 +12,15 @@ jinja2==3.1.4
 ultralytics==8.3.0
 
 # TFLite / ONNX conversion deps (required by ultralytics .pt → .tflite export)
-tf_keras
+# Pinned to a known-working combo for ultralytics==8.3.0's TFLite export path.
+# Unpinned tensorflow/onnx/onnx2tf resolve to newer releases that hit a shape-mismatch
+# bug in onnx2tf's residual-add handling for YOLO's C2f/C3k2 blocks.
+tensorflow==2.16.1
+tf_keras==2.16.0
 sng4onnx>=1.0.1
 onnx_graphsurgeon>=0.3.26
-onnx>=1.17.0
-onnx2tf>1.17.5,<=1.22.3
+onnx==1.16.1
+onnx2tf==1.20.0
 onnxslim>=0.1.31
 onnxscript
 # tflite_support
