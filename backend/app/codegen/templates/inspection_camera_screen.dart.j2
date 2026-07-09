@@ -511,7 +511,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     }
     final currentTask = widget.tasks[_currentIndex];
     final List<String> mandatoryClasses =
-        List<String>.from(currentTask['mandatoryClasses'] ?? currentTask['classes'] ?? []);
+        List<String>.from(currentTask['mandatoryClasses'] ?? []);
 
     final bool badgeGreen = _mandatoryClassResults.isNotEmpty
         ? _allMandatoryPassed(_mandatoryClassResults, _allDetections, _failClasses)
