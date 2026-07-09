@@ -149,7 +149,8 @@ class PrintService {
       if (_hasValue(t['detectedPart'] as String?)) taskRows += 40;
     }
     final tasksSection = failedTasks.isEmpty ? 0 : 60 + taskRows;
-    final labelHeight = 80 + 140 + 80 + tasksSection + 55;
+    // VIN row is now larger (60pt), so allow more height for the VIN+DATE block.
+    final labelHeight = 80 + 165 + 80 + tasksSection + 55;
 
     final buf = StringBuffer();
     int y = 20;
@@ -165,9 +166,9 @@ class PrintService {
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
     y += 18;
 
-    // ── VIN and DATE only ─────────────────────────────────────────────────────
-    buf.writeln('^FO50,$y^A0N,42,30^FDVIN  : $vin^FS');
-    y += 56;
+    // ── VIN (large, prominent) and DATE (normal size) ─────────────────────────
+    buf.writeln('^FO50,$y^A0N,60,44^FDVIN : $vin^FS');
+    y += 76;
     buf.writeln('^FO50,$y^A0N,38,27^FDDATE : $cleanDate^FS');
     y += 54;
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
