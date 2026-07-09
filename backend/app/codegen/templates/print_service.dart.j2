@@ -149,8 +149,8 @@ class PrintService {
       if (_hasValue(t['detectedPart'] as String?)) taskRows += 40;
     }
     final tasksSection = failedTasks.isEmpty ? 0 : 60 + taskRows;
-    // DATE + VIN now share one line, so this block is a single taller row.
-    final labelHeight = 80 + 110 + 80 + tasksSection + 55;
+    // DATE/TIME stacked on the left with VIN beside them — two-row block.
+    final labelHeight = 80 + 125 + 80 + tasksSection + 55;
 
     final buf = StringBuffer();
     int y = 20;
@@ -166,13 +166,16 @@ class PrintService {
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
     y += 18;
 
-    // ── DATE (left, compact) + VIN (right, large) on one line ─────────────────
-    // DATE label on the left; VIN value printed larger on the right of the same
-    // row using the free space. VIN is 17 chars, so at width 32 it needs ~544
-    // dots — placed from x=640 it ends ~1184, inside the 1200-dot label width.
-    buf.writeln('^FO50,${y + 12}^A0N,30,21^FDDATE : $cleanDate^FS');
-    buf.writeln('^FO640,$y^A0N,48,32^FD$vin^FS');
-    y += 74;
+    // ── DATE + TIME stacked (left), VIN large (right) ─────────────────────────
+    // Split "2026-06-30 13:45:09" into date and time on two left rows; print
+    // the VIN larger on the right, vertically centred beside the two rows.
+    final parts = cleanDate.split(' ');
+    final datePart = parts.isNotEmpty ? parts[0] : cleanDate;
+    final timePart = parts.length > 1 ? parts[1] : '';
+    buf.writeln('^FO50,$y^A0N,30,21^FDDATE : $datePart^FS');
+    buf.writeln('^FO50,${y + 40}^A0N,30,21^FDTIME : $timePart^FS');
+    buf.writeln('^FO600,${y + 8}^A0N,50,34^FD$vin^FS');
+    y += 88;
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
     y += 18;
 
