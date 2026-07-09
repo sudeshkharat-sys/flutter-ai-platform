@@ -792,33 +792,34 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                           const Text('NOT FOUND',
                                               style: TextStyle(color: Colors.red, fontSize: 11, fontWeight: FontWeight.bold)),
                                       ]),
-                                      if (detected && ocrText != null && ocrText.isNotEmpty)
+                                      if (detected && ocrMatch != null)
                                         Padding(
-                                          padding: const EdgeInsets.only(left: 24, top: 2),
-                                          child: Row(children: [
-                                            Icon(
-                                              ocrMatch == true ? Icons.text_fields : Icons.warning_amber,
-                                              size: 12,
-                                              color: ocrMatch == true ? Colors.greenAccent : Colors.orangeAccent,
+                                          padding: const EdgeInsets.only(left: 24, top: 3),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: ocrMatch == true ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+                                              borderRadius: BorderRadius.circular(4),
+                                              border: Border.all(color: ocrMatch == true ? Colors.greenAccent : Colors.orangeAccent, width: 0.5),
                                             ),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              'Read: "$ocrText"',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: ocrMatch == true ? Colors.greenAccent : Colors.orangeAccent,
-                                              ),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Row(children: [
+                                                  Icon(ocrMatch == true ? Icons.check : Icons.warning_amber, size: 13, color: ocrMatch == true ? Colors.greenAccent : Colors.orangeAccent),
+                                                  const SizedBox(width: 4),
+                                                  Text(
+                                                    'OCR ${ocrMatch == true ? "✓ MATCH" : "✗ MISMATCH"}',
+                                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: ocrMatch == true ? Colors.greenAccent : Colors.orangeAccent),
+                                                  ),
+                                                ]),
+                                                if (ocrText != null && ocrText.isNotEmpty) ...[
+                                                  const SizedBox(height: 2),
+                                                  Text('Read:     "$ocrText"', style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                                                ],
+                                              ],
                                             ),
-                                            const SizedBox(width: 6),
-                                            Text(
-                                              ocrMatch == true ? '✓ OK' : '✗ FAIL',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.bold,
-                                                color: ocrMatch == true ? Colors.greenAccent : Colors.orangeAccent,
-                                              ),
-                                            ),
-                                          ]),
+                                          ),
                                         ),
                                     ],
                                   ),

@@ -32,7 +32,10 @@ class ModelManager {
 {% endif %}{% endfor %}{% endfor %}
   };
 
-  static img.Image _preprocessForOcr(img.Image src) {
+  // ── OCR preprocessing ─────────────────────────────────────────────────────
+
+  /// Upscale 3x, grayscale, contrast-stretch, sharpen.
+  static img.Image _preprocessForOcr(img.Image src, {bool invert = false}) {
     img.Image out = img.copyResize(
       src,
       width: src.width * 3,
@@ -40,6 +43,7 @@ class ModelManager {
       interpolation: img.Interpolation.cubic,
     );
     out = img.grayscale(out);
+    // Contrast stretch
     int minL = 255, maxL = 0;
     for (final pixel in out) {
       final l = pixel.r.toInt();
@@ -48,56 +52,126 @@ class ModelManager {
     }
     final range = (maxL - minL).clamp(1, 255);
     for (final pixel in out) {
-      final stretched = (((pixel.r.toInt() - minL) / range) * 255).round().clamp(0, 255);
+      int stretched = (((pixel.r.toInt() - minL) / range) * 255).round().clamp(0, 255);
+      if (invert) stretched = 255 - stretched;
       pixel.r = stretched;
       pixel.g = stretched;
       pixel.b = stretched;
     }
+    // Sharpen
     out = img.convolution(out, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0], div: 1);
     return out;
   }
 
-  /// Crops [source] to the given normalized [bbox], runs ML Kit OCR on the
-  /// crop, and returns the DetectionResult with ocrText + isOcrMatch filled in.
-  /// Returns det unchanged if this class has no OCR target configured.
+  // ── OCR text helpers ───────────────────────────────────────────────────────
+
+  /// Strip non-alphanumeric, uppercase, apply common OCR substitutions.
+  static String _normalizeOcr(String s) => s
+      .toUpperCase()
+      .replaceAll('0', 'O')
+      .replaceAll('1', 'I')
+      .replaceAll('5', 'S')
+      .replaceAll(RegExp(r'[^A-Z]'), '');
+
+  /// Levenshtein edit distance between two strings.
+  static int _levenshtein(String a, String b) {
+    if (a.isEmpty) return b.length;
+    if (b.isEmpty) return a.length;
+    final List<List<int>> dp = List.generate(
+      a.length + 1, (i) => List.generate(b.length + 1, (j) => i == 0 ? j : (j == 0 ? i : 0)),
+    );
+    for (int i = 1; i <= a.length; i++) {
+      for (int j = 1; j <= b.length; j++) {
+        dp[i][j] = a[i - 1] == b[j - 1]
+            ? dp[i - 1][j - 1]
+            : 1 + [dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]].reduce((x, y) => x < y ? x : y);
+      }
+    }
+    return dp[a.length][b.length];
+  }
+
+  /// Best Levenshtein similarity using a sliding window across extracted text.
+  /// Handles extra surrounding chars, noise, and single-char misreads.
+  static double _ocrSimilarity(String extracted, String target) {
+    if (target.isEmpty) return 1.0;
+    if (extracted.isEmpty) return 0.0;
+    if (extracted == target) return 1.0;
+    // Slide window of target.length across extracted
+    double best = 0;
+    final len = target.length;
+    for (int start = 0; start <= extracted.length - len; start++) {
+      final window = extracted.substring(start, start + len);
+      final dist = _levenshtein(window, target);
+      final score = 1.0 - dist / len;
+      if (score > best) best = score;
+    }
+    // Also try full extracted vs target when extracted is shorter
+    if (extracted.length < len) {
+      final dist = _levenshtein(extracted, target);
+      final score = 1.0 - dist / len;
+      if (score > best) best = score;
+    }
+    return best;
+  }
+
+  // ── Run OCR on single image bytes ─────────────────────────────────────────
+
+  static Future<String> _ocrBytes(Uint8List pngBytes, Directory tempDir, String name) async {
+    final tempFile = File('${tempDir.path}/$name.png');
+    await tempFile.writeAsBytes(pngBytes);
+    try {
+      final inputImage = InputImage.fromFilePath(tempFile.path);
+      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final result = await recognizer.processImage(inputImage);
+      recognizer.close();
+      return result.text.replaceAll('\n', ' ').trim();
+    } catch (e) {
+      debugPrint('[OCR] error: $e');
+      return '';
+    }
+  }
+
+  /// Crops bbox, runs OCR on normal + inverted image, picks best result
+  /// using Levenshtein similarity against target. Returns updated DetectionResult.
   static Future<DetectionResult> _runOcrOnBbox(
     DetectionResult det,
     img.Image source,
   ) async {
     final String? target = _classOcrTargets[det.className];
     if (target == null || target.isEmpty) return det;
+
     final int x = (det.bbox.left * source.width).round().clamp(0, source.width - 1);
     final int y = (det.bbox.top * source.height).round().clamp(0, source.height - 1);
     final int w = (det.bbox.width * source.width).round().clamp(1, source.width - x);
     final int h = (det.bbox.height * source.height).round().clamp(1, source.height - y);
-
     final cropped = img.copyCrop(source, x: x, y: y, width: w, height: h);
-    final processed = _preprocessForOcr(cropped);
-    final pngBytes = Uint8List.fromList(img.encodePng(processed));
+
+    final normalBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped)));
+    final invertBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped, invert: true)));
 
     final tempDir = await Directory.systemTemp.createTemp('ocr_');
-    final tempFile = File('${tempDir.path}/crop.png');
-    await tempFile.writeAsBytes(pngBytes);
-
     String extractedText = '';
     try {
-      final inputImage = InputImage.fromFilePath(tempFile.path);
-      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      final result = await recognizer.processImage(inputImage);
-      extractedText = result.text.replaceAll('\n', ' ').trim();
-      recognizer.close();
-    } catch (e) {
-      debugPrint('[OCR] error: $e');
+      final normalText = await _ocrBytes(normalBytes, tempDir, 'normal');
+      final invertText = await _ocrBytes(invertBytes, tempDir, 'invert');
+      final normTarget = _normalizeOcr(target);
+      final normalScore = _ocrSimilarity(_normalizeOcr(normalText), normTarget);
+      final invertScore = _ocrSimilarity(_normalizeOcr(invertText), normTarget);
+      debugPrint('[OCR] normal="$normalText"($normalScore) invert="$invertText"($invertScore) target="$target"');
+      // Pick the read with higher similarity; fall back to normal if both empty
+      extractedText = normalScore >= invertScore ? normalText : invertText;
+      if (extractedText.isEmpty) extractedText = normalText.isNotEmpty ? normalText : invertText;
     } finally {
       await tempDir.delete(recursive: true);
     }
 
-    final bool matched = _normalizeOcr(extractedText) == _normalizeOcr(target);
+    final normExtracted = _normalizeOcr(extractedText);
+    final normTarget = _normalizeOcr(target);
+    final similarity = _ocrSimilarity(normExtracted, normTarget);
+    final bool matched = similarity >= 0.8;
+    debugPrint('[OCR] final="$extractedText" similarity=$similarity matched=$matched');
     return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
   }
-
-  static String _normalizeOcr(String s) =>
-      s.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
 {% endif %}
 
   Future<void> loadModel(String modelPath, String labelsPath) async {
