@@ -168,7 +168,11 @@ class ModelManager {
     final normExtracted = _normalizeOcr(extractedText);
     final normTarget = _normalizeOcr(target);
     final similarity = _ocrSimilarity(normExtracted, normTarget);
-    final bool matched = similarity >= 0.8;
+    // For short labels (≤8 chars after normalize) use strict threshold —
+    // one char difference means a completely different variant (GOLDZX vs GOLDZA).
+    // For longer labels allow slightly more tolerance.
+    final double threshold = normTarget.length <= 8 ? 1.0 : 0.9;
+    final bool matched = similarity >= threshold;
     debugPrint('[OCR] final="$extractedText" similarity=$similarity matched=$matched');
     return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
   }
