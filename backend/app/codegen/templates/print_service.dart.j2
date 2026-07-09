@@ -149,8 +149,8 @@ class PrintService {
       if (_hasValue(t['detectedPart'] as String?)) taskRows += 40;
     }
     final tasksSection = failedTasks.isEmpty ? 0 : 60 + taskRows;
-    // VIN row is now larger (60pt), so allow more height for the VIN+DATE block.
-    final labelHeight = 80 + 165 + 80 + tasksSection + 55;
+    // DATE + VIN now share one line, so this block is a single taller row.
+    final labelHeight = 80 + 110 + 80 + tasksSection + 55;
 
     final buf = StringBuffer();
     int y = 20;
@@ -166,11 +166,13 @@ class PrintService {
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
     y += 18;
 
-    // ── VIN (large, prominent) and DATE (normal size) ─────────────────────────
-    buf.writeln('^FO50,$y^A0N,60,44^FDVIN : $vin^FS');
-    y += 76;
-    buf.writeln('^FO50,$y^A0N,38,27^FDDATE : $cleanDate^FS');
-    y += 54;
+    // ── DATE (left, compact) + VIN (right, large) on one line ─────────────────
+    // DATE label on the left; VIN value printed larger on the right of the same
+    // row using the free space. VIN is 17 chars, so at width 32 it needs ~544
+    // dots — placed from x=640 it ends ~1184, inside the 1200-dot label width.
+    buf.writeln('^FO50,${y + 12}^A0N,30,21^FDDATE : $cleanDate^FS');
+    buf.writeln('^FO640,$y^A0N,48,32^FD$vin^FS');
+    y += 74;
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
     y += 18;
 
