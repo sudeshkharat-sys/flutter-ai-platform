@@ -760,33 +760,68 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                               // Pass classes (checked) — must all be detected
                               ..._mandatoryClassResults.entries.map((entry) {
                                 final detected = entry.value != null;
+                                final ocrText = entry.value?.ocrText;
+                                final ocrMatch = entry.value?.isOcrMatch;
                                 return Padding(
                                   padding: const EdgeInsets.only(bottom: 6),
-                                  child: Row(children: [
-                                    Icon(
-                                      detected ? Icons.check_circle : Icons.cancel,
-                                      color: detected ? Colors.green : Colors.red,
-                                      size: 16,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        entry.key,
-                                        style: TextStyle(
-                                            color: detected ? Colors.white : Colors.red[300],
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w600),
-                                      ),
-                                    ),
-                                    if (detected)
-                                      Text(
-                                        "${(entry.value!.confidence * 100).toStringAsFixed(0)}%",
-                                        style: const TextStyle(color: Colors.white54, fontSize: 12),
-                                      ),
-                                    if (!detected)
-                                      const Text('NOT FOUND',
-                                          style: TextStyle(color: Colors.red, fontSize: 11, fontWeight: FontWeight.bold)),
-                                  ]),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(children: [
+                                        Icon(
+                                          detected ? Icons.check_circle : Icons.cancel,
+                                          color: detected ? Colors.green : Colors.red,
+                                          size: 16,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            entry.key,
+                                            style: TextStyle(
+                                                color: detected ? Colors.white : Colors.red[300],
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w600),
+                                          ),
+                                        ),
+                                        if (detected)
+                                          Text(
+                                            "${(entry.value!.confidence * 100).toStringAsFixed(0)}%",
+                                            style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                          ),
+                                        if (!detected)
+                                          const Text('NOT FOUND',
+                                              style: TextStyle(color: Colors.red, fontSize: 11, fontWeight: FontWeight.bold)),
+                                      ]),
+                                      if (detected && ocrText != null && ocrText.isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(left: 24, top: 2),
+                                          child: Row(children: [
+                                            Icon(
+                                              ocrMatch == true ? Icons.text_fields : Icons.warning_amber,
+                                              size: 12,
+                                              color: ocrMatch == true ? Colors.greenAccent : Colors.orangeAccent,
+                                            ),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              'Read: "$ocrText"',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: ocrMatch == true ? Colors.greenAccent : Colors.orangeAccent,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              ocrMatch == true ? '✓ OK' : '✗ FAIL',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.bold,
+                                                color: ocrMatch == true ? Colors.greenAccent : Colors.orangeAccent,
+                                              ),
+                                            ),
+                                          ]),
+                                        ),
+                                    ],
+                                  ),
                                 );
                               }),
                               // Fail classes (unchecked) — shown only if detected

@@ -32,6 +32,31 @@ class ModelManager {
 {% endif %}{% endfor %}{% endfor %}
   };
 
+  static img.Image _preprocessForOcr(img.Image src) {
+    img.Image out = img.copyResize(
+      src,
+      width: src.width * 3,
+      height: src.height * 3,
+      interpolation: img.Interpolation.cubic,
+    );
+    out = img.grayscale(out);
+    int minL = 255, maxL = 0;
+    for (final pixel in out) {
+      final l = pixel.r.toInt();
+      if (l < minL) minL = l;
+      if (l > maxL) maxL = l;
+    }
+    final range = (maxL - minL).clamp(1, 255);
+    for (final pixel in out) {
+      final stretched = (((pixel.r.toInt() - minL) / range) * 255).round().clamp(0, 255);
+      pixel.r = stretched;
+      pixel.g = stretched;
+      pixel.b = stretched;
+    }
+    out = img.convolution(out, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0], div: 1);
+    return out;
+  }
+
   /// Crops [source] to the given normalized [bbox], runs ML Kit OCR on the
   /// crop, and returns the DetectionResult with ocrText + isOcrMatch filled in.
   /// Returns det unchanged if this class has no OCR target configured.
@@ -47,7 +72,8 @@ class ModelManager {
     final int h = (det.bbox.height * source.height).round().clamp(1, source.height - y);
 
     final cropped = img.copyCrop(source, x: x, y: y, width: w, height: h);
-    final pngBytes = Uint8List.fromList(img.encodePng(cropped));
+    final processed = _preprocessForOcr(cropped);
+    final pngBytes = Uint8List.fromList(img.encodePng(processed));
 
     final tempDir = await Directory.systemTemp.createTemp('ocr_');
     final tempFile = File('${tempDir.path}/crop.png');
