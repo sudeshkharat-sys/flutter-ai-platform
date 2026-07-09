@@ -310,7 +310,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         mandatoryResults[mc] = matches.isNotEmpty
             ? (matches.toList()..sort((a, b) => b.confidence.compareTo(a.confidence))).first
             : null;
-        _addLog("  [$mc] → ${mandatoryResults[mc]?.className ?? 'NOT FOUND'}");
+        _addLog("  [$mc] → ${mandatoryResults[mc]?.className ?? 'NOT FOUND'} | ocrText=${mandatoryResults[mc]?.ocrText} | ocrMatch=${mandatoryResults[mc]?.isOcrMatch}");
       }
 
       // For each fail class, check if it was detected
