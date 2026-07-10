@@ -202,7 +202,7 @@ class ModelManager {
     final bool matched = normTarget.length <= 8
         ? normExtracted == normTarget || normExtracted.contains(normTarget)
         : _ocrSimilarity(normExtracted, normTarget) >= 0.9;
-    debugPrint('[OCR] final="$extractedText" similarity=$similarity matched=$matched');
+    debugPrint('[OCR] final="$extractedText" normExtracted=$normExtracted normTarget=$normTarget matched=$matched');
     return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
   }
 {% endif %}
