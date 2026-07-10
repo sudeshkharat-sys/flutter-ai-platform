@@ -196,13 +196,19 @@ class PrintService {
       y += 12;
 
       for (final task in failedTasks) {
-        final name = task['taskName'] as String? ?? 'Task';
+        final rawName = task['taskName'] as String? ?? 'Task';
+        // At width 27 about 40 chars fit in the 1100-dot line; truncate longer
+        // names so they never run off the right edge.
+        final name = rawName.length > 40 ? '${rawName.substring(0, 37)}...' : rawName;
         buf.writeln('^FO50,$y^A0N,38,27^FD$name^FS');
         y += 50;
 
         final part = task['detectedPart'] as String?;
         if (_hasValue(part)) {
-          buf.writeln('^FO70,$y^A0N,30,22^FD> ${part!.trim()}^FS');
+          final trimmed = part!.trim();
+          final shownPart =
+              trimmed.length > 44 ? '${trimmed.substring(0, 41)}...' : trimmed;
+          buf.writeln('^FO70,$y^A0N,30,22^FD> $shownPart^FS');
           y += 40;
         }
 
