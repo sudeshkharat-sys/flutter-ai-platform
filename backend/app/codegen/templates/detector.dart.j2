@@ -66,12 +66,8 @@ class ModelManager {
   // ── OCR text helpers ───────────────────────────────────────────────────────
 
   /// Strip non-alphanumeric, uppercase, apply common OCR substitutions.
-  static String _normalizeOcr(String s) => s
-      .toUpperCase()
-      .replaceAll('0', 'O')
-      .replaceAll('1', 'I')
-      .replaceAll('5', 'S')
-      .replaceAll(RegExp(r'[^A-Z]'), '');
+  static String _normalizeOcr(String s) =>
+      s.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
 
   /// Levenshtein edit distance between two strings.
   static int _levenshtein(String a, String b) {
@@ -167,12 +163,11 @@ class ModelManager {
 
     final normExtracted = _normalizeOcr(extractedText);
     final normTarget = _normalizeOcr(target);
-    final similarity = _ocrSimilarity(normExtracted, normTarget);
-    // For short labels (≤8 chars after normalize) use strict threshold —
-    // one char difference means a completely different variant (GOLDZX vs GOLDZA).
-    // For longer labels allow slightly more tolerance.
-    final double threshold = normTarget.length <= 8 ? 1.0 : 0.9;
-    final bool matched = similarity >= threshold;
+    // For short labels (≤8 chars): exact match only — one char wrong = wrong variant.
+    // For longer labels (>8 chars): allow 1 char tolerance via Levenshtein.
+    final bool matched = normTarget.length <= 8
+        ? normExtracted == normTarget || normExtracted.contains(normTarget)
+        : _ocrSimilarity(normExtracted, normTarget) >= 0.9;
     debugPrint('[OCR] final="$extractedText" similarity=$similarity matched=$matched');
     return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
   }
