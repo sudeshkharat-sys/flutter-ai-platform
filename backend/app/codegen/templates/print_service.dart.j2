@@ -142,13 +142,26 @@ class PrintService {
         ? <Map<String, dynamic>>[]
         : tasks.where((t) => t['success'] != true).toList();
 
+    // When there are many failed tasks, lay them out in two columns so the
+    // label stays compact instead of growing very long.
+    final bool twoCol = failedTasks.length > 4;
+
     // Dynamic height
-    int taskRows = 0;
-    for (final t in failedTasks) {
-      taskRows += 56 + 8;
-      if (_hasValue(t['detectedPart'] as String?)) taskRows += 40;
+    int tasksSection;
+    if (failedTasks.isEmpty) {
+      tasksSection = 0;
+    } else if (!twoCol) {
+      int taskRows = 0;
+      for (final t in failedTasks) {
+        taskRows += 56 + 8;
+        if (_hasValue(t['detectedPart'] as String?)) taskRows += 40;
+      }
+      tasksSection = 60 + taskRows;
+    } else {
+      // Two columns: height driven by the taller (left) column's row count.
+      final rows = (failedTasks.length / 2).ceil();
+      tasksSection = 60 + rows * 98;
     }
-    final tasksSection = failedTasks.isEmpty ? 0 : 60 + taskRows;
     // DATE/TIME stacked on the left with VIN beside them — two-row block.
     final labelHeight = 80 + 125 + 80 + tasksSection + 55;
 
@@ -195,27 +208,51 @@ class PrintService {
       buf.writeln('^FO50,$y^GB1100,2,2^FS');
       y += 12;
 
-      for (final task in failedTasks) {
-        final rawName = task['taskName'] as String? ?? 'Task';
-        // At width 27 about 40 chars fit in the 1100-dot line; truncate longer
-        // names so they never run off the right edge.
-        final name = rawName.length > 40 ? '${rawName.substring(0, 37)}...' : rawName;
-        buf.writeln('^FO50,$y^A0N,38,27^FD$name^FS');
-        y += 50;
+      String fit(String s, int max) =>
+          s.length > max ? '${s.substring(0, max - 3)}...' : s;
 
-        final part = task['detectedPart'] as String?;
-        if (_hasValue(part)) {
-          final trimmed = part!.trim();
-          final shownPart =
-              trimmed.length > 44 ? '${trimmed.substring(0, 41)}...' : trimmed;
-          buf.writeln('^FO70,$y^A0N,30,22^FD> $shownPart^FS');
-          y += 40;
+      if (!twoCol) {
+        // Single column — one task per row, full width.
+        for (final task in failedTasks) {
+          final name = fit(task['taskName'] as String? ?? 'Task', 40);
+          buf.writeln('^FO50,$y^A0N,38,27^FD$name^FS');
+          y += 50;
+
+          final part = task['detectedPart'] as String?;
+          if (_hasValue(part)) {
+            buf.writeln('^FO70,$y^A0N,30,22^FD> ${fit(part!.trim(), 44)}^FS');
+            y += 40;
+          }
+
+          buf.writeln('^FO50,$y^GB1100,2,2^FS');
+          y += 8;
         }
+        y += 6;
+      } else {
+        // Two columns — left column fills first, then right column.
+        final startY = y;
+        final half = (failedTasks.length / 2).ceil();
+        const rowH = 98;
+        const colX = [50, 620];
+        for (int i = 0; i < failedTasks.length; i++) {
+          final col = i < half ? 0 : 1;
+          final rowIdx = i < half ? i : i - half;
+          final rx = colX[col];
+          final ry = startY + rowIdx * rowH;
+          final task = failedTasks[i];
 
-        buf.writeln('^FO50,$y^GB1100,2,2^FS');
-        y += 8;
+          // ~22 chars fit in a ~550-dot column at width 24.
+          final name = fit(task['taskName'] as String? ?? 'Task', 22);
+          buf.writeln('^FO$rx,$ry^A0N,34,24^FD$name^FS');
+
+          final part = task['detectedPart'] as String?;
+          if (_hasValue(part)) {
+            buf.writeln(
+                '^FO${rx + 20},${ry + 44}^A0N,28,20^FD> ${fit(part!.trim(), 24)}^FS');
+          }
+        }
+        y = startY + half * rowH + 6;
       }
-      y += 6;
     }
 
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
