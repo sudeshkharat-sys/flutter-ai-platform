@@ -187,10 +187,10 @@ class PrintService {
     final timePart = parts.length > 1 ? parts[1] : '';
     buf.writeln('^FO50,$y^A0N,30,21^FDDATE : $datePart^FS');
     buf.writeln('^FO50,${y + 40}^A0N,30,21^FDTIME : $timePart^FS');
-    // Bigger VIN; starts at x=460 (left column is short) so 17 chars at
-    // width 38 reach ~1106, still inside the 1200-dot label width.
-    buf.writeln('^FO460,${y + 6}^A0N,58,38^FD$vin^FS');
-    y += 88;
+    // Large VIN; starts at x=450 (past the short DATE/TIME column) so 17 chars
+    // at width 42 reach ~1164 — near the max that fits the 1200-dot width.
+    buf.writeln('^FO450,${y + 2}^A0N,66,42^FD$vin^FS');
+    y += 90;
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
     y += 18;
 
