@@ -186,14 +186,13 @@ class PrintService {
     final parts = cleanDate.split(' ');
     final datePart = parts.isNotEmpty ? parts[0] : cleanDate;
     final timePart = parts.length > 1 ? parts[1] : '';
-    // "VIN : value" big on its own full-width line ("VIN : " + 17 chars = 23
-    // chars at width 46 reach ~1108, inside the 1200-dot width).
-    buf.writeln('^FO50,$y^A0N,64,46^FDVIN : $vin^FS');
-    y += 82;
-    // DATE and TIME together on one compact row below.
-    buf.writeln('^FO50,$y^A0N,34,24^FDDATE : $datePart^FS');
-    buf.writeln('^FO560,$y^A0N,34,24^FDTIME : $timePart^FS');
-    y += 50;
+    // DATE/TIME stacked compact on the left; "VIN : value" big on the right.
+    // Left column ends ~390, so VIN starts at x=410. "VIN : " + 17 chars = 23
+    // chars at width 32 reach ~1146, inside the 1200-dot width.
+    buf.writeln('^FO50,$y^A0N,28,20^FDDATE : $datePart^FS');
+    buf.writeln('^FO50,${y + 38}^A0N,28,20^FDTIME : $timePart^FS');
+    buf.writeln('^FO410,${y + 8}^A0N,48,32^FDVIN : $vin^FS');
+    y += 84;
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
     y += 18;
 
