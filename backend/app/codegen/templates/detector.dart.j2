@@ -34,33 +34,67 @@ class ModelManager {
 
   // ── OCR preprocessing ─────────────────────────────────────────────────────
 
-  /// Upscale 3x, grayscale, contrast-stretch, sharpen.
+  /// Upscale 3x, grayscale, adaptive threshold (per-tile), sharpen.
+  /// Adaptive thresholding divides the image into tiles and finds the optimal
+  /// black/white cutoff per tile — handles uneven lighting and reflections on
+  /// metallic stickers far better than a single global threshold.
   static img.Image _preprocessForOcr(img.Image src, {bool invert = false}) {
+    // 1. Upscale 3x
     img.Image out = img.copyResize(
       src,
       width: src.width * 3,
       height: src.height * 3,
       interpolation: img.Interpolation.cubic,
     );
+
+    // 2. Grayscale
     out = img.grayscale(out);
-    // Contrast stretch
-    int minL = 255, maxL = 0;
-    for (final pixel in out) {
-      final l = pixel.r.toInt();
-      if (l < minL) minL = l;
-      if (l > maxL) maxL = l;
+
+    // 3. Adaptive thresholding — tile size ~15% of image width, min 16px
+    final int w = out.width;
+    final int h = out.height;
+    final int tileSize = (w * 0.15).round().clamp(16, 64);
+    final img.Image thresholded = img.Image(width: w, height: h);
+
+    for (int ty = 0; ty < h; ty += tileSize) {
+      for (int tx = 0; tx < w; tx += tileSize) {
+        final int x1 = tx;
+        final int y1 = ty;
+        final int x2 = (tx + tileSize).clamp(0, w);
+        final int y2 = (ty + tileSize).clamp(0, h);
+
+        // Find mean luminance in this tile
+        int sum = 0, count = 0;
+        for (int y = y1; y < y2; y++) {
+          for (int x = x1; x < x2; x++) {
+            sum += out.getPixel(x, y).r.toInt();
+            count++;
+          }
+        }
+        final int mean = count > 0 ? (sum ~/ count) : 128;
+        // Threshold slightly below mean to favour text pixels
+        final int tileThreshold = (mean * 0.85).round().clamp(0, 255);
+
+        // Apply threshold to tile
+        for (int y = y1; y < y2; y++) {
+          for (int x = x1; x < x2; x++) {
+            final int lum = out.getPixel(x, y).r.toInt();
+            int val = lum < tileThreshold ? 0 : 255;
+            if (invert) val = 255 - val;
+            thresholded.setPixelRgb(x, y, val, val, val);
+          }
+        }
+      }
     }
-    final range = (maxL - minL).clamp(1, 255);
-    for (final pixel in out) {
-      int stretched = (((pixel.r.toInt() - minL) / range) * 255).round().clamp(0, 255);
-      if (invert) stretched = 255 - stretched;
-      pixel.r = stretched;
-      pixel.g = stretched;
-      pixel.b = stretched;
-    }
-    // Sharpen
-    out = img.convolution(out, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0], div: 1);
-    return out;
+
+    // 4. Sharpen
+    img.Image sharpened = img.convolution(
+      thresholded,
+      filter: [0, -1, 0, -1, 5, -1, 0, -1, 0],
+      div: 1,
+    );
+
+    return sharpened;
   }
 
   // ── OCR text helpers ───────────────────────────────────────────────────────
