@@ -186,14 +186,14 @@ class PrintService {
     final parts = cleanDate.split(' ');
     final datePart = parts.isNotEmpty ? parts[0] : cleanDate;
     final timePart = parts.length > 1 ? parts[1] : '';
-    buf.writeln('^FO50,$y^A0N,30,21^FDDATE : $datePart^FS');
-    buf.writeln('^FO50,${y + 40}^A0N,30,21^FDTIME : $timePart^FS');
-    // Right side: small "VIN" caption above the large VIN value, so it stays
-    // labelled AND big. Value at width 40 (17 chars) reaches ~1130, inside
-    // the 1200-dot width. ("VIN :" inline would be too wide at this size.)
-    buf.writeln('^FO450,$y^A0N,26,18^FDVIN^FS');
-    buf.writeln('^FO450,${y + 26}^A0N,60,40^FD$vin^FS');
-    y += 96;
+    // "VIN : value" big on its own full-width line ("VIN : " + 17 chars = 23
+    // chars at width 46 reach ~1108, inside the 1200-dot width).
+    buf.writeln('^FO50,$y^A0N,64,46^FDVIN : $vin^FS');
+    y += 82;
+    // DATE and TIME together on one compact row below.
+    buf.writeln('^FO50,$y^A0N,34,24^FDDATE : $datePart^FS');
+    buf.writeln('^FO560,$y^A0N,34,24^FDTIME : $timePart^FS');
+    y += 50;
     buf.writeln('^FO50,$y^GB1100,4,4^FS');
     y += 18;
 
