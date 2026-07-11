@@ -61,6 +61,11 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   List<List<_OcrWord>> _rows = [];
   double? _overallAccuracy;
 
+  // Debug aid: shows each word's raw confidence % next to it, so you can
+  // see exactly what the recognizer scored per word/character instead of
+  // just the red/black pass-fail color — useful for tuning the threshold.
+  bool _showConfidenceDetails = true;
+
   // Box OCR: when enabled, only the area inside this fractional rectangle
   // (0..1 relative to the camera preview) is cropped out and OCR'd, instead
   // of the whole frame. User can drag to move and drag the handle to resize.
@@ -296,7 +301,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   /// shots and keeping whichever reads with the highest confidence beats
   /// relying on a single frame that might have the highlight sitting right
   /// across a critical stroke.
-  static const int _burstShotCount = 2;
+  static const int _burstShotCount = 3;
 
   Future<void> _captureAndScan() async {
     if (_isProcessing || _cameraController == null || !_isCameraInitialized) return;
@@ -435,11 +440,31 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
               children: [
                 const Icon(Icons.verified, color: Color(0xFFDC143C)),
                 const SizedBox(width: 10),
-                Text(
-                  _overallAccuracy != null
-                      ? 'Overall Accuracy: ${(_overallAccuracy! * 100).toStringAsFixed(1)}%'
-                      : 'Overall Accuracy: N/A',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                Expanded(
+                  child: Text(
+                    _overallAccuracy != null
+                        ? 'Overall Accuracy: ${(_overallAccuracy! * 100).toStringAsFixed(1)}%'
+                        : 'Overall Accuracy: N/A',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () => setState(() => _showConfidenceDetails = !_showConfidenceDetails),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: _showConfidenceDetails ? const Color(0xFFDC143C) : Colors.black12,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '%',
+                      style: TextStyle(
+                        color: _showConfidenceDetails ? Colors.white : Colors.black54,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -476,7 +501,18 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
                                 fontWeight: FontWeight.w500,
                               ),
                             ),
-                            if (i != row.length - 1) const TextSpan(text: ' '),
+                            if (_showConfidenceDetails)
+                              TextSpan(
+                                text: row[i].confidence != null
+                                    ? ' (${(row[i].confidence! * 100).toStringAsFixed(0)}%)'
+                                    : ' (?)',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.black45,
+                                  fontWeight: FontWeight.normal,
+                                ),
+                              ),
+                            if (i != row.length - 1) const TextSpan(text: '  '),
                           ],
                         ],
                       ),
