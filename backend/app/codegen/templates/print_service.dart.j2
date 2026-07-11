@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zsdk/zsdk.dart';
 
 /// A Bluetooth printer (bonded or discovered via zsdk).
@@ -17,6 +18,26 @@ class PrintService {
   PrintService._();
 
   final _zsdk = ZSDK();
+
+  static const _kDpiKey = 'printer_dpi';
+
+  /// Supported label print resolutions.
+  static const List<int> supportedDpi = [203, 300];
+  static const int defaultDpi = 300;
+
+  /// Persist the label print resolution (203 or 300 dpi) so the user can
+  /// switch printers of a different DPI class without mis-scaled labels.
+  Future<void> setPrinterDpi(int dpi) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kDpiKey, dpi);
+  }
+
+  /// Returns the saved DPI setting, defaulting to [defaultDpi] (300) —
+  /// the resolution the label layout was originally designed for.
+  Future<int> getPrinterDpi() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_kDpiKey) ?? defaultDpi;
+  }
 
   // ── Bluetooth discovery ───────────────────────────────────────────────────
 
@@ -68,14 +89,20 @@ class PrintService {
   }
 
   /// Build a ZPL II label for the inspection report.
-  /// Designed for Zebra ZT411 at 300 dpi, 4-inch wide labels.
+  /// Authored for a Zebra ZT411 at 300 dpi, 4-inch wide labels; all
+  /// coordinates are scaled at print time for [dpi] (e.g. 203 dpi) so the
+  /// label keeps the same physical 4-inch size on either printer class.
   String _buildZpl({
     required String vin,
     required String modelCode,
     required String timestamp,
     required bool overallSuccess,
     required List<Map<String, dynamic>> tasks,
+    int dpi = PrintService.defaultDpi,
   }) {
+    final double scale = dpi / PrintService.defaultDpi;
+    int s(num v) => (v * scale).round();
+
     // Clean up ISO timestamp → "2026-03-26 15:46:09"
     final cleanDate = timestamp
         .replaceFirst('T', ' ')
@@ -86,75 +113,70 @@ class PrintService {
         ? <Map<String, dynamic>>[]
         : tasks.where((t) => t['success'] != true).toList();
 
-    // Dynamic height
-    int taskRows = 0;
-    for (final t in failedTasks) {
-      taskRows += 56 + 8;
-      if (_hasValue(t['detectedPart'] as String?)) taskRows += 40;
-    }
-    final tasksSection = failedTasks.isEmpty ? 0 : 60 + taskRows;
-    final labelHeight = 80 + 140 + 80 + tasksSection + 55;
-
-    final buf = StringBuffer();
-    int y = 20;
-
-    buf.writeln('^XA');
-    buf.writeln('^PW1200');
-    buf.writeln('^LL$labelHeight');
+    // Body is built first so the exact content height (and therefore ^LL)
+    // is known before we emit the header — avoids magic-number height math
+    // drifting out of sync with the layout below.
+    final body = StringBuffer();
+    int y = s(20);
 
     // ── Title ─────────────────────────────────────────────────────────────────
-    buf.writeln('^FO50,$y^A0N,62,44^FDINSPECTION REPORT^FS');
-    y += 75;
-    buf.writeln('^FO50,$y^GB1100,4,4^FS');
-    y += 18;
+    body.writeln('^FO${s(50)},$y^A0N,${s(62)},${s(44)}^FDINSPECTION REPORT^FS');
+    y += s(75);
+    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
+    y += s(18);
 
-    // ── VIN and DATE only ─────────────────────────────────────────────────────
-    buf.writeln('^FO50,$y^A0N,42,30^FDVIN  : $vin^FS');
-    y += 56;
-    buf.writeln('^FO50,$y^A0N,38,27^FDDATE : $cleanDate^FS');
-    y += 54;
-    buf.writeln('^FO50,$y^GB1100,4,4^FS');
-    y += 18;
+    // ── VIN (large) and DATE ────────────────────────────────────────────────
+    body.writeln('^FO${s(50)},$y^A0N,${s(72)},${s(50)}^FDVIN  : $vin^FS');
+    y += s(86);
+    body.writeln('^FO${s(50)},$y^A0N,${s(38)},${s(27)}^FDDATE : $cleanDate^FS');
+    y += s(54);
+    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
+    y += s(18);
 
     // ── Status ────────────────────────────────────────────────────────────────
     final statusText = overallSuccess ? '[ PASSED ]' : '[ FAILED ]';
-    buf.writeln('^FO50,$y^A0N,60,44^FD$statusText^FS');
-    y += 75;
-    buf.writeln('^FO50,$y^GB1100,4,4^FS');
-    y += 18;
+    body.writeln('^FO${s(50)},$y^A0N,${s(60)},${s(44)}^FD$statusText^FS');
+    y += s(75);
+    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
+    y += s(18);
 
     // ── Failed tasks only ─────────────────────────────────────────────────────
     if (failedTasks.isNotEmpty) {
-      buf.writeln('^FO50,$y^A0N,32,23^FDFAILED TASKS^FS');
-      y += 44;
-      buf.writeln('^FO50,$y^GB1100,2,2^FS');
-      y += 12;
+      body.writeln('^FO${s(50)},$y^A0N,${s(32)},${s(23)}^FDFAILED TASKS^FS');
+      y += s(44);
+      body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(2)},${s(2)}^FS');
+      y += s(12);
 
       for (final task in failedTasks) {
         final name = task['taskName'] as String? ?? 'Task';
-        buf.writeln('^FO50,$y^A0N,38,27^FD$name^FS');
-        y += 50;
+        body.writeln('^FO${s(50)},$y^A0N,${s(38)},${s(27)}^FD$name^FS');
+        y += s(50);
 
         final part = task['detectedPart'] as String?;
         if (_hasValue(part)) {
-          buf.writeln('^FO70,$y^A0N,30,22^FD> ${part!.trim()}^FS');
-          y += 40;
+          body.writeln('^FO${s(70)},$y^A0N,${s(30)},${s(22)}^FD> ${part!.trim()}^FS');
+          y += s(40);
         }
 
-        buf.writeln('^FO50,$y^GB1100,2,2^FS');
-        y += 8;
+        body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(2)},${s(2)}^FS');
+        y += s(8);
       }
-      y += 6;
+      y += s(6);
     }
 
-    buf.writeln('^FO50,$y^GB1100,4,4^FS');
-    y += 14;
+    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
+    y += s(14);
 
     // ── Footer ────────────────────────────────────────────────────────────────
-    buf.writeln('^FO50,$y^A0N,30,22^FDFlutter AI Inspection System^FS');
+    body.writeln('^FO${s(50)},$y^A0N,${s(30)},${s(22)}^FDFlutter AI Inspection System^FS');
+    y += s(40);
 
-    buf.writeln('^XZ');
-    return buf.toString();
+    final header = StringBuffer();
+    header.writeln('^XA');
+    header.writeln('^PW${s(1200)}');
+    header.writeln('^LL$y');
+
+    return header.toString() + body.toString() + '^XZ\n';
   }
 
   // ── Print ─────────────────────────────────────────────────────────────────
@@ -175,6 +197,7 @@ class PrintService {
         timestamp: timestamp,
         overallSuccess: overallSuccess,
         tasks: tasks,
+        dpi: await getPrinterDpi(),
       );
 
       final result = await _zsdk.printZplDataOverBluetooth(

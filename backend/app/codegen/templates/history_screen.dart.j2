@@ -417,12 +417,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
             _hCell('Vehicle\nOK %', headerStyle),
             _hCell('Total\nTasks', headerStyle),
             _hCell('Tasks\nPassed', headerStyle),
+            _hCell('Tasks\nFailed', headerStyle),
             _hCell('Task\nPass %', headerStyle),
           ],
         ),
         ...summaries.asMap().entries.map((e) {
           final i = e.key;
           final s = e.value;
+          final failedTasks = s.totalTasks - s.passedTasks;
           return TableRow(
             decoration: BoxDecoration(
               color: i.isEven ? Colors.white : Colors.grey.shade50,
@@ -435,6 +437,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               _pctBadgeCell(s.okPercent),
               _dCell('${s.totalTasks}', center: true),
               _dCell('${s.passedTasks}', center: true),
+              _failedCountCell(failedTasks),
               _pctBadgeCell(s.taskPassPercent),
             ],
           );
@@ -475,6 +478,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ),
             textAlign: TextAlign.center,
           ),
+        ),
+      );
+
+  Widget _failedCountCell(int count) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Text(
+          '$count',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: count > 0 ? FontWeight.bold : FontWeight.normal,
+            color: count > 0 ? Colors.red.shade700 : Colors.black87,
+          ),
+          textAlign: TextAlign.center,
         ),
       );
 
