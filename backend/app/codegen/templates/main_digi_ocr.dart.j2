@@ -1,0 +1,33 @@
+import 'package:flutter/material.dart';
+import 'screens/full_ocr_screen.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: '{{ app_name }}',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFDC143C),
+          brightness: Brightness.light,
+        ),
+        useMaterial3: true,
+        scaffoldBackgroundColor: Colors.white,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFFDC143C),
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
+      ),
+      home: const FullOcrScreen(),
+    );
+  }
+}

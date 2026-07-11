@@ -1,11 +1,12 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import '../styles/Header.css';
-import logo from '../DigiOcr.png';
+import logo from '../assests/image.png';
 const NAV = [
   { label: 'Dashboard', to: '/dashboard' },
   { label: 'Master Data', to: '/master-data' },
   { label: 'Model Library', to: '/model-library' },
+  { label: 'Digi OCR', to: '/digi-ocr' },
 ];
 
 export default function Header() {

@@ -7,6 +7,7 @@ import NewApp from './components/NewApp';
 import AppBuilder from './components/AppBuilder';
 import ModelLibrary from './components/ModelsBrowser';
 import MasterData from './components/MasterData';
+import DigiOcr from './components/DigiOcr';
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/model-library" element={<ModelLibrary />} />
           <Route path="/master-data" element={<MasterData />} />
           <Route path="/new-app" element={<NewApp />} />
+          <Route path="/digi-ocr" element={<DigiOcr />} />
           <Route path="/apps/:id" element={<AppBuilder />} />
         </Routes>
       </div>

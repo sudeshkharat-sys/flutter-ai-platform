@@ -56,11 +56,90 @@ def _dart_slug(name: str) -> str:
     return slug
 
 
+DIGI_OCR_MIPMAP_SIZES = {
+    "mipmap-mdpi":    (48,  48),
+    "mipmap-hdpi":    (72,  72),
+    "mipmap-xhdpi":   (96,  96),
+    "mipmap-xxhdpi":  (144, 144),
+    "mipmap-xxxhdpi": (192, 192),
+}
+
+
+def _generate_digi_ocr_project(env, app_name: str, package_name: str, settings: dict) -> bytes:
+    """Render a minimal standalone Flutter project: a single full-page text
+    scan screen, no class detection / VIN / printing / history. Reuses the
+    shared Android/Gradle scaffolding but swaps in its own pubspec, main.dart,
+    and app icon (DigiOcr logo)."""
+    ctx = {
+        "kotlin_version": _detect_kotlin_version(),
+        "app_name": app_name,
+        "app_name_slug": _dart_slug(app_name),
+        "package_name": package_name,
+        "full_ocr_threshold": settings.get("full_ocr_threshold", 0.5),
+    }
+
+    files = {
+        "pubspec.yaml": "pubspec_digi_ocr.yaml.j2",
+        "lib/main.dart": "main_digi_ocr.dart.j2",
+        "lib/screens/full_ocr_screen.dart": "full_ocr_screen.dart.j2",
+        "android/app/src/main/AndroidManifest.xml": "AndroidManifest.xml.j2",
+        "android/build.gradle": "build.gradle.j2",
+        "android/app/build.gradle": "app_build.gradle.j2",
+        "android/app/proguard-rules.pro": "proguard-rules.pro.j2",
+        "android/settings.gradle": "settings.gradle.j2",
+        "android/local.properties": "local.properties.j2",
+        "android/gradle.properties": "gradle.properties.j2",
+        "android/gradle/wrapper/gradle-wrapper.properties": "gradle-wrapper.properties.j2",
+        "android/gradle/wrapper/gradle-wrapper.jar": "gradle-wrapper.jar.raw",
+        "android/gradlew": "gradlew.j2",
+        "android/gradlew.bat": "gradlew.bat.j2",
+        "android/buildSrc/build.gradle": "buildSrc_build.gradle.j2",
+        "android/buildSrc/src/main/groovy/FlutterLocalExtension.groovy": "FlutterLocalExtension.groovy.j2",
+        f"android/app/src/main/kotlin/{package_name.replace('.', '/')}/MainActivity.kt": "MainActivity.kt.j2",
+        "android/app/src/main/res/values/styles.xml": "styles.xml.j2",
+        "android/app/src/main/res/drawable/launch_background.xml": "launch_background.xml.j2",
+    }
+
+    buf = io.BytesIO()
+    root = ctx["app_name_slug"]
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for zip_path, template_name in files.items():
+            full_path = f"{root}/{zip_path}"
+            if template_name.endswith(".raw"):
+                raw_path = TEMPLATES_DIR / template_name
+                if raw_path.exists():
+                    zf.writestr(full_path, raw_path.read_bytes())
+            else:
+                tmpl = env.get_template(template_name)
+                zf.writestr(full_path, tmpl.render(**ctx))
+
+        icon_src = TEMPLATES_DIR / "icons" / "digi_ocr_launcher.png"
+        if icon_src.exists():
+            try:
+                from PIL import Image
+                import io as _io
+                with Image.open(icon_src) as img:
+                    img = img.convert("RGBA")
+                    for density, (w, h) in DIGI_OCR_MIPMAP_SIZES.items():
+                        resized = img.resize((w, h), Image.LANCZOS)
+                        buf_icon = _io.BytesIO()
+                        resized.save(buf_icon, format="PNG")
+                        zf.writestr(
+                            f"{root}/android/app/src/main/res/{density}/ic_launcher.png",
+                            buf_icon.getvalue(),
+                        )
+            except Exception as e:
+                print(f"Warning: Could not process Digi OCR app icon: {e}")
+
+    return buf.getvalue()
+
+
 def generate_flutter_project(app_project, model_asset=None, all_model_assets=None) -> bytes:
     """Render all Jinja2 templates and return a ZIP file as bytes."""
     env = _get_jinja_env()
-    
-    # Handle dict vs object dynamically for backward compatibility if needed, 
+
+    # Handle dict vs object dynamically for backward compatibility if needed,
     # but primarily expect dicts from the new StateDBConnector
     def get_attr(obj, key, default=None):
         if isinstance(obj, dict):
@@ -68,7 +147,19 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         return getattr(obj, key, default)
 
     settings = get_attr(app_project, "app_settings") or {}
-    
+    if isinstance(settings, str):
+        import json
+        try:
+            settings = json.loads(settings)
+        except Exception:
+            settings = {}
+
+    if settings.get("app_mode") == "digi_ocr":
+        app_name = get_attr(app_project, "name", "Digi OCR")
+        package_name = get_attr(app_project, "package_name", "com.example.digiocr")
+        return _generate_digi_ocr_project(env, app_name, package_name, settings)
+
+
     # Handle multiple models and map them for tasks
     models_list = all_model_assets or ([model_asset] if model_asset else [])
     model_id_to_paths = {}

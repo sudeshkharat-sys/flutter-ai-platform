@@ -25,12 +25,20 @@ def trigger_build(app_id: str, db: StateDBConnector = Depends(get_db_connector))
         raise HTTPException(status_code=404, detail="App project not found")
     
     app = rows[0]
-    
+
+    app_settings = app.get("app_settings", {})
+    if isinstance(app_settings, str):
+        try:
+            app_settings = json.loads(app_settings)
+        except Exception:
+            app_settings = {}
+    is_digi_ocr = app_settings.get("app_mode") == "digi_ocr"
+
     model_asset_ids = app.get("model_asset_ids", [])
     if isinstance(model_asset_ids, str):
         model_asset_ids = json.loads(model_asset_ids)
 
-    if not model_asset_ids or len(model_asset_ids) == 0:
+    if not is_digi_ocr and (not model_asset_ids or len(model_asset_ids) == 0):
         raise HTTPException(status_code=400, detail="No model assigned to this app. Please add a model in the Studio UI first.")
 
     params = {
