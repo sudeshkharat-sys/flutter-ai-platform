@@ -32,6 +32,8 @@ export const getModels      = ()         => api.get('/models');
 export const getModelStatus = (id) => api.get(`/models/${id}/status`);
 export const detectModelClasses = (id) => api.post(`/models/${id}/detect-classes`);
 export const deleteModel = (id) => api.delete(`/models/${id}`);
+export const downloadModelPt = (id) =>
+  api.get(`/models/${id}/download-pt`, { responseType: 'blob' });
 
 
 export const getApps    = ()         => api.get('/apps');
