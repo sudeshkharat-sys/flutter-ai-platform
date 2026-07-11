@@ -142,10 +142,20 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   static img.Image _denoise(img.Image src) => img.gaussianBlur(src, radius: 1);
 
   /// Whole-frame preprocessing for Full Scan mode: a global auto
-  /// brightness/contrast stretch plus a light sharpen. Kept cheap (no
-  /// upscale, no per-tile pass) since it runs on the entire high-res photo.
+  /// brightness/contrast stretch plus a light sharpen. Runs on a background
+  /// isolate already, but a full camera-resolution photo (10+ megapixels)
+  /// still takes several seconds of real CPU time to filter pixel-by-pixel —
+  /// downsizing first keeps that reasonable, since whole-frame text reading
+  /// doesn't need full sensor resolution.
   static img.Image _preprocessFullFrame(img.Image src) {
-    img.Image out = img.normalize(src, min: 0, max: 255);
+    img.Image working = src;
+    const int maxDimension = 1600;
+    if (src.width > maxDimension || src.height > maxDimension) {
+      working = src.width >= src.height
+          ? img.copyResize(src, width: maxDimension)
+          : img.copyResize(src, height: maxDimension);
+    }
+    img.Image out = img.normalize(working, min: 0, max: 255);
     out = _denoise(out);
     out = img.convolution(out, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0], div: 1);
     return out;
