@@ -37,11 +37,23 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
   bool _printing = false;
   String _statusMessage = '';
   final TextEditingController _macController = TextEditingController();
+  int _dpi = PrintService.defaultDpi;
 
   @override
   void initState() {
     super.initState();
     _loadBondedDevices();
+    _loadDpi();
+  }
+
+  Future<void> _loadDpi() async {
+    final dpi = await PrintService.instance.getPrinterDpi();
+    if (mounted) setState(() => _dpi = dpi);
+  }
+
+  Future<void> _setDpi(int dpi) async {
+    setState(() => _dpi = dpi);
+    await PrintService.instance.setPrinterDpi(dpi);
   }
 
   @override
@@ -314,6 +326,39 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
                     backgroundColor: _crimsonLight,
                     color: _crimson,
                   ),
+
+                // ── Label DPI toggle ─────────────────────────────────────────
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                  color: Colors.white,
+                  child: Row(
+                    children: [
+                      const Icon(Icons.print, size: 16, color: _crimson),
+                      const SizedBox(width: 10),
+                      const Text('Label DPI:',
+                          style: TextStyle(color: Colors.black87, fontSize: 13)),
+                      const Spacer(),
+                      ToggleButtons(
+                        borderRadius: BorderRadius.circular(8),
+                        selectedColor: Colors.white,
+                        fillColor: _crimson,
+                        color: _crimson,
+                        borderColor: _crimson,
+                        selectedBorderColor: _crimson,
+                        constraints: const BoxConstraints(minHeight: 32, minWidth: 68),
+                        isSelected: PrintService.supportedDpi
+                            .map((dpi) => dpi == _dpi)
+                            .toList(),
+                        onPressed: (index) =>
+                            _setDpi(PrintService.supportedDpi[index]),
+                        children: PrintService.supportedDpi
+                            .map((dpi) => Text('$dpi dpi',
+                                style: const TextStyle(fontSize: 12)))
+                            .toList(),
+                      ),
+                    ],
+                  ),
+                ),
 
                 // ── Manual MAC entry ──────────────────────────────────────────
                 Padding(
