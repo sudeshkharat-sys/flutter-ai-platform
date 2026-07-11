@@ -209,6 +209,8 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             for cls in (task.get("mandatoryClasses") or [])
         ) or bool(get_attr(app_project, "ocr_enabled", False)),
         "ocr_target_text": get_attr(app_project, "ocr_target_text", "") or "",
+        "full_ocr_enabled": bool(settings.get("full_ocr_enabled", False)) or bool(get_attr(app_project, "full_ocr_enabled", False)),
+        "full_ocr_threshold": settings.get("full_ocr_threshold", 0.5),
     }
 
     # Map of zip path -> template name
@@ -221,6 +223,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "lib/screens/component_config_screen.dart": "component_config_screen.dart.j2",
         "lib/screens/inspection_camera_screen.dart": "inspection_camera_screen.dart.j2",
         "lib/screens/history_screen.dart": "history_screen.dart.j2",
+        "lib/screens/full_ocr_screen.dart": "full_ocr_screen.dart.j2",
         "lib/screens/printer_discovery_screen.dart": "printer_discovery_screen.dart.j2",
         "lib/services/print_service.dart": "print_service.dart.j2",
         "lib/database/database.dart": "database.dart.j2",

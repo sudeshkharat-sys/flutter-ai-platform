@@ -6,6 +6,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart' as drift;
 import 'inspection_camera_screen.dart';
 import 'history_screen.dart';
+{% if full_ocr_enabled %}
+import 'full_ocr_screen.dart';
+{% endif %}
 import '../services/print_service.dart';
 import '../database/database.dart';
 
@@ -595,6 +598,11 @@ class _HomeScreenState extends State<HomeScreen> {
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
           _navItem(Icons.home, "Home", true),
+{% if full_ocr_enabled %}
+          _navItem(Icons.document_scanner, "Text Scan", false, onTap: () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const FullOcrScreen()));
+          }),
+{% endif %}
           _navItem(Icons.history, "History", false, onTap: () {
             Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()));
           }),

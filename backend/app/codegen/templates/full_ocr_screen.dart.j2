@@ -1,0 +1,345 @@
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+
+/// Full-page text scan: reads every character on screen, top-to-bottom and
+/// left-to-right, and highlights low-confidence words in red so an inspector
+/// can spot unreliable reads at a glance.
+class FullOcrScreen extends StatefulWidget {
+  const FullOcrScreen({super.key});
+
+  @override
+  State<FullOcrScreen> createState() => _FullOcrScreenState();
+}
+
+/// A single recognized word placed in reading order, with its own confidence.
+class _OcrWord {
+  final String text;
+  final double? confidence;
+  _OcrWord(this.text, this.confidence);
+}
+
+class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserver {
+  static const double _lowConfidenceThreshold = {{ full_ocr_threshold | default(0.5) }};
+
+  CameraController? _cameraController;
+  bool _isCameraInitialized = false;
+  bool _isProcessing = false;
+  String? _error;
+
+  Uint8List? _capturedImageBytes;
+  List<List<_OcrWord>> _rows = [];
+  double? _overallAccuracy;
+
+  final TextRecognizer _recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initializeCamera();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _cameraController?.dispose();
+    _recognizer.close();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final ctrl = _cameraController;
+    if (ctrl == null || !ctrl.value.isInitialized) return;
+    if (state == AppLifecycleState.inactive) {
+      ctrl.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initializeCamera();
+    }
+  }
+
+  Future<void> _initializeCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        setState(() => _error = 'No cameras found');
+        return;
+      }
+      final back = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+      final controller = CameraController(back, ResolutionPreset.high, enableAudio: false);
+      _cameraController = controller;
+      await controller.initialize();
+      if (mounted) setState(() => _isCameraInitialized = true);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Camera error: $e');
+    }
+  }
+
+  /// Groups recognized text elements into reading order: rows ordered
+  /// top-to-bottom (clustered by vertical overlap so wrapped/adjacent lines
+  /// land in the same row), and words ordered left-to-right within each row.
+  List<List<_OcrWord>> _toReadingOrder(RecognizedText recognizedText) {
+    final elements = <TextElement>[];
+    for (final block in recognizedText.blocks) {
+      for (final line in block.lines) {
+        elements.addAll(line.elements);
+      }
+    }
+    if (elements.isEmpty) return [];
+
+    elements.sort((a, b) => a.boundingBox.top.compareTo(b.boundingBox.top));
+
+    final List<List<TextElement>> rows = [];
+    for (final el in elements) {
+      final elCenter = el.boundingBox.top + el.boundingBox.height / 2;
+      List<TextElement>? targetRow;
+      for (final row in rows) {
+        final refTop = row.first.boundingBox.top;
+        final refHeight = row.first.boundingBox.height;
+        final rowCenter = refTop + refHeight / 2;
+        if ((elCenter - rowCenter).abs() < refHeight * 0.6) {
+          targetRow = row;
+          break;
+        }
+      }
+      if (targetRow != null) {
+        targetRow.add(el);
+      } else {
+        rows.add([el]);
+      }
+    }
+
+    rows.sort((a, b) => a.first.boundingBox.top.compareTo(b.first.boundingBox.top));
+    for (final row in rows) {
+      row.sort((a, b) => a.boundingBox.left.compareTo(b.boundingBox.left));
+    }
+
+    return rows
+        .map((row) => row.map((el) => _OcrWord(el.text, el.confidence)).toList())
+        .toList();
+  }
+
+  Future<void> _captureAndScan() async {
+    if (_isProcessing || _cameraController == null || !_isCameraInitialized) return;
+    setState(() {
+      _isProcessing = true;
+      _error = null;
+    });
+    try {
+      final XFile image = await _cameraController!.takePicture();
+      final bytes = await image.readAsBytes();
+
+      final decoded = img.decodeImage(bytes);
+      final oriented = decoded != null ? img.bakeOrientation(decoded) : null;
+      final orientedBytes = oriented != null
+          ? Uint8List.fromList(img.encodeJpg(oriented))
+          : bytes;
+
+      final inputImage = InputImage.fromFilePath(image.path);
+      final recognizedText = await _recognizer.processImage(inputImage);
+      final rows = _toReadingOrder(recognizedText);
+
+      final confidences = rows
+          .expand((row) => row)
+          .map((w) => w.confidence)
+          .whereType<double>()
+          .toList();
+      final overall = confidences.isEmpty
+          ? null
+          : confidences.reduce((a, b) => a + b) / confidences.length;
+
+      if (!mounted) return;
+      setState(() {
+        _capturedImageBytes = orientedBytes;
+        _rows = rows;
+        _overallAccuracy = overall;
+        _isProcessing = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Scan failed: $e';
+        _isProcessing = false;
+      });
+    }
+  }
+
+  void _retake() {
+    setState(() {
+      _capturedImageBytes = null;
+      _rows = [];
+      _overallAccuracy = null;
+      _error = null;
+    });
+  }
+
+  Color _colorFor(double? confidence) {
+    if (confidence == null) return Colors.black87;
+    return confidence < _lowConfidenceThreshold ? const Color(0xFFD32F2F) : Colors.black87;
+  }
+
+  Widget _buildResultView() {
+    final hasText = _rows.isNotEmpty;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_capturedImageBytes != null)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.memory(_capturedImageBytes!, fit: BoxFit.contain),
+            ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF5F5),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFD4AF37)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.verified, color: Color(0xFFDC143C)),
+                const SizedBox(width: 10),
+                Text(
+                  _overallAccuracy != null
+                      ? 'Overall Accuracy: ${(_overallAccuracy! * 100).toStringAsFixed(1)}%'
+                      : 'Overall Accuracy: N/A',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (!hasText)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Text('No text detected. Try retaking the photo closer to the label.'),
+            )
+          else
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.black12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: _rows.map((row) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Text.rich(
+                      TextSpan(
+                        children: [
+                          for (int i = 0; i < row.length; i++) ...[
+                            TextSpan(
+                              text: row[i].text,
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: _colorFor(row[i].confidence),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            if (i != row.length - 1) const TextSpan(text: ' '),
+                          ],
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Container(width: 12, height: 12, color: const Color(0xFFD32F2F)),
+              const SizedBox(width: 6),
+              const Text('Low confidence', style: TextStyle(fontSize: 12, color: Colors.black54)),
+              const SizedBox(width: 16),
+              Container(width: 12, height: 12, color: Colors.black87),
+              const SizedBox(width: 6),
+              const Text('Confident', style: TextStyle(fontSize: 12, color: Colors.black54)),
+            ],
+          ),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _retake,
+              icon: const Icon(Icons.camera_alt),
+              label: const Text('Scan Again'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFDC143C),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCameraView() {
+    if (_error != null) {
+      return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_error!, textAlign: TextAlign.center)));
+    }
+    if (!_isCameraInitialized || _cameraController == null) {
+      return const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)));
+    }
+    return Stack(
+      alignment: Alignment.bottomCenter,
+      children: [
+        Positioned.fill(child: CameraPreview(_cameraController!)),
+        Positioned(
+          bottom: 28,
+          child: GestureDetector(
+            onTap: _captureAndScan,
+            child: Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white,
+                border: Border.all(color: const Color(0xFFDC143C), width: 4),
+              ),
+              child: _isProcessing
+                  ? const Padding(
+                      padding: EdgeInsets.all(18),
+                      child: CircularProgressIndicator(color: Color(0xFFDC143C)),
+                    )
+                  : const Icon(Icons.document_scanner, color: Color(0xFFDC143C), size: 32),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showResult = _capturedImageBytes != null || _rows.isNotEmpty;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: const Color(0xFFDC143C),
+        title: const Text('Text Scan'),
+      ),
+      body: Container(
+        color: showResult ? const Color(0xFFFFF5F5) : Colors.black,
+        child: showResult ? _buildResultView() : _buildCameraView(),
+      ),
+    );
+  }
+}

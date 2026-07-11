@@ -333,6 +333,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   const [profileName, setProfileName] = useState(existingApp?.name || '');
   const [scanType, setScanType] = useState(existingApp?.app_settings?.scan_type || 'model');
+  const [fullOcrEnabled, setFullOcrEnabled] = useState(existingApp?.app_settings?.full_ocr_enabled || false);
+  const [fullOcrThreshold, setFullOcrThreshold] = useState(existingApp?.app_settings?.full_ocr_threshold ?? 0.5);
   const [selectedModelCodes, setSelectedModelCodes] = useState([]);
   const [selectedEngineCodes, setSelectedEngineCodes] = useState([]);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -630,7 +632,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           model_codes: selectedModelCodes,
           model_code: selectedModelCodes[0],
           engine_codes: selectedEngineCodes,
-          default_configs: defaultAIConfigs
+          default_configs: defaultAIConfigs,
+          full_ocr_enabled: fullOcrEnabled,
+          full_ocr_threshold: fullOcrThreshold
         }
       };
 
@@ -703,6 +707,34 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                   <option value="model">Model Code (VIN barcode)</option>
                   <option value="engine">Engine Code (Part No + Serial)</option>
                 </select>
+              </div>
+
+              <div style={{ padding: 14, borderRadius: 12, border: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={fullOcrEnabled}
+                    onChange={e => setFullOcrEnabled(e.target.checked)}
+                  />
+                  <span style={{ fontWeight: 700 }}>Enable Full-Page Text Scan</span>
+                </label>
+                <span style={{ fontSize: 12, color: C.muted }}>
+                  Adds a "Text Scan" tab that reads every character on a label top-to-bottom, left-to-right, and highlights low-confidence words in red.
+                </span>
+                {fullOcrEnabled && (
+                  <div>
+                    <label style={{ ...labelStyle, fontSize: 12 }}>Low-confidence threshold ({Math.round(fullOcrThreshold * 100)}%)</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={fullOcrThreshold}
+                      onChange={e => setFullOcrThreshold(parseFloat(e.target.value))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                )}
               </div>
 
               {scanType === 'model' ? (
