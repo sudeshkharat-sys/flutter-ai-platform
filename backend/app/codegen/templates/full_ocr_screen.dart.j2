@@ -38,10 +38,26 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   // (0..1 relative to the camera preview) is cropped out and OCR'd, instead
   // of the whole frame. User can drag to move and drag the handle to resize.
   bool _boxOcrMode = false;
-  // Wide, short strip by default — matches a typical engraved/stamped code
-  // plate, so most scans need little to no manual resizing.
-  static const Rect _defaultBoxRect = Rect.fromLTWH(0.1, 0.42, 0.8, 0.16);
-  Rect _boxRect = _defaultBoxRect;
+  Rect? _boxRect;
+  Size _previewAreaSize = Size.zero;
+
+  /// Centered square box, sized relative to whichever screen it's shown on
+  /// (fractional width/height differ so the box renders as an actual square,
+  /// not just an equal fraction of each axis).
+  Rect _squareBoxFor(Size areaSize) {
+    if (areaSize.width <= 0 || areaSize.height <= 0) {
+      return const Rect.fromLTWH(0.25, 0.4, 0.5, 0.25);
+    }
+    final double side = areaSize.shortestSide * 0.55;
+    final double left = (areaSize.width - side) / 2;
+    final double top = (areaSize.height - side) / 2;
+    return Rect.fromLTWH(
+      left / areaSize.width,
+      top / areaSize.height,
+      side / areaSize.width,
+      side / areaSize.height,
+    );
+  }
 
   final TextRecognizer _recognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
@@ -274,7 +290,8 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
         final List<img.Image> variants;
         if (_boxOcrMode) {
-          final cropped = _cropToBox(oriented, _boxRect);
+          final box = _boxRect ?? _squareBoxFor(_previewAreaSize);
+          final cropped = _cropToBox(oriented, box);
           variants = [_preprocessCropForOcr(cropped), _preprocessCropRelief(cropped)];
         } else {
           variants = [_preprocessFullFrame(oriented)];
@@ -491,7 +508,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
           if (_boxOcrMode) ...[
             const SizedBox(width: 8),
             GestureDetector(
-              onTap: () => setState(() => _boxRect = _defaultBoxRect),
+              onTap: () => setState(() => _boxRect = _squareBoxFor(_previewAreaSize)),
               child: Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
@@ -512,11 +529,12 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   /// preview area, so they map directly onto the same fraction of the
   /// captured photo regardless of screen size.
   Widget _buildBoxOverlay(Size areaSize) {
+    final Rect box = _boxRect ?? _squareBoxFor(areaSize);
     final Rect pixelRect = Rect.fromLTWH(
-      _boxRect.left * areaSize.width,
-      _boxRect.top * areaSize.height,
-      _boxRect.width * areaSize.width,
-      _boxRect.height * areaSize.height,
+      box.left * areaSize.width,
+      box.top * areaSize.height,
+      box.width * areaSize.width,
+      box.height * areaSize.height,
     );
 
     void updateBox(Rect newPixelRect) {
@@ -592,13 +610,15 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
           child: LayoutBuilder(
             builder: (context, constraints) {
               final areaSize = constraints.biggest;
+              _previewAreaSize = areaSize;
+              _boxRect ??= _squareBoxFor(areaSize);
               return Stack(
                 alignment: Alignment.bottomCenter,
                 children: [
                   Positioned.fill(child: CameraPreview(_cameraController!)),
                   if (_boxOcrMode) _buildBoxOverlay(areaSize),
                   Positioned(
-                    bottom: 28,
+                    bottom: 48,
                     child: GestureDetector(
                       onTap: _captureAndScan,
                       child: Container(
@@ -630,15 +650,28 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   @override
   Widget build(BuildContext context) {
     final showResult = _capturedImageBytes != null || _rows.isNotEmpty;
-    return Scaffold(
+    return PopScope(
+      // While a result is shown, the back button/gesture should return to the
+      // camera for another scan instead of leaving the app (this screen has
+      // no route below it when it's the app's home screen).
+      canPop: !showResult,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+        if (showResult) _retake();
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: const Color(0xFFDC143C),
         title: const Text('Text Scan'),
+        automaticallyImplyLeading: false,
       ),
-      body: Container(
-        color: showResult ? const Color(0xFFFFF5F5) : Colors.black,
-        child: showResult ? _buildResultView() : _buildCameraView(),
+      body: SafeArea(
+        child: Container(
+          color: showResult ? const Color(0xFFFFF5F5) : Colors.black,
+          child: showResult ? _buildResultView() : _buildCameraView(),
+        ),
+      ),
       ),
     );
   }
