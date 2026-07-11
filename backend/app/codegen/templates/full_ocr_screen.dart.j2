@@ -98,6 +98,31 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
+    _warmUpRecognizer();
+  }
+
+  /// ML Kit's text recognizer has a one-time model-load delay on first use,
+  /// which otherwise lands right on the user's first real scan and makes it
+  /// feel much slower than every scan after. Firing a throwaway recognition
+  /// call as soon as the screen opens moves that wait here instead, while
+  /// the user is still lining up the shot.
+  Future<void> _warmUpRecognizer() async {
+    File? warmupFile;
+    try {
+      final blank = img.Image(width: 16, height: 16);
+      warmupFile = File('${Directory.systemTemp.path}/digiocr_warmup.jpg');
+      await warmupFile.writeAsBytes(img.encodeJpg(blank));
+      await _recognizer.processImage(InputImage.fromFilePath(warmupFile.path));
+    } catch (_) {
+      // Best-effort only — a failed warm-up just means the first real scan
+      // pays the model-load cost instead, same as before this existed.
+    } finally {
+      if (warmupFile != null) {
+        try {
+          await warmupFile.delete();
+        } catch (_) {}
+      }
+    }
   }
 
   @override
@@ -303,6 +328,12 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   /// across a critical stroke.
   static const int _burstShotCount = 3;
 
+  /// Once a shot's mean word confidence reaches this, stop taking more shots
+  /// / trying more variants — most scans nail it on the first try, and
+  /// running the full burst every single time was making every scan take as
+  /// long as the hardest case.
+  static const double _earlyExitScore = 0.88;
+
   Future<void> _captureAndScan() async {
     if (_isProcessing || _cameraController == null || !_isCameraInitialized) return;
     setState(() {
@@ -315,7 +346,32 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     double bestScore = double.negativeInfinity;
     final List<File> tempFiles = [];
 
+    Future<void> tryVariant(
+      Uint8List Function(Uint8List) preprocess,
+      Uint8List inputJpg,
+      Uint8List displayBytes,
+    ) async {
+      final processed = await compute(preprocess, inputJpg);
+      final tempFile = File(
+        '${Directory.systemTemp.path}/digiocr_${DateTime.now().microsecondsSinceEpoch}.jpg',
+      );
+      tempFiles.add(tempFile);
+      await tempFile.writeAsBytes(processed);
+
+      final inputImage = InputImage.fromFilePath(tempFile.path);
+      final recognizedText = await _recognizer.processImage(inputImage);
+      final rows = _toReadingOrder(recognizedText);
+      final score = _scoreRows(rows);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestRows = rows;
+        bestDisplayBytes = displayBytes;
+      }
+    }
+
     try {
+      shotLoop:
       for (int shot = 0; shot < _burstShotCount; shot++) {
         if (shot > 0) {
           await Future.delayed(const Duration(milliseconds: 200));
@@ -333,38 +389,23 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
         // The actual per-pixel processing runs on a background isolate via
         // compute() (see top-level _computeCropForOcr etc. above) — doing
         // this inline on the UI isolate is what was freezing the app.
-        final List<Uint8List> variantBytesList;
         if (_boxOcrMode) {
           final box = _boxRect ?? _squareBoxFor(_previewAreaSize);
           final cropped = _cropToBox(oriented, box);
           final croppedJpg = Uint8List.fromList(img.encodeJpg(cropped));
-          variantBytesList = await Future.wait([
-            compute(_computeCropForOcr, croppedJpg),
-            compute(_computeCropRelief, croppedJpg),
-          ]);
+
+          await tryVariant(_computeCropForOcr, croppedJpg, displayBytes);
+          if (bestScore >= _earlyExitScore) break shotLoop;
+
+          // Only try the second (relief) variant if the first one wasn't
+          // already good enough — most plates don't need both.
+          await tryVariant(_computeCropRelief, croppedJpg, displayBytes);
         } else {
           final fullJpg = Uint8List.fromList(img.encodeJpg(oriented));
-          variantBytesList = [await compute(_computeFullFrame, fullJpg)];
+          await tryVariant(_computeFullFrame, fullJpg, displayBytes);
         }
 
-        for (final variantBytes in variantBytesList) {
-          final tempFile = File(
-            '${Directory.systemTemp.path}/digiocr_${DateTime.now().microsecondsSinceEpoch}.jpg',
-          );
-          tempFiles.add(tempFile);
-          await tempFile.writeAsBytes(variantBytes);
-
-          final inputImage = InputImage.fromFilePath(tempFile.path);
-          final recognizedText = await _recognizer.processImage(inputImage);
-          final rows = _toReadingOrder(recognizedText);
-          final score = _scoreRows(rows);
-
-          if (score > bestScore) {
-            bestScore = score;
-            bestRows = rows;
-            bestDisplayBytes = displayBytes;
-          }
-        }
+        if (bestScore >= _earlyExitScore) break shotLoop;
       }
 
       if (bestDisplayBytes == null) {
