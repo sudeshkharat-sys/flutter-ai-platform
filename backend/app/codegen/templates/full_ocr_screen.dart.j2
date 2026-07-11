@@ -34,6 +34,12 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   List<List<_OcrWord>> _rows = [];
   double? _overallAccuracy;
 
+  // Box OCR: when enabled, only the area inside this fractional rectangle
+  // (0..1 relative to the camera preview) is cropped out and OCR'd, instead
+  // of the whole frame. User can drag to move and drag the handle to resize.
+  bool _boxOcrMode = false;
+  Rect _boxRect = const Rect.fromLTWH(0.2, 0.35, 0.6, 0.3);
+
   final TextRecognizer _recognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
   @override
@@ -81,6 +87,73 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
       if (mounted) setState(() => _error = 'Camera error: $e');
     }
   }
+
+  // ── OCR image preprocessing ────────────────────────────────────────────
+
+  /// Whole-frame preprocessing for Full Scan mode: a global auto
+  /// brightness/contrast stretch plus a light sharpen. Kept cheap (no
+  /// upscale, no per-tile pass) since it runs on the entire high-res photo.
+  static img.Image _preprocessFullFrame(img.Image src) {
+    img.Image out = img.normalize(src, min: 0, max: 255);
+    out = img.convolution(out, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0], div: 1);
+    return out;
+  }
+
+  /// Region preprocessing for Box Scan mode: upscale 3x, grayscale, adaptive
+  /// per-tile threshold, then sharpen. Same technique already proven for
+  /// per-class OCR crops — safe to upscale here since the crop is small.
+  static img.Image _preprocessCropForOcr(img.Image src) {
+    img.Image out = img.copyResize(
+      src,
+      width: src.width * 3,
+      height: src.height * 3,
+      interpolation: img.Interpolation.cubic,
+    );
+    out = img.grayscale(out);
+
+    final int w = out.width;
+    final int h = out.height;
+    final int tileSize = (w * 0.15).round().clamp(16, 64);
+    final img.Image thresholded = img.Image(width: w, height: h);
+
+    for (int ty = 0; ty < h; ty += tileSize) {
+      for (int tx = 0; tx < w; tx += tileSize) {
+        final int x2 = (tx + tileSize).clamp(0, w);
+        final int y2 = (ty + tileSize).clamp(0, h);
+
+        int sum = 0, count = 0;
+        for (int y = ty; y < y2; y++) {
+          for (int x = tx; x < x2; x++) {
+            sum += out.getPixel(x, y).r.toInt();
+            count++;
+          }
+        }
+        final int mean = count > 0 ? (sum ~/ count) : 128;
+        final int tileThreshold = (mean * 0.85).round().clamp(0, 255);
+
+        for (int y = ty; y < y2; y++) {
+          for (int x = tx; x < x2; x++) {
+            final int lum = out.getPixel(x, y).r.toInt();
+            final int val = lum < tileThreshold ? 0 : 255;
+            thresholded.setPixelRgb(x, y, val, val, val);
+          }
+        }
+      }
+    }
+
+    return img.convolution(thresholded, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0], div: 1);
+  }
+
+  /// Crops [full] to the fractional [box] (0..1 coordinates).
+  static img.Image _cropToBox(img.Image full, Rect box) {
+    final int x = (box.left * full.width).round().clamp(0, full.width - 1);
+    final int y = (box.top * full.height).round().clamp(0, full.height - 1);
+    final int w = (box.width * full.width).round().clamp(1, full.width - x);
+    final int h = (box.height * full.height).round().clamp(1, full.height - y);
+    return img.copyCrop(full, x: x, y: y, width: w, height: h);
+  }
+
+  // ── Reading order ───────────────────────────────────────────────────────
 
   /// Groups recognized text elements into reading order: rows ordered
   /// top-to-bottom (clustered by vertical overlap so wrapped/adjacent lines
@@ -132,17 +205,29 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
       _isProcessing = true;
       _error = null;
     });
+    File? tempFile;
     try {
       final XFile image = await _cameraController!.takePicture();
       final bytes = await image.readAsBytes();
 
       final decoded = img.decodeImage(bytes);
       final oriented = decoded != null ? img.bakeOrientation(decoded) : null;
-      final orientedBytes = oriented != null
-          ? Uint8List.fromList(img.encodeJpg(oriented))
-          : bytes;
+      if (oriented == null) {
+        throw Exception('Could not decode captured photo.');
+      }
 
-      final inputImage = InputImage.fromFilePath(image.path);
+      final displayBytes = Uint8List.fromList(img.encodeJpg(oriented));
+
+      final img.Image forOcr = _boxOcrMode
+          ? _preprocessCropForOcr(_cropToBox(oriented, _boxRect))
+          : _preprocessFullFrame(oriented);
+
+      tempFile = File(
+        '${Directory.systemTemp.path}/digiocr_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      );
+      await tempFile.writeAsBytes(img.encodeJpg(forOcr));
+
+      final inputImage = InputImage.fromFilePath(tempFile.path);
       final recognizedText = await _recognizer.processImage(inputImage);
       final rows = _toReadingOrder(recognizedText);
 
@@ -157,7 +242,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
       if (!mounted) return;
       setState(() {
-        _capturedImageBytes = orientedBytes;
+        _capturedImageBytes = displayBytes;
         _rows = rows;
         _overallAccuracy = overall;
         _isProcessing = false;
@@ -168,6 +253,12 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
         _error = 'Scan failed: $e';
         _isProcessing = false;
       });
+    } finally {
+      if (tempFile != null) {
+        try {
+          await tempFile.delete();
+        } catch (_) {}
+      }
     }
   }
 
@@ -291,6 +382,115 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     );
   }
 
+  Widget _modeButton(String label, bool active, VoidCallback onTap) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: active ? const Color(0xFFDC143C) : Colors.white24,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: active ? FontWeight.bold : FontWeight.normal,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildModeToggle() {
+    return Container(
+      color: Colors.black,
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      child: Row(
+        children: [
+          _modeButton('Full Scan', !_boxOcrMode, () => setState(() => _boxOcrMode = false)),
+          const SizedBox(width: 8),
+          _modeButton('Box Scan', _boxOcrMode, () => setState(() => _boxOcrMode = true)),
+        ],
+      ),
+    );
+  }
+
+  /// Draggable (move) + resizable (bottom-right handle) crop box, drawn over
+  /// the camera preview. Coordinates are fractional (0..1) relative to the
+  /// preview area, so they map directly onto the same fraction of the
+  /// captured photo regardless of screen size.
+  Widget _buildBoxOverlay(Size areaSize) {
+    final Rect pixelRect = Rect.fromLTWH(
+      _boxRect.left * areaSize.width,
+      _boxRect.top * areaSize.height,
+      _boxRect.width * areaSize.width,
+      _boxRect.height * areaSize.height,
+    );
+
+    void updateBox(Rect newPixelRect) {
+      const double minSize = 40.0;
+      final double left = newPixelRect.left.clamp(0.0, areaSize.width - minSize);
+      final double top = newPixelRect.top.clamp(0.0, areaSize.height - minSize);
+      final double width = newPixelRect.width.clamp(minSize, areaSize.width - left);
+      final double height = newPixelRect.height.clamp(minSize, areaSize.height - top);
+      setState(() {
+        _boxRect = Rect.fromLTWH(
+          left / areaSize.width,
+          top / areaSize.height,
+          width / areaSize.width,
+          height / areaSize.height,
+        );
+      });
+    }
+
+    return Stack(
+      children: [
+        Positioned(
+          left: pixelRect.left,
+          top: pixelRect.top,
+          width: pixelRect.width,
+          height: pixelRect.height,
+          child: GestureDetector(
+            onPanUpdate: (details) => updateBox(pixelRect.shift(details.delta)),
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: const Color(0xFFDC143C), width: 2),
+                color: const Color(0x1ADC143C),
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          left: pixelRect.right - 14,
+          top: pixelRect.bottom - 14,
+          child: GestureDetector(
+            onPanUpdate: (details) => updateBox(Rect.fromLTRB(
+              pixelRect.left,
+              pixelRect.top,
+              pixelRect.right + details.delta.dx,
+              pixelRect.bottom + details.delta.dy,
+            )),
+            child: Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: const Color(0xFFDC143C),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+              ),
+              child: const Icon(Icons.open_in_full, color: Colors.white, size: 14),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildCameraView() {
     if (_error != null) {
       return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_error!, textAlign: TextAlign.center)));
@@ -298,29 +498,42 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     if (!_isCameraInitialized || _cameraController == null) {
       return const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)));
     }
-    return Stack(
-      alignment: Alignment.bottomCenter,
+    return Column(
       children: [
-        Positioned.fill(child: CameraPreview(_cameraController!)),
-        Positioned(
-          bottom: 28,
-          child: GestureDetector(
-            onTap: _captureAndScan,
-            child: Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.white,
-                border: Border.all(color: const Color(0xFFDC143C), width: 4),
-              ),
-              child: _isProcessing
-                  ? const Padding(
-                      padding: EdgeInsets.all(18),
-                      child: CircularProgressIndicator(color: Color(0xFFDC143C)),
-                    )
-                  : const Icon(Icons.document_scanner, color: Color(0xFFDC143C), size: 32),
-            ),
+        _buildModeToggle(),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final areaSize = constraints.biggest;
+              return Stack(
+                alignment: Alignment.bottomCenter,
+                children: [
+                  Positioned.fill(child: CameraPreview(_cameraController!)),
+                  if (_boxOcrMode) _buildBoxOverlay(areaSize),
+                  Positioned(
+                    bottom: 28,
+                    child: GestureDetector(
+                      onTap: _captureAndScan,
+                      child: Container(
+                        width: 72,
+                        height: 72,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white,
+                          border: Border.all(color: const Color(0xFFDC143C), width: 4),
+                        ),
+                        child: _isProcessing
+                            ? const Padding(
+                                padding: EdgeInsets.all(18),
+                                child: CircularProgressIndicator(color: Color(0xFFDC143C)),
+                              )
+                            : const Icon(Icons.document_scanner, color: Color(0xFFDC143C), size: 32),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ),
       ],
