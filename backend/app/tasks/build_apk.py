@@ -192,7 +192,17 @@ def build_apk_task(self, app_id: str):
 
         # 1. Generate code
         _update_status(db, app_id, step="Generating Flutter project code...", log_append="Generating Flutter project templates...\n")
-        
+
+        _app_settings_check = app.get("app_settings", {})
+        if isinstance(_app_settings_check, str):
+            try: _app_settings_check = json.loads(_app_settings_check)
+            except Exception: _app_settings_check = {}
+        _is_digi_ocr = _app_settings_check.get("app_mode") == "digi_ocr"
+        _update_status(db, app_id, log_append=(
+            f"[CONFIG] app_mode={_app_settings_check.get('app_mode')!r} -> "
+            f"using {'Digi OCR (minimal)' if _is_digi_ocr else 'regular inspection'} codegen path\n"
+        ))
+
         all_model_assets = []
         model_asset_ids = app.get("model_asset_ids", [])
         if isinstance(model_asset_ids, str):
