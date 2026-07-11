@@ -144,6 +144,32 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     return img.convolution(thresholded, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0], div: 1);
   }
 
+  /// Alternate region variant for engraved/stamped text: a directional
+  /// (emboss-style) filter that emphasizes the groove edges of low-relief
+  /// strokes, instead of a flat threshold. Run alongside
+  /// [_preprocessCropForOcr] each burst shot — whichever reads with higher
+  /// confidence wins, since which one works best depends on the light angle
+  /// at capture time.
+  static img.Image _preprocessCropRelief(img.Image src) {
+    img.Image out = img.copyResize(
+      src,
+      width: src.width * 3,
+      height: src.height * 3,
+      interpolation: img.Interpolation.cubic,
+    );
+    out = img.grayscale(out);
+    return img.convolution(out, filter: [-1, -1, 0, -1, 1, 1, 0, 1, 1], div: 1);
+  }
+
+  /// Higher is better: mean confidence across recognized words. Candidates
+  /// with no words at all score lowest so a real (if low-confidence) read
+  /// always beats an empty one.
+  static double _scoreRows(List<List<_OcrWord>> rows) {
+    final confidences = rows.expand((row) => row).map((w) => w.confidence).whereType<double>().toList();
+    if (confidences.isEmpty) return rows.isEmpty ? -1.0 : 0.0;
+    return confidences.reduce((a, b) => a + b) / confidences.length;
+  }
+
   /// Crops [full] to the fractional [box] (0..1 coordinates).
   static img.Image _cropToBox(img.Image full, Rect box) {
     final int x = (box.left * full.width).round().clamp(0, full.width - 1);
@@ -199,39 +225,74 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
         .toList();
   }
 
+  /// Number of quick shots taken per scan. Engraved/stamped text often has a
+  /// specular highlight from the light source that lands in a different spot
+  /// on each shot (due to natural hand shake between frames) — taking a few
+  /// shots and keeping whichever reads with the highest confidence beats
+  /// relying on a single frame that might have the highlight sitting right
+  /// across a critical stroke.
+  static const int _burstShotCount = 3;
+
   Future<void> _captureAndScan() async {
     if (_isProcessing || _cameraController == null || !_isCameraInitialized) return;
     setState(() {
       _isProcessing = true;
       _error = null;
     });
-    File? tempFile;
-    try {
-      final XFile image = await _cameraController!.takePicture();
-      final bytes = await image.readAsBytes();
 
-      final decoded = img.decodeImage(bytes);
-      final oriented = decoded != null ? img.bakeOrientation(decoded) : null;
-      if (oriented == null) {
-        throw Exception('Could not decode captured photo.');
+    Uint8List? bestDisplayBytes;
+    List<List<_OcrWord>> bestRows = [];
+    double bestScore = double.negativeInfinity;
+    final List<File> tempFiles = [];
+
+    try {
+      for (int shot = 0; shot < _burstShotCount; shot++) {
+        if (shot > 0) {
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+
+        final XFile image = await _cameraController!.takePicture();
+        final bytes = await image.readAsBytes();
+
+        final decoded = img.decodeImage(bytes);
+        final oriented = decoded != null ? img.bakeOrientation(decoded) : null;
+        if (oriented == null) continue;
+
+        final displayBytes = Uint8List.fromList(img.encodeJpg(oriented));
+
+        final List<img.Image> variants;
+        if (_boxOcrMode) {
+          final cropped = _cropToBox(oriented, _boxRect);
+          variants = [_preprocessCropForOcr(cropped), _preprocessCropRelief(cropped)];
+        } else {
+          variants = [_preprocessFullFrame(oriented)];
+        }
+
+        for (final variant in variants) {
+          final tempFile = File(
+            '${Directory.systemTemp.path}/digiocr_${DateTime.now().microsecondsSinceEpoch}.jpg',
+          );
+          tempFiles.add(tempFile);
+          await tempFile.writeAsBytes(img.encodeJpg(variant));
+
+          final inputImage = InputImage.fromFilePath(tempFile.path);
+          final recognizedText = await _recognizer.processImage(inputImage);
+          final rows = _toReadingOrder(recognizedText);
+          final score = _scoreRows(rows);
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestRows = rows;
+            bestDisplayBytes = displayBytes;
+          }
+        }
       }
 
-      final displayBytes = Uint8List.fromList(img.encodeJpg(oriented));
+      if (bestDisplayBytes == null) {
+        throw Exception('Could not capture a usable photo.');
+      }
 
-      final img.Image forOcr = _boxOcrMode
-          ? _preprocessCropForOcr(_cropToBox(oriented, _boxRect))
-          : _preprocessFullFrame(oriented);
-
-      tempFile = File(
-        '${Directory.systemTemp.path}/digiocr_${DateTime.now().millisecondsSinceEpoch}.jpg',
-      );
-      await tempFile.writeAsBytes(img.encodeJpg(forOcr));
-
-      final inputImage = InputImage.fromFilePath(tempFile.path);
-      final recognizedText = await _recognizer.processImage(inputImage);
-      final rows = _toReadingOrder(recognizedText);
-
-      final confidences = rows
+      final confidences = bestRows
           .expand((row) => row)
           .map((w) => w.confidence)
           .whereType<double>()
@@ -242,8 +303,8 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
       if (!mounted) return;
       setState(() {
-        _capturedImageBytes = displayBytes;
-        _rows = rows;
+        _capturedImageBytes = bestDisplayBytes;
+        _rows = bestRows;
         _overallAccuracy = overall;
         _isProcessing = false;
       });
@@ -254,9 +315,9 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
         _isProcessing = false;
       });
     } finally {
-      if (tempFile != null) {
+      for (final f in tempFiles) {
         try {
-          await tempFile.delete();
+          await f.delete();
         } catch (_) {}
       }
     }
