@@ -90,18 +90,25 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
   // ── OCR image preprocessing ────────────────────────────────────────────
 
+  /// Small blur to suppress fine background texture noise (e.g. a brushed
+  /// metal finish) before binarizing/embossing, without softening the much
+  /// bolder engraved or stamped character strokes.
+  static img.Image _denoise(img.Image src) => img.gaussianBlur(src, radius: 1);
+
   /// Whole-frame preprocessing for Full Scan mode: a global auto
   /// brightness/contrast stretch plus a light sharpen. Kept cheap (no
   /// upscale, no per-tile pass) since it runs on the entire high-res photo.
   static img.Image _preprocessFullFrame(img.Image src) {
     img.Image out = img.normalize(src, min: 0, max: 255);
+    out = _denoise(out);
     out = img.convolution(out, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0], div: 1);
     return out;
   }
 
-  /// Region preprocessing for Box Scan mode: upscale 3x, grayscale, adaptive
-  /// per-tile threshold, then sharpen. Same technique already proven for
-  /// per-class OCR crops — safe to upscale here since the crop is small.
+  /// Region preprocessing for Box Scan mode: upscale 3x, grayscale, denoise,
+  /// adaptive per-tile threshold, then sharpen. Same technique already
+  /// proven for per-class OCR crops — safe to upscale here since the crop is
+  /// small.
   static img.Image _preprocessCropForOcr(img.Image src) {
     img.Image out = img.copyResize(
       src,
@@ -110,6 +117,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
       interpolation: img.Interpolation.cubic,
     );
     out = img.grayscale(out);
+    out = _denoise(out);
 
     final int w = out.width;
     final int h = out.height;
@@ -158,6 +166,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
       interpolation: img.Interpolation.cubic,
     );
     out = img.grayscale(out);
+    out = _denoise(out);
     return img.convolution(out, filter: [-1, -1, 0, -1, 1, 1, 0, 1, 1], div: 1);
   }
 
