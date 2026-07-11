@@ -2,8 +2,35 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+
+// ── Background-isolate preprocessing ──────────────────────────────────────
+// The adaptive threshold / emboss passes below do per-pixel work on a 3x
+// upscaled crop, which is heavy enough (especially run up to 6 times per
+// burst scan) to freeze the UI thread and trigger an Android ANR if run
+// inline. compute() runs each one on a background isolate instead, so the
+// screen stays responsive no matter how long processing takes. Top-level
+// functions (not methods) are required for compute().
+
+Uint8List _computeCropForOcr(Uint8List jpgBytes) {
+  final src = img.decodeJpg(jpgBytes);
+  if (src == null) return jpgBytes;
+  return Uint8List.fromList(img.encodeJpg(_FullOcrScreenState._preprocessCropForOcr(src)));
+}
+
+Uint8List _computeCropRelief(Uint8List jpgBytes) {
+  final src = img.decodeJpg(jpgBytes);
+  if (src == null) return jpgBytes;
+  return Uint8List.fromList(img.encodeJpg(_FullOcrScreenState._preprocessCropRelief(src)));
+}
+
+Uint8List _computeFullFrame(Uint8List jpgBytes) {
+  final src = img.decodeJpg(jpgBytes);
+  if (src == null) return jpgBytes;
+  return Uint8List.fromList(img.encodeJpg(_FullOcrScreenState._preprocessFullFrame(src)));
+}
 
 /// Full-page text scan: reads every character on screen, top-to-bottom and
 /// left-to-right, and highlights low-confidence words in red so an inspector
@@ -259,7 +286,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   /// shots and keeping whichever reads with the highest confidence beats
   /// relying on a single frame that might have the highlight sitting right
   /// across a critical stroke.
-  static const int _burstShotCount = 3;
+  static const int _burstShotCount = 2;
 
   Future<void> _captureAndScan() async {
     if (_isProcessing || _cameraController == null || !_isCameraInitialized) return;
@@ -288,21 +315,29 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
         final displayBytes = Uint8List.fromList(img.encodeJpg(oriented));
 
-        final List<img.Image> variants;
+        // The actual per-pixel processing runs on a background isolate via
+        // compute() (see top-level _computeCropForOcr etc. above) — doing
+        // this inline on the UI isolate is what was freezing the app.
+        final List<Uint8List> variantBytesList;
         if (_boxOcrMode) {
           final box = _boxRect ?? _squareBoxFor(_previewAreaSize);
           final cropped = _cropToBox(oriented, box);
-          variants = [_preprocessCropForOcr(cropped), _preprocessCropRelief(cropped)];
+          final croppedJpg = Uint8List.fromList(img.encodeJpg(cropped));
+          variantBytesList = await Future.wait([
+            compute(_computeCropForOcr, croppedJpg),
+            compute(_computeCropRelief, croppedJpg),
+          ]);
         } else {
-          variants = [_preprocessFullFrame(oriented)];
+          final fullJpg = Uint8List.fromList(img.encodeJpg(oriented));
+          variantBytesList = [await compute(_computeFullFrame, fullJpg)];
         }
 
-        for (final variant in variants) {
+        for (final variantBytes in variantBytesList) {
           final tempFile = File(
             '${Directory.systemTemp.path}/digiocr_${DateTime.now().microsecondsSinceEpoch}.jpg',
           );
           tempFiles.add(tempFile);
-          await tempFile.writeAsBytes(img.encodeJpg(variant));
+          await tempFile.writeAsBytes(variantBytes);
 
           final inputImage = InputImage.fromFilePath(tempFile.path);
           final recognizedText = await _recognizer.processImage(inputImage);
