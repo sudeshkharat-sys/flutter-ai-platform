@@ -115,22 +115,23 @@ def _generate_digi_ocr_project(env, app_name: str, package_name: str, settings: 
                 zf.writestr(full_path, tmpl.render(**ctx))
 
         icon_src = TEMPLATES_DIR / "icons" / "digi_ocr_launcher.png"
-        if icon_src.exists():
-            try:
-                from PIL import Image
-                import io as _io
-                with Image.open(icon_src) as img:
-                    img = img.convert("RGBA")
-                    for density, (w, h) in DIGI_OCR_MIPMAP_SIZES.items():
-                        resized = img.resize((w, h), Image.LANCZOS)
-                        buf_icon = _io.BytesIO()
-                        resized.save(buf_icon, format="PNG")
-                        zf.writestr(
-                            f"{root}/android/app/src/main/res/{density}/ic_launcher.png",
-                            buf_icon.getvalue(),
-                        )
-            except Exception as e:
-                print(f"Warning: Could not process Digi OCR app icon: {e}")
+        if not icon_src.exists():
+            raise FileNotFoundError(f"Digi OCR app icon missing at {icon_src}")
+
+        from PIL import Image, ImageOps
+        import io as _io
+        with Image.open(icon_src) as img:
+            img = img.convert("RGBA")
+            for density, (w, h) in DIGI_OCR_MIPMAP_SIZES.items():
+                # Center-crop to square before resizing so a non-square source
+                # image isn't stretched/distorted into the launcher icon.
+                square = ImageOps.fit(img, (w, h), Image.LANCZOS, centering=(0.5, 0.5))
+                buf_icon = _io.BytesIO()
+                square.save(buf_icon, format="PNG")
+                zf.writestr(
+                    f"{root}/android/app/src/main/res/{density}/ic_launcher.png",
+                    buf_icon.getvalue(),
+                )
 
     return buf.getvalue()
 
