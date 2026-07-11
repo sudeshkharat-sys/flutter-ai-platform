@@ -76,6 +76,7 @@ def _generate_digi_ocr_project(env, app_name: str, package_name: str, settings: 
         "app_name_slug": _dart_slug(app_name),
         "package_name": package_name,
         "full_ocr_threshold": settings.get("full_ocr_threshold", 0.5),
+        "mlkit_ocr_needed": True,
     }
 
     files = {
@@ -304,6 +305,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "full_ocr_enabled": bool(settings.get("full_ocr_enabled", False)) or bool(get_attr(app_project, "full_ocr_enabled", False)),
         "full_ocr_threshold": settings.get("full_ocr_threshold", 0.5),
     }
+    ctx["mlkit_ocr_needed"] = ctx["ocr_enabled"] or ctx["full_ocr_enabled"]
 
     # Map of zip path -> template name
     files = {

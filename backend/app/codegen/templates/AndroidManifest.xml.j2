@@ -39,6 +39,15 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+{% if mlkit_ocr_needed %}
+        <!-- Tells Play Services to download the on-device text recognition
+             model right after install, in the background, instead of on the
+             app's first OCR call (which otherwise blocks the user's first
+             scan for however long that download takes). -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="ocr" />
+{% endif %}
     </application>
 
     <!-- Required for API level 31+ -->
