@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import '../styles/Header.css';
-import logo from '../assests/image.png';
+import logo from '../DigiOcr.png';
 const NAV = [
   { label: 'Dashboard', to: '/dashboard' },
   { label: 'Master Data', to: '/master-data' },
