@@ -281,11 +281,14 @@ def build_apk_task(self, app_id: str):
         ret_pub = _run_command_streaming(db, app_id, [flutter_path, "pub", "get"], project_dir, env)
         if ret_pub != 0: raise Exception(f"'flutter pub get' failed with exit code {ret_pub}. Check pubspec.yaml and network access.")
 
-        dart_path = r"C:\flutter\bin\dart.bat"
-        if not os.path.exists(dart_path): dart_path = "dart"
-        _update_status(db, app_id, step="Generating database code...", log_append="\nRunning 'dart run build_runner build'...\n")
-        ret_gen = _run_command_streaming(db, app_id, [dart_path, "run", "build_runner", "build", "--delete-conflicting-outputs"], project_dir, env)
-        if ret_gen != 0: raise Exception(f"Code generation failed with exit code {ret_gen}")
+        if _is_digi_ocr:
+            _update_status(db, app_id, log_append="\nSkipping 'build_runner' (Digi OCR app has no database code to generate).\n")
+        else:
+            dart_path = r"C:\flutter\bin\dart.bat"
+            if not os.path.exists(dart_path): dart_path = "dart"
+            _update_status(db, app_id, step="Generating database code...", log_append="\nRunning 'dart run build_runner build'...\n")
+            ret_gen = _run_command_streaming(db, app_id, [dart_path, "run", "build_runner", "build", "--delete-conflicting-outputs"], project_dir, env)
+            if ret_gen != 0: raise Exception(f"Code generation failed with exit code {ret_gen}")
 
         _update_status(db, app_id, step="Compiling APK...", log_append="\nRunning final compilation...\n")
         ret_build = _run_command_streaming(db, app_id, [
