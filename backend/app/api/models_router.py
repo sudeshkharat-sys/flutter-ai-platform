@@ -1,6 +1,8 @@
 import json
+import os
 import shutil
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from app.connectors.state_db import StateDBConnector
 from app.queries import ModelAssetQueries
 from app.schemas.base import ModelAssetResponse, ModelAssetStatus
@@ -142,6 +144,27 @@ def get_model_status(model_asset_id: str, db: StateDBConnector = Depends(get_db_
         status=asset["status"],
         error_message=asset["error_message"],
         tflite_path=asset["tflite_path"],
+    )
+
+@router.get("/{model_asset_id}/download-pt")
+def download_pt(model_asset_id: str, db: StateDBConnector = Depends(get_db_connector)):
+    """Download the original uploaded .pt model file, e.g. to resume training."""
+    rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})
+    if not rows:
+        raise HTTPException(status_code=404, detail="Model asset not found")
+
+    asset = rows[0]
+    if not asset["pt_path"]:
+        raise HTTPException(status_code=404, detail="Model asset missing pt_path")
+
+    if not os.path.exists(asset["pt_path"]):
+        raise HTTPException(status_code=404, detail="PT file not found on disk")
+
+    filename = f"{asset['vision_project_name'].lower().replace(' ', '_')}.pt"
+    return FileResponse(
+        asset["pt_path"],
+        media_type="application/octet-stream",
+        filename=filename,
     )
 
 @router.delete("/{model_asset_id}")
