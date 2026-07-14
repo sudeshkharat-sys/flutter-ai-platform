@@ -85,12 +85,15 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
   /// Centered square box, sized relative to whichever screen it's shown on
   /// (fractional width/height differ so the box renders as an actual square,
-  /// not just an equal fraction of each axis).
+  /// not just an equal fraction of each axis). Kept tight on purpose — the
+  /// per-class OCR crop this mirrors is a small model-detected region, and
+  /// every extra pixel here is more work for the 3x-upscale + per-tile
+  /// threshold pass. Drag/resize if a specific plate needs more room.
   Rect _squareBoxFor(Size areaSize) {
     if (areaSize.width <= 0 || areaSize.height <= 0) {
-      return const Rect.fromLTWH(0.25, 0.4, 0.5, 0.25);
+      return const Rect.fromLTWH(0.325, 0.45, 0.35, 0.175);
     }
-    final double side = areaSize.shortestSide * 0.55;
+    final double side = areaSize.shortestSide * 0.35;
     final double left = (areaSize.width - side) / 2;
     final double top = (areaSize.height - side) / 2;
     return Rect.fromLTWH(
@@ -373,13 +376,12 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
         .toList();
   }
 
-  /// Number of quick shots taken per scan. Engraved/stamped text often has a
-  /// specular highlight from the light source that lands in a different spot
-  /// on each shot (due to natural hand shake between frames) — taking a few
-  /// shots and keeping whichever reads with the highest confidence beats
-  /// relying on a single frame that might have the highlight sitting right
-  /// across a critical stroke.
-  static const int _burstShotCount = 2;
+  /// Number of quick shots taken per tap. Kept at 1 by default — automatic
+  /// multi-shot bursts were making every single scan pay the cost of the
+  /// worst case. Tapping "Scan Again" is the retry now (still a background
+  /// isolate, still fast), so a bad frame costs one more deliberate tap
+  /// instead of the app silently spending extra seconds every time.
+  static const int _burstShotCount = 1;
 
   /// Once a shot's mean word confidence reaches this, stop taking more shots
   /// / trying more variants — most scans nail it on the first try, and
