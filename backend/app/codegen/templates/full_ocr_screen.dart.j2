@@ -36,7 +36,11 @@ Uint8List _computeFullFrame(Uint8List jpgBytes) {
 /// left-to-right, and highlights low-confidence words in red so an inspector
 /// can spot unreliable reads at a glance.
 class FullOcrScreen extends StatefulWidget {
-  const FullOcrScreen({super.key});
+  /// When set (e.g. from a QR code scanned beforehand), the OCR reading is
+  /// compared against this value and the result screen shows a MATCH/NO
+  /// MATCH verdict instead of just a free-form reading.
+  final String? expectedText;
+  const FullOcrScreen({super.key, this.expectedText});
 
   @override
   State<FullOcrScreen> createState() => _FullOcrScreenState();
@@ -65,6 +69,11 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   // see exactly what the recognizer scored per word/character instead of
   // just the red/black pass-fail color — useful for tuning the threshold.
   bool _showConfidenceDetails = true;
+
+  // Match-against-expected-text (set when widget.expectedText is provided).
+  bool? _isMatch;
+  double? _matchScore;
+  String _matchExtractedText = '';
 
   // Box OCR: when enabled, only the area inside this fractional rectangle
   // (0..1 relative to the camera preview) is cropped out and OCR'd, instead
@@ -274,6 +283,49 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     return img.copyCrop(full, x: x, y: y, width: w, height: h);
   }
 
+  // ── Expected-text matching (same approach as the per-class OCR matching) ──
+
+  static const double _matchThreshold = 0.85;
+
+  static String _normalizeForMatch(String s) =>
+      s.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+  static int _levenshtein(String a, String b) {
+    if (a.isEmpty) return b.length;
+    if (b.isEmpty) return a.length;
+    final List<List<int>> dp = List.generate(
+      a.length + 1,
+      (i) => List.generate(b.length + 1, (j) => i == 0 ? j : (j == 0 ? i : 0)),
+    );
+    for (int i = 1; i <= a.length; i++) {
+      for (int j = 1; j <= b.length; j++) {
+        dp[i][j] = a[i - 1] == b[j - 1]
+            ? dp[i - 1][j - 1]
+            : 1 + [dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]].reduce((x, y) => x < y ? x : y);
+      }
+    }
+    return dp[a.length][b.length];
+  }
+
+  /// Best similarity of [target] against a sliding window across
+  /// [extracted] — tolerates extra surrounding text/noise around the real
+  /// code, same as the per-class OCR matching already does.
+  static double _matchSimilarity(String extracted, String target) {
+    if (target.isEmpty || extracted.isEmpty) return 0.0;
+    if (extracted == target) return 1.0;
+    final int len = target.length;
+    if (extracted.length < len) {
+      return (1.0 - _levenshtein(extracted, target) / len).clamp(0.0, 1.0);
+    }
+    double best = 0;
+    for (int start = 0; start <= extracted.length - len; start++) {
+      final String window = extracted.substring(start, start + len);
+      final double score = 1.0 - _levenshtein(window, target) / len;
+      if (score > best) best = score;
+    }
+    return best.clamp(0.0, 1.0);
+  }
+
   // ── Reading order ───────────────────────────────────────────────────────
 
   /// Groups recognized text elements into reading order: rows ordered
@@ -421,11 +473,24 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
           ? null
           : confidences.reduce((a, b) => a + b) / confidences.length;
 
+      String extractedText = '';
+      bool? isMatch;
+      double? matchScore;
+      final expected = widget.expectedText;
+      if (expected != null && expected.isNotEmpty) {
+        extractedText = bestRows.expand((row) => row).map((w) => w.text).join();
+        matchScore = _matchSimilarity(_normalizeForMatch(extractedText), _normalizeForMatch(expected));
+        isMatch = matchScore >= _matchThreshold;
+      }
+
       if (!mounted) return;
       setState(() {
         _capturedImageBytes = bestDisplayBytes;
         _rows = bestRows;
         _overallAccuracy = overall;
+        _isMatch = isMatch;
+        _matchScore = matchScore;
+        _matchExtractedText = extractedText;
         _isProcessing = false;
       });
     } catch (e) {
@@ -449,6 +514,9 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
       _rows = [];
       _overallAccuracy = null;
       _error = null;
+      _isMatch = null;
+      _matchScore = null;
+      _matchExtractedText = '';
     });
   }
 
@@ -470,6 +538,52 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
               child: Image.memory(_capturedImageBytes!, fit: BoxFit.contain),
             ),
           const SizedBox(height: 16),
+          if (widget.expectedText != null && widget.expectedText!.isNotEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: _isMatch == true ? const Color(0xFFE8F5E9) : const Color(0xFFFFEBEE),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: _isMatch == true ? Colors.green : Colors.red,
+                  width: 2,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        _isMatch == true ? Icons.check_circle : Icons.cancel,
+                        color: _isMatch == true ? Colors.green : Colors.red,
+                        size: 28,
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        _isMatch == true ? 'MATCH' : 'NO MATCH',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: _isMatch == true ? Colors.green.shade800 : Colors.red.shade800,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text('Expected: ${widget.expectedText}', style: const TextStyle(fontSize: 13)),
+                  Text('Read: ${_matchExtractedText.isEmpty ? "(nothing read)" : _matchExtractedText}',
+                      style: const TextStyle(fontSize: 13)),
+                  if (_matchScore != null)
+                    Text(
+                      'Similarity: ${(_matchScore! * 100).toStringAsFixed(0)}%',
+                      style: const TextStyle(fontSize: 12, color: Colors.black54),
+                    ),
+                ],
+              ),
+            ),
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
@@ -589,6 +703,23 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
               ),
             ),
           ),
+          if (widget.expectedText != null && widget.expectedText!.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('Scan New Part (QR)'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFDC143C),
+                  side: const BorderSide(color: Color(0xFFDC143C)),
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

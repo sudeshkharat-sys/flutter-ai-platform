@@ -1,0 +1,89 @@
+import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'full_ocr_screen.dart';
+
+/// First step of the Digi OCR flow: scan a QR code carrying the expected
+/// number for this part, then hand off to the camera screen to read the
+/// physical engraved/printed text and check it against that value.
+class QrExpectedScreen extends StatefulWidget {
+  const QrExpectedScreen({super.key});
+
+  @override
+  State<QrExpectedScreen> createState() => _QrExpectedScreenState();
+}
+
+class _QrExpectedScreenState extends State<QrExpectedScreen> {
+  bool _handled = false;
+  final MobileScannerController _controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    facing: CameraFacing.back,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    if (_handled) return;
+    final barcode = capture.barcodes.isNotEmpty ? capture.barcodes.first : null;
+    final value = barcode?.rawValue?.trim();
+    if (value == null || value.isEmpty) return;
+    _handled = true;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => FullOcrScreen(expectedText: value)),
+    ).then((_) => setState(() => _handled = false));
+  }
+
+  void _skip() {
+    if (_handled) return;
+    _handled = true;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const FullOcrScreen()),
+    ).then((_) => setState(() => _handled = false));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: const Color(0xFFDC143C),
+        title: const Text('Scan QR Code'),
+        actions: [
+          TextButton(
+            onPressed: _skip,
+            child: const Text('Skip', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          MobileScanner(controller: _controller, onDetect: _onDetect),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 32,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Text(
+                  'Point at the QR code with the expected number',
+                  style: TextStyle(color: Colors.white, fontSize: 13),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
