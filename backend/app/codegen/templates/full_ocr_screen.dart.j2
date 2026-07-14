@@ -404,7 +404,9 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     Uint8List? bestDisplayBytes;
     List<List<_OcrWord>> bestRows = [];
     double bestScore = double.negativeInfinity;
+    bool matchFoundEarly = false;
     final List<File> tempFiles = [];
+    final String? expected = widget.expectedText;
 
     Future<void> tryVariant(
       Uint8List Function(Uint8List) preprocess,
@@ -427,6 +429,21 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
         bestScore = score;
         bestRows = rows;
         bestDisplayBytes = displayBytes;
+      }
+
+      // Already know what we're looking for (from the QR scan) — if this
+      // shot's reading actually matches it, that's a stronger stop signal
+      // than raw confidence, so take it immediately instead of grinding
+      // through more shots/variants.
+      if (expected != null && expected.isNotEmpty && !matchFoundEarly) {
+        final extracted = rows.expand((row) => row).map((w) => w.text).join();
+        final similarity = _matchSimilarity(_normalizeForMatch(extracted), _normalizeForMatch(expected));
+        if (similarity >= _matchThreshold) {
+          matchFoundEarly = true;
+          bestScore = score;
+          bestRows = rows;
+          bestDisplayBytes = displayBytes;
+        }
       }
     }
 
@@ -456,7 +473,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
           if (mounted) setState(() => _processingStatus = 'Reading (shot ${shot + 1}/$_burstShotCount)...');
           await tryVariant(_computeCropForOcr, croppedJpg, displayBytes);
-          if (bestScore >= _earlyExitScore) break shotLoop;
+          if (matchFoundEarly || bestScore >= _earlyExitScore) break shotLoop;
 
           // Only try the second (relief) variant if the first one read
           // poorly — most plates don't need both passes.
@@ -470,7 +487,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
           await tryVariant(_computeFullFrame, fullJpg, displayBytes);
         }
 
-        if (bestScore >= _earlyExitScore) break shotLoop;
+        if (matchFoundEarly || bestScore >= _earlyExitScore) break shotLoop;
       }
 
       if (bestDisplayBytes == null) {
@@ -489,7 +506,6 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
       String extractedText = '';
       bool? isMatch;
       double? matchScore;
-      final expected = widget.expectedText;
       if (expected != null && expected.isNotEmpty) {
         extractedText = bestRows.expand((row) => row).map((w) => w.text).join();
         matchScore = _matchSimilarity(_normalizeForMatch(extractedText), _normalizeForMatch(expected));
@@ -873,6 +889,17 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     }
     return Column(
       children: [
+        if (widget.expectedText != null && widget.expectedText!.isNotEmpty)
+          Container(
+            width: double.infinity,
+            color: const Color(0xFF1B5E20),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text(
+              'Matching against: ${widget.expectedText}',
+              style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+              textAlign: TextAlign.center,
+            ),
+          ),
         _buildModeToggle(),
         Expanded(
           child: LayoutBuilder(

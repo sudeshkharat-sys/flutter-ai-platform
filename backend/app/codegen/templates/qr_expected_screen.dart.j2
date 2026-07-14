@@ -25,26 +25,31 @@ class _QrExpectedScreenState extends State<QrExpectedScreen> {
     super.dispose();
   }
 
+  /// The QR camera session and the OCR screen's camera session are two
+  /// different plugins fighting over the same physical camera. Explicitly
+  /// stopping this one before handing off (and restarting it on return) is
+  /// what avoids the black-screen freeze when coming back to this screen.
+  Future<void> _goTo(Widget screen) async {
+    if (_handled) return;
+    _handled = true;
+    await _controller.stop();
+    if (!mounted) return;
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+    if (!mounted) return;
+    await _controller.start();
+    if (!mounted) return;
+    setState(() => _handled = false);
+  }
+
   void _onDetect(BarcodeCapture capture) {
     if (_handled) return;
     final barcode = capture.barcodes.isNotEmpty ? capture.barcodes.first : null;
     final value = barcode?.rawValue?.trim();
     if (value == null || value.isEmpty) return;
-    _handled = true;
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => FullOcrScreen(expectedText: value)),
-    ).then((_) => setState(() => _handled = false));
+    _goTo(FullOcrScreen(expectedText: value));
   }
 
-  void _skip() {
-    if (_handled) return;
-    _handled = true;
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const FullOcrScreen()),
-    ).then((_) => setState(() => _handled = false));
-  }
+  void _skip() => _goTo(const FullOcrScreen());
 
   @override
   Widget build(BuildContext context) {
