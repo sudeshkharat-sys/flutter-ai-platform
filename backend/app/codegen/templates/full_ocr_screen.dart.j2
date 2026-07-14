@@ -59,6 +59,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   CameraController? _cameraController;
   bool _isCameraInitialized = false;
   bool _isProcessing = false;
+  String? _processingStatus;
   String? _error;
 
   Uint8List? _capturedImageBytes;
@@ -378,18 +379,25 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   /// shots and keeping whichever reads with the highest confidence beats
   /// relying on a single frame that might have the highlight sitting right
   /// across a critical stroke.
-  static const int _burstShotCount = 3;
+  static const int _burstShotCount = 2;
 
   /// Once a shot's mean word confidence reaches this, stop taking more shots
   /// / trying more variants — most scans nail it on the first try, and
   /// running the full burst every single time was making every scan take as
-  /// long as the hardest case.
-  static const double _earlyExitScore = 0.88;
+  /// long as the hardest case. Kept modest on purpose (not "near perfect")
+  /// so an already-decent read doesn't keep grinding for marginal gains.
+  static const double _earlyExitScore = 0.75;
+
+  /// The Box Scan relief variant only gets tried if the plain threshold
+  /// pass scored below this — most plates read fine with just the first
+  /// pass, so this avoids doubling the work on every single scan.
+  static const double _tryReliefBelowScore = 0.5;
 
   Future<void> _captureAndScan() async {
     if (_isProcessing || _cameraController == null || !_isCameraInitialized) return;
     setState(() {
       _isProcessing = true;
+      _processingStatus = 'Capturing...';
       _error = null;
     });
 
@@ -446,14 +454,19 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
           final cropped = _cropToBox(oriented, box);
           final croppedJpg = Uint8List.fromList(img.encodeJpg(cropped));
 
+          if (mounted) setState(() => _processingStatus = 'Reading (shot ${shot + 1}/$_burstShotCount)...');
           await tryVariant(_computeCropForOcr, croppedJpg, displayBytes);
           if (bestScore >= _earlyExitScore) break shotLoop;
 
-          // Only try the second (relief) variant if the first one wasn't
-          // already good enough — most plates don't need both.
-          await tryVariant(_computeCropRelief, croppedJpg, displayBytes);
+          // Only try the second (relief) variant if the first one read
+          // poorly — most plates don't need both passes.
+          if (bestScore < _tryReliefBelowScore) {
+            if (mounted) setState(() => _processingStatus = 'Trying alternate reading...');
+            await tryVariant(_computeCropRelief, croppedJpg, displayBytes);
+          }
         } else {
           final fullJpg = Uint8List.fromList(img.encodeJpg(oriented));
+          if (mounted) setState(() => _processingStatus = 'Reading (shot ${shot + 1}/$_burstShotCount)...');
           await tryVariant(_computeFullFrame, fullJpg, displayBytes);
         }
 
@@ -492,12 +505,14 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
         _matchScore = matchScore;
         _matchExtractedText = extractedText;
         _isProcessing = false;
+        _processingStatus = null;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _error = 'Scan failed: $e';
         _isProcessing = false;
+        _processingStatus = null;
       });
     } finally {
       for (final f in tempFiles) {
@@ -870,6 +885,21 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
                 children: [
                   Positioned.fill(child: CameraPreview(_cameraController!)),
                   if (_boxOcrMode) _buildBoxOverlay(areaSize),
+                  if (_isProcessing && _processingStatus != null)
+                    Positioned(
+                      bottom: 132,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          _processingStatus!,
+                          style: const TextStyle(color: Colors.white, fontSize: 13),
+                        ),
+                      ),
+                    ),
                   Positioned(
                     bottom: 48,
                     child: GestureDetector(
