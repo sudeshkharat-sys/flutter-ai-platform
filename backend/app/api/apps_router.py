@@ -1,3 +1,4 @@
+import re
 import uuid
 import json
 from datetime import datetime
@@ -42,7 +43,10 @@ def create_app(data: AppProjectCreate, db: StateDBConnector = Depends(get_db_con
     project_id = str(uuid.uuid4())
     package_name = data.package_name
     if not package_name:
-        slug = data.name.lower().replace(" ", "_").replace("-", "_")
+        slug = re.sub(r"[^a-z0-9]", "_", data.name.lower()) or "app"
+        # Java package segments can't start with a digit (e.g. "4x4_reverse").
+        if slug[0].isdigit():
+            slug = f"app_{slug}"
         package_name = f"com.studio.{slug}"
 
     app_settings = data.app_settings or {
