@@ -618,9 +618,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
     try {
       const modelAssetIds = Array.from(new Set(finalTasks.map(t => t.modelId)));
+      let profileSlug = (profileName || 'app').toLowerCase().replace(/[^a-z0-9]/g, '_');
+      if (!profileSlug) profileSlug = 'app';
+      // Java package segments can't start with a digit (e.g. "4x4_reverse").
+      if (/^[0-9]/.test(profileSlug)) profileSlug = `app_${profileSlug}`;
       const payload = {
         name: profileName || 'New Inspection Profile',
-        package_name: existingApp?.package_name || `com.inspection.${(profileName || 'app').toLowerCase().replace(/\s+/g, '_')}`,
+        package_name: existingApp?.package_name || `com.inspection.${profileSlug}`,
         model_asset_ids: modelAssetIds,
         inspection_tasks: finalTasks,
         app_settings: {
