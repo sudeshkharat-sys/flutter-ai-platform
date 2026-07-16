@@ -18,6 +18,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_track_started=True,
     broker_connection_retry_on_startup=True,
+    worker_pool="solo",
 )
 
 # Windows uses 'spawn' for multiprocessing (not 'fork'), so child worker

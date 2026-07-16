@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
+import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -67,6 +67,11 @@ export default function AppBuilder() {
     } finally {
       setBuildLoading(false);
     }
+  };
+
+  const handleResetBuild = async () => {
+    await updateApp(id, { build_status: 'idle', build_step: '' });
+    loadData();
   };
 
   const handleDownloadAPK = async () => {
@@ -287,6 +292,14 @@ export default function AppBuilder() {
             <button onClick={handleStartBuild} disabled={isBuilding || buildLoading} style={{ width: '100%', padding: '16px', borderRadius: 12, border: 'none', background: isBuilding ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 800, cursor: isBuilding ? 'not-allowed' : 'pointer' }}>
               {isBuilding ? 'Compiling APK...' : 'Build Final APK'}
             </button>
+            {isBuilding && (
+              <button
+                onClick={handleResetBuild}
+                style={{ width: '100%', marginTop: 8, padding: '10px', borderRadius: 12, border: `1px solid ${C.error}`, background: 'transparent', color: C.error, fontWeight: 700, cursor: 'pointer', fontSize: 13 }}
+              >
+                Cancel / Reset Build
+              </button>
+            )}
           </div>
 
         </div>
@@ -315,32 +328,39 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const navigate = useNavigate();
   const [models, setModels] = useState([]);
   const [masterMappings, setMasterMappings] = useState([]);
+  const [engineMappings, setEngineMappings] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Step 1: Selection State
   const [profileName, setProfileName] = useState(existingApp?.name || '');
-  const [selectedModelCodes, setSelectedModelCodes] = useState([]); 
+  const [scanType, setScanType] = useState(existingApp?.app_settings?.scan_type || 'model');
+  const [selectedModelCodes, setSelectedModelCodes] = useState([]);
+  const [selectedEngineCodes, setSelectedEngineCodes] = useState([]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showEngineDropdown, setShowEngineDropdown] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [engineSearchTerm, setEngineSearchTerm] = useState('');
 
-  // Step 1: Initial AI Model State (Multiple)
-  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', instruction: '' }]);
+  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', mandatoryClasses: [], instruction: '' }]);
 
-  // Step 2: Review State
   const [isReviewing, setIsReviewing] = useState(startAtReview);
   const [reviewData, setReviewData] = useState([]); 
 
   useEffect(() => {
-    Promise.all([getModels(), getMasterMappings()]).then(([mr, gr]) => { 
+    let mounted = true;
+
+    Promise.all([getModels(), getMasterMappings(), getEngineMappings()]).then(([mr, gr, er]) => {
+      if (!mounted) return;
+
       const availableModels = mr.data.filter(m => m.status === 'ready');
       const allMappings = gr.data;
-      
-      setModels(availableModels); 
+      const allEngineMappings = er.data;
+
+      setModels(availableModels);
       setMasterMappings(allMappings);
-      setLoading(false); 
+      setEngineMappings(allEngineMappings);
+      setLoading(false);
 
       if (existingApp) {
-        // 1. Restore selected model codes
         let codes = [];
         if (existingApp.app_settings?.model_codes) {
           codes = existingApp.app_settings.model_codes;
@@ -349,19 +369,28 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         }
         setSelectedModelCodes(codes);
 
-        // 2. Restore default configs template
-        if (existingApp.app_settings?.default_configs) {
-          setDefaultAIConfigs(existingApp.app_settings.default_configs);
+        if (existingApp.app_settings?.engine_codes) {
+          setSelectedEngineCodes(existingApp.app_settings.engine_codes);
         }
 
-        // 3. Reconstruct reviewData
+        if (existingApp.app_settings?.default_configs) {
+          // Migrate old single-class format to mandatoryClasses array
+          const migrated = existingApp.app_settings.default_configs.map(c => ({
+            ...c,
+            mandatoryClasses: c.mandatoryClasses || (c.class ? [c.class] : []),
+            classOcrConfig: c.classOcrConfig || {},
+          }));
+          setDefaultAIConfigs(migrated);
+        }
+
         if (existingApp.inspection_tasks && existingApp.inspection_tasks.length > 0) {
           const tasksByCode = existingApp.inspection_tasks.reduce((acc, t) => {
             const code = t.vehicleCode || 'Default';
             if (!acc[code]) acc[code] = [];
             acc[code].push({
               modelId: t.modelId,
-              class: t.classes?.[0] || '',
+              mandatoryClasses: t.mandatoryClasses || [],
+              classOcrConfig: t.classOcrConfig || {},
               instruction: t.instruction || t.taskName || '',
               referenceImage: t.referenceImage || null,
             });
@@ -384,19 +413,28 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         }
       }
     }).catch((err) => {
+      if (!mounted) return;
       console.error("Restoration error:", err);
       setLoading(false);
     });
-  }, [existingApp, startAtReview]);
+
+    return () => { mounted = false; };
+  }, [existingApp?.id, startAtReview]);
 
   const handleToggleModelCode = (code) => {
-    setSelectedModelCodes(prev => 
+    setSelectedModelCodes(prev =>
       prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
     );
   };
 
+  const handleToggleEngineCode = (partNo) => {
+    setSelectedEngineCodes(prev =>
+      prev.includes(partNo) ? prev.filter(c => c !== partNo) : [...prev, partNo]
+    );
+  };
+
   const handleAddDefaultAI = () => {
-    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', class: '', instruction: '' }]);
+    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', mandatoryClasses: [], classOcrConfig: {}, instruction: '' }]);
   };
 
   const handleRemoveDefaultAI = (index) => {
@@ -407,51 +445,117 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newConfigs = [...defaultAIConfigs];
     newConfigs[index][field] = value;
     if (field === 'modelId') {
-      const m = models.find(mod => mod.id === value);
-      newConfigs[index].class = m?.classes[0] || '';
+      newConfigs[index].mandatoryClasses = [];
+      newConfigs[index].classOcrConfig = {};
     }
     setDefaultAIConfigs(newConfigs);
   };
 
-  const handleEnterReview = () => {
-    if (selectedModelCodes.length === 0) {
-      alert("Please select at least one Vehicle Model Code.");
-      return;
+  const handleToggleMandatoryClass = (index, cls) => {
+    const newConfigs = [...defaultAIConfigs];
+    const current = newConfigs[index].mandatoryClasses || [];
+    newConfigs[index].mandatoryClasses = current.includes(cls)
+      ? current.filter(c => c !== cls)
+      : [...current, cls];
+    setDefaultAIConfigs(newConfigs);
+  };
+
+  const handleToggleClassOcr = (index, cls) => {
+    const newConfigs = [...defaultAIConfigs];
+    const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
+    if (ocr[cls]?.ocrEnabled) {
+      ocr[cls] = { ocrEnabled: false, ocrTargetText: '' };
+    } else {
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '' };
     }
+    newConfigs[index].classOcrConfig = ocr;
+    setDefaultAIConfigs(newConfigs);
+  };
 
-    // Valid AI configs only
-    const validAI = defaultAIConfigs.filter(c => c.modelId && c.class);
+  const handleClassOcrText = (index, cls, text) => {
+    const newConfigs = [...defaultAIConfigs];
+    const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrTargetText: text };
+    newConfigs[index].classOcrConfig = ocr;
+    setDefaultAIConfigs(newConfigs);
+  };
 
-    const newReviewData = selectedModelCodes.map(code => {
-      const mapping = masterMappings.find(m => m.model_code === code);
-      return {
-        id: mapping.id,
-        platform_name: mapping.platform_name,
-        model_code: mapping.model_code,
-        description: mapping.description,
-        selectedAIModels: validAI.map(v => ({ ...v })) 
-      };
-    });
-    setReviewData(newReviewData);
+  const handleEnterReview = () => {
+    if (scanType === 'engine') {
+      if (selectedEngineCodes.length === 0) {
+        alert("Please select at least one Engine Code.");
+        return;
+      }
+      const validAI = defaultAIConfigs.filter(c => c.modelId && c.mandatoryClasses?.length > 0);
+      const newReviewData = selectedEngineCodes.map(partNo => {
+        const mapping = engineMappings.find(m => m.part_no === partNo) || { part_no: partNo, sheet_name: 'Unknown', description: '' };
+        return {
+          id: mapping.id || Math.random().toString(),
+          platform_name: mapping.sheet_name,
+          model_code: mapping.part_no,
+          description: mapping.description,
+          selectedAIModels: validAI.map(v => ({ ...v }))
+        };
+      });
+      setReviewData(newReviewData);
+    } else {
+      if (selectedModelCodes.length === 0) {
+        alert("Please select at least one Vehicle Model Code.");
+        return;
+      }
+      const validAI = defaultAIConfigs.filter(c => c.modelId && c.mandatoryClasses?.length > 0);
+      const newReviewData = selectedModelCodes.map(code => {
+        const mapping = masterMappings.find(m => m.model_code === code);
+        return {
+          id: mapping.id,
+          platform_name: mapping.platform_name,
+          model_code: mapping.model_code,
+          description: mapping.description,
+          selectedAIModels: validAI.map(v => ({ ...v }))
+        };
+      });
+      setReviewData(newReviewData);
+    }
     setIsReviewing(true);
   };
 
   const handleUpdateRowAI = (rowIndex, aiIdx, field, value) => {
-    setReviewData(prev => prev.map((row, rIdx) => {
-      if (rIdx !== rowIndex) return row;
-      return {
-        ...row,
-        selectedAIModels: row.selectedAIModels.map((ai, aIdx) => {
-          if (aIdx !== aiIdx) return ai;
-          const updated = { ...ai, [field]: value };
-          if (field === 'modelId') {
-            const m = models.find(mod => mod.id === value);
-            updated.class = m?.classes[0] || '';
-          }
-          return updated;
-        }),
-      };
-    }));
+    const newData = [...reviewData];
+    newData[rowIndex].selectedAIModels[aiIdx][field] = value;
+    if (field === 'modelId') {
+      newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = [];
+      newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = {};
+    }
+    setReviewData(newData);
+  };
+
+  const handleToggleRowMandatoryClass = (rowIndex, aiIdx, cls) => {
+    const newData = [...reviewData];
+    const current = newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses || [];
+    newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = current.includes(cls)
+      ? current.filter(c => c !== cls)
+      : [...current, cls];
+    setReviewData(newData);
+  };
+
+  const handleToggleRowClassOcr = (rowIndex, aiIdx, cls) => {
+    const newData = [...reviewData];
+    const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
+    if (ocr[cls]?.ocrEnabled) {
+      ocr[cls] = { ocrEnabled: false, ocrTargetText: '' };
+    } else {
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '' };
+    }
+    newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
+    setReviewData(newData);
+  };
+
+  const handleRowClassOcrText = (rowIndex, aiIdx, cls, text) => {
+    const newData = [...reviewData];
+    const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrTargetText: text };
+    newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
+    setReviewData(newData);
   };
 
   const handleMoveRowAI = (rowIndex, aiIdx, direction) => {
@@ -470,7 +574,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   const handleAddRowAI = (rowIndex) => {
     const newData = [...reviewData];
-    newData[rowIndex].selectedAIModels.push({ modelId: '', class: '', instruction: '', referenceImage: null });
+    newData[rowIndex].selectedAIModels.push({ modelId: '', mandatoryClasses: [], instruction: '', referenceImage: null });
     setReviewData(newData);
   };
 
@@ -494,7 +598,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             modelId: ai.modelId,
             taskName: ai.instruction || `${row.model_code} - ${model.vision_project_name}`,
             modelName: model.vision_project_name,
-            classes: [ai.class],
+            classes: model.classes,
+            mandatoryClasses: ai.mandatoryClasses || [],
+            classOcrConfig: ai.classOcrConfig || {},
             tflitePath: model.tflite_path,
             labelsPath: model.labels_path,
             vehicleCode: row.model_code,
@@ -512,17 +618,23 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
     try {
       const modelAssetIds = Array.from(new Set(finalTasks.map(t => t.modelId)));
+      let profileSlug = (profileName || 'app').toLowerCase().replace(/[^a-z0-9]/g, '_');
+      if (!profileSlug) profileSlug = 'app';
+      // Java package segments can't start with a digit (e.g. "4x4_reverse").
+      if (/^[0-9]/.test(profileSlug)) profileSlug = `app_${profileSlug}`;
       const payload = {
         name: profileName || 'New Inspection Profile',
-        package_name: existingApp?.package_name || `com.inspection.${(profileName || 'app').toLowerCase().replace(/\s+/g, '_')}`,
+        package_name: existingApp?.package_name || `com.inspection.${profileSlug}`,
         model_asset_ids: modelAssetIds,
         inspection_tasks: finalTasks,
-        app_settings: { 
-          ...(existingApp?.app_settings || {}), 
-          app_type: 'sequential', 
+        app_settings: {
+          ...(existingApp?.app_settings || {}),
+          app_type: 'sequential',
+          scan_type: scanType,
           model_codes: selectedModelCodes,
           model_code: selectedModelCodes[0],
-          default_configs: defaultAIConfigs // Persist the template
+          engine_codes: selectedEngineCodes,
+          default_configs: defaultAIConfigs
         }
       };
 
@@ -537,8 +649,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     } catch { alert('Failed to save profile'); }
   };
 
-  // Grouping and Filtering logic
-  const filteredMappings = masterMappings.filter(m => 
+  const filteredMappings = masterMappings.filter(m =>
     m.model_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
     m.platform_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (m.description || '').toLowerCase().includes(searchTerm.toLowerCase())
@@ -549,6 +660,20 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     acc[m.platform_name].push(m);
     return acc;
   }, {});
+
+  const filteredEngineMappings = engineMappings.filter(m =>
+    m.part_no.toLowerCase().includes(engineSearchTerm.toLowerCase()) ||
+    m.sheet_name.toLowerCase().includes(engineSearchTerm.toLowerCase()) ||
+    (m.model_name || '').toLowerCase().includes(engineSearchTerm.toLowerCase()) ||
+    (m.description || '').toLowerCase().includes(engineSearchTerm.toLowerCase())
+  );
+
+  const groupedEngineMappings = filteredEngineMappings.reduce((acc, m) => {
+    if (!acc[m.sheet_name]) acc[m.sheet_name] = [];
+    acc[m.sheet_name].push(m);
+    return acc;
+  }, {});
+
 
   if (loading) return null;
 
@@ -572,83 +697,136 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                 <input style={inputStyle} value={profileName} onChange={e => setProfileName(e.target.value)} placeholder="e.g. Bumper Inspection" />
               </div>
 
-              <div style={{ position: 'relative' }}>
-                <label style={labelStyle}>Vehicle Model Code (Multi-Select)</label>
-                <div 
-                  onClick={() => setShowDropdown(!showDropdown)}
-                  style={{ ...inputStyle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', minHeight: 46 }}
+              <div>
+                <label style={labelStyle}>Scan Type</label>
+                <select
+                  style={{ ...inputStyle, cursor: 'pointer' }}
+                  value={scanType}
+                  onChange={e => setScanType(e.target.value)}
                 >
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {selectedModelCodes.length === 0 ? (
-                      <span style={{ color: C.muted }}>Select Model Codes...</span>
-                    ) : (
-                      selectedModelCodes.map(code => (
-                        <span key={code} style={{ background: C.accent, color: '#fff', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-                          {code}
-                          <span onClick={(e) => { e.stopPropagation(); handleToggleModelCode(code); }} style={{ cursor: 'pointer', opacity: 0.8 }}>×</span>
-                        </span>
-                      ))
-                    )}
-                  </div>
-                  <ChevronDown size={18} color={C.muted} />
-                </div>
+                  <option value="model">Model Code (VIN barcode)</option>
+                  <option value="engine">Engine Code (Part No + Serial)</option>
+                </select>
+              </div>
 
-                {showDropdown && (
-                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, background:"black", border: `1px solid ${C.border}`, borderRadius: 12, marginTop: 4, maxHeight: 350, overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ padding: '12px', borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.surface, zIndex: 5 }}>
-                      <div style={{ position: 'relative' }}>
-                        <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.muted }} />
-                        <input 
-                          style={{ ...inputStyle, paddingLeft: 36, marginBottom: 0 }} 
-                          value={searchTerm} 
-                          onChange={e => setSearchTerm(e.target.value)} 
-                          placeholder="Search code, platform, description..."
-                          onClick={e => e.stopPropagation()}
-                        />
-                      </div>
-                    </div>
-                    
-                    <div style={{ overflowY: 'auto', flex: 1 }}>
-                      {Object.keys(groupedMappings).length === 0 ? (
-                        <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>No matches found.</div>
+              {scanType === 'model' ? (
+                <div style={{ position: 'relative' }}>
+                  <label style={labelStyle}>Vehicle Model Code (Multi-Select)</label>
+                  <div
+                    onClick={() => setShowDropdown(!showDropdown)}
+                    style={{ ...inputStyle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', minHeight: 46 }}
+                  >
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {selectedModelCodes.length === 0 ? (
+                        <span style={{ color: C.muted }}>Select Model Codes...</span>
                       ) : (
-                        Object.entries(groupedMappings).map(([platform, items]) => (
-                          <div key={platform}>
-                            <div style={{ padding: '8px 16px', background: C.surface2, fontSize: 10, fontWeight: 800, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: `1px solid ${C.border}` }}>
-                              {platform}
-                            </div>
-                            {items.map(m => {
-                              const isSelected = selectedModelCodes.includes(m.model_code);
-                              return (
-                                <div 
-                                  key={m.id} 
-                                  onClick={() => handleToggleModelCode(m.model_code)}
-                                  style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', borderBottom: `1px solid ${C.border}`, background: isSelected ? 'rgba(220, 20, 60, 0.05)' : 'transparent' }}
-                                >
-                                  <div style={{ width: 18, height: 18, borderRadius: 4, border: `1px solid ${isSelected ? C.accent : C.border}`, background: isSelected ? C.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                    {isSelected && <Check size={12} color="#fff" />}
-                                  </div>
-                                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text, lineHeight: '1.4' }}>
-                                    <span style={{ fontWeight: 800, color: C.accent }}>{m.model_code}</span>
-                                    <span style={{ margin: '0 8px', color: C.muted }}>|</span>
-                                    <span>{m.platform_name}</span>
-                                    {m.description && (
-                                      <>
-                                        <span style={{ margin: '0 8px', color: C.muted }}>|</span>
-                                        <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>{m.description}</span>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                        selectedModelCodes.map(code => (
+                          <span key={code} style={{ background: C.accent, color: '#fff', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            {code}
+                            <span onClick={(e) => { e.stopPropagation(); handleToggleModelCode(code); }} style={{ cursor: 'pointer', opacity: 0.8 }}>×</span>
+                          </span>
                         ))
                       )}
                     </div>
+                    <ChevronDown size={18} color={C.muted} />
                   </div>
-                )}
-              </div>
+                  {showDropdown && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, background: 'black', border: `1px solid ${C.border}`, borderRadius: 12, marginTop: 4, maxHeight: 350, overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column' }}>
+                      <div style={{ padding: '12px', borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.surface, zIndex: 5 }}>
+                        <div style={{ position: 'relative' }}>
+                          <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.muted }} />
+                          <input style={{ ...inputStyle, paddingLeft: 36, marginBottom: 0 }} value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Search code, platform, description..." onClick={e => e.stopPropagation()} />
+                        </div>
+                      </div>
+                      <div style={{ overflowY: 'auto', flex: 1 }}>
+                        {Object.keys(groupedMappings).length === 0 ? (
+                          <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>No matches found.</div>
+                        ) : (
+                          Object.entries(groupedMappings).map(([platform, items]) => (
+                            <div key={platform}>
+                              <div style={{ padding: '8px 16px', background: C.surface2, fontSize: 10, fontWeight: 800, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: `1px solid ${C.border}` }}>{platform}</div>
+                              {items.map(m => {
+                                const isSelected = selectedModelCodes.includes(m.model_code);
+                                return (
+                                  <div key={m.id} onClick={() => handleToggleModelCode(m.model_code)} style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', borderBottom: `1px solid ${C.border}`, background: isSelected ? 'rgba(220, 20, 60, 0.05)' : 'transparent' }}>
+                                    <div style={{ width: 18, height: 18, borderRadius: 4, border: `1px solid ${isSelected ? C.accent : C.border}`, background: isSelected ? C.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                      {isSelected && <Check size={12} color="#fff" />}
+                                    </div>
+                                    <div style={{ fontSize: 13, fontWeight: 600, color: C.text, lineHeight: '1.4' }}>
+                                      <span style={{ fontWeight: 800, color: C.accent }}>{m.model_code}</span>
+                                      <span style={{ margin: '0 8px', color: C.muted }}>|</span>
+                                      <span>{m.platform_name}</span>
+                                      {m.description && (<><span style={{ margin: '0 8px', color: C.muted }}>|</span><span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>{m.description}</span></>)}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ position: 'relative' }}>
+                  <label style={labelStyle}>Engine Code (Multi-Select)</label>
+                  <div
+                    onClick={() => setShowEngineDropdown(!showEngineDropdown)}
+                    style={{ ...inputStyle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', minHeight: 46 }}
+                  >
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {selectedEngineCodes.length === 0 ? (
+                        <span style={{ color: C.muted }}>Select Engine Codes...</span>
+                      ) : (
+                        selectedEngineCodes.map(code => (
+                          <span key={code} style={{ background: C.accent, color: '#fff', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            {code}
+                            <span onClick={(e) => { e.stopPropagation(); handleToggleEngineCode(code); }} style={{ cursor: 'pointer', opacity: 0.8 }}>×</span>
+                          </span>
+                        ))
+                      )}
+                    </div>
+                    <ChevronDown size={18} color={C.muted} />
+                  </div>
+                  {showEngineDropdown && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, background: 'black', border: `1px solid ${C.border}`, borderRadius: 12, marginTop: 4, maxHeight: 350, overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column' }}>
+                      <div style={{ padding: '12px', borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.surface, zIndex: 5 }}>
+                        <div style={{ position: 'relative' }}>
+                          <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.muted }} />
+                          <input style={{ ...inputStyle, paddingLeft: 36, marginBottom: 0 }} value={engineSearchTerm} onChange={e => setEngineSearchTerm(e.target.value)} placeholder="Search part no, line, model..." onClick={e => e.stopPropagation()} />
+                        </div>
+                      </div>
+                      <div style={{ overflowY: 'auto', flex: 1 }}>
+                        {Object.keys(groupedEngineMappings).length === 0 ? (
+                          <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>No engine codes found. Add them in Master Data → Engine Codes.</div>
+                        ) : (
+                          Object.entries(groupedEngineMappings).map(([sheet, items]) => (
+                            <div key={sheet}>
+                              <div style={{ padding: '8px 16px', background: C.surface2, fontSize: 10, fontWeight: 800, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: `1px solid ${C.border}` }}>{sheet}</div>
+                              {items.map(m => {
+                                const isSelected = selectedEngineCodes.includes(m.part_no);
+                                return (
+                                  <div key={m.id} onClick={() => handleToggleEngineCode(m.part_no)} style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', borderBottom: `1px solid ${C.border}`, background: isSelected ? 'rgba(220, 20, 60, 0.05)' : 'transparent' }}>
+                                    <div style={{ width: 18, height: 18, borderRadius: 4, border: `1px solid ${isSelected ? C.accent : C.border}`, background: isSelected ? C.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                      {isSelected && <Check size={12} color="#fff" />}
+                                    </div>
+                                    <div style={{ fontSize: 13, fontWeight: 600, color: C.text, lineHeight: '1.4' }}>
+                                      <span style={{ fontWeight: 800, color: C.accent }}>{m.part_no}</span>
+                                      {m.model_name && (<><span style={{ margin: '0 8px', color: C.muted }}>|</span><span>{m.model_name}</span></>)}
+                                      {m.description && (<><span style={{ margin: '0 8px', color: C.muted }}>|</span><span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>{m.description}</span></>)}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Default AI Configurations (Step 1) */}
               <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: 20, padding: 20 }}>
@@ -676,13 +854,61 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                           </select>
                         </div>
                         <div>
-                          <label style={labelStyle}>Detection Class</label>
-                          <select style={inputStyle} value={config.class} onChange={(e) => handleUpdateDefaultAI(idx, 'class', e.target.value)} disabled={!config.modelId}>
-                            <option value="">Select Class...</option>
-                            {models.find(m => m.id === config.modelId)?.classes.map(c => (
-                              <option key={c} value={c}>{c}</option>
-                            ))}
-                          </select>
+                          {(() => {
+                            const modelClasses = models.find(m => m.id === config.modelId)?.classes || [];
+                            if (!config.modelId) {
+                              return <><label style={labelStyle}>Mandatory Classes</label><span style={{ fontSize: 12, color: C.muted }}>Select a model first</span></>;
+                            }
+                            return <>
+                              <label style={labelStyle}>Pass Classes — check which must be detected for OK badge</label>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: '8px 0' }}>
+                                {modelClasses.map(c => {
+                                  const selected = (config.mandatoryClasses || []).includes(c);
+                                  const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
+                                  const isNotOk = cn.includes('not') && cn.includes('ok');
+                                  const ocrCfg = (config.classOcrConfig || {})[c] || {};
+                                  return (
+                                    <div key={c} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={selected}
+                                          onChange={() => handleToggleMandatoryClass(idx, c)}
+                                          style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                        />
+                                        <span style={{ fontSize: 12, fontWeight: 600, color: selected ? (isNotOk ? '#e74c3c' : 'var(--accent)') : C.muted }}>{c}</span>
+                                        {selected
+                                          ? (isNotOk
+                                              ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                              : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
+                                          : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                        }
+                                      </label>
+                                      {selected && !isNotOk && (
+                                        <div style={{ marginLeft: 23, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={!!ocrCfg.ocrEnabled}
+                                            onChange={() => handleToggleClassOcr(idx, c)}
+                                            style={{ width: 13, height: 13, accentColor: '#f0a500', cursor: 'pointer' }}
+                                          />
+                                          <span style={{ fontSize: 11, color: '#f0a500' }}>OCR verify</span>
+                                          {ocrCfg.ocrEnabled && (
+                                            <input
+                                              style={{ ...inputStyle, padding: '3px 8px', fontSize: 11, width: 160 }}
+                                              placeholder="Target text e.g. AB-1234"
+                                              value={ocrCfg.ocrTargetText || ''}
+                                              onChange={e => handleClassOcrText(idx, c, e.target.value)}
+                                            />
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>;
+                          })()}
                         </div>
                       </div>
                       <div>
@@ -701,10 +927,10 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               </div>
             </div>
 
-            <button 
-              onClick={handleEnterReview} 
-              disabled={selectedModelCodes.length === 0}
-              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: selectedModelCodes.length === 0 ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+            <button
+              onClick={handleEnterReview}
+              disabled={scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0}
+              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0) ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
             >
               REVIEW MAPPINGS <ChevronRight size={20} />
             </button>
@@ -729,7 +955,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                   {reviewData.map((row, rowIndex) => (
                     <tr key={row.id} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={tdStyle}><div style={{ fontWeight: 700, fontSize: 13 }}>{row.platform_name}</div></td>
-                      <td style={tdStyle}><span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span></td>
+                      <td style={tdStyle}>
+                        <span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span>
+                        {row.description && (
+                          <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.4, wordBreak: 'break-word', maxWidth: 120 }}>{row.description}</div>
+                        )}
+                      </td>
                       <td colSpan={6} style={{ padding: 0 }}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
                           {row.selectedAIModels.map((ai, aiIdx) => (
@@ -745,16 +976,55 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                 </select>
                               </div>
                               <div style={{ padding: '12px 16px' }}>
-                                <select 
-                                  style={{ ...miniSelectStyle, width: '100%' }} 
-                                  value={ai.class} 
-                                  onChange={(e) => handleUpdateRowAI(rowIndex, aiIdx, 'class', e.target.value)}
-                                  disabled={!ai.modelId}
-                                >
-                                  {models.find(m => m.id === ai.modelId)?.classes.map(c => (
-                                    <option key={c} value={c}>{c}</option>
-                                  ))}
-                                </select>
+                                {(() => {
+                                  if (!ai.modelId) return <span style={{ fontSize: 11, color: '#aaa' }}>Select model</span>;
+                                  const mc = models.find(m => m.id === ai.modelId)?.classes || [];
+                                  return <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                    <span style={{ fontSize: 10, color: '#aaa', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>✓ Check = Pass class (must be detected for OK)</span>
+                                    {mc.map(c => {
+                                      const sel = (ai.mandatoryClasses || []).includes(c);
+                                      const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
+                                      const isNotOk = cn.includes('not') && cn.includes('ok');
+                                      const ocrCfg = (ai.classOcrConfig || {})[c] || {};
+                                      return <div key={c} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={sel}
+                                            onChange={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
+                                            style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                          />
+                                          <span style={{ fontSize: 12, fontWeight: 600, color: sel ? (isNotOk ? '#e74c3c' : 'var(--accent)') : '#aaa' }}>{c}</span>
+                                          {sel
+                                            ? (isNotOk
+                                                ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                                : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
+                                            : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                          }
+                                        </label>
+                                        {sel && !isNotOk && (
+                                          <div style={{ marginLeft: 23, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                            <input
+                                              type="checkbox"
+                                              checked={!!ocrCfg.ocrEnabled}
+                                              onChange={() => handleToggleRowClassOcr(rowIndex, aiIdx, c)}
+                                              style={{ width: 12, height: 12, accentColor: '#f0a500', cursor: 'pointer' }}
+                                            />
+                                            <span style={{ fontSize: 10, color: '#f0a500' }}>OCR</span>
+                                            {ocrCfg.ocrEnabled && (
+                                              <input
+                                                style={{ padding: '2px 6px', fontSize: 10, width: 110, borderRadius: 4, border: '1px solid #444', background: '#111', color: '#fff' }}
+                                                placeholder="Target text"
+                                                value={ocrCfg.ocrTargetText || ''}
+                                                onChange={e => handleRowClassOcrText(rowIndex, aiIdx, c, e.target.value)}
+                                              />
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>;
+                                    })}
+                                  </div>;
+                                })()}
                               </div>
                               <div style={{ padding: '12px 16px' }}>
                                 <input
@@ -865,7 +1135,6 @@ function ModelModal({ id, appIds, onClose }) {
   const [tab, setTab] = useState('library');
   const [existing, setExisting] = useState([]);
   
-  // Conversion state
   const [ptFile, setPtFile] = useState(null);
   const [modelName, setModelName] = useState('');
   const [classes, setClasses] = useState([]);

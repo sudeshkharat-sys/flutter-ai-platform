@@ -1,0 +1,1454 @@
+[1mdiff --git a/backend/app/codegen/templates/detection_overlay.dart.j2 b/backend/app/codegen/templates/detection_overlay.dart.j2[m
+[1mindex c7f27f8..639fedf 100644[m
+[1m--- a/backend/app/codegen/templates/detection_overlay.dart.j2[m
+[1m+++ b/backend/app/codegen/templates/detection_overlay.dart.j2[m
+[36m@@ -40,6 +40,13 @@[m [mclass _BoundingBoxPainter extends CustomPainter {[m
+     Color(0xFFFF6B9D),[m
+   ];[m
+ [m
+[32m+[m[32m  static Color _colorForClass(String className, int index) {[m
+[32m+[m[32m    final lower = className.toLowerCase();[m
+[32m+[m[32m    if (lower.contains('not ok')) return const Color(0xFFE53935);[m
+[32m+[m[32m    if (lower.contains('ok')) return const Color(0xFF43A047);[m
+[32m+[m[32m    return _colors[index % _colors.length];[m
+[32m+[m[32m  }[m
+[32m+[m
+   _BoundingBoxPainter({[m
+     required this.results,[m
+     required this.previewSize,[m
+[36m@@ -51,7 +58,7 @@[m [mclass _BoundingBoxPainter extends CustomPainter {[m
+   void paint(Canvas canvas, Size size) {[m
+     for (int i = 0; i < results.length; i++) {[m
+       final result = results[i];[m
+[31m-      final color = _colors[i % _colors.length];[m
+[32m+[m[32m      final color = _colorForClass(result.className, i);[m
+ [m
+       final rect = Rect.fromLTRB([m
+         result.bbox.left * size.width,[m
+[1mdiff --git a/backend/app/codegen/templates/history_screen.dart.j2 b/backend/app/codegen/templates/history_screen.dart.j2[m
+[1mindex afc5e57..ace89eb 100644[m
+[1m--- a/backend/app/codegen/templates/history_screen.dart.j2[m
+[1m+++ b/backend/app/codegen/templates/history_screen.dart.j2[m
+[36m@@ -1,7 +1,27 @@[m
+[32m+[m[32mimport 'dart:io';[m
+ import 'package:flutter/material.dart';[m
+ import 'dart:convert';[m
+[31m-import 'package:shared_preferences/shared_preferences.dart';[m
+[32m+[m[32mimport 'package:image/image.dart' as img;[m
+ import '../database/database.dart';[m
+[32m+[m[32mimport '../ml/detection_result.dart';[m
+[32m+[m[32mimport '../widgets/detection_overlay.dart';[m
+[32m+[m[32mimport '../services/print_service.dart';[m
+[32m+[m
+[32m+[m[32mclass _ShiftSummary {[m
+[32m+[m[32m  final DateTime date;[m
+[32m+[m[32m  final String shift;[m
+[32m+[m[32m  final Set<String> vins = {};[m
+[32m+[m[32m  int totalScans = 0;[m
+[32m+[m[32m  int okScans = 0;[m
+[32m+[m[32m  int totalTasks = 0;[m
+[32m+[m[32m  int passedTasks = 0;[m
+[32m+[m
+[32m+[m[32m  _ShiftSummary({required this.date, required this.shift});[m
+[32m+[m
+[32m+[m[32m  int get vehicleCount => vins.length;[m
+[32m+[m[32m  double get okPercent => totalScans == 0 ? 0.0 : (okScans / totalScans * 100);[m
+[32m+[m[32m  double get taskPassPercent => totalTasks == 0 ? 0.0 : (passedTasks / totalTasks * 100);[m
+[32m+[m[32m}[m
+ [m
+ class HistoryScreen extends StatefulWidget {[m
+   const HistoryScreen({super.key});[m
+[36m@@ -24,24 +44,28 @@[m [mclass _HistoryScreenState extends State<HistoryScreen> {[m
+     try {[m
+       final List<Inspection> inspections = await db.getAllInspections();[m
+       List<Map<String, dynamic>> results = [];[m
+[31m-      [m
+[32m+[m
+       for (var insp in inspections) {[m
+         final taskResults = await db.getResultsForInspection(insp.id);[m
+         bool overallSuccess = true;[m
+         for (var tr in taskResults) {[m
+           if (!tr.success) overallSuccess = false;[m
+         }[m
+[31m-        [m
+[32m+[m
+         results.add({[m
+           'vin': insp.vin,[m
+           'modelCode': insp.modelCode,[m
+           'timestamp': insp.createdAt.toIso8601String(),[m
+           'overallSuccess': overallSuccess,[m
+[31m-          'tasks': taskResults.map((tr) => {[m
+[31m-            'taskName': tr.taskName,[m
+[31m-            'detectedPart': tr.className,[m
+[31m-            'success': tr.success,[m
+[31m-          }).toList(),[m
+[32m+[m[32m          'tasks': taskResults[m
+[32m+[m[32m              .map((tr) => {[m
+[32m+[m[32m                    'taskName': tr.taskName,[m
+[32m+[m[32m                    'detectedPart': tr.className,[m
+[32m+[m[32m                    'success': tr.success,[m
+[32m+[m[32m                    'imagePath': tr.imagePath,[m
+[32m+[m[32m                    'detectionsJson': tr.detectionsJson,[m
+[32m+[m[32m                  })[m
+[32m+[m[32m              .toList(),[m
+         });[m
+       }[m
+ [m
+[36m@@ -55,99 +79,705 @@[m [mclass _HistoryScreenState extends State<HistoryScreen> {[m
+     }[m
+   }[m
+ [m
+[31m-  Future<void> _clearHistory() async {[m
+[31m-    // For drift, we'd need a delete all method. [m
+[31m-    // For now let's just use SharedPreferences if that was the fallback, [m
+[31m-    // but better to add delete logic to database.dart[m
+[31m-    // For this prototype, we'll just clear the state list.[m
+[31m-    setState(() => _groupedHistory = []);[m
+[32m+[m[32m  // ── Shift logic ──────────────────────────────────────────────────────────────[m
+[32m+[m[32m  // A: 07:00–15:30   B: 15:30–00:00   C: 00:00–07:00 (counts as previous date)[m
+[32m+[m
+[32m+[m[32m  String _getShift(DateTime dt) {[m
+[32m+[m[32m    final int mins = dt.hour * 60 + dt.minute;[m
+[32m+[m[32m    if (mins >= 420 && mins < 930) return 'A';[m
+[32m+[m[32m    if (mins >= 930) return 'B';[m
+[32m+[m[32m    return 'C';[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  DateTime _getShiftDate(DateTime dt) {[m
+[32m+[m[32m    // Shift C (night, 00:00–07:00) is attributed to the previous calendar date[m
+[32m+[m[32m    if (dt.hour < 7) {[m
+[32m+[m[32m      return DateTime(dt.year, dt.month, dt.day).subtract(const Duration(days: 1));[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return DateTime(dt.year, dt.month, dt.day);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  // ── Dashboard helpers ─────────────────────────────────────────────────────────[m
+[32m+[m
+[32m+[m[32m  List<_ShiftSummary> _buildDashboardData() {[m
+[32m+[m[32m    final Map<String, _ShiftSummary> map = {};[m
+[32m+[m
+[32m+[m[32m    for (final item in _groupedHistory) {[m
+[32m+[m[32m      final dt = DateTime.parse(item['timestamp'] as String);[m
+[32m+[m[32m      final shift = _getShift(dt);[m
+[32m+[m[32m      final shiftDate = _getShiftDate(dt);[m
+[32m+[m[32m      final key = '${shiftDate.year}-${shiftDate.month}-${shiftDate.day}_$shift';[m
+[32m+[m
+[32m+[m[32m      map.putIfAbsent(key, () => _ShiftSummary(date: shiftDate, shift: shift));[m
+[32m+[m[32m      final s = map[key]!;[m
+[32m+[m
+[32m+[m[32m      s.vins.add(item['vin'] as String);[m
+[32m+[m[32m      s.totalScans++;[m
+[32m+[m[32m      if (item['overallSuccess'] == true) s.okScans++;[m
+[32m+[m
+[32m+[m[32m      final tasks = item['tasks'] as List<dynamic>;[m
+[32m+[m[32m      s.totalTasks += tasks.length;[m
+[32m+[m[32m      s.passedTasks += tasks.where((t) => t['success'] == true).length;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    return map.values.toList()[m
+[32m+[m[32m      ..sort((a, b) {[m
+[32m+[m[32m        final d = b.date.compareTo(a.date);[m
+[32m+[m[32m        return d != 0 ? d : a.shift.compareTo(b.shift);[m
+[32m+[m[32m      });[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  String _formatDate(DateTime dt) =>[m
+[32m+[m[32m      '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';[m
+[32m+[m
+[32m+[m[32m  Color _percentColor(double pct) {[m
+[32m+[m[32m    if (pct >= 80) return Colors.green.shade700;[m
+[32m+[m[32m    if (pct >= 50) return Colors.orange.shade700;[m
+[32m+[m[32m    return Colors.red.shade700;[m
+   }[m
+ [m
+[32m+[m[32m  Color _shiftColor(String shift) {[m
+[32m+[m[32m    switch (shift) {[m
+[32m+[m[32m      case 'A':[m
+[32m+[m[32m        return const Color(0xFF1565C0); // day blue[m
+[32m+[m[32m      case 'B':[m
+[32m+[m[32m        return const Color(0xFFE65100); // evening orange[m
+[32m+[m[32m      default:[m
+[32m+[m[32m        return const Color(0xFF4A148C); // night purple[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  String _shiftTimeLabel(String shift) {[m
+[32m+[m[32m    switch (shift) {[m
+[32m+[m[32m      case 'A':[m
+[32m+[m[32m        return '07:00 – 15:30';[m
+[32m+[m[32m      case 'B':[m
+[32m+[m[32m        return '15:30 – 00:00';[m
+[32m+[m[32m      default:[m
+[32m+[m[32m        return '00:00 – 07:00';[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  // ── Build ─────────────────────────────────────────────────────────────────────[m
+[32m+[m
+   @override[m
+   Widget build(BuildContext context) {[m
+[31m-    return Scaffold([m
+[31m-      backgroundColor: const Color(0xFFFFF5F5),[m
+[31m-      appBar: AppBar([m
+[31m-        title: const Text('INSPECTION HISTORY', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),[m
+[31m-        centerTitle: true,[m
+[31m-        backgroundColor: const Color(0xFFDC143C),[m
+[31m-        elevation: 0,[m
+[31m-        iconTheme: const IconThemeData(color: Colors.white),[m
+[32m+[m[32m    return DefaultTabController([m
+[32m+[m[32m      length: 2,[m
+[32m+[m[32m      child: Scaffold([m
+[32m+[m[32m        backgroundColor: const Color(0xFFFFF5F5),[m
+[32m+[m[32m        appBar: AppBar([m
+[32m+[m[32m          title: const Text([m
+[32m+[m[32m            'INSPECTION HISTORY',[m
+[32m+[m[32m            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),[m
+[32m+[m[32m          ),[m
+[32m+[m[32m          centerTitle: true,[m
+[32m+[m[32m          backgroundColor: const Color(0xFFDC143C),[m
+[32m+[m[32m          elevation: 0,[m
+[32m+[m[32m          iconTheme: const IconThemeData(color: Colors.white),[m
+[32m+[m[32m          bottom: const TabBar([m
+[32m+[m[32m            labelColor: Colors.white,[m
+[32m+[m[32m            unselectedLabelColor: Colors.white60,[m
+[32m+[m[32m            indicatorColor: Color(0xFFD4AF37),[m
+[32m+[m[32m            indicatorWeight: 3,[m
+[32m+[m[32m            tabs: [[m
+[32m+[m[32m              Tab(icon: Icon(Icons.bar_chart_rounded), text: 'Dashboard'),[m
+[32m+[m[32m              Tab(icon: Icon(Icons.history_rounded), text: 'History'),[m
+[32m+[m[32m            ],[m
+[32m+[m[32m          ),[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        body: _loading[m
+[32m+[m[32m            ? const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))[m
+[32m+[m[32m            : TabBarView([m
+[32m+[m[32m                children: [[m
+[32m+[m[32m                  _buildDashboardTab(),[m
+[32m+[m[32m                  _buildHistoryTab(),[m
+[32m+[m[32m                ],[m
+[32m+[m[32m              ),[m
+       ),[m
+[31m-      body: _loading[m
+[31m-          ? const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))[m
+[31m-          : _groupedHistory.isEmpty[m
+[31m-              ? const Center(child: Text('No history found', style: TextStyle(color: Colors.grey)))[m
+[31m-              : ListView.builder([m
+[31m-                  padding: const EdgeInsets.all(16),[m
+[31m-                  itemCount: _groupedHistory.length,[m
+[31m-                  itemBuilder: (context, index) {[m
+[31m-                    final item = _groupedHistory[index];[m
+[31m-                    final bool overallSuccess = item['overallSuccess'] ?? false;[m
+[31m-                    final DateTime date = DateTime.parse(item['timestamp']);[m
+[31m-                    final List<dynamic> tasks = item['tasks'] ?? [];[m
+[31m-[m
+[31m-                    return Container([m
+[31m-                      margin: const EdgeInsets.only(bottom: 12),[m
+[31m-                      decoration: BoxDecoration([m
+[31m-                        color: Colors.white,[m
+[31m-                        borderRadius: BorderRadius.circular(12),[m
+[31m-                        border: Border.all(color: const Color(0xFFD4AF37), width: 1),[m
+[31m-                        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 4, offset: const Offset(0, 2))],[m
+[31m-                      ),[m
+[31m-                      child: ExpansionTile([m
+[31m-                        leading: Container([m
+[31m-                          width: 40,[m
+[31m-                          height: 40,[m
+[31m-                          decoration: BoxDecoration([m
+[31m-                            color: overallSuccess ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),[m
+[31m-                            shape: BoxShape.circle,[m
+[31m-                          ),[m
+[31m-                          child: Icon([m
+[31m-                            overallSuccess ? Icons.check_circle : Icons.error,[m
+[31m-                            color: overallSuccess ? Colors.green : Colors.red,[m
+[31m-                            size: 24,[m
+[31m-                          ),[m
+[31m-                        ),[m
+[31m-                        title: Text([m
+[31m-                          'VIN: ${item['vin']}',[m
+[31m-                          style: const TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold, fontSize: 14),[m
+[32m+[m[32m    );[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  // ── Dashboard tab ─────────────────────────────────────────────────────────────[m
+[32m+[m
+[32m+[m[32m  Widget _buildDashboardTab() {[m
+[32m+[m[32m    final summaries = _buildDashboardData();[m
+[32m+[m[32m    final today = _getShiftDate(DateTime.now());[m
+[32m+[m[32m    final todaySums = summaries.where([m
+[32m+[m[32m      (s) => s.date.year == today.year && s.date.month == today.month && s.date.day == today.day,[m
+[32m+[m[32m    ).toList();[m
+[32m+[m
+[32m+[m[32m    final todayScans = todaySums.fold<int>(0, (a, s) => a + s.totalScans);[m
+[32m+[m[32m    final todayOk = todaySums.fold<int>(0, (a, s) => a + s.okScans);[m
+[32m+[m[32m    final todayOkPct = todayScans == 0 ? 0.0 : (todayOk / todayScans * 100);[m
+[32m+[m[32m    final currentShift = _getShift(DateTime.now());[m
+[32m+[m
+[32m+[m[32m    return SingleChildScrollView([m
+[32m+[m[32m      padding: const EdgeInsets.all(16),[m
+[32m+[m[32m      child: Column([m
+[32m+[m[32m        crossAxisAlignment: CrossAxisAlignment.stretch,[m
+[32m+[m[32m        children: [[m
+[32m+[m[32m          // ── KPI cards ──────────────────────────────────────────────────────[m
+[32m+[m[32m          Row([m
+[32m+[m[32m            children: [[m
+[32m+[m[32m              Expanded([m
+[32m+[m[32m                child: _kpiCard([m
+[32m+[m[32m                  label: "Today's\nScans",[m
+[32m+[m[32m                  value: '$todayScans',[m
+[32m+[m[32m                  icon: Icons.directions_car_rounded,[m
+[32m+[m[32m                  color: const Color(0xFF1565C0),[m
+[32m+[m[32m                ),[m
+[32m+[m[32m              ),[m
+[32m+[m[32m              const SizedBox(width: 8),[m
+[32m+[m[32m              Expanded([m
+[32m+[m[32m                child: _kpiCard([m
+[32m+[m[32m                  label: 'OK Rate\nToday',[m
+[32m+[m[32m                  value: '${todayOkPct.toStringAsFixed(0)}%',[m
+[32m+[m[32m                  icon: Icons.check_circle_rounded,[m
+[32m+[m[32m                  color: _percentColor(todayOkPct),[m
+[32m+[m[32m                ),[m
+[32m+[m[32m              ),[m
+[32m+[m[32m              const SizedBox(width: 8),[m
+[32m+[m[32m              Expanded([m
+[32m+[m[32m                child: _kpiCard([m
+[32m+[m[32m                  label: 'Current\nShift',[m
+[32m+[m[32m                  value: 'Shift $currentShift',[m
+[32m+[m[32m                  icon: Icons.schedule_rounded,[m
+[32m+[m[32m                  color: _shiftColor(currentShift),[m
+[32m+[m[32m                ),[m
+[32m+[m[32m              ),[m
+[32m+[m[32m            ],[m
+[32m+[m[32m          ),[m
+[32m+[m[32m          const SizedBox(height: 12),[m
+[32m+[m
+[32m+[m[32m          // ── Shift legend ───────────────────────────────────────────────────[m
+[32m+[m[32m          Container([m
+[32m+[m[32m            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),[m
+[32m+[m[32m            decoration: BoxDecoration([m
+[32m+[m[32m              color: Colors.white,[m
+[32m+[m[32m              borderRadius: BorderRadius.circular(10),[m
+[32m+[m[32m              border: Border.all(color: const Color(0xFFD4AF37)),[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            child: Column([m
+[32m+[m[32m              crossAxisAlignment: CrossAxisAlignment.start,[m
+[32m+[m[32m              children: [[m
+[32m+[m[32m                const Text([m
+[32m+[m[32m                  'Shift Schedule',[m
+[32m+[m[32m                  style: TextStyle([m
+[32m+[m[32m                    fontWeight: FontWeight.bold,[m
+[32m+[m[32m                    fontSize: 12,[m
+[32m+[m[32m                    color: Color(0xFFDC143C),[m
+[32m+[m[32m                  ),[m
+[32m+[m[32m                ),[m
+[32m+[m[32m                const SizedBox(height: 8),[m
+[32m+[m[32m                Row([m
+[32m+[m[32m                  mainAxisAlignment: MainAxisAlignment.spaceAround,[m
+[32m+[m[32m                  children: ['A', 'B', 'C'][m
+[32m+[m[32m                      .map([m
+[32m+[m[32m                        (sh) => Row([m
+[32m+[m[32m                          mainAxisSize: MainAxisSize.min,[m
+[32m+[m[32m                          children: [[m
+[32m+[m[32m                            Container([m
+[32m+[m[32m                              width: 10,[m
+[32m+[m[32m                              height: 10,[m
+[32m+[m[32m                              decoration: BoxDecoration([m
+[32m+[m[32m                                color: _shiftColor(sh),[m
+[32m+[m[32m                                shape: BoxShape.circle,[m
+[32m+[m[32m                              ),[m
+[32m+[m[32m                            ),[m
+[32m+[m[32m                            const SizedBox(width: 5),[m
+[32m+[m[32m                            Text([m
+[32m+[m[32m                              '$sh: ${_shiftTimeLabel(sh)}',[m
+[32m+[m[32m                              style: const TextStyle(fontSize: 10),[m
+[32m+[m[32m                            ),[m
+[32m+[m[32m                          ],[m
+                         ),[m
+[31m-                        subtitle: Text([m
+[31m-                          'Model: ${item['modelCode']} • ${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute}',[m
+[31m-                          style: const TextStyle(fontSize: 11, color: Colors.grey),[m
+[32m+[m[32m                      )[m
+[32m+[m[32m                      .toList(),[m
+[32m+[m[32m                ),[m
+[32m+[m[32m              ],[m
+[32m+[m[32m            ),[m
+[32m+[m[32m          ),[m
+[32m+[m[32m          const SizedBox(height: 16),[m
+[32m+[m
+[32m+[m[32m          // ── Shift summary table ────────────────────────────────────────────[m
+[32m+[m[32m          if (summaries.isEmpty)[m
+[32m+[m[32m            Container([m
+[32m+[m[32m              padding: const EdgeInsets.all(32),[m
+[32m+[m[32m              alignment: Alignment.center,[m
+[32m+[m[32m              decoration: BoxDecoration([m
+[32m+[m[32m                color: Colors.white,[m
+[32m+[m[32m                borderRadius: BorderRadius.circular(12),[m
+[32m+[m[32m              ),[m
+[32m+[m[32m              child: const Text([m
+[32m+[m[32m                'No inspection data yet',[m
+[32m+[m[32m                style: TextStyle(color: Colors.grey),[m
+[32m+[m[32m              ),[m
+[32m+[m[32m            )[m
+[32m+[m[32m          else ...[[m
+[32m+[m[32m            const Text([m
+[32m+[m[32m              'Shift Summary',[m
+[32m+[m[32m              style: TextStyle([m
+[32m+[m[32m                fontWeight: FontWeight.bold,[m
+[32m+[m[32m                fontSize: 14,[m
+[32m+[m[32m                color: Color(0xFFDC143C),[m
+[32m+[m[32m              ),[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            const SizedBox(height: 8),[m
+[32m+[m[32m            ClipRRect([m
+[32m+[m[32m              borderRadius: BorderRadius.circular(12),[m
+[32m+[m[32m              child: Container([m
+[32m+[m[32m                decoration: BoxDecoration([m
+[32m+[m[32m                  border: Border.all(color: const Color(0xFFD4AF37)),[m
+[32m+[m[32m                  borderRadius: BorderRadius.circular(12),[m
+[32m+[m[32m                  boxShadow: [[m
+[32m+[m[32m                    BoxShadow([m
+[32m+[m[32m                      color: Colors.black.withOpacity(0.05),[m
+[32m+[m[32m                      blurRadius: 4,[m
+[32m+[m[32m                      offset: const Offset(0, 2),[m
+[32m+[m[32m                    ),[m
+[32m+[m[32m                  ],[m
+[32m+[m[32m                ),[m
+[32m+[m[32m                child: SingleChildScrollView([m
+[32m+[m[32m                  scrollDirection: Axis.horizontal,[m
+[32m+[m[32m                  child: _buildShiftTable(summaries),[m
+[32m+[m[32m                ),[m
+[32m+[m[32m              ),[m
+[32m+[m[32m            ),[m
+[32m+[m[32m          ],[m
+[32m+[m[32m          const SizedBox(height: 24),[m
+[32m+[m[32m        ],[m
+[32m+[m[32m      ),[m
+[32m+[m[32m    );[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  Widget _kpiCard({[m
+[32m+[m[32m    required String label,[m
+[32m+[m[32m    required String value,[m
+[32m+[m[32m    required IconData icon,[m
+[32m+[m[32m    required Color color,[m
+[32m+[m[32m  }) {[m
+[32m+[m[32m    return Container([m
+[32m+[m[32m      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),[m
+[32m+[m[32m      decoration: BoxDecoration([m
+[32m+[m[32m        color: Colors.white,[m
+[32m+[m[32m        borderRadius: BorderRadius.circular(10),[m
+[32m+[m[32m        border: Border.all(color: const Color(0xFFD4AF37)),[m
+[32m+[m[32m        boxShadow: [[m
+[32m+[m[32m          BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 4),[m
+[32m+[m[32m        ],[m
+[32m+[m[32m      ),[m
+[32m+[m[32m      child: Column([m
+[32m+[m[32m        mainAxisSize: MainAxisSize.min,[m
+[32m+[m[32m        children: [[m
+[32m+[m[32m          Icon(icon, color: color, size: 22),[m
+[32m+[m[32m          const SizedBox(height: 6),[m
+[32m+[m[32m          Text([m
+[32m+[m[32m            value,[m
+[32m+[m[32m            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: color),[m
+[32m+[m[32m          ),[m
+[32m+[m[32m          const SizedBox(height: 2),[m
+[32m+[m[32m          Text([m
+[32m+[m[32m            label,[m
+[32m+[m[32m            textAlign: TextAlign.center,[m
+[32m+[m[32m            style: const TextStyle(fontSize: 10, color: Colors.grey),[m
+[32m+[m[32m          ),[m
+[32m+[m[32m        ],[m
+[32m+[m[32m      ),[m
+[32m+[m[32m    );[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  Widget _buildShiftTable(List<_ShiftSummary> summaries) {[m
+[32m+[m[32m    const headerStyle = TextStyle([m
+[32m+[m[32m      color: Colors.white,[m
+[32m+[m[32m      fontWeight: FontWeight.bold,[m
+[32m+[m[32m      fontSize: 12,[m
+[32m+[m[32m    );[m
+[32m+[m
+[32m+[m[32m    return Table([m
+[32m+[m[32m      defaultColumnWidth: const IntrinsicColumnWidth(),[m
+[32m+[m[32m      border: TableBorder([m
+[32m+[m[32m        horizontalInside: BorderSide(color: Colors.grey.shade200),[m
+[32m+[m[32m        verticalInside: BorderSide(color: Colors.grey.shade100),[m
+[32m+[m[32m      ),[m
+[32m+[m[32m      children: [[m
+[32m+[m[32m        // Header row[m
+[32m+[m[32m        TableRow([m
+[32m+[m[32m          decoration: const BoxDecoration(color: Color(0xFFDC143C)),[m
+[32m+[m[32m          children: [[m
+[32m+[m[32m            _hCell('Date', headerStyle),[m
+[32m+[m[32m            _hCell('Shift', headerStyle),[m
+[32m+[m[32m            _hCell('VINs\nScanned', headerStyle),[m
+[32m+[m[32m            _hCell('Scans\n(OK)', headerStyle),[m
+[32m+[m[32m            _hCell('Vehicle\nOK %', headerStyle),[m
+[32m+[m[32m            _hCell('Total\nTasks', headerStyle),[m
+[32m+[m[32m            _hCell('Tasks\nPassed', headerStyle),[m
+[32m+[m[32m            _hCell('Task\nPass %', headerStyle),[m
+[32m+[m[32m          ],[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        // Data rows[m
+[32m+[m[32m        ...summaries.asMap().entries.map((e) {[m
+[32m+[m[32m          final i = e.key;[m
+[32m+[m[32m          final s = e.value;[m
+[32m+[m[32m          return TableRow([m
+[32m+[m[32m            decoration: BoxDecoration([m
+[32m+[m[32m              color: i.isEven ? Colors.white : Colors.grey.shade50,[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            children: [[m
+[32m+[m[32m              _dCell(_formatDate(s.date)),[m
+[32m+[m[32m              _shiftBadgeCell(s.shift),[m
+[32m+[m[32m              _dCell('${s.vehicleCount}', center: true),[m
+[32m+[m[32m              _dCell('${s.totalScans} (${s.okScans})', center: true),[m
+[32m+[m[32m              _pctBadgeCell(s.okPercent),[m
+[32m+[m[32m              _dCell('${s.totalTasks}', center: true),[m
+[32m+[m[32m              _dCell('${s.passedTasks}', center: true),[m
+[32m+[m[32m              _pctBadgeCell(s.taskPassPercent),[m
+[32m+[m[32m            ],[m
+[32m+[m[32m          );[m
+[32m+[m[32m        }),[m
+[32m+[m[32m      ],[m
+[32m+[m[32m    );[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  Widget _hCell(String text, TextStyle style) => Padding([m
+[32m+[m[32m        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),[m
+[32m+[m[32m        child: Text(text, style: style, textAlign: TextAlign.center),[m
+[32m+[m[32m      );[m
+[32m+[m
+[32m+[m[32m  Widget _dCell(String text, {bool center = false}) => Padding([m
+[32m+[m[32m        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),[m
+[32m+[m[32m        child: Text([m
+[32m+[m[32m          text,[m
+[32m+[m[32m          style: const TextStyle(fontSize: 12),[m
+[32m+[m[32m          textAlign: center ? TextAlign.center : TextAlign.left,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m      );[m
+[32m+[m
+[32m+[m[32m  Widget _shiftBadgeCell(String shift) => Padding([m
+[32m+[m[32m        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),[m
+[32m+[m[32m        child: Container([m
+[32m+[m[32m          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),[m
+[32m+[m[32m          decoration: BoxDecoration([m
+[32m+[m[32m            color: _shiftColor(shift).withOpacity(0.12),[m
+[32m+[m[32m            borderRadius: BorderRadius.circular(12),[m
+[32m+[m[32m            border: Border.all(color: _shiftColor(shift)),[m
+[32m+[m[32m          ),[m
+[32m+[m[32m          child: Text([m
+[32m+[m[32m            shift,[m
+[32m+[m[32m            style: TextStyle([m
+[32m+[m[32m              color: _shiftColor(shift),[m
+[32m+[m[32m              fontWeight: FontWeight.bold,[m
+[32m+[m[32m              fontSize: 12,[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            textAlign: TextAlign.center,[m
+[32m+[m[32m          ),[m
+[32m+[m[32m        ),[m
+[32m+[m[32m      );[m
+[32m+[m
+[32m+[m[32m  Widget _pctBadgeCell(double pct) {[m
+[32m+[m[32m    final color = _percentColor(pct);[m
+[32m+[m[32m    return Padding([m
+[32m+[m[32m      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),[m
+[32m+[m[32m      child: Container([m
+[32m+[m[32m        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),[m
+[32m+[m[32m        decoration: BoxDecoration([m
+[32m+[m[32m          color: color.withOpacity(0.1),[m
+[32m+[m[32m          borderRadius: BorderRadius.circular(8),[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        child: Text([m
+[32m+[m[32m          '${pct.toStringAsFixed(1)}%',[m
+[32m+[m[32m          style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),[m
+[32m+[m[32m          textAlign: TextAlign.center,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m      ),[m
+[32m+[m[32m    );[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  // ── History tab ───────────────────────────────────────────────────────────────[m
+[32m+[m
+[32m+[m[32m  Widget _buildHistoryTab() {[m
+[32m+[m[32m    if (_groupedHistory.isEmpty) {[m
+[32m+[m[32m      return const Center([m
+[32m+[m[32m        child: Text('No history found', style: TextStyle(color: Colors.grey)),[m
+[32m+[m[32m      );[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return ListView.builder([m
+[32m+[m[32m      padding: const EdgeInsets.all(16),[m
+[32m+[m[32m      itemCount: _groupedHistory.length,[m
+[32m+[m[32m      itemBuilder: (context, index) {[m
+[32m+[m[32m        final item = _groupedHistory[index];[m
+[32m+[m[32m        final bool overallSuccess = item['overallSuccess'] ?? false;[m
+[32m+[m[32m        final DateTime date = DateTime.parse(item['timestamp']);[m
+[32m+[m[32m        final List<dynamic> tasks = item['tasks'] ?? [];[m
+[32m+[m[32m        final shift = _getShift(date);[m
+[32m+[m
+[32m+[m[32m        return Container([m
+[32m+[m[32m          margin: const EdgeInsets.only(bottom: 12),[m
+[32m+[m[32m          decoration: BoxDecoration([m
+[32m+[m[32m            color: Colors.white,[m
+[32m+[m[32m            borderRadius: BorderRadius.circular(12),[m
+[32m+[m[32m            border: Border.all(color: const Color(0xFFD4AF37), width: 1),[m
+[32m+[m[32m            boxShadow: [[m
+[32m+[m[32m              BoxShadow([m
+[32m+[m[32m                color: Colors.black.withOpacity(0.05),[m
+[32m+[m[32m                blurRadius: 4,[m
+[32m+[m[32m                offset: const Offset(0, 2),[m
+[32m+[m[32m              ),[m
+[32m+[m[32m            ],[m
+[32m+[m[32m          ),[m
+[32m+[m[32m          child: ExpansionTile([m
+[32m+[m[32m            leading: Container([m
+[32m+[m[32m              width: 40,[m
+[32m+[m[32m              height: 40,[m
+[32m+[m[32m              decoration: BoxDecoration([m
+[32m+[m[32m                color: overallSuccess[m
+[32m+[m[32m                    ? Colors.green.withOpacity(0.1)[m
+[32m+[m[32m                    : Colors.red.withOpacity(0.1),[m
+[32m+[m[32m                shape: BoxShape.circle,[m
+[32m+[m[32m              ),[m
+[32m+[m[32m              child: Icon([m
+[32m+[m[32m                overallSuccess ? Icons.check_circle : Icons.error,[m
+[32m+[m[32m                color: overallSuccess ? Colors.green : Colors.red,[m
+[32m+[m[32m                size: 24,[m
+[32m+[m[32m              ),[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            title: Text([m
+[32m+[m[32m              'VIN: ${item['vin']}',[m
+[32m+[m[32m              style: const TextStyle([m
+[32m+[m[32m                color: Color(0xFFDC143C),[m
+[32m+[m[32m                fontWeight: FontWeight.bold,[m
+[32m+[m[32m                fontSize: 14,[m
+[32m+[m[32m              ),[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            subtitle: Row([m
+[32m+[m[32m              children: [[m
+[32m+[m[32m                Expanded([m
+[32m+[m[32m                  child: Text([m
+[32m+[m[32m                    'Model: ${item['modelCode']} • ${_formatDate(date)} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}',[m
+[32m+[m[32m                    style: const TextStyle(fontSize: 11, color: Colors.grey),[m
+[32m+[m[32m                  ),[m
+[32m+[m[32m                ),[m
+[32m+[m[32m                Container([m
+[32m+[m[32m                  margin: const EdgeInsets.only(top: 2),[m
+[32m+[m[32m                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),[m
+[32m+[m[32m                  decoration: BoxDecoration([m
+[32m+[m[32m                    color: _shiftColor(shift).withOpacity(0.12),[m
+[32m+[m[32m                    borderRadius: BorderRadius.circular(8),[m
+[32m+[m[32m                    border: Border.all(color: _shiftColor(shift), width: 0.8),[m
+[32m+[m[32m                  ),[m
+[32m+[m[32m                  child: Text([m
+[32m+[m[32m                    'Shift $shift',[m
+[32m+[m[32m                    style: TextStyle([m
+[32m+[m[32m                      fontSize: 10,[m
+[32m+[m[32m                      color: _shiftColor(shift),[m
+[32m+[m[32m                      fontWeight: FontWeight.bold,[m
+[32m+[m[32m                    ),[m
+[32m+[m[32m                  ),[m
+[32m+[m[32m                ),[m
+[32m+[m[32m              ],[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            trailing: Row([m
+[32m+[m[32m              mainAxisSize: MainAxisSize.min,[m
+[32m+[m[32m              children: [[m
+[32m+[m[32m                IconButton([m
+[32m+[m[32m                  icon: const Icon(Icons.print_outlined,[m
+[32m+[m[32m                      color: Color(0xFFDC143C), size: 22),[m
+[32m+[m[32m                  tooltip: 'Print Report',[m
+[32m+[m[32m                  onPressed: () async {[m
+[32m+[m[32m                    final printers =[m
+[32m+[m[32m                        await PrintService.instance.getBondedPrinters();[m
+[32m+[m[32m                    if (!context.mounted) return;[m
+[32m+[m[32m                    if (printers.isEmpty) {[m
+[32m+[m[32m                      ScaffoldMessenger.of(context).showSnackBar([m
+[32m+[m[32m                        const SnackBar([m
+[32m+[m[32m                          content: Text([m
+[32m+[m[32m                              'No paired printer found. Please pair a Bluetooth printer in device settings.'),[m
+[32m+[m[32m                          backgroundColor: Colors.orange,[m
+[32m+[m[32m                          duration: Duration(seconds: 4),[m
+                         ),[m
+[32m+[m[32m                      );[m
+[32m+[m[32m                      return;[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                    ScaffoldMessenger.of(context).showSnackBar([m
+[32m+[m[32m                      SnackBar([m
+[32m+[m[32m                        content: Text('Printing to ${printers.first.name}...'),[m
+[32m+[m[32m                        backgroundColor: Colors.blue,[m
+[32m+[m[32m                        duration: const Duration(seconds: 2),[m
+[32m+[m[32m                      ),[m
+[32m+[m[32m                    );[m
+[32m+[m[32m                    final printSuccess =[m
+[32m+[m[32m                        await PrintService.instance.printInspectionReport([m
+[32m+[m[32m                      printer: printers.first,[m
+[32m+[m[32m                      vin: item['vin'] as String,[m
+[32m+[m[32m                      modelCode: item['modelCode'] as String,[m
+[32m+[m[32m                      timestamp: item['timestamp'] as String,[m
+[32m+[m[32m                      overallSuccess: overallSuccess,[m
+[32m+[m[32m                      tasks: List<Map<String, dynamic>>.from(tasks),[m
+[32m+[m[32m                    );[m
+[32m+[m[32m                    if (!context.mounted) return;[m
+[32m+[m[32m                    ScaffoldMessenger.of(context).showSnackBar([m
+[32m+[m[32m                      SnackBar([m
+[32m+[m[32m                        content: Text(printSuccess[m
+[32m+[m[32m                            ? 'Report printed to ${printers.first.name}'[m
+[32m+[m[32m                            : 'Print failed. Please check the printer.'),[m
+[32m+[m[32m                        backgroundColor:[m
+[32m+[m[32m                            printSuccess ? Colors.green : Colors.red,[m
+[32m+[m[32m                      ),[m
+[32m+[m[32m                    );[m
+[32m+[m[32m                  },[m
+[32m+[m[32m                ),[m
+[32m+[m[32m                const Icon(Icons.expand_more, color: Colors.grey),[m
+[32m+[m[32m              ],[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            children: [[m
+[32m+[m[32m              const Divider(height: 1),[m
+[32m+[m[32m              ...tasks.map((task) {[m
+[32m+[m[32m                final String? imgPath = task['imagePath'] as String?;[m
+[32m+[m[32m                final String? detectionsRaw = task['detectionsJson'] as String?;[m
+[32m+[m[32m                List<DetectionResult> detections = [];[m
+[32m+[m[32m                if (detectionsRaw != null) {[m
+[32m+[m[32m                  try {[m
+[32m+[m[32m                    detections = (jsonDecode(detectionsRaw) as List)[m
+[32m+[m[32m                        .map((e) =>[m
+[32m+[m[32m                            DetectionResult.fromJson(e as Map<String, dynamic>))[m
+[32m+[m[32m                        .toList();[m
+[32m+[m[32m                  } catch (_) {}[m
+[32m+[m[32m                }[m
+[32m+[m[32m                final hasImage = imgPath != null && File(imgPath).existsSync();[m
+[32m+[m
+[32m+[m[32m                return Column([m
+[32m+[m[32m                  crossAxisAlignment: CrossAxisAlignment.start,[m
+[32m+[m[32m                  children: [[m
+[32m+[m[32m                    Padding([m
+[32m+[m[32m                      padding: const EdgeInsets.symmetric([m
+[32m+[m[32m                          horizontal: 16, vertical: 10),[m
+[32m+[m[32m                      child: Row([m
+                         children: [[m
+[31m-                          const Divider(height: 1),[m
+[31m-                          ...tasks.map((task) => Padding([m
+[31m-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),[m
+[31m-                            child: Row([m
+[32m+[m[32m                          Icon([m
+[32m+[m[32m                            task['success'] ? Icons.check : Icons.close,[m
+[32m+[m[32m                            color: task['success'] ? Colors.green : Colors.red,[m
+[32m+[m[32m                            size: 16,[m
+[32m+[m[32m                          ),[m
+[32m+[m[32m                          const SizedBox(width: 12),[m
+[32m+[m[32m                          Expanded([m
+[32m+[m[32m                            child: Column([m
+[32m+[m[32m                              crossAxisAlignment: CrossAxisAlignment.start,[m
+                               children: [[m
+[31m-                                Icon([m
+[31m-                                  task['success'] ? Icons.check : Icons.close,[m
+[31m-                                  color: task['success'] ? Colors.green : Colors.red,[m
+[31m-                                  size: 16,[m
+[32m+[m[32m                                Text([m
+[32m+[m[32m                                  task['taskName'] ?? 'Task',[m
+[32m+[m[32m                                  style: const TextStyle([m
+[32m+[m[32m                                      fontWeight: FontWeight.bold,[m
+[32m+[m[32m                                      fontSize: 13),[m
+                                 ),[m
+[31m-                                const SizedBox(width: 12),[m
+[31m-                                Expanded([m
+[31m-                                  child: Column([m
+[31m-                                    crossAxisAlignment: CrossAxisAlignment.start,[m
+[31m-                                    children: [[m
+[31m-                                      Text(task['taskName'] ?? 'Task', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),[m
+[31m-                                      Text('Detected: ${task['detectedPart']}', style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),[m
+[31m-                                    ],[m
+[31m-                                  ),[m
+[32m+[m[32m                                Text([m
+[32m+[m[32m                                  'Detected: ${task['detectedPart']}',[m
+[32m+[m[32m                                  style: const TextStyle([m
+[32m+[m[32m                                      fontSize: 11, color: Colors.blueGrey),[m
+                                 ),[m
+                               ],[m
+                             ),[m
+[31m-                          )).toList(),[m
+[31m-                          const SizedBox(height: 8),[m
+[32m+[m[32m                          ),[m
+                         ],[m
+                       ),[m
+[31m-                    );[m
+[31m-                  },[m
+[31m-                ),[m
+[32m+[m[32m                    ),[m
+[32m+[m[32m                    if (hasImage)[m
+[32m+[m[32m                      Padding([m
+[32m+[m[32m                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),[m
+[32m+[m[32m                        child: ClipRRect([m
+[32m+[m[32m                          borderRadius: BorderRadius.circular(8),[m
+[32m+[m[32m                          child: SizedBox([m
+[32m+[m[32m                            height: 220,[m
+[32m+[m[32m                            width: double.infinity,[m
+[32m+[m[32m                            child: _HistoryImageWithOverlay([m
+[32m+[m[32m                              imagePath: imgPath!,[m
+[32m+[m[32m                              detections: detections,[m
+[32m+[m[32m                            ),[m
+[32m+[m[32m                          ),[m
+[32m+[m[32m                        ),[m
+[32m+[m[32m                      ),[m
+[32m+[m[32m                  ],[m
+[32m+[m[32m                );[m
+[32m+[m[32m              }).toList(),[m
+[32m+[m[32m              const SizedBox(height: 8),[m
+[32m+[m[32m            ],[m
+[32m+[m[32m          ),[m
+[32m+[m[32m        );[m
+[32m+[m[32m      },[m
+     );[m
+   }[m
+ }[m
+ [m
+[32m+[m[32m// ── Image + overlay helper ────────────────────────────────────────────────────[m
+[32m+[m
+[32m+[m[32mclass _HistoryImageWithOverlay extends StatefulWidget {[m
+[32m+[m[32m  final String imagePath;[m
+[32m+[m[32m  final List<DetectionResult> detections;[m
+[32m+[m
+[32m+[m[32m  const _HistoryImageWithOverlay([m
+[32m+[m[32m      {required this.imagePath, required this.detections});[m
+[32m+[m
+[32m+[m[32m  @override[m
+[32m+[m[32m  State<_HistoryImageWithOverlay> createState() =>[m
+[32m+[m[32m      _HistoryImageWithOverlayState();[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mclass _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {[m
+[32m+[m[32m  Size? _imageSize;[m
+[32m+[m
+[32m+[m[32m  @override[m
+[32m+[m[32m  void initState() {[m
+[32m+[m[32m    super.initState();[m
+[32m+[m[32m    _loadSize();[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  Future<void> _loadSize() async {[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      final bytes = await File(widget.imagePath).readAsBytes();[m
+[32m+[m[32m      final decoded = img.decodeImage(bytes);[m
+[32m+[m[32m      if (decoded != null && mounted) {[m
+[32m+[m[32m        final oriented = img.bakeOrientation(decoded);[m
+[32m+[m[32m        setState(() =>[m
+[32m+[m[32m            _imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble()));[m
+[32m+[m[32m      }[m
+[32m+[m[32m    } catch (_) {}[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  @override[m
+[32m+[m[32m  Widget build(BuildContext context) {[m
+[32m+[m[32m    if (_imageSize == null) {[m
+[32m+[m[32m      return Image.file([m
+[32m+[m[32m        File(widget.imagePath),[m
+[32m+[m[32m        fit: BoxFit.contain,[m
+[32m+[m[32m        width: double.infinity,[m
+[32m+[m[32m        errorBuilder: (_, __, ___) => Container([m
+[32m+[m[32m          color: Colors.grey[200],[m
+[32m+[m[32m          child: const Center(child: Icon(Icons.broken_image, color: Colors.grey, size: 40)),[m
+[32m+[m[32m        ),[m
+[32m+[m[32m      );[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return FittedBox([m
+[32m+[m[32m      fit: BoxFit.contain,[m
+[32m+[m[32m      child: SizedBox([m
+[32m+[m[32m        width: _imageSize!.width,[m
+[32m+[m[32m        height: _imageSize!.height,[m
+[32m+[m[32m        child: Stack([m
+[32m+[m[32m          fit: StackFit.expand,[m
+[32m+[m[32m          children: [[m
+[32m+[m[32m            Image.file([m
+[32m+[m[32m              File(widget.imagePath),[m
+[32m+[m[32m              fit: BoxFit.fill,[m
+[32m+[m[32m              width: _imageSize!.width,[m
+[32m+[m[32m              height: _imageSize!.height,[m
+[32m+[m[32m              errorBuilder: (_, __, ___) => Container(color: Colors.grey[200]),[m
+[32m+[m[32m            ),[m
+[32m+[m[32m            if (widget.detections.isNotEmpty)[m
+[32m+[m[32m              DetectionOverlay([m
+[32m+[m[32m                results: widget.detections,[m
+[32m+[m[32m                previewSize: _imageSize!,[m
+[32m+[m[32m              ),[m
+[32m+[m[32m          ],[m
+[32m+[m[32m        ),[m
+[32m+[m[32m      ),[m
+[32m+[m[32m    );[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[1mdiff --git a/backend/app/codegen/templates/inspection_camera_screen.dart.j2 b/backend/app/codegen/templates/inspection_camera_screen.dart.j2[m
+[1mindex 44755f0..ce93320 100644[m
+[1m--- a/backend/app/codegen/templates/inspection_camera_screen.dart.j2[m
+[1m+++ b/backend/app/codegen/templates/inspection_camera_screen.dart.j2[m
+[36m@@ -1,11 +1,15 @@[m
+[32m+[m[32mimport 'dart:io';[m
+ import 'package:camera/camera.dart';[m
+ import 'package:flutter/material.dart';[m
+ import 'dart:convert';[m
+ import 'dart:typed_data';[m
+[32m+[m[32mimport 'package:image/image.dart' as img;[m
+[32m+[m[32mimport 'package:path_provider/path_provider.dart';[m
+ import 'package:shared_preferences/shared_preferences.dart';[m
+ import '../ml/detector.dart';[m
+ import '../ml/detection_result.dart';[m
+ import '../database/database.dart';[m
+[32m+[m[32mimport '../widgets/detection_overlay.dart';[m
+ [m
+ class InspectionCameraScreen extends StatefulWidget {[m
+   final String vin;[m
+[36m@@ -29,6 +33,7 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+   CameraController? _cameraController;[m
+   bool _isCameraInitialized = false;[m
+   Uint8List? _capturedImageBytes;[m
+[32m+[m[32m  Size? _capturedImageSize;[m
+   DetectionResult? _bestResult;[m
+   bool _isAnalyzing = false;[m
+   bool _isModelLoaded = false;[m
+[36m@@ -39,6 +44,10 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+   List<String> _debugLogs = [];[m
+   bool _showDebugConsole = false;[m
+ [m
+[32m+[m[32m  bool _isFlashOn = false;[m
+[32m+[m
+[32m+[m[32m  List<DetectionResult> _allDetections = [];[m
+[32m+[m[32m  List<DetectionResult> _detectedNonTargetClasses = [];[m
+   int _currentIndex = 0;[m
+   final Map<int, dynamic> _results = {};[m
+ [m
+[36m@@ -80,6 +89,7 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+           _isModelLoaded = true;[m
+         });[m
+         _addLog("Model loaded. Target classes: ${task['classes']}");[m
+[32m+[m[32m        _addLog("Labels in model: ${ModelManager().labelsCount}");[m
+       }[m
+     } catch (e) {[m
+       _addLog("AI Init error: $e");[m
+[36m@@ -90,6 +100,9 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+   @override[m
+   void dispose() {[m
+     WidgetsBinding.instance.removeObserver(this);[m
+[32m+[m[32m    if (_isFlashOn) {[m
+[32m+[m[32m      _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});[m
+[32m+[m[32m    }[m
+     _cameraController?.dispose();[m
+     super.dispose();[m
+   }[m
+[36m@@ -101,6 +114,10 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+       return;[m
+     }[m
+     if (state == AppLifecycleState.inactive) {[m
+[32m+[m[32m      if (_isFlashOn) {[m
+[32m+[m[32m        cameraController.setFlashMode(FlashMode.off).catchError((_) {});[m
+[32m+[m[32m        setState(() => _isFlashOn = false);[m
+[32m+[m[32m      }[m
+       cameraController.dispose();[m
+     } else if (state == AppLifecycleState.resumed) {[m
+       _initializeCamera();[m
+[36m@@ -116,7 +133,9 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+         return;[m
+       }[m
+       final backCamera = cameras.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cameras.first);[m
+[31m-      final controller = CameraController(backCamera, ResolutionPreset.high, enableAudio: false);[m
+[32m+[m[32m      // ResolutionPreset.medium (~720p) is sufficient for 640×640 model input and[m
+[32m+[m[32m      // cuts JPEG decode time roughly in half vs. high (~1080p).[m
+[32m+[m[32m      final controller = CameraController(backCamera, ResolutionPreset.medium, enableAudio: false);[m
+       _cameraController = controller;[m
+       await controller.initialize();[m
+       if (mounted) setState(() => _isCameraInitialized = true);[m
+[36m@@ -136,37 +155,145 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+       _addLog("--- Start Inference ---");[m
+       final XFile image = await _cameraController!.takePicture();[m
+       final bytes = await image.readAsBytes();[m
+[31m-      setState(() { _isAnalyzing = true; _bestResult = null; _capturedImageBytes = bytes; });[m
+[32m+[m
+[32m+[m[32m      // Decode EXIF-corrected dimensions and run blur detection.[m
+[32m+[m[32m      // We keep a reference to the oriented image so that inference can reuse it[m
+[32m+[m[32m      // directly (predictImage), avoiding a second decode + bakeOrientation call.[m
+[32m+[m[32m      Size? imageSize;[m
+[32m+[m[32m      img.Image? orientedImage; // reused by inference below[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        final decoded = img.decodeImage(bytes);[m
+[32m+[m[32m        if (decoded != null) {[m
+[32m+[m[32m          final oriented = img.bakeOrientation(decoded);[m
+[32m+[m[32m          orientedImage = oriented; // captured for inference[m
+[32m+[m[32m          imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble());[m
+[32m+[m
+[32m+[m[32m          // Blur detection: Laplacian variance on a 150×150 thumbnail.[m
+[32m+[m[32m          // Sharp images have high variance; blurry images have low variance.[m
+[32m+[m[32m          final small = img.copyResize(oriented, width: 150, height: 150);[m
+[32m+[m[32m          final gray = img.grayscale(small);[m
+[32m+[m[32m          double sumLap = 0, sumLapSq = 0;[m
+[32m+[m[32m          int count = 0;[m
+[32m+[m[32m          for (int y = 1; y < gray.height - 1; y++) {[m
+[32m+[m[32m            for (int x = 1; x < gray.width - 1; x++) {[m
+[32m+[m[32m              final c = gray.getPixel(x, y).r.toDouble();[m
+[32m+[m[32m              final t = gray.getPixel(x, y - 1).r.toDouble();[m
+[32m+[m[32m              final b = gray.getPixel(x, y + 1).r.toDouble();[m
+[32m+[m[32m              final l = gray.getPixel(x - 1, y).r.toDouble();[m
+[32m+[m[32m              final rv = gray.getPixel(x + 1, y).r.toDouble();[m
+[32m+[m[32m              final lap = t + b + l + rv - 4 * c;[m
+[32m+[m[32m              sumLap += lap;[m
+[32m+[m[32m              sumLapSq += lap * lap;[m
+[32m+[m[32m              count++;[m
+[32m+[m[32m            }[m
+[32m+[m[32m          }[m
+[32m+[m[32m          if (count > 0) {[m
+[32m+[m[32m            final mean = sumLap / count;[m
+[32m+[m[32m            final blurVariance = (sumLapSq / count) - (mean * mean);[m
+[32m+[m[32m            _addLog('Blur variance: ${blurVariance.toStringAsFixed(1)}');[m
+[32m+[m[32m            if (blurVariance < 150.0 && mounted) {[m
+[32m+[m[32m              await showDialog([m
+[32m+[m[32m                context: context,[m
+[32m+[m[32m                barrierDismissible: false,[m
+[32m+[m[32m                builder: (_) => AlertDialog([m
+[32m+[m[32m                  backgroundColor: const Color(0xFF1A1A24),[m
+[32m+[m[32m                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),[m
+[32m+[m[32m                  title: const Row(children: [[m
+[32m+[m[32m                    Icon(Icons.blur_on, color: Color(0xFFDC143C)),[m
+[32m+[m[32m                    SizedBox(width: 8),[m
+[32m+[m[32m                    Text('Image Not Clear', style: TextStyle(color: Colors.white, fontSize: 18)),[m
+[32m+[m[32m                  ]),[m
+[32m+[m[32m                  content: const Text([m
+[32m+[m[32m                    'The photo appears blurry or out of focus.\nPlease hold the device steady and retake.',[m
+[32m+[m[32m                    style: TextStyle(color: Colors.white70, height: 1.5),[m
+[32m+[m[32m                  ),[m
+[32m+[m[32m                  actions: [[m
+[32m+[m[32m                    ElevatedButton.icon([m
+[32m+[m[32m                      onPressed: () => Navigator.pop(context),[m
+[32m+[m[32m                      icon: const Icon(Icons.camera_alt, color: Colors.white, size: 18),[m
+[32m+[m[32m                      label: const Text('Retake', style: TextStyle(color: Colors.white)),[m
+[32m+[m[32m                      style: ElevatedButton.styleFrom([m
+[32m+[m[32m                        backgroundColor: const Color(0xFFDC143C),[m
+[32m+[m[32m                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),[m
+[32m+[m[32m                      ),[m
+[32m+[m[32m                    ),[m
+[32m+[m[32m                  ],[m
+[32m+[m[32m                ),[m
+[32m+[m[32m              );[m
+[32m+[m[32m              return; // Abort — don't run detection on a blurry image[m
+[32m+[m[32m            }[m
+[32m+[m[32m          }[m
+[32m+[m[32m        }[m
+[32m+[m[32m      } catch (_) {}[m
+[32m+[m
+[32m+[m[32m      setState(() {[m
+[32m+[m[32m        _isAnalyzing = true;[m
+[32m+[m[32m        _bestResult = null;[m
+[32m+[m[32m        _capturedImageBytes = bytes;[m
+[32m+[m[32m        _capturedImageSize = imageSize;[m
+[32m+[m[32m      });[m
+       [m
+       final currentTask = widget.tasks[_currentIndex];[m
+       final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);[m
+       _addLog("Target: ${targetClasses.join(', ')}");[m
+       [m
+[31m-      final allDetections = await ModelManager().predictBytes(bytes);[m
+[32m+[m[32m      // Fast path: skip re-decode + re-orient by reusing the image from blur detection.[m
+[32m+[m[32m      // Falls back to predictBytes (raw JPEG) if blur detection was skipped.[m
+[32m+[m[32m      final allDetections = orientedImage != null[m
+[32m+[m[32m          ? await ModelManager().predictImage(orientedImage)[m
+[32m+[m[32m          : await ModelManager().predictBytes(bytes);[m
+[32m+[m[32m      setState(() => _allDetections = allDetections);[m
+[32m+[m
+[32m+[m[32m      // Persist captured image to device storage for history[m
+[32m+[m[32m      String? savedImagePath;[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        final dir = await getApplicationDocumentsDirectory();[m
+[32m+[m[32m        final imgDir = Directory('${dir.path}/inspection_images');[m
+[32m+[m[32m        await imgDir.create(recursive: true);[m
+[32m+[m[32m        savedImagePath = '${imgDir.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';[m
+[32m+[m[32m        await File(savedImagePath).writeAsBytes(bytes);[m
+[32m+[m[32m      } catch (e) {[m
+[32m+[m[32m        _addLog("Image save error: $e");[m
+[32m+[m[32m      }[m
+       _addLog("Raw objects found: ${allDetections.length}");[m
+[31m-      [m
+[32m+[m
+       for(var d in allDetections) {[m
+         _addLog("Found: ${d.className} (${(d.confidence*100).toStringAsFixed(1)}%)");[m
+       }[m
+ [m
+[31m-      final filtered = allDetections.where((d) => targetClasses.any((tc) => d.className.toLowerCase().contains(tc.toLowerCase()))).toList();[m
+[32m+[m[32m      final filtered = allDetections.where((d) => targetClasses.any((tc) => d.className.toLowerCase() == tc.toLowerCase())).toList();[m
+       _addLog("Matches after filtering: ${filtered.length}");[m
+[31m-      [m
+[32m+[m
+       setState(() {[m
+         if (filtered.isNotEmpty) {[m
+           filtered.sort((a, b) => b.confidence.compareTo(a.confidence));[m
+           _bestResult = filtered.first;[m
+           _addLog("WINNER: ${_bestResult!.className}");[m
+[31m-          [m
+[32m+[m
+[32m+[m[32m          // Store only the single winning bbox so history shows one clean box.[m
+[32m+[m[32m          final detectionsJson = jsonEncode([_bestResult!.toJson()]);[m
+[32m+[m
+           _results[_currentIndex] = {[m
+             'className': _bestResult!.className,[m
+             'success': true,[m
+[32m+[m[32m            'imagePath': savedImagePath,[m
+[32m+[m[32m            'detectionsJson': detectionsJson,[m
+           };[m
+         } else {[m
+[31m-          _addLog("RESULT: NOT FOUND");[m
+[32m+[m[32m          // Model detected something but it's not the target class.[m
+[32m+[m[32m          final nonTarget = List<DetectionResult>.from(allDetections)[m
+[32m+[m[32m            ..sort((a, b) => b.confidence.compareTo(a.confidence));[m
+[32m+[m[32m          _detectedNonTargetClasses = nonTarget.take(3).toList();[m
+[32m+[m[32m          final bestDetected = allDetections.isNotEmpty[m
+[32m+[m[32m              ? allDetections.reduce((a, b) => a.confidence > b.confidence ? a : b)[m
+[32m+[m[32m              : null;[m
+[32m+[m[32m          final detectedLabel = bestDetected?.className ?? 'nothing';[m
+[32m+[m[32m          _addLog("Wrong image: target is '${targetClasses.join(', ')}' but detected '$detectedLabel'");[m
+           _results[_currentIndex] = {[m
+[31m-            'className': 'None',[m
+[32m+[m[32m            'className': bestDetected?.className ?? 'None',[m
+             'success': false,[m
+[32m+[m[32m            'imagePath': savedImagePath,[m
+[32m+[m[32m            'detectionsJson': bestDetected != null ? jsonEncode([bestDetected.toJson()]) : jsonEncode([]),[m
+           };[m
+         }[m
+         _isAnalyzing = false;[m
+[36m@@ -178,13 +305,27 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+     }[m
+   }[m
+ [m
+[32m+[m[32m  Future<void> _toggleFlash() async {[m
+[32m+[m[32m    if (_cameraController == null || !_isCameraInitialized) return;[m
+[32m+[m[32m    final newFlashOn = !_isFlashOn;[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      await _cameraController!.setFlashMode(newFlashOn ? FlashMode.torch : FlashMode.off);[m
+[32m+[m[32m      setState(() => _isFlashOn = newFlashOn);[m
+[32m+[m[32m      _addLog("Flash ${newFlashOn ? 'ON' : 'OFF'}");[m
+[32m+[m[32m    } catch (e) {[m
+[32m+[m[32m      _addLog("Flash error: $e");[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m
+   void _retake() {[m
+     _addLog("Retake requested");[m
+[31m-    setState(() { _capturedImageBytes = null; _bestResult = null; _isAnalyzing = false; });[m
+[32m+[m[32m    setState(() { _capturedImageBytes = null; _capturedImageSize = null; _bestResult = null; _isAnalyzing = false; _allDetections = []; _detectedNonTargetClasses = []; });[m
+   }[m
+ [m
+   void _onSaveAndContinue() {[m
+[31m-    _results[_currentIndex] = {[m
+[32m+[m[32m    // _handleCapture already stored the full result (imagePath, detectionsJson).[m
+[32m+[m[32m    // Only fall back if somehow the capture result is missing.[m
+[32m+[m[32m    _results[_currentIndex] ??= {[m
+       'className': _bestResult?.className ?? 'None',[m
+       'success': _bestResult != null,[m
+     };[m
+[36m@@ -266,8 +407,38 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+                   children: [[m
+                     if (_capturedImageBytes == null)[m
+                       Positioned.fill(child: _isCameraInitialized && _cameraController != null ? CameraPreview(_cameraController!) : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))),[m
+[32m+[m
+[32m+[m[32m                    // Show captured image with bbox overlay. FittedBox + SizedBox[m
+[32m+[m[32m                    // ensures the overlay coordinate system exactly matches the[m
+[32m+[m[32m                    // visible image pixels (no letterbox offset errors).[m
+                     if (_capturedImageBytes != null)[m
+[31m-                      Positioned.fill(child: Image.memory(_capturedImageBytes!, fit: BoxFit.contain)),[m
+[32m+[m[32m                      Positioned.fill([m
+[32m+[m[32m                        child: _capturedImageSize != null[m
+[32m+[m[32m                          ? FittedBox([m
+[32m+[m[32m                              fit: BoxFit.contain,[m
+[32m+[m[32m                              child: SizedBox([m
+[32m+[m[32m                                width: _capturedImageSize!.width,[m
+[32m+[m[32m                                height: _capturedImageSize!.height,[m
+[32m+[m[32m                                child: Stack([m
+[32m+[m[32m                                  fit: StackFit.expand,[m
+[32m+[m[32m                                  children: [[m
+[32m+[m[32m                                    Image.memory([m
+[32m+[m[32m                                      _capturedImageBytes!,[m
+[32m+[m[32m                                      fit: BoxFit.fill,[m
+[32m+[m[32m                                      width: _capturedImageSize!.width,[m
+[32m+[m[32m                                      height: _capturedImageSize!.height,[m
+[32m+[m[32m                                    ),[m
+[32m+[m[32m                                    if (_bestResult != null)[m
+[32m+[m[32m                                      DetectionOverlay([m
+[32m+[m[32m                                        results: [_bestResult!],[m
+[32m+[m[32m                                        previewSize: _capturedImageSize!,[m
+[32m+[m[32m                                      ),[m
+[32m+[m[32m                                  ],[m
+[32m+[m[32m                                ),[m
+[32m+[m[32m                              ),[m
+[32m+[m[32m                            )[m
+[32m+[m[32m                          : Image.memory(_capturedImageBytes!, fit: BoxFit.contain),[m
+[32m+[m[32m                      ),[m
+ [m
+                     if (_capturedImageBytes == null)[m
+                       Center(child: Container(width: 280, height: 280, decoration: BoxDecoration(border: Border.all(color: const Color(0xFFDC143C), width: 2)))),[m
+[36m@@ -278,13 +449,100 @@[m [mclass _InspectionCameraScreenState extends State<InspectionCameraScreen> with Wi[m
+                     if (_isAnalyzing)[m
+                       Container(color: Colors.black54, child: const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C)))),[m
+ [m
+[32m+[m[32m                    // Flashlight toggle — visible only during live camera preview[m
+[32m+[m[32m                    if (_capturedImageBytes == null && _isCameraInitialized)[m
+[32m+[m[32m                      Positioned([m
+[32m+[m[32m                        top: 16, left: 16,[m
+[32m+[m[32m                        child: GestureDetector([m
+[32m+[m[32m                          onTap: _toggleFlash,[m
+[32m+[m[32m                          child: Container([m
+[32m+[m[32m                            width: 48, height: 48,[m
+[32m+[m[32m                            decoration: BoxDecoration([m
+[32m+[m[32m                              color: _isFlashOn ? const Color(0xFFFFD700) : Colors.black54,[m
+[32m+[m[32m                              shape: BoxShape.circle,[m
+[32m+[m[32m                              border: Border.all(color: _isFlashOn ? const Color(0xFFFFD700) : Colors.white30, width: 1.5),[m
+[32m+[m[32m                            ),[m
+[32m+[m[32m                            child: Icon([m
+[32m+[m[32m                              _isFlashOn ? Icons.flashlight_on : Icons.flashlight_off,[m
+[32m+[m[32m                              color: _isFlashOn ? Colors.black : Colors.white,[m
+[32m+[m[32m                              size: 24,[m
+[32m+[m[32m                            ),[m
+[32m+[m[32m                          ),[m
+[32m+[m[32m                        ),[m
+[32m+[m[32m                      ),[m
+[32m+[m
+[32m+[m[32m                    // Top-right status badge[m
+                     if (!_isAnalyzing && _capturedImageBytes != null)[m
+                       Positioned([m
+                         top: 16, right: 16,[m
+                         child: Container([m
+                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),[m
+[31m-                          decoration: BoxDecoration(color: _bestResult != null ? Colors.green : Colors.red, borderRadius: BorderRadius.circular(20)),[m
+[31m-                          child: Text(_bestResult != null ? 'OK: ${_bestResult!.className}' : 'NOT FOUND', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),[m
+[32m+[m[32m                          decoration: BoxDecoration([m
+[32m+[m[32m                            color: _bestResult == null[m
+[32m+[m[32m                                ? Colors.red[m
+[32m+[m[32m                                : (_bestResult!.className.toLowerCase().contains('not ok') ? Colors.red : Colors.green),[m
+[32m+[m[32m                            borderRadius: BorderRadius.circular(20),[m
+[32m+[m[32m                          ),[m
+[32m+[m[32m                          child: _bestResult != null[m
+[32m+[m[32m                              ? Text('✓  ${_bestResult!.className}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))[m
+[32m+[m[32m                              : Text([m
+[32m+[m[32m                                  _detectedNonTargetClasses.isNotEmpty[m
+[32m+[m[32m                                      ? 'Detected: ${_detectedNonTargetClasses.first.className}'[m
+[32m+[m[32m                                      : 'Wrong image',[m
+[32m+[m[32m                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),[m
+[32m+[m[32m                                ),[m
+[32m+[m[32m                        ),[m
+[32m+[m[32m                      ),[m
+[32m+[m
+[32m+[m[32m                    // Bottom panel — shown when NOT FOUND (and debug console is hidden)[m
+[32m+[m[32m                    if (!_isAnalyzing && _capturedImageBytes != null && _bestResult == null && !_showDebugConsole)[m
+[32m+[m[32m                      Positioned([m
+[32m+[m[32m                        bottom: 0, left: 0, right: 0,[m
+[32m+[m[32m                        child: Container([m
+[32m+[m[32m                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),[m
+[32m+[m[32m                          decoration: BoxDecoration([m
+[32m+[m[32m                            color: Colors.black.withOpacity(0.88),[m
+[32m+[m[32m                            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),[m
+[32m+[m[32m                          ),[m
+[32m+[m[32m                          child: Column([m
+[32m+[m[32m                            mainAxisSize: MainAxisSize.min,[m
+[32m+[m[32m                            crossAxisAlignment: CrossAxisAlignment.start,[m
+[32m+[m[32m                            children: [[m
+[32m+[m[32m                              Row(children: [[m
+[32m+[m[32m                                const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 16),[m
+[32m+[m[32m                                const SizedBox(width: 6),[m
+[32m+[m[32m                                const Text('Wrong image captured', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 13)),[m
+[32m+[m[32m                              ]),[m
+[32m+[m[32m                              const SizedBox(height: 10),[m
+[32m+[m[32m                              Row(children: [[m
+[32m+[m[32m                                const Icon(Icons.track_changes, color: Colors.blue, size: 14),[m
+[32m+[m[32m                                const SizedBox(width: 6),[m
+[32m+[m[32m                                const Text('Target class: ', style: TextStyle(color: Colors.white54, fontSize: 12)),[m
+[32m+[m[32m                                Expanded([m
+[32m+[m[32m                                  child: Text([m
+[32m+[m[32m                                    List<String>.from(widget.tasks[_currentIndex]['classes'] ?? []).join(', '),[m
+[32m+[m[32m                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),[m
+[32m+[m[32m                                    overflow: TextOverflow.ellipsis,[m
+[32m+[m[32m                                  ),[m
+[32m+[m[32m                                ),[m
+[32m+[m[32m                              ]),[m
+[32m+[m[32m                              const SizedBox(height: 6),[m
+[32m+[m[32m                              Row(children: [[m
+[32m+[m[32m                                const Icon(Icons.find_in_page, color: Colors.red, size: 14),[m
+[32m+[m[32m                                const SizedBox(width: 6),[m
+[32m+[m[32m                                const Text('Detected: ', style: TextStyle(color: Colors.white54, fontSize: 12)),[m
+[32m+[m[32m                                Expanded([m
+[32m+[m[32m                                  child: Text([m
+[32m+[m[32m                                    _detectedNonTargetClasses.isNotEmpty[m
+[32m+[m[32m                                        ? '${_detectedNonTargetClasses.first.className} (${(_detectedNonTargetClasses.first.confidence * 100).toStringAsFixed(0)}%)'[m
+[32m+[m[32m                                        : 'nothing',[m
+[32m+[m[32m                                    style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w600, fontSize: 12),[m
+[32m+[m[32m                                    overflow: TextOverflow.ellipsis,[m
+[32m+[m[32m                                  ),[m
+[32m+[m[32m                                ),[m
+[32m+[m[32m                              ]),[m
+[32m+[m[32m                            ],[m
+[32m+[m[32m                          ),[m
+                         ),[m
+                       ),[m
+                       [m
+[1mdiff --git a/frontend/src/components/AppBuilder.js b/frontend/src/components/AppBuilder.js[m
+[1mindex 8af4060..b5623df 100644[m
+[1m--- a/frontend/src/components/AppBuilder.js[m
+[1m+++ b/frontend/src/components/AppBuilder.js[m
+[36m@@ -1,6 +1,7 @@[m
+ import React, { useState, useEffect, useRef, useCallback } from 'react';[m
+ import { useParams, useNavigate } from 'react-router-dom';[m
+[31m-import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings } from '../api';[m
+[32m+[m[32mimport { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';[m
+[32m+[m[32mimport ConfirmModal from './ConfirmModal';[m
+ [m
+ const C = {[m
+   surface: 'var(--surface)', surface2: 'var(--surface2)',[m
+[36m@@ -22,6 +23,7 @@[m [mexport default function AppBuilder() {[m
+   const [buildLoading, setBuildLoading] = useState(false);[m
+   const [showModelModal, setShowModelModal] = useState(false);[m
+   const [showProfileModal, setShowProfileModal] = useState(false);[m
+[32m+[m[32m  const [confirmConfig, setConfirmConfig] = useState(null);[m
+   [m
+   const pollingRef = useRef(null);[m
+   const logEndRef = useRef(null);[m
+[36m@@ -83,11 +85,18 @@[m [mexport default function AppBuilder() {[m
+     loadData();[m
+   };[m
+ [m
+[31m-  const removeTask = async (taskIdx) => {[m
+[31m-    if (!window.confirm('Are you sure you want to remove this inspection task?')) return;[m
+[31m-    const newTasks = app.inspection_tasks.filter((_, i) => i !== taskIdx);[m
+[31m-    await updateApp(id, { inspection_tasks: newTasks });[m
+[31m-    loadData();[m
+[32m+[m[32m  const removeTask = (taskIdx) => {[m
+[32m+[m[32m    setConfirmConfig({[m
+[32m+[m[32m      title: 'Remove Inspection Task',[m
+[32m+[m[32m      message: 'This inspection task will be removed from the app configuration.',[m
+[32m+[m[32m      confirmLabel: 'Remove',[m
+[32m+[m[32m      onConfirm: async () => {[m
+[32m+[m[32m        setConfirmConfig(null);[m
+[32m+[m[32m        const newTasks = app.inspection_tasks.filter((_, i) => i !== taskIdx);[m
+[32m+[m[32m        await updateApp(id, { inspection_tasks: newTasks });[m
+[32m+[m[32m        loadData();[m
+[32m+[m[32m      },[m
+[32m+[m[32m    });[m
+   };[m
+ [m
+   const [draggedIdx, setDraggedIdx] = useState(null);[m
+[36m@@ -278,11 +287,20 @@[m [mexport default function AppBuilder() {[m
+       {showProfileModal && <ProfileModal existingApp={app} startAtReview={modalStartAtReview} onClose={() => { setShowProfileModal(false); loadData(); }} />}[m
+       [m
+       <style>{` @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } } `}</style>[m
+[32m+[m
+[32m+[m[32m      <ConfirmModal[m
+[32m+[m[32m        isOpen={!!confirmConfig}[m
+[32m+[m[32m        title={confirmConfig?.title}[m
+[32m+[m[32m        message={confirmConfig?.message}[m
+[32m+[m[32m        confirmLabel={confirmConfig?.confirmLabel}[m
+[32m+[m[32m        onConfirm={confirmConfig?.onConfirm}[m
+[32m+[m[32m        onCancel={() => setConfirmConfig(null)}[m
+[32m+[m[32m      />[m
+     </div>[m
+   );[m
+ }[m
+ [m
+[31m-import { Plus, Trash2, Edit3, ChevronRight, ArrowLeft, Check, ChevronDown, ArrowUp, ArrowDown, Search, Download } from 'lucide-react';[m
+[32m+[m[32mimport { Plus, Trash2, Edit3, ChevronRight, ArrowLeft, Check, ChevronDown, ArrowUp, ArrowDown, Search, Download, ImageIcon } from 'lucide-react';[m
+ [m
+ function ProfileModal({ onClose, existingApp, startAtReview = false }) {[m
+   const navigate = useNavigate();[m
+[36m@@ -335,7 +353,8 @@[m [mfunction ProfileModal({ onClose, existingApp, startAtReview = false }) {[m
+             acc[code].push({[m
+               modelId: t.modelId,[m
+               class: t.classes?.[0] || '',[m
+[31m-              instruction: t.instruction || t.taskName || ''[m
+[32m+[m[32m              instruction: t.instruction || t.taskName || '',[m
+[32m+[m[32m              referenceImage: t.referenceImage || null,[m
+             });[m
+             return acc;[m
+           }, {});[m
+[36m@@ -434,7 +453,7 @@[m [mfunction ProfileModal({ onClose, existingApp, startAtReview = false }) {[m
+ [m
+   const handleAddRowAI = (rowIndex) => {[m
+     const newData = [...reviewData];[m
+[31m-    newData[rowIndex].selectedAIModels.push({ modelId: '', class: '', instruction: '' });[m
+[32m+[m[32m    newData[rowIndex].selectedAIModels.push({ modelId: '', class: '', instruction: '', referenceImage: null });[m
+     setReviewData(newData);[m
+   };[m
+ [m
+[36m@@ -462,7 +481,8 @@[m [mfunction ProfileModal({ onClose, existingApp, startAtReview = false }) {[m
+             tflitePath: model.tflite_path,[m
+             labelsPath: model.labels_path,[m
+             vehicleCode: row.model_code,[m
+[31m-            instruction: ai.instruction[m
+[32m+[m[32m            instruction: ai.instruction,[m
+[32m+[m[32m            referenceImage: ai.referenceImage || null,[m
+           });[m
+         }[m
+       });[m
+[36m@@ -683,6 +703,7 @@[m [mfunction ProfileModal({ onClose, existingApp, startAtReview = false }) {[m
+                     <th style={{ ...thStyle, width: '180px' }}>AI Model</th>[m
+                     <th style={{ ...thStyle, width: '140px' }}>Class</th>[m
+                     <th style={thStyle}>Instruction / Description</th>[m
+[32m+[m[32m                    <th style={{ ...thStyle, width: '80px' }}>Ref. Image</th>[m
+                     <th style={{ ...thStyle, textAlign: 'right', width: '90px' }}>Reorder</th>[m
+                     <th style={{ ...thStyle, textAlign: 'right', width: '50px' }}></th>[m
+                   </tr>[m
+[36m@@ -692,10 +713,10 @@[m [mfunction ProfileModal({ onClose, existingApp, startAtReview = false }) {[m
+                     <tr key={row.id} style={{ borderBottom: `1px solid ${C.border}` }}>[m
+                       <td style={tdStyle}><div style={{ fontWeight: 700, fontSize: 13 }}>{row.platform_name}</div></td>[m
+                       <td style={tdStyle}><span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span></td>[m
+[31m-                      <td colSpan={5} style={{ padding: 0 }}>[m
+[32m+[m[32m                      <td colSpan={6} style={{ padding: 0 }}>[m
+                         <div style={{ display: 'flex', flexDirection: 'column' }}>[m
+                           {row.selectedAIModels.map((ai, aiIdx) => ([m
+[31m-                            <div key={aiIdx} style={{ display: 'grid', gridTemplateColumns: '180px 140px 1fr 90px 50px', borderBottom: aiIdx === row.selectedAIModels.length - 1 ? 'none' : `1px solid ${C.border}` }}>[m
+[32m+[m[32m                            <div key={aiIdx} style={{ display: 'grid', gridTemplateColumns: '180px 140px 1fr 80px 90px 50px', borderBottom: aiIdx === row.selectedAIModels.length - 1 ? 'none' : `1px solid ${C.border}` }}>[m
+                               <div style={{ padding: '12px 16px' }}>[m
+                                 <select [m
+                                   style={{ ...miniSelectStyle, width: '100%' }} [m
+[36m@@ -719,11 +740,47 @@[m [mfunction ProfileModal({ onClose, existingApp, startAtReview = false }) {[m
+                                 </select>[m
+                               </div>[m
+                               <div style={{ padding: '12px 16px' }}>[m
+[31m-                                <input [m
+[31m-                                  style={{ ...miniSelectStyle, width: '100%', border: 'none', background: 'transparent' }} [m
+[31m-                                  value={ai.instruction} [m
+[32m+[m[32m                                <input[m
+[32m+[m[32m                                  style={{ ...miniSelectStyle, width: '100%', border: 'none', background: 'transparent' }}[m
+[32m+[m[32m                                  value={ai.instruction}[m
+                                   onChange={(e) => handleUpdateRowAI(rowIndex, aiIdx, 'instruction', e.target.value)}[m
+[31m-                                  placeholder="e.g. Check front left..." [m
+[32m+[m[32m                                  placeholder="e.g. Check front left..."[m
+[32m+[m[32m                                />[m
+[32m+[m[32m                              </div>[m
+[32m+[m[32m                              <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>[m
+[32m+[m[32m                                <label[m
+[32m+[m[32m                                  htmlFor={`ref-img-${rowIndex}-${aiIdx}`}[m
+[32m+[m[32m                                  title={ai.referenceImage ? 'Change reference image' : 'Upload reference image'}[m
+[32m+[m[32m                                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}[m
+[32m+[m[32m                                >[m
+[32m+[m[32m                                  {ai.referenceImage ? ([m
+[32m+[m[32m                                    <img[m
+[32m+[m[32m                                      src={getReferenceImageUrl(ai.referenceImage)}[m
+[32m+[m[32m                                      alt="ref"[m
+[32m+[m[32m                                      style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 6, border: `2px solid ${C.accent}` }}[m
+[32m+[m[32m                                    />[m
+[32m+[m[32m                                  ) : ([m
+[32m+[m[32m                                    <div style={{ width: 44, height: 44, border: `1px dashed ${C.border}`, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted }}>[m
+[32m+[m[32m                                      <ImageIcon size={18} />[m
+[32m+[m[32m                                    </div>[m
+[32m+[m[32m                                  )}[m
+[32m+[m[32m                                </label>[m
+[32m+[m[32m                                <input[m
+[32m+[m[32m                                  id={`ref-img-${rowIndex}-${aiIdx}`}[m
+[32m+[m[32m                                  type="file"[m
+[32m+[m[32m                                  accept="image/*"[m
+[32m+[m[32m                                  style={{ display: 'none' }}[m
+[32m+[m[32m                                  onChange={async (e) => {[m
+[32m+[m[32m                                    const file = e.target.files?.[0];[m
+[32m+[m[32m                                    if (!file) return;[m
+[32m+[m[32m                                    try {[m
+[32m+[m[32m                                      const r = await uploadReferenceImage(file);[m
+[32m+[m[32m                                      handleUpdateRowAI(rowIndex, aiIdx, 'referenceImage', r.data.filename);[m
+[32m+[m[32m                                    } catch {[m
+[32m+[m[32m                                      alert('Image upload failed. Please try again.');[m
+[32m+[m[32m                                    }[m
+[32m+[m[32m                                    e.target.value = '';[m
+[32m+[m[32m                                  }}[m
+                                 />[m
+                               </div>[m
+                               <div style={{ padding: '12px 16px', display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>[m

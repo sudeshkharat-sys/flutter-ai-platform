@@ -61,6 +61,9 @@ class AppProjectUpdate(BaseModel):
     inspection_tasks: Optional[List[Any]] = None
     canvas_state: Optional[List[Any]] = None
     app_settings: Optional[dict] = None
+    build_status: Optional[str] = None
+    build_step: Optional[str] = None
+    build_log: Optional[str] = None
 
 
 class AppProjectResponse(BaseModel):
@@ -101,6 +104,33 @@ class MasterMappingResponse(BaseModel):
     id: str
     platform_name: str
     model_code: str
+    description: Optional[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── EngineMapping schemas ─────────────────────────────────────────────────────
+
+class EngineMappingCreate(BaseModel):
+    sheet_name: str
+    part_no: str
+    model_name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class EngineMappingUpdate(BaseModel):
+    sheet_name: Optional[str] = None
+    part_no: Optional[str] = None
+    model_name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class EngineMappingResponse(BaseModel):
+    id: str
+    sheet_name: str
+    part_no: str
+    model_name: Optional[str]
     description: Optional[str]
     created_at: datetime
 

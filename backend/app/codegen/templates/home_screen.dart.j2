@@ -98,6 +98,9 @@ class _HomeScreenState extends State<HomeScreen> {
             restored[idx] = {
               'className': res.className,
               'success': res.success,
+              'imagePath': res.imagePath,
+              'backupImagePath': res.backupImagePath,
+              'detectionsJson': res.detectionsJson,
             };
           }
         }
@@ -129,14 +132,16 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // Show confirmation modal with task summary
-    final bool? confirmed = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => _buildSubmitConfirmDialog(),
-    );
-
-    if (confirmed != true) return;
+    // If any task failed, show confirmation dialog before submitting
+    final bool allOk = _taskResults.values.every((r) => r['success'] == true);
+    if (!allOk) {
+      final bool? confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => _buildSubmitConfirmDialog(),
+      );
+      if (confirmed != true) return;
+    }
 
     // Persist to local DB
     final inspectionId = await db.saveInspection(InspectionsCompanion.insert(
@@ -156,6 +161,7 @@ class _HomeScreenState extends State<HomeScreen> {
         confidence: 0.0,
         success: success,
         imagePath: drift.Value(result['imagePath'] as String?),
+        backupImagePath: drift.Value(result['backupImagePath'] as String?),
         detectionsJson: drift.Value(result['detectionsJson'] as String?),
       ));
     }
@@ -248,7 +254,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const Divider(),
             const SizedBox(height: 8),
 
-            // Per-task summary — scrollable so it never overflows
+            // Per-task summary -- scrollable so it never overflows
             Flexible(
               child: SingleChildScrollView(
                 child: Column(
@@ -443,21 +449,30 @@ class _HomeScreenState extends State<HomeScreen> {
                       margin: const EdgeInsets.only(bottom: 12),
                       child: ElevatedButton(
                         onPressed: () async {
+                          // Retake: only this single task. First time: full chain from this index.
+                          final bool isRetake = _taskResults.containsKey(index);
                           final result = await Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (context) => InspectionCameraScreen(
                                 vin: widget.vin ?? "MANUAL_SCAN",
-                                modelCode: widget.modelCode ?? "", 
-                                tasks: _tasks,
-                                initialIndex: index,
+                                modelCode: widget.modelCode ?? "",
+                                tasks: isRetake ? [_tasks[index]] : _tasks,
+                                initialIndex: isRetake ? 0 : index,
                               ),
                             ),
                           );
-                          
+
                           if (result != null && result is Map<int, dynamic>) {
                             setState(() {
-                              _taskResults.addAll(result);
+                              if (isRetake) {
+                                // Remap single-task result (key 0) back to original index
+                                if (result.containsKey(0)) {
+                                  _taskResults[index] = result[0];
+                                }
+                              } else {
+                                _taskResults.addAll(result);
+                              }
                             });
                           }
                         },
@@ -507,16 +522,34 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                               ),
                             if (isDone)
-                              Icon(
-                                _taskResults[index]?['success'] == true
-                                    ? Icons.check_circle
-                                    : Icons.cancel,
-                                color: _taskResults[index]?['success'] == true
-                                    ? Colors.green
-                                    : Colors.red,
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  border: Border.all(
+                                    color: _taskResults[index]?['success'] == true ? Colors.green : Colors.red,
+                                    width: 2,
+                                  ),
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Text(
+                                  _taskResults[index]?['success'] == true ? 'OK' : 'NOT OK',
+                                  style: TextStyle(
+                                    color: _taskResults[index]?['success'] == true ? Colors.green : Colors.red,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
                               )
                             else
-                              const Icon(Icons.camera_alt, size: 20, color: Color(0xFFDC143C)),
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: const [
+                                  Icon(Icons.camera_alt, size: 18, color: Color(0xFFDC143C)),
+                                  SizedBox(height: 2),
+                                  Text('PENDING', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 9)),
+                                ],
+                              ),
                           ],
                         ),
                       ),

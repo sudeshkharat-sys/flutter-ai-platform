@@ -82,8 +82,11 @@ export default function NewApp() {
   }, []);
 
   useEffect(() => {
-    const slug = appName.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    setPackageName(`com.inspection.${slug || 'app'}`);
+    let slug = appName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    if (!slug) slug = 'app';
+    // Java package segments can't start with a digit (e.g. "4x4_reverse").
+    if (/^[0-9]/.test(slug)) slug = `app_${slug}`;
+    setPackageName(`com.inspection.${slug}`);
   }, [appName]);
 
   const handleFileDrop = async (file) => {

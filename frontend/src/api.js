@@ -32,6 +32,8 @@ export const getModels      = ()         => api.get('/models');
 export const getModelStatus = (id) => api.get(`/models/${id}/status`);
 export const detectModelClasses = (id) => api.post(`/models/${id}/detect-classes`);
 export const deleteModel = (id) => api.delete(`/models/${id}`);
+export const downloadModelPt = (id) =>
+  api.get(`/models/${id}/download-pt`, { responseType: 'blob' });
 
 
 export const getApps    = ()         => api.get('/apps');
@@ -70,5 +72,11 @@ export const getMasterMappings = () => api.get('/master-data');
 export const createMasterMapping = (data) => api.post('/master-data', data);
 export const updateMasterMapping = (id, data) => api.put(`/master-data/${id}`, data);
 export const deleteMasterMapping = (id) => api.delete(`/master-data/${id}`);
+
+// ── Engine Data ──────────────────────────────────────────────────────────────
+export const getEngineMappings = () => api.get('/engine-data');
+export const createEngineMapping = (data) => api.post('/engine-data', data);
+export const updateEngineMapping = (id, data) => api.put(`/engine-data/${id}`, data);
+export const deleteEngineMapping = (id) => api.delete(`/engine-data/${id}`);
 
 export default api;
