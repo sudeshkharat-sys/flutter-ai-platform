@@ -1,0 +1,167 @@
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show compute, debugPrint;
+import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
+import 'package:tflite_flutter/tflite_flutter.dart';
+
+/// Reads a whole line of engraved/stamped text at once with the project's
+/// trained CRNN+CTC recognizer (ocr_crnn.tflite, exported from the OCR
+/// Character Training panel — "CRNN line reader" engine).
+///
+/// This is a real OCR recognizer: given a cropped LINE (located beforehand
+/// by ML Kit or a box crop), it outputs the whole string with character
+/// context — better on confusable pairs (V/U, 8/0) than isolated-character
+/// classification. Input is a fixed 32x256 grayscale line; output is a
+/// per-timestep character distribution decoded with greedy CTC in Dart.
+class CrnnReader {
+  static const int imgH = 32;
+  static const int imgW = 256;
+
+  Interpreter? _interpreter;
+  List<String> _charset = [];
+  int _timeSteps = 64;
+  int _numClasses = 0;
+  bool _isLoaded = false;
+
+  bool get isLoaded => _isLoaded;
+
+  Future<void> load({
+    String modelPath = 'assets/ocr/ocr_crnn.tflite',
+    String charsetPath = 'assets/ocr/charset.txt',
+  }) async {
+    try {
+      final charsetData = await rootBundle.loadString(charsetPath);
+      _charset = charsetData.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+      _interpreter = await Interpreter.fromAsset(modelPath);
+      final outShape = _interpreter!.getOutputTensor(0).shape; // [1, T, C]
+      _timeSteps = outShape.length >= 3 ? outShape[1] : 64;
+      _numClasses = outShape.length >= 3 ? outShape[2] : (_charset.length + 1);
+      _isLoaded = _charset.isNotEmpty;
+      debugPrint('[CrnnReader] loaded ${_charset.length} chars, T=$_timeSteps, C=$_numClasses');
+    } catch (e) {
+      debugPrint('[CrnnReader] not available: $e');
+      _isLoaded = false;
+    }
+  }
+
+  void dispose() {
+    _interpreter?.close();
+    _isLoaded = false;
+  }
+
+  /// Reads one line crop. Returns (text, meanConfidence). Runs the heavy
+  /// preprocessing + inference on a background isolate.
+  Future<({String text, double confidence})> readLine(img.Image lineCrop) async {
+    if (!_isLoaded || _interpreter == null) return (text: '', confidence: 0.0);
+    final jpgBytes = Uint8List.fromList(img.encodeJpg(lineCrop));
+    final res = await compute(_computeReadLine, {
+      'jpgBytes': jpgBytes,
+      'interpreter_address': _interpreter!.address,
+      'charset': _charset,
+      'timeSteps': _timeSteps,
+      'numClasses': _numClasses,
+    });
+    return (text: res['text'] as String, confidence: res['confidence'] as double);
+  }
+}
+
+// ── Isolate entry point ────────────────────────────────────────────────────
+
+Map<String, dynamic> _computeReadLine(Map<String, dynamic> args) {
+  final Uint8List jpgBytes = args['jpgBytes'] as Uint8List;
+  final int interpreterAddress = args['interpreter_address'] as int;
+  final List<String> charset = List<String>.from(args['charset'] as List);
+  final int timeSteps = args['timeSteps'] as int;
+  final int numClasses = args['numClasses'] as int;
+  final int blankIndex = charset.length; // CTC blank is the last class
+
+  final src = img.decodeJpg(jpgBytes);
+  if (src == null) return {'text': '', 'confidence': 0.0};
+
+  // ── Normalize exactly like the training backend (_normalize_line) ──
+  final gray = img.grayscale(src);
+  final enhanced = img.normalize(gray, min: 0, max: 255);
+
+  // Otsu to decide polarity — engraved strokes may be lighter or darker.
+  final hist = List<int>.filled(256, 0);
+  for (int y = 0; y < enhanced.height; y++) {
+    for (int x = 0; x < enhanced.width; x++) {
+      hist[enhanced.getPixel(x, y).r.toInt()]++;
+    }
+  }
+  final total = enhanced.width * enhanced.height;
+  double sum = 0;
+  for (int t = 0; t < 256; t++) sum += t * hist[t];
+  double sumB = 0, wB = 0, maxVar = 0;
+  int threshold = 127;
+  for (int t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB == 0) continue;
+    final wF = total - wB;
+    if (wF == 0) break;
+    sumB += t * hist[t];
+    final between = wB * wF * (sumB / wB - (sum - sumB) / wF) * (sumB / wB - (sum - sumB) / wF);
+    if (between > maxVar) {
+      maxVar = between;
+      threshold = t;
+    }
+  }
+  int aboveCount = 0;
+  for (int y = 0; y < enhanced.height; y++) {
+    for (int x = 0; x < enhanced.width; x++) {
+      if (enhanced.getPixel(x, y).r.toInt() >= threshold) aboveCount++;
+    }
+  }
+  // If the majority is dark, the strokes are the bright minority -> invert so
+  // text ends up dark on a light background (what the model was trained on).
+  img.Image polar = enhanced;
+  if (aboveCount <= total - aboveCount) {
+    polar = img.invert(enhanced);
+  }
+
+  // Letterbox into 32x256 (aspect preserved, left-aligned, white padding).
+  final scale = CrnnReader.imgH / polar.height;
+  int nw = (polar.width * scale).round();
+  if (nw < 1) nw = 1;
+  if (nw > CrnnReader.imgW) nw = CrnnReader.imgW;
+  final resized = img.copyResize(polar, width: nw, height: CrnnReader.imgH, interpolation: img.Interpolation.average);
+  final canvas = img.Image(width: CrnnReader.imgW, height: CrnnReader.imgH);
+  img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
+  img.compositeImage(canvas, resized, dstX: 0, dstY: 0);
+
+  // ── Build input tensor [1, 32, 256, 1], values /255 ──
+  final input = Float32List(CrnnReader.imgH * CrnnReader.imgW);
+  int idx = 0;
+  for (int y = 0; y < CrnnReader.imgH; y++) {
+    for (int x = 0; x < CrnnReader.imgW; x++) {
+      input[idx++] = canvas.getPixel(x, y).r.toDouble() / 255.0;
+    }
+  }
+
+  final interpreter = Interpreter.fromAddress(interpreterAddress);
+  final output = List.generate(1, (_) => List.generate(timeSteps, (_) => List.filled(numClasses, 0.0)));
+  interpreter.run(input.reshape([1, CrnnReader.imgH, CrnnReader.imgW, 1]), output);
+
+  // ── Greedy CTC decode ──
+  final sb = StringBuffer();
+  final confs = <double>[];
+  int prev = -1;
+  for (int t = 0; t < timeSteps; t++) {
+    int best = 0;
+    double bestScore = output[0][t][0];
+    for (int c = 1; c < numClasses; c++) {
+      if (output[0][t][c] > bestScore) {
+        bestScore = output[0][t][c];
+        best = c;
+      }
+    }
+    if (best != prev && best != blankIndex && best < charset.length) {
+      sb.write(charset[best]);
+      confs.add(bestScore);
+    }
+    prev = best;
+  }
+
+  final conf = confs.isEmpty ? 0.0 : confs.reduce((a, b) => a + b) / confs.length;
+  return {'text': sb.toString(), 'confidence': conf};
+}

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'character_reader.dart';
+import 'crnn_reader.dart';
 
 // ── Background-isolate preprocessing ──────────────────────────────────────
 // The adaptive threshold / emboss passes below do per-pixel work on a 3x
@@ -116,12 +117,26 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
   final CharacterReader _charReader = CharacterReader();
   bool _charReaderReady = false;
 
+  // Preferred reader: the CRNN line recognizer (reads a whole line at once).
+  // If it's bundled (assets/ocr/ocr_crnn.tflite) it wins; otherwise the app
+  // falls back to the per-character reader, then to plain ML Kit.
+  final CrnnReader _crnnReader = CrnnReader();
+  bool _crnnReaderReady = false;
+
+  /// Which reader is active, for the app-bar badge.
+  String get _activeReaderLabel => _crnnReaderReady
+      ? 'CRNN reader'
+      : (_charReaderReady ? 'Custom reader' : 'ML Kit reader');
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
     _warmUpRecognizer();
+    _crnnReader.load().then((_) {
+      if (mounted) setState(() => _crnnReaderReady = _crnnReader.isLoaded);
+    });
     _charReader.load().then((_) {
       if (mounted) setState(() => _charReaderReady = _charReader.isLoaded);
     });
@@ -157,6 +172,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     _cameraController?.dispose();
     _recognizer.close();
     _charReader.dispose();
+    _crnnReader.dispose();
     super.dispose();
   }
 
@@ -411,6 +427,10 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
   Future<void> _captureAndScan() async {
     if (_isProcessing || _cameraController == null || !_isCameraInitialized) return;
+    if (_crnnReaderReady) {
+      await _captureAndScanWithCrnn();
+      return;
+    }
     if (_charReaderReady) {
       await _captureAndScanWithCharReader();
       return;
@@ -556,6 +576,103 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
           await f.delete();
         } catch (_) {}
       }
+    }
+  }
+
+  /// Capture + read using the CRNN line recognizer — the preferred reader.
+  /// Box Scan: the user's box is one line crop, read directly.
+  /// Full Scan: ML Kit finds each text LINE on the photo (its line boxes are
+  /// exactly what a line recognizer wants), then each line is re-cropped from
+  /// the original photo and read by the CRNN.
+  Future<void> _captureAndScanWithCrnn() async {
+    setState(() {
+      _isProcessing = true;
+      _processingStatus = 'Capturing...';
+      _error = null;
+    });
+
+    try {
+      final XFile image = await _cameraController!.takePicture();
+      final bytes = await image.readAsBytes();
+      final decoded = img.decodeImage(bytes);
+      final oriented = decoded != null ? img.bakeOrientation(decoded) : null;
+      if (oriented == null) throw Exception('Could not decode photo.');
+      final displayBytes = Uint8List.fromList(img.encodeJpg(oriented));
+
+      List<List<_OcrWord>> rows = [];
+
+      if (_boxOcrMode) {
+        if (mounted) setState(() => _processingStatus = 'Reading...');
+        final box = _boxRect ?? _squareBoxFor(_previewAreaSize);
+        final cropped = _cropToBox(oriented, box);
+        final r = await _crnnReader.readLine(cropped);
+        if (r.text.isNotEmpty) rows = [[_OcrWord(r.text, r.confidence)]];
+      } else {
+        if (mounted) setState(() => _processingStatus = 'Finding text...');
+        final fullJpg = Uint8List.fromList(img.encodeJpg(oriented));
+        final tempFile = File(
+          '${Directory.systemTemp.path}/digiocr_find_${DateTime.now().microsecondsSinceEpoch}.jpg',
+        );
+        await tempFile.writeAsBytes(fullJpg);
+        List<TextLine> lines = [];
+        try {
+          final recognizedText = await _recognizer.processImage(InputImage.fromFilePath(tempFile.path));
+          for (final block in recognizedText.blocks) {
+            lines.addAll(block.lines);
+          }
+        } finally {
+          try {
+            await tempFile.delete();
+          } catch (_) {}
+        }
+        lines.sort((a, b) => a.boundingBox.top.compareTo(b.boundingBox.top));
+
+        int done = 0;
+        for (final line in lines) {
+          final box = line.boundingBox;
+          final x = box.left.round().clamp(0, oriented.width - 1);
+          final y = box.top.round().clamp(0, oriented.height - 1);
+          final w = box.width.round().clamp(1, oriented.width - x);
+          final h = box.height.round().clamp(1, oriented.height - y);
+          final crop = img.copyCrop(oriented, x: x, y: y, width: w, height: h);
+          final r = await _crnnReader.readLine(crop);
+          if (r.text.isNotEmpty) rows.add([_OcrWord(r.text, r.confidence)]);
+          done++;
+          if (mounted) setState(() => _processingStatus = 'Reading ($done/${lines.length})...');
+        }
+      }
+
+      final confidences = rows.expand((row) => row).map((w) => w.confidence).whereType<double>().toList();
+      final overall = confidences.isEmpty ? null : confidences.reduce((a, b) => a + b) / confidences.length;
+
+      String extractedText = '';
+      bool? isMatch;
+      double? matchScore;
+      final expected = widget.expectedText;
+      if (expected != null && expected.isNotEmpty) {
+        extractedText = rows.expand((row) => row).map((w) => w.text).join();
+        matchScore = _matchSimilarity(_normalizeForMatch(extractedText), _normalizeForMatch(expected));
+        isMatch = matchScore >= _matchThreshold;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _capturedImageBytes = displayBytes;
+        _rows = rows;
+        _overallAccuracy = overall;
+        _isMatch = isMatch;
+        _matchScore = matchScore;
+        _matchExtractedText = extractedText;
+        _isProcessing = false;
+        _processingStatus = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Scan failed: $e';
+        _isProcessing = false;
+        _processingStatus = null;
+      });
     }
   }
 
@@ -1152,7 +1269,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
-                  _charReaderReady ? 'Custom reader' : 'ML Kit reader',
+                  _activeReaderLabel,
                   style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
                 ),
               ),

@@ -23,9 +23,13 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  # Drop your trained OCR Character Training model here:
-  #   assets/ocr/ocr_model.tflite  (download from the OCR panel)
-  #   assets/ocr/labels.txt        (download from the OCR panel)
-  # The app falls back to plain ML Kit reading if these files are missing.
+  # Drop your trained OCR model(s) here (download from the OCR panel):
+  #   Preferred — CRNN line reader:
+  #     assets/ocr/ocr_crnn.tflite
+  #     assets/ocr/charset.txt
+  #   Or the per-character reader:
+  #     assets/ocr/ocr_model.tflite
+  #     assets/ocr/labels.txt
+  # The app prefers CRNN, then the per-char reader, then plain ML Kit.
   assets:
     - assets/ocr/

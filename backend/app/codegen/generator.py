@@ -84,6 +84,7 @@ def _generate_digi_ocr_project(env, app_name: str, package_name: str, settings: 
         "lib/main.dart": "main_digi_ocr.dart.j2",
         "lib/screens/full_ocr_screen.dart": "full_ocr_screen.dart.j2",
         "lib/screens/character_reader.dart": "character_reader.dart.j2",
+        "lib/screens/crnn_reader.dart": "crnn_reader.dart.j2",
         "lib/screens/qr_expected_screen.dart": "qr_expected_screen.dart.j2",
         "android/app/src/main/AndroidManifest.xml": "AndroidManifest.xml.j2",
         "android/build.gradle": "build.gradle.j2",
