@@ -1,0 +1,220 @@
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show compute, debugPrint;
+import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
+import 'package:tflite_flutter/tflite_flutter.dart';
+
+/// One character read by the custom model, in left-to-right order.
+class ModelChar {
+  final String char;
+  final double confidence;
+  const ModelChar(this.char, this.confidence);
+}
+
+/// Reads engraved/stamped alphanumeric text with the project's own trained
+/// character classifier (ocr_model.tflite, exported from the OCR Character
+/// Training panel), instead of trusting Google ML Kit's own reading.
+///
+/// ML Kit stays the "finder" — its text/line detection rarely misses, even
+/// through glare. This class is only the "reader": given a crop that
+/// contains ONE line of text, it (a) segments the line into individual
+/// character slices using a column-gap projection, then (b) classifies each
+/// slice with the trained CNN — the same two-step approach the training
+/// backend uses (Tesseract-line building + char crop + classify).
+class CharacterReader {
+  Interpreter? _interpreter;
+  List<String> _labels = [];
+  int _inputSize = 64;
+  bool _isLoaded = false;
+
+  bool get isLoaded => _isLoaded;
+
+  Future<void> load({
+    String modelPath = 'assets/ocr/ocr_model.tflite',
+    String labelsPath = 'assets/ocr/labels.txt',
+  }) async {
+    try {
+      final labelsData = await rootBundle.loadString(labelsPath);
+      _labels = labelsData.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+      _interpreter = await Interpreter.fromAsset(modelPath);
+      final shape = _interpreter!.getInputTensor(0).shape; // [1, size, size, 1]
+      _inputSize = shape.length >= 2 ? shape[1] : 64;
+      _isLoaded = _labels.isNotEmpty;
+      debugPrint('[CharacterReader] loaded ${_labels.length} classes, input ${_inputSize}x$_inputSize');
+    } catch (e) {
+      // Assets not bundled into this build yet, or a corrupt model file —
+      // callers fall back to plain ML Kit reading, same fallback pattern
+      // the training backend uses when no YOLO detector is trained.
+      debugPrint('[CharacterReader] not available: $e');
+      _isLoaded = false;
+    }
+  }
+
+  void dispose() {
+    _interpreter?.close();
+    _isLoaded = false;
+  }
+
+  /// Segments [lineCrop] into characters and classifies each one. Runs on a
+  /// background isolate (compute) since segmentation + several inferences
+  /// per line is too heavy for the UI thread.
+  Future<List<ModelChar>> readLine(img.Image lineCrop) async {
+    if (!_isLoaded || _interpreter == null) return [];
+    final jpgBytes = Uint8List.fromList(img.encodeJpg(lineCrop));
+    final maps = await compute(_computeReadCharacters, {
+      'jpgBytes': jpgBytes,
+      'interpreter_address': _interpreter!.address,
+      'labels': _labels,
+      'inputSize': _inputSize,
+    });
+    return maps.map((m) => ModelChar(m['char'] as String, m['confidence'] as double)).toList();
+  }
+}
+
+// ── Isolate entry point ────────────────────────────────────────────────────
+// Top-level (not a method) so compute() can send it to a background isolate.
+
+List<Map<String, dynamic>> _computeReadCharacters(Map<String, dynamic> args) {
+  final Uint8List jpgBytes = args['jpgBytes'] as Uint8List;
+  final int interpreterAddress = args['interpreter_address'] as int;
+  final List<String> labels = List<String>.from(args['labels'] as List);
+  final int inputSize = args['inputSize'] as int;
+
+  final src = img.decodeJpg(jpgBytes);
+  if (src == null) return [];
+
+  final gray = img.grayscale(src);
+  final w = gray.width, h = gray.height;
+
+  // Local contrast stretch — a lightweight stand-in for the CLAHE step the
+  // training backend applies (engraved strokes are low-contrast).
+  final enhanced = img.normalize(gray, min: 0, max: 255);
+
+  // ── Otsu threshold, to find where the ink is ──────────────────────────
+  final hist = List<int>.filled(256, 0);
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      hist[enhanced.getPixel(x, y).r.toInt()]++;
+    }
+  }
+  final total = w * h;
+  double sum = 0;
+  for (int t = 0; t < 256; t++) sum += t * hist[t];
+  double sumB = 0, wB = 0, maxVar = 0;
+  int threshold = 127;
+  for (int t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB == 0) continue;
+    final wF = total - wB;
+    if (wF == 0) break;
+    sumB += t * hist[t];
+    final mB = sumB / wB;
+    final mF = (sum - sumB) / wF;
+    final between = wB * wF * (mB - mF) * (mB - mF);
+    if (between > maxVar) {
+      maxVar = between;
+      threshold = t;
+    }
+  }
+
+  // Characters can read darker OR lighter than the background (deep vs
+  // shallow engraving) — assume the minority of pixels is the ink, same
+  // polarity rule the Tesseract line-builder uses server-side.
+  int aboveCount = 0;
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      if (enhanced.getPixel(x, y).r.toInt() >= threshold) aboveCount++;
+    }
+  }
+  final bool inkIsAbove = aboveCount < (total - aboveCount);
+
+  bool isInk(int x, int y) {
+    final v = enhanced.getPixel(x, y).r.toInt();
+    return inkIsAbove ? v >= threshold : v < threshold;
+  }
+
+  // ── Column-gap segmentation: sum ink pixels per column, split on gaps ──
+  final colInk = List<int>.filled(w, 0);
+  for (int x = 0; x < w; x++) {
+    int c = 0;
+    for (int y = 0; y < h; y++) {
+      if (isInk(x, y)) c++;
+    }
+    colInk[x] = c;
+  }
+  final int gapThreshold = (h * 0.03).ceil().clamp(1, h);
+  final int minCharWidth = (h * 0.12).round().clamp(2, w);
+
+  final List<List<int>> slices = [];
+  int? start;
+  for (int x = 0; x < w; x++) {
+    final hasInk = colInk[x] > gapThreshold;
+    if (hasInk && start == null) {
+      start = x;
+    } else if (!hasInk && start != null) {
+      if (x - start >= minCharWidth) slices.add([start, x]);
+      start = null;
+    }
+  }
+  if (start != null && w - start >= minCharWidth) slices.add([start, w]);
+  if (slices.isEmpty) return [];
+
+  // ── Classify each slice ────────────────────────────────────────────────
+  final interpreter = Interpreter.fromAddress(interpreterAddress);
+  final results = <Map<String, dynamic>>[];
+
+  for (final s in slices) {
+    final margin = ((s[1] - s[0]) * 0.15).round();
+    final x1 = (s[0] - margin).clamp(0, w - 1);
+    final x2 = (s[1] + margin).clamp(x1 + 1, w);
+    final charCrop = img.copyCrop(enhanced, x: x1, y: 0, width: x2 - x1, height: h);
+
+    // Aspect-preserving resize onto a square canvas, padded with the crop's
+    // own median value — mirrors the training backend's char-crop function
+    // so the model sees the same kind of input it was trained on.
+    final scale = inputSize / (charCrop.width > charCrop.height ? charCrop.width : charCrop.height);
+    final nw = (charCrop.width * scale).round().clamp(1, inputSize);
+    final nh = (charCrop.height * scale).round().clamp(1, inputSize);
+    final resized = img.copyResize(charCrop, width: nw, height: nh, interpolation: img.Interpolation.average);
+
+    final borderVals = <int>[];
+    for (int x = 0; x < nw; x++) {
+      borderVals.add(resized.getPixel(x, 0).r.toInt());
+      borderVals.add(resized.getPixel(x, nh - 1).r.toInt());
+    }
+    for (int y = 0; y < nh; y++) {
+      borderVals.add(resized.getPixel(0, y).r.toInt());
+      borderVals.add(resized.getPixel(nw - 1, y).r.toInt());
+    }
+    borderVals.sort();
+    final padVal = borderVals.isEmpty ? 128 : borderVals[borderVals.length ~/ 2];
+
+    final canvas = img.Image(width: inputSize, height: inputSize);
+    img.fill(canvas, color: img.ColorRgb8(padVal, padVal, padVal));
+    final ox = (inputSize - nw) ~/ 2, oy = (inputSize - nh) ~/ 2;
+    img.compositeImage(canvas, resized, dstX: ox, dstY: oy);
+
+    final buffer = Float32List(inputSize * inputSize);
+    int idx = 0;
+    for (int y = 0; y < inputSize; y++) {
+      for (int x = 0; x < inputSize; x++) {
+        buffer[idx++] = canvas.getPixel(x, y).r.toDouble() / 255.0;
+      }
+    }
+    final input = buffer.reshape([1, inputSize, inputSize, 1]);
+    final output = List.generate(1, (_) => List.filled(labels.length, 0.0));
+    interpreter.run(input, output);
+
+    int best = 0;
+    double bestScore = output[0][0];
+    for (int i = 1; i < labels.length; i++) {
+      if (output[0][i] > bestScore) {
+        bestScore = output[0][i];
+        best = i;
+      }
+    }
+    results.add({'char': labels[best], 'confidence': bestScore});
+  }
+
+  return results;
+}

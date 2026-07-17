@@ -14,6 +14,7 @@ dependencies:
   permission_handler: ^11.3.1
   google_mlkit_text_recognition: ^0.13.0
   mobile_scanner: ^3.5.2
+  tflite_flutter: '>=0.10.4 <2.0.0'
 
 dev_dependencies:
   flutter_test:
@@ -22,3 +23,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # Drop your trained OCR Character Training model here:
+  #   assets/ocr/ocr_model.tflite  (download from the OCR panel)
+  #   assets/ocr/labels.txt        (download from the OCR panel)
+  # The app falls back to plain ML Kit reading if these files are missing.
+  assets:
+    - assets/ocr/

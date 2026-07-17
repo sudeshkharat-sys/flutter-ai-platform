@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'character_reader.dart';
 
 // ── Background-isolate preprocessing ──────────────────────────────────────
 // The adaptive threshold / emboss passes below do per-pixel work on a 3x
@@ -106,12 +107,24 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
   final TextRecognizer _recognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
+  // ML Kit stays the "finder" (its text/line detection rarely misses, even
+  // through glare on engraved metal). When the project's own trained
+  // character model is bundled into the app (assets/ocr/), it becomes the
+  // "reader" instead of trusting ML Kit's own guess — that's what fixes
+  // confusions like V/U or B/8/9 on engraved fonts ML Kit was never trained
+  // on. Falls back to plain ML Kit reading when the assets aren't present.
+  final CharacterReader _charReader = CharacterReader();
+  bool _charReaderReady = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
     _warmUpRecognizer();
+    _charReader.load().then((_) {
+      if (mounted) setState(() => _charReaderReady = _charReader.isLoaded);
+    });
   }
 
   /// ML Kit's text recognizer has a one-time model-load delay on first use,
@@ -143,6 +156,7 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
     WidgetsBinding.instance.removeObserver(this);
     _cameraController?.dispose();
     _recognizer.close();
+    _charReader.dispose();
     super.dispose();
   }
 
@@ -397,6 +411,10 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
 
   Future<void> _captureAndScan() async {
     if (_isProcessing || _cameraController == null || !_isCameraInitialized) return;
+    if (_charReaderReady) {
+      await _captureAndScanWithCharReader();
+      return;
+    }
     setState(() {
       _isProcessing = true;
       _processingStatus = 'Capturing...';
@@ -539,6 +557,152 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
         } catch (_) {}
       }
     }
+  }
+
+  /// Capture + read using the project's own trained character model.
+  /// Box Scan: the user-positioned box is already a tight single-line crop,
+  /// so it's handed straight to the reader (ML Kit isn't needed to find it).
+  /// Full Scan: ML Kit finds each text line/word on the whole photo (it
+  /// rarely misses), then each of ITS boxes is re-cropped from the original
+  /// photo and re-read with the trained model instead of ML Kit's guess.
+  Future<void> _captureAndScanWithCharReader() async {
+    setState(() {
+      _isProcessing = true;
+      _processingStatus = 'Capturing...';
+      _error = null;
+    });
+
+    try {
+      final XFile image = await _cameraController!.takePicture();
+      final bytes = await image.readAsBytes();
+      final decoded = img.decodeImage(bytes);
+      final oriented = decoded != null ? img.bakeOrientation(decoded) : null;
+      if (oriented == null) throw Exception('Could not decode photo.');
+      final displayBytes = Uint8List.fromList(img.encodeJpg(oriented));
+
+      List<List<_OcrWord>> rows = [];
+
+      if (_boxOcrMode) {
+        if (mounted) setState(() => _processingStatus = 'Reading...');
+        final box = _boxRect ?? _squareBoxFor(_previewAreaSize);
+        final cropped = _cropToBox(oriented, box);
+        final chars = await _charReader.readLine(cropped);
+        if (chars.isNotEmpty) {
+          rows = [chars.map((c) => _OcrWord(c.char, c.confidence)).toList()];
+        }
+      } else {
+        if (mounted) setState(() => _processingStatus = 'Finding text...');
+        final fullJpg = Uint8List.fromList(img.encodeJpg(oriented));
+        final tempFile = File(
+          '${Directory.systemTemp.path}/digiocr_find_${DateTime.now().microsecondsSinceEpoch}.jpg',
+        );
+        await tempFile.writeAsBytes(fullJpg);
+        List<List<TextElement>> elementRows = [];
+        try {
+          final recognizedText = await _recognizer.processImage(InputImage.fromFilePath(tempFile.path));
+          elementRows = _elementsInReadingOrder(recognizedText);
+        } finally {
+          try {
+            await tempFile.delete();
+          } catch (_) {}
+        }
+
+        if (mounted) setState(() => _processingStatus = 'Reading (0/${elementRows.fold<int>(0, (n, r) => n + r.length)})...');
+        int done = 0;
+        final totalElements = elementRows.fold<int>(0, (n, r) => n + r.length);
+        for (final elRow in elementRows) {
+          final wordRow = <_OcrWord>[];
+          for (final el in elRow) {
+            final box = el.boundingBox;
+            final x = box.left.round().clamp(0, oriented.width - 1);
+            final y = box.top.round().clamp(0, oriented.height - 1);
+            final w = box.width.round().clamp(1, oriented.width - x);
+            final h = box.height.round().clamp(1, oriented.height - y);
+            final crop = img.copyCrop(oriented, x: x, y: y, width: w, height: h);
+            final chars = await _charReader.readLine(crop);
+            if (chars.isNotEmpty) {
+              final text = chars.map((c) => c.char).join();
+              final conf = chars.map((c) => c.confidence).reduce((a, b) => a + b) / chars.length;
+              wordRow.add(_OcrWord(text, conf));
+            }
+            done++;
+            if (mounted) setState(() => _processingStatus = 'Reading ($done/$totalElements)...');
+          }
+          if (wordRow.isNotEmpty) rows.add(wordRow);
+        }
+      }
+
+      final confidences = rows.expand((row) => row).map((w) => w.confidence).whereType<double>().toList();
+      final overall = confidences.isEmpty ? null : confidences.reduce((a, b) => a + b) / confidences.length;
+
+      String extractedText = '';
+      bool? isMatch;
+      double? matchScore;
+      final expected = widget.expectedText;
+      if (expected != null && expected.isNotEmpty) {
+        extractedText = rows.expand((row) => row).map((w) => w.text).join();
+        matchScore = _matchSimilarity(_normalizeForMatch(extractedText), _normalizeForMatch(expected));
+        isMatch = matchScore >= _matchThreshold;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _capturedImageBytes = displayBytes;
+        _rows = rows;
+        _overallAccuracy = overall;
+        _isMatch = isMatch;
+        _matchScore = matchScore;
+        _matchExtractedText = extractedText;
+        _isProcessing = false;
+        _processingStatus = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Scan failed: $e';
+        _isProcessing = false;
+        _processingStatus = null;
+      });
+    }
+  }
+
+  /// Same row/reading-order grouping as [_toReadingOrder], but returns the
+  /// raw ML Kit [TextElement]s (with bounding boxes) instead of extracted
+  /// text — the boxes are what's needed to re-crop and re-read each one.
+  List<List<TextElement>> _elementsInReadingOrder(RecognizedText recognizedText) {
+    final elements = <TextElement>[];
+    for (final block in recognizedText.blocks) {
+      for (final line in block.lines) {
+        elements.addAll(line.elements);
+      }
+    }
+    if (elements.isEmpty) return [];
+
+    elements.sort((a, b) => a.boundingBox.top.compareTo(b.boundingBox.top));
+    final List<List<TextElement>> rows = [];
+    for (final el in elements) {
+      final elCenter = el.boundingBox.top + el.boundingBox.height / 2;
+      List<TextElement>? targetRow;
+      for (final row in rows) {
+        final refTop = row.first.boundingBox.top;
+        final refHeight = row.first.boundingBox.height;
+        final rowCenter = refTop + refHeight / 2;
+        if ((elCenter - rowCenter).abs() < refHeight * 0.6) {
+          targetRow = row;
+          break;
+        }
+      }
+      if (targetRow != null) {
+        targetRow.add(el);
+      } else {
+        rows.add([el]);
+      }
+    }
+    rows.sort((a, b) => a.first.boundingBox.top.compareTo(b.first.boundingBox.top));
+    for (final row in rows) {
+      row.sort((a, b) => a.boundingBox.left.compareTo(b.boundingBox.left));
+    }
+    return rows;
   }
 
   void _retake() {
@@ -977,6 +1141,24 @@ class _FullOcrScreenState extends State<FullOcrScreen> with WidgetsBindingObserv
         backgroundColor: const Color(0xFFDC143C),
         title: const Text('Text Scan'),
         automaticallyImplyLeading: false,
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  _charReaderReady ? 'Custom reader' : 'ML Kit reader',
+                  style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
       body: SafeArea(
         child: Container(

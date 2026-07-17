@@ -83,6 +83,7 @@ def _generate_digi_ocr_project(env, app_name: str, package_name: str, settings: 
         "pubspec.yaml": "pubspec_digi_ocr.yaml.j2",
         "lib/main.dart": "main_digi_ocr.dart.j2",
         "lib/screens/full_ocr_screen.dart": "full_ocr_screen.dart.j2",
+        "lib/screens/character_reader.dart": "character_reader.dart.j2",
         "lib/screens/qr_expected_screen.dart": "qr_expected_screen.dart.j2",
         "android/app/src/main/AndroidManifest.xml": "AndroidManifest.xml.j2",
         "android/build.gradle": "build.gradle.j2",
@@ -115,6 +116,21 @@ def _generate_digi_ocr_project(env, app_name: str, package_name: str, settings: 
             else:
                 tmpl = env.get_template(template_name)
                 zf.writestr(full_path, tmpl.render(**ctx))
+
+        # Placeholder so `assets/ocr/` exists on disk for `flutter pub get`
+        # even before the trained model is dropped in. Download
+        # ocr_model.tflite + labels.txt from the OCR Character Training
+        # panel and place them in this same folder (replacing this file is
+        # optional — pubspec.yaml bundles the whole directory).
+        zf.writestr(
+            f"{root}/assets/ocr/README.txt",
+            "Drop your trained OCR model here:\n"
+            "  ocr_model.tflite\n"
+            "  labels.txt\n"
+            "Both are downloadable from the OCR Character Training panel "
+            "after training. Without them, the app falls back to plain "
+            "Google ML Kit reading.\n",
+        )
 
         icon_src = TEMPLATES_DIR / "icons" / "digi_ocr_launcher.png"
         if not icon_src.exists():
