@@ -199,6 +199,95 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     });
   }
 
+{% elif scan_type == 'chakan' %}
+  // ── Chakan Plant Scan Logic ───────────────────────────────────────────────
+  // Barcode format: VIN_MODELCODE_GARBAGE (underscore-delimited).
+  // Model code segment may carry 2 trailing junk characters, same as the
+  // standard VIN flow, so the same stripping logic is reused.
+
+  bool _isKnownModelCode(String candidate) {
+    if (candidate.isEmpty || _scanData.isEmpty) return false;
+    final upper = candidate.toUpperCase();
+    return _scanData.any(
+      (m) => (m['model_code'] as String? ?? '').toUpperCase() == upper,
+    );
+  }
+
+  String _resolveModelCode(String suffix) {
+    for (final strip in [2, 1, 0]) {
+      if (suffix.length > strip) {
+        final candidate = suffix.substring(0, suffix.length - strip);
+        if (_isKnownModelCode(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    if (suffix.length > 2) return suffix.substring(0, suffix.length - 2);
+    return suffix;
+  }
+
+  void _handleChakanScan(String raw) {
+    final List<String> parts = raw.split('_');
+    if (parts.length < 2 || parts[0].trim().isEmpty || parts[1].trim().isEmpty) {
+      setState(() => _isProcessing = true);
+      _showErrorDialog('Invalid Chakan Plant barcode. Expected format: VIN_MODELCODE_GARBAGE');
+      return;
+    }
+
+    setState(() => _isProcessing = true);
+
+    final String vin = parts[0].trim();
+    final String extractedModelCode = _resolveModelCode(parts[1].trim());
+
+    if (!_isKnownModelCode(extractedModelCode)) {
+      _showErrorDialog('Model code is not present, please add code and rebuild app.');
+      return;
+    }
+
+    if (!mounted) return;
+    _scannerController.stop();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => HomeScreen(
+          vin: vin,
+          modelCode: extractedModelCode,
+          cameras: [],
+        ),
+      ),
+    ).then((_) async {
+      if (mounted) {
+        await _scannerController.stop();
+        await _scannerController.start();
+        setState(() {
+          _isProcessing = false;
+          _pendingBarcode = null;
+        });
+      }
+    });
+  }
+
+  Future<void> _onDetect(BarcodeCapture capture) async {
+    if (_isProcessing) return;
+    final List<Barcode> barcodes = capture.barcodes;
+    if (barcodes.isEmpty) return;
+    final String? code = barcodes.first.rawValue;
+    if (code == null || code.trim().isEmpty) return;
+    final String raw = code.trim();
+
+    if (_manualMode) {
+      setState(() => _pendingBarcode = raw);
+      return;
+    }
+
+    _handleChakanScan(raw);
+  }
+
+  void _processScan() {
+    final raw = _pendingBarcode;
+    if (raw == null || _isProcessing) return;
+    _handleChakanScan(raw);
+  }
+
 {% else %}
   // ── Model Code Scan Logic ─────────────────────────────────────────────────
 

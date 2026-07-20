@@ -639,10 +639,11 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                 >
                   <option value="model">Model Code (VIN barcode)</option>
                   <option value="engine">Engine Code (Part No + Serial)</option>
+                  <option value="chakan">Chakan Plant (VIN_ModelCode_Garbage)</option>
                 </select>
               </div>
 
-              {scanType === 'model' ? (
+              {scanType !== 'engine' ? (
                 <div style={{ position: 'relative' }}>
                   <label style={labelStyle}>Vehicle Model Code (Multi-Select)</label>
                   <div
