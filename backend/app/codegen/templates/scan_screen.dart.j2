@@ -92,6 +92,31 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     );
   }
 
+{% if scan_type != 'engine' %}
+  // ── Model Code Lookup (shared by VIN and Chakan Plant scans) ───────────────
+
+  bool _isKnownModelCode(String candidate) {
+    if (candidate.isEmpty || _scanData.isEmpty) return false;
+    final upper = candidate.toUpperCase();
+    return _scanData.any(
+      (m) => (m['model_code'] as String? ?? '').toUpperCase() == upper,
+    );
+  }
+
+  String _resolveModelCode(String suffix) {
+    for (final strip in [2, 1, 0]) {
+      if (suffix.length > strip) {
+        final candidate = suffix.substring(0, suffix.length - strip);
+        if (_isKnownModelCode(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    if (suffix.length > 2) return suffix.substring(0, suffix.length - 2);
+    return suffix;
+  }
+{% endif %}
+
 {% if scan_type == 'engine' %}
   // ── Engine Code Scan Logic ────────────────────────────────────────────────
 
@@ -202,29 +227,8 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 {% elif scan_type == 'chakan' %}
   // ── Chakan Plant Scan Logic ───────────────────────────────────────────────
   // Barcode format: VIN_MODELCODE_GARBAGE (underscore-delimited).
-  // Model code segment may carry 2 trailing junk characters, same as the
-  // standard VIN flow, so the same stripping logic is reused.
-
-  bool _isKnownModelCode(String candidate) {
-    if (candidate.isEmpty || _scanData.isEmpty) return false;
-    final upper = candidate.toUpperCase();
-    return _scanData.any(
-      (m) => (m['model_code'] as String? ?? '').toUpperCase() == upper,
-    );
-  }
-
-  String _resolveModelCode(String suffix) {
-    for (final strip in [2, 1, 0]) {
-      if (suffix.length > strip) {
-        final candidate = suffix.substring(0, suffix.length - strip);
-        if (_isKnownModelCode(candidate)) {
-          return candidate;
-        }
-      }
-    }
-    if (suffix.length > 2) return suffix.substring(0, suffix.length - 2);
-    return suffix;
-  }
+  // Model code segment may carry 2 trailing junk characters, resolved via the
+  // shared _resolveModelCode() above (same stripping rule as the VIN flow).
 
   void _handleChakanScan(String raw) {
     final List<String> parts = raw.split('_');
@@ -290,27 +294,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
 {% else %}
   // ── Model Code Scan Logic ─────────────────────────────────────────────────
-
-  bool _isKnownModelCode(String candidate) {
-    if (candidate.isEmpty || _scanData.isEmpty) return false;
-    final upper = candidate.toUpperCase();
-    return _scanData.any(
-      (m) => (m['model_code'] as String? ?? '').toUpperCase() == upper,
-    );
-  }
-
-  String _resolveModelCode(String suffix) {
-    for (final strip in [2, 1, 0]) {
-      if (suffix.length > strip) {
-        final candidate = suffix.substring(0, suffix.length - strip);
-        if (_isKnownModelCode(candidate)) {
-          return candidate;
-        }
-      }
-    }
-    if (suffix.length > 2) return suffix.substring(0, suffix.length - 2);
-    return suffix;
-  }
 
   Future<void> _onDetect(BarcodeCapture capture) async {
     if (_isProcessing) return;
