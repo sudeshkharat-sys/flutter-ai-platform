@@ -125,12 +125,17 @@ def _generate_digi_ocr_project(env, app_name: str, package_name: str, settings: 
         # optional — pubspec.yaml bundles the whole directory).
         zf.writestr(
             f"{root}/assets/ocr/README.txt",
-            "Drop your trained OCR model here:\n"
+            "Drop your trained OCR model here.\n\n"
+            "RECOMMENDED — CRNN line reader (reads a whole line at once, best\n"
+            "on engraved/stamped text and confusable pairs like V/U, 0/8):\n"
+            "  ocr_crnn.tflite\n"
+            "  charset.txt\n\n"
+            "OR — per-character classifier (legacy fallback):\n"
             "  ocr_model.tflite\n"
-            "  labels.txt\n"
-            "Both are downloadable from the OCR Character Training panel "
-            "after training. Without them, the app falls back to plain "
-            "Google ML Kit reading.\n",
+            "  labels.txt\n\n"
+            "All are downloadable from the OCR Training panel after training.\n"
+            "If both are present the CRNN reader wins; if neither is present\n"
+            "the app falls back to plain Google ML Kit reading.\n",
         )
 
         icon_src = TEMPLATES_DIR / "icons" / "digi_ocr_launcher.png"
