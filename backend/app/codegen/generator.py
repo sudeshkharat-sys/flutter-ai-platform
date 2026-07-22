@@ -2,6 +2,7 @@ import re
 import zipfile
 import io
 import os
+import json
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
@@ -94,6 +95,11 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             mid = task.get("modelId")
             paths = model_id_to_paths.get(mid, {})
             task_classes = task.get("classes", [])
+            if isinstance(task_classes, str):
+                try:
+                    task_classes = json.loads(task_classes)
+                except Exception:
+                    task_classes = []
 
             # Validate task classes against the model's actual trained classes.
             # If none of the configured classes exist in the model, fall back to
@@ -102,9 +108,11 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 (ma for ma in models_list if get_attr(ma, "id") == mid), None
             )
             if model_for_task:
-                model_classes = get_attr(model_for_task, "classes", []) or []
+                _raw = get_attr(model_for_task, "classes", []) or []
+                model_classes = json.loads(_raw) if isinstance(_raw, str) else _raw
                 if model_classes:
-                    valid = [c for c in task_classes if c in model_classes]
+                    model_classes_lower_set = {c.lower().strip() for c in model_classes}
+                    valid = [c for c in task_classes if c.lower().strip() in model_classes_lower_set]
                     if not valid:
                         print(
                             f"[generator] WARNING: task '{task.get('taskName')}' "
@@ -113,10 +121,32 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                         )
                         task_classes = model_classes
 
+            # Multi-class detection config (only meaningful when detection_method == 'multiclass').
+            # mandatoryClasses = the "pass" classes that must be detected for an OK badge.
+            # classOcrConfig   = per-class OCR verification { className: {ocrEnabled, ocrTargetText} }.
+            mandatory_classes = task.get("mandatoryClasses", [])
+            if isinstance(mandatory_classes, str):
+                try:
+                    mandatory_classes = json.loads(mandatory_classes)
+                except Exception:
+                    mandatory_classes = []
+            if model_for_task and mandatory_classes:
+                _raw = get_attr(model_for_task, "classes", []) or []
+                model_classes = json.loads(_raw) if isinstance(_raw, str) else _raw
+                model_classes_lower = {c.lower().strip() for c in model_classes}
+                if model_classes_lower:
+                    filtered = [c for c in mandatory_classes if c.lower().strip() in model_classes_lower]
+                    if filtered:
+                        mandatory_classes = filtered
+                    # else: names didn't match — keep original selection to avoid an
+                    # empty mandatory list (which would fall back to all-classes).
+
             ref_img = task.get("referenceImage")
             models_manifest.append({
                 "name": task.get("taskName") or task.get("modelName"),
                 "classes": task_classes,
+                "mandatoryClasses": mandatory_classes,
+                "classOcrConfig": task.get("classOcrConfig", {}) or {},
                 "tflite_path": paths.get("tflite", "assets/models/model_0.tflite"),
                 "labels_path": paths.get("labels", "assets/models/labels_0.txt"),
                 "vehicle_code": task.get("vehicleCode"),
@@ -170,7 +200,22 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "app_type": settings.get("app_type", "sequential"),
         "scan_type": settings.get("scan_type", "model"),
         "app_settings": settings,
+        # Detection engine selector: 'default' (single-target flow) or
+        # 'multiclass' (mandatory-class checklist + per-class OCR verification).
+        "detection_method": settings.get("detection_method", "default"),
     }
+
+    # OCR codegen is only enabled in multi-class mode AND when at least one
+    # mandatory class has OCR verification configured with target text.
+    ctx["ocr_enabled"] = (
+        ctx["detection_method"] == "multiclass"
+        and any(
+            bool((entry.get("classOcrConfig") or {}).get(cls, {}).get("ocrEnabled"))
+            and bool((entry.get("classOcrConfig") or {}).get(cls, {}).get("ocrTargetText"))
+            for entry in models_manifest
+            for cls in (entry.get("mandatoryClasses") or [])
+        )
+    )
 
     # Map of zip path -> template name
     files = {

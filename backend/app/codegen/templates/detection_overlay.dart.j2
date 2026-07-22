@@ -1,3 +1,180 @@
+{% if detection_method == "multiclass" %}
+import 'package:flutter/material.dart';
+import '../ml/detection_result.dart';
+
+class DetectionOverlay extends StatelessWidget {
+  final List<DetectionResult> results;
+  final Size previewSize;
+  final Color? overrideColor;
+  final List<String> mandatoryClasses;
+
+  const DetectionOverlay({
+    super.key,
+    required this.results,
+    required this.previewSize,
+    this.overrideColor,
+    this.mandatoryClasses = const [],
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _BoundingBoxPainter(
+        results: results,
+        previewSize: previewSize,
+        overrideColor: overrideColor,
+        mandatoryClasses: mandatoryClasses,
+        {% if show_labels %}showLabels: true,{% else %}showLabels: false,{% endif %}
+        {% if show_confidence %}showConfidence: true,{% else %}showConfidence: false,{% endif %}
+      ),
+    );
+  }
+}
+
+class _BoundingBoxPainter extends CustomPainter {
+  final List<DetectionResult> results;
+  final Size previewSize;
+  final bool showLabels;
+  final bool showConfidence;
+  final Color? overrideColor;
+
+  static const _fallbackColors = [
+    Color(0xFF7C5CFC),
+    Color(0xFF5B8AF5),
+    Color(0xFF4CAF82),
+    Color(0xFFF5A623),
+    Color(0xFF00BCD4),
+    Color(0xFFFF6B9D),
+  ];
+
+  final List<String> mandatoryClasses;
+
+  static bool _isNotOk(String className) {
+    final cn = className.toLowerCase().replaceAll('_', ' ').replaceAll('-', ' ');
+    return cn.contains('not') && cn.contains('ok');
+  }
+
+  Color _colorForClass(String className, int index) {
+    if (_isNotOk(className)) return const Color(0xFFE53935); // red — defect
+    if (mandatoryClasses.any((m) => m.toLowerCase().trim() == className.toLowerCase().trim())) {
+      return const Color(0xFF43A047); // green — mandatory
+    }
+    return const Color(0xFFE53935); // red — unchecked/fail class detected
+  }
+
+  _BoundingBoxPainter({
+    required this.results,
+    required this.previewSize,
+    this.overrideColor,
+    this.mandatoryClasses = const [],
+    this.showLabels = true,
+    this.showConfidence = true,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (int i = 0; i < results.length; i++) {
+      final result = results[i];
+      // overrideColor lets the caller force green/red based on pass/fail logic
+      // rather than relying on class name substring matching.
+      final color = overrideColor ?? _colorForClass(result.className, i);
+
+      final rect = Rect.fromLTRB(
+        result.bbox.left * size.width,
+        result.bbox.top * size.height,
+        result.bbox.right * size.width,
+        result.bbox.bottom * size.height,
+      );
+
+      final boxPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5;
+      canvas.drawRect(rect, boxPaint);
+
+      final accentPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4.0;
+      const cornerLen = 16.0;
+
+      canvas.drawLine(rect.topLeft, rect.topLeft.translate(cornerLen, 0), accentPaint);
+      canvas.drawLine(rect.topLeft, rect.topLeft.translate(0, cornerLen), accentPaint);
+      canvas.drawLine(rect.topRight, rect.topRight.translate(-cornerLen, 0), accentPaint);
+      canvas.drawLine(rect.topRight, rect.topRight.translate(0, cornerLen), accentPaint);
+      canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(cornerLen, 0), accentPaint);
+      canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(0, -cornerLen), accentPaint);
+      canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(-cornerLen, 0), accentPaint);
+      canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(0, -cornerLen), accentPaint);
+
+      if (showLabels) {
+        final label = showConfidence
+            ? '${result.className} ${(result.confidence * 100).toStringAsFixed(0)}%'
+            : result.className;
+
+{% if ocr_enabled %}
+        final ocrStatus = result.isOcrMatch == true
+            ? ' ✓ OCR OK'
+            : result.isOcrMatch == false
+                ? ' ✗ OCR FAIL'
+                : '';
+        final displayLabel = '$label$ocrStatus';
+        final labelColor = result.isOcrMatch == true
+            ? const Color(0xFF43A047)
+            : result.isOcrMatch == false
+                ? const Color(0xFFE53935)
+                : color;
+{% else %}
+        final displayLabel = label;
+        final labelColor = color;
+{% endif %}
+
+        final textSpan = TextSpan(
+          text: ' $displayLabel ',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            backgroundColor: labelColor.withOpacity(0.85),
+          ),
+        );
+        final textPainter = TextPainter(
+          text: textSpan,
+          textDirection: TextDirection.ltr,
+        )..layout();
+
+        final labelY = rect.top - textPainter.height - 2;
+        textPainter.paint(
+          canvas,
+          Offset(rect.left, labelY < 0 ? rect.top + 2 : labelY),
+        );
+
+{% if ocr_enabled %}
+        if (result.ocrText != null && result.ocrText!.isNotEmpty) {
+          final ocrSpan = TextSpan(
+            text: ' "${result.ocrText}" ',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 10,
+              backgroundColor: Colors.black.withOpacity(0.7),
+            ),
+          );
+          final ocrPainter = TextPainter(
+            text: ocrSpan,
+            textDirection: TextDirection.ltr,
+          )..layout();
+          ocrPainter.paint(canvas, Offset(rect.left, rect.bottom + 2));
+        }
+{% endif %}
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _BoundingBoxPainter old) =>
+      old.results != results || old.overrideColor != overrideColor;
+}
+{% else %}
 import 'package:flutter/material.dart';
 import '../ml/detection_result.dart';
 
@@ -126,3 +303,4 @@ class _BoundingBoxPainter extends CustomPainter {
   bool shouldRepaint(covariant _BoundingBoxPainter old) =>
       old.results != results || old.overrideColor != overrideColor;
 }
+{% endif %}

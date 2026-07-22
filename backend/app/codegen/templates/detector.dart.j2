@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
+{% if ocr_enabled %}
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+{% endif %}
 import 'detection_result.dart';
 
 class ModelManager {
@@ -20,6 +23,189 @@ class ModelManager {
   bool get isLoaded => _isLoaded;
 
   int get labelsCount => _labels.length;
+
+{% if ocr_enabled %}
+  /// Per-class OCR config: className -> target text (empty string = no OCR for that class)
+  static const Map<String, String> _classOcrTargets = {
+{% set seen_ocr = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.ocrEnabled and cfg.ocrTargetText and cls not in seen_ocr.keys %}{% set seen_ocr.keys = seen_ocr.keys + [cls] %}
+    '{{ cls }}': '{{ cfg.ocrTargetText }}',
+{% endif %}{% endfor %}{% endfor %}
+  };
+
+  // ── OCR preprocessing ─────────────────────────────────────────────────────
+
+  /// Upscale 3x, grayscale, adaptive threshold (per-tile), sharpen.
+  /// Adaptive thresholding divides the image into tiles and finds the optimal
+  /// black/white cutoff per tile — handles uneven lighting and reflections on
+  /// metallic stickers far better than a single global threshold.
+  static img.Image _preprocessForOcr(img.Image src, {bool invert = false}) {
+    // 1. Upscale 3x
+    img.Image out = img.copyResize(
+      src,
+      width: src.width * 3,
+      height: src.height * 3,
+      interpolation: img.Interpolation.cubic,
+    );
+
+    // 2. Grayscale
+    out = img.grayscale(out);
+
+    // 3. Adaptive thresholding — tile size ~15% of image width, min 16px
+    final int w = out.width;
+    final int h = out.height;
+    final int tileSize = (w * 0.15).round().clamp(16, 64);
+    final img.Image thresholded = img.Image(width: w, height: h);
+
+    for (int ty = 0; ty < h; ty += tileSize) {
+      for (int tx = 0; tx < w; tx += tileSize) {
+        final int x1 = tx;
+        final int y1 = ty;
+        final int x2 = (tx + tileSize).clamp(0, w);
+        final int y2 = (ty + tileSize).clamp(0, h);
+
+        // Find mean luminance in this tile
+        int sum = 0, count = 0;
+        for (int y = y1; y < y2; y++) {
+          for (int x = x1; x < x2; x++) {
+            sum += out.getPixel(x, y).r.toInt();
+            count++;
+          }
+        }
+        final int mean = count > 0 ? (sum ~/ count) : 128;
+        // Threshold slightly below mean to favour text pixels
+        final int tileThreshold = (mean * 0.85).round().clamp(0, 255);
+
+        // Apply threshold to tile
+        for (int y = y1; y < y2; y++) {
+          for (int x = x1; x < x2; x++) {
+            final int lum = out.getPixel(x, y).r.toInt();
+            int val = lum < tileThreshold ? 0 : 255;
+            if (invert) val = 255 - val;
+            thresholded.setPixelRgb(x, y, val, val, val);
+          }
+        }
+      }
+    }
+
+    // 4. Sharpen
+    img.Image sharpened = img.convolution(
+      thresholded,
+      filter: [0, -1, 0, -1, 5, -1, 0, -1, 0],
+      div: 1,
+    );
+
+    return sharpened;
+  }
+
+  // ── OCR text helpers ───────────────────────────────────────────────────────
+
+  /// Strip non-alphanumeric, uppercase, apply common OCR substitutions.
+  static String _normalizeOcr(String s) =>
+      s.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+  /// Levenshtein edit distance between two strings.
+  static int _levenshtein(String a, String b) {
+    if (a.isEmpty) return b.length;
+    if (b.isEmpty) return a.length;
+    final List<List<int>> dp = List.generate(
+      a.length + 1, (i) => List.generate(b.length + 1, (j) => i == 0 ? j : (j == 0 ? i : 0)),
+    );
+    for (int i = 1; i <= a.length; i++) {
+      for (int j = 1; j <= b.length; j++) {
+        dp[i][j] = a[i - 1] == b[j - 1]
+            ? dp[i - 1][j - 1]
+            : 1 + [dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]].reduce((x, y) => x < y ? x : y);
+      }
+    }
+    return dp[a.length][b.length];
+  }
+
+  /// Best Levenshtein similarity using a sliding window across extracted text.
+  /// Handles extra surrounding chars, noise, and single-char misreads.
+  static double _ocrSimilarity(String extracted, String target) {
+    if (target.isEmpty) return 1.0;
+    if (extracted.isEmpty) return 0.0;
+    if (extracted == target) return 1.0;
+    // Slide window of target.length across extracted
+    double best = 0;
+    final len = target.length;
+    for (int start = 0; start <= extracted.length - len; start++) {
+      final window = extracted.substring(start, start + len);
+      final dist = _levenshtein(window, target);
+      final score = 1.0 - dist / len;
+      if (score > best) best = score;
+    }
+    // Also try full extracted vs target when extracted is shorter
+    if (extracted.length < len) {
+      final dist = _levenshtein(extracted, target);
+      final score = 1.0 - dist / len;
+      if (score > best) best = score;
+    }
+    return best;
+  }
+
+  // ── Run OCR on single image bytes ─────────────────────────────────────────
+
+  static Future<String> _ocrBytes(Uint8List pngBytes, Directory tempDir, String name) async {
+    final tempFile = File('${tempDir.path}/$name.png');
+    await tempFile.writeAsBytes(pngBytes);
+    try {
+      final inputImage = InputImage.fromFilePath(tempFile.path);
+      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final result = await recognizer.processImage(inputImage);
+      recognizer.close();
+      return result.text.replaceAll('\n', ' ').trim();
+    } catch (e) {
+      debugPrint('[OCR] error: $e');
+      return '';
+    }
+  }
+
+  /// Crops bbox, runs OCR on normal + inverted image, picks best result
+  /// using Levenshtein similarity against target. Returns updated DetectionResult.
+  static Future<DetectionResult> _runOcrOnBbox(
+    DetectionResult det,
+    img.Image source,
+  ) async {
+    final String? target = _classOcrTargets[det.className];
+    if (target == null || target.isEmpty) return det;
+
+    final int x = (det.bbox.left * source.width).round().clamp(0, source.width - 1);
+    final int y = (det.bbox.top * source.height).round().clamp(0, source.height - 1);
+    final int w = (det.bbox.width * source.width).round().clamp(1, source.width - x);
+    final int h = (det.bbox.height * source.height).round().clamp(1, source.height - y);
+    final cropped = img.copyCrop(source, x: x, y: y, width: w, height: h);
+
+    final normalBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped)));
+    final invertBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped, invert: true)));
+
+    final tempDir = await Directory.systemTemp.createTemp('ocr_');
+    String extractedText = '';
+    try {
+      final normalText = await _ocrBytes(normalBytes, tempDir, 'normal');
+      final invertText = await _ocrBytes(invertBytes, tempDir, 'invert');
+      final normTarget = _normalizeOcr(target);
+      final normalScore = _ocrSimilarity(_normalizeOcr(normalText), normTarget);
+      final invertScore = _ocrSimilarity(_normalizeOcr(invertText), normTarget);
+      debugPrint('[OCR] normal="$normalText"($normalScore) invert="$invertText"($invertScore) target="$target"');
+      // Pick the read with higher similarity; fall back to normal if both empty
+      extractedText = normalScore >= invertScore ? normalText : invertText;
+      if (extractedText.isEmpty) extractedText = normalText.isNotEmpty ? normalText : invertText;
+    } finally {
+      await tempDir.delete(recursive: true);
+    }
+
+    final normExtracted = _normalizeOcr(extractedText);
+    final normTarget = _normalizeOcr(target);
+    // For short labels (≤8 chars): exact match only — one char wrong = wrong variant.
+    // For longer labels (>8 chars): allow 1 char tolerance via Levenshtein.
+    final bool matched = normTarget.length <= 8
+        ? normExtracted == normTarget || normExtracted.contains(normTarget)
+        : _ocrSimilarity(normExtracted, normTarget) >= 0.9;
+    debugPrint('[OCR] final="$extractedText" normExtracted=$normExtracted normTarget=$normTarget matched=$matched');
+    return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
+  }
+{% endif %}
 
   Future<void> loadModel(String modelPath, String labelsPath) async {
     if (_currentModelPath == modelPath && _isLoaded) return;
@@ -90,13 +276,22 @@ class ModelManager {
     if (!_isLoaded || _interpreter == null) return [];
 
     final inputData = _imageToFloat32(orientedImage, {{ input_size }});
-    return compute(_runInference, {
+    final detections = await compute(_runInference, {
       'inputData': inputData,
       'interpreter_address': _interpreter!.address,
       'labels': _labels,
       'inputSize': {{ input_size }},
       'threshold': confidenceThreshold,
     });
+{% if ocr_enabled %}
+    final List<DetectionResult> withOcr = [];
+    for (final det in detections) {
+      withOcr.add(await _runOcrOnBbox(det, orientedImage));
+    }
+    return withOcr;
+{% else %}
+    return detections;
+{% endif %}
   }
 
   /// Fallback path: accepts raw JPEG bytes when a pre-decoded image is not
@@ -104,13 +299,25 @@ class ModelManager {
   Future<List<DetectionResult>> predictBytes(Uint8List bytes) async {
     if (!_isLoaded || _interpreter == null) return [];
 
-    return compute(_runInferenceBytes, {
+    final detections = await compute(_runInferenceBytes, {
       'bytes': bytes,
       'interpreter_address': _interpreter!.address,
       'labels': _labels,
       'inputSize': {{ input_size }},
       'threshold': confidenceThreshold,
     });
+{% if ocr_enabled %}
+    img.Image? decoded = img.decodeImage(bytes);
+    if (decoded == null) return detections;
+    decoded = img.bakeOrientation(decoded);
+    final List<DetectionResult> withOcr = [];
+    for (final det in detections) {
+      withOcr.add(await _runOcrOnBbox(det, decoded));
+    }
+    return withOcr;
+{% else %}
+    return detections;
+{% endif %}
   }
 
   /// Inference isolate entry-point for the fast path (pre-processed Float32List).
