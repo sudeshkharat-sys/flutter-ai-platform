@@ -379,10 +379,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         if (existingApp.app_settings?.default_configs) {
           // Ensure both the single-class ('class') and multi-class
           // ('mandatoryClasses'/'classOcrConfig') fields exist on every config.
+          // Note: mandatoryClasses must NOT be back-filled from the legacy
+          // single 'class' field — that would silently pre-check a class the
+          // user never selected in the Multi-Class checklist.
           const restored = existingApp.app_settings.default_configs.map(c => ({
             ...c,
             class: c.class || '',
-            mandatoryClasses: c.mandatoryClasses || (c.class ? [c.class] : []),
+            mandatoryClasses: c.mandatoryClasses || [],
             classOcrConfig: c.classOcrConfig || {},
           }));
           setDefaultAIConfigs(restored);
