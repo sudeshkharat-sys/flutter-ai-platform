@@ -4,12 +4,24 @@ class DetectionResult {
   final String className;
   final double confidence;
   final Rect bbox; // normalized 0.0–1.0 coordinates (x, y, w, h)
+  final String? ocrText;
+  final bool? isOcrMatch;
 
   const DetectionResult({
     required this.className,
     required this.confidence,
     required this.bbox,
+    this.ocrText,
+    this.isOcrMatch,
   });
+
+  DetectionResult copyWith({String? ocrText, bool? isOcrMatch}) => DetectionResult(
+    className: className,
+    confidence: confidence,
+    bbox: bbox,
+    ocrText: ocrText ?? this.ocrText,
+    isOcrMatch: isOcrMatch ?? this.isOcrMatch,
+  );
 
   Map<String, dynamic> toJson() => {
     'className': className,
@@ -20,6 +32,8 @@ class DetectionResult {
       'right': bbox.right,
       'bottom': bbox.bottom,
     },
+    'ocrText': ocrText,
+    'isOcrMatch': isOcrMatch,
   };
 
   static DetectionResult fromJson(Map<String, dynamic> json) => DetectionResult(
@@ -31,9 +45,11 @@ class DetectionResult {
       (json['bbox']['right'] as num).toDouble(),
       (json['bbox']['bottom'] as num).toDouble(),
     ),
+    ocrText: json['ocrText'] as String?,
+    isOcrMatch: json['isOcrMatch'] as bool?,
   );
 
   @override
   String toString() =>
-      'DetectionResult(class=$className, conf=${confidence.toStringAsFixed(2)}, bbox=$bbox)';
+      'DetectionResult(class=$className, conf=${confidence.toStringAsFixed(2)}, bbox=$bbox, ocr=$ocrText, match=$isOcrMatch)';
 }

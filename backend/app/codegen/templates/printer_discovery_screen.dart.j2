@@ -7,6 +7,9 @@ const _crimsonLight = Color(0xFFFFEBEE);
 const _crimsonDark = Color(0xFFB01030);
 
 class PrinterDiscoveryScreen extends StatefulWidget {
+  /// When true the screen only lets the user pick + save a default printer
+  /// (no report is printed). Used for "Select / Change Printer" from settings.
+  final bool selectOnly;
   final String vin;
   final String modelCode;
   final String timestamp;
@@ -15,11 +18,12 @@ class PrinterDiscoveryScreen extends StatefulWidget {
 
   const PrinterDiscoveryScreen({
     super.key,
-    required this.vin,
-    required this.modelCode,
-    required this.timestamp,
-    required this.overallSuccess,
-    required this.tasks,
+    this.selectOnly = false,
+    this.vin = 'UNKNOWN',
+    this.modelCode = 'UNKNOWN',
+    this.timestamp = '',
+    this.overallSuccess = false,
+    this.tasks = const [],
   });
 
   @override
@@ -33,11 +37,23 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
   bool _printing = false;
   String _statusMessage = '';
   final TextEditingController _macController = TextEditingController();
+  int _dpi = PrintService.defaultDpi;
 
   @override
   void initState() {
     super.initState();
     _loadBondedDevices();
+    _loadDpi();
+  }
+
+  Future<void> _loadDpi() async {
+    final dpi = await PrintService.instance.getPrinterDpi();
+    if (mounted) setState(() => _dpi = dpi);
+  }
+
+  Future<void> _setDpi(int dpi) async {
+    setState(() => _dpi = dpi);
+    await PrintService.instance.setPrinterDpi(dpi);
   }
 
   @override
@@ -46,30 +62,52 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
     super.dispose();
   }
 
-  /// Request BLUETOOTH_CONNECT + BLUETOOTH_SCAN at runtime (Android 12+).
-  /// Returns true if permissions are granted.
-  Future<bool> _ensureBluetoothPermissions() async {
-    final statuses = await [
-      Permission.bluetoothConnect,
-      Permission.bluetoothScan,
-    ].request();
+  /// Request the Bluetooth permissions needed for the requested operation.
+  ///
+  /// Listing already-paired devices (getBondedDevices) only needs
+  /// BLUETOOTH_CONNECT on Android 12+, and nothing extra on Android 11-.
+  ///
+  /// Active discovery (startDiscovery) additionally needs BLUETOOTH_SCAN on
+  /// Android 12+ and ACCESS_FINE_LOCATION on Android 11- (a BT scan can be
+  /// used to derive physical location, so the OS gates it behind location).
+  ///
+  /// We therefore only hard-require location/scan when [forScan] is true, so
+  /// denying location never blocks the paired-printer path.
+  Future<bool> _ensureBluetoothPermissions({required bool forScan}) async {
+    final requests = <Permission>[Permission.bluetoothConnect];
+    if (forScan) {
+      requests.add(Permission.bluetoothScan);
+      requests.add(Permission.location);
+    }
+    final statuses = await requests.request();
 
-    final connectGranted =
-        statuses[Permission.bluetoothConnect]?.isGranted ?? false;
-    final scanGranted =
-        statuses[Permission.bluetoothScan]?.isGranted ?? false;
+    // permission_handler abstracts SDK differences: on Android 11- it returns
+    // granted for bluetoothConnect since no runtime grant is needed there.
+    final connectBlocked =
+        !(statuses[Permission.bluetoothConnect]?.isGranted ?? false);
 
-    if (!connectGranted || !scanGranted) {
+    bool scanBlocked = false;
+    if (forScan) {
+      final scanGranted =
+          statuses[Permission.bluetoothScan]?.isGranted ?? false;
+      final locationGranted =
+          statuses[Permission.location]?.isGranted ?? false;
+      scanBlocked = !scanGranted || !locationGranted;
+    }
+
+    if (connectBlocked || scanBlocked) {
       if (mounted) {
         setState(() {
           _scanning = false;
-          _statusMessage =
-              'Bluetooth permission denied. Grant it in App Settings.';
+          _statusMessage = forScan
+              ? 'Bluetooth scan / location permission denied. Grant in App Settings.'
+              : 'Bluetooth permission denied. Grant in App Settings.';
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text(
-                'Bluetooth permission is required to find printers.'),
+            content: Text(forScan
+                ? 'Bluetooth & location permissions are required to scan for printers.'
+                : 'Bluetooth permission is required to list paired printers.'),
             backgroundColor: _crimson,
             action: SnackBarAction(
               label: 'Settings',
@@ -91,18 +129,26 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
       _statusMessage = 'Loading paired devices…';
     });
 
-    if (!await _ensureBluetoothPermissions()) return;
+    if (!await _ensureBluetoothPermissions(forScan: false)) return;
 
-    final bonded = await PrintService.instance.getBondedPrinters();
-
-    if (mounted) {
-      setState(() {
-        _printers.addAll(bonded);
-        _scanning = false;
-        _statusMessage = bonded.isEmpty
-            ? 'No paired devices found'
-            : '${bonded.length} paired device(s)';
-      });
+    try {
+      final bonded = await PrintService.instance.getBondedPrinters();
+      if (mounted) {
+        setState(() {
+          _printers.addAll(bonded);
+          _scanning = false;
+          _statusMessage = bonded.isEmpty
+              ? 'No paired devices found. Pair printer in Android Bluetooth settings first.'
+              : '${bonded.length} paired device(s) found';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _statusMessage = 'Error loading devices: $e';
+        });
+      }
     }
   }
 
@@ -113,18 +159,26 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
       _statusMessage = 'Scanning for Zebra printers…';
     });
 
-    if (!await _ensureBluetoothPermissions()) return;
+    if (!await _ensureBluetoothPermissions(forScan: true)) return;
 
-    final found = await PrintService.instance.discoverBluetoothPrinters();
-
-    if (mounted) {
-      setState(() {
-        _printers.addAll(found);
-        _scanning = false;
-        _statusMessage = found.isEmpty
-            ? 'No printers found. Try pairing first.'
-            : '${found.length} printer(s) found';
-      });
+    try {
+      final found = await PrintService.instance.discoverBluetoothPrinters();
+      if (mounted) {
+        setState(() {
+          _printers.addAll(found);
+          _scanning = false;
+          _statusMessage = found.isEmpty
+              ? 'No printers found. Try the "Paired" list or enter MAC manually.'
+              : '${found.length} printer(s) found';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _statusMessage = 'Error scanning: $e';
+        });
+      }
     }
   }
 
@@ -153,6 +207,21 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
   }
 
   Future<void> _printTo(DiscoveredPrinter printer) async {
+    // Remember this printer so future auto-prints target it directly
+    // instead of guessing the first paired Bluetooth device.
+    await PrintService.instance.setDefaultPrinter(printer);
+
+    // Selection-only mode: just save the default and return, no printing.
+    if (widget.selectOnly) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Default printer set: ${printer.name}'),
+        backgroundColor: Colors.green[700],
+      ));
+      Navigator.of(context).pop();
+      return;
+    }
+
     setState(() => _printing = true);
 
     final ok = await PrintService.instance.printInspectionReport(
@@ -169,9 +238,10 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
 
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(ok
-          ? 'Report printed successfully!'
-          : 'Print failed. Ensure printer is paired and in range.'),
+          ? 'Report printed — saved as default printer.'
+          : 'Print failed: ${PrintService.instance.lastPrintError ?? 'ensure printer is on, in range, and in ZPL mode'}'),
       backgroundColor: ok ? Colors.green[700] : _crimson,
+      duration: const Duration(seconds: 6),
     ));
 
     if (ok && mounted) Navigator.of(context).pop();
@@ -183,8 +253,8 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
       backgroundColor: const Color(0xFFFFF5F5),
       appBar: AppBar(
         backgroundColor: _crimson,
-        title: const Text('Print Report',
-            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+        title: Text(widget.selectOnly ? 'Select Printer' : 'Print Report',
+            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
         iconTheme: const IconThemeData(color: Colors.white),
         elevation: 0,
       ),
@@ -256,6 +326,39 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
                     backgroundColor: _crimsonLight,
                     color: _crimson,
                   ),
+
+                // ── Label DPI toggle ─────────────────────────────────────────
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                  color: Colors.white,
+                  child: Row(
+                    children: [
+                      const Icon(Icons.print, size: 16, color: _crimson),
+                      const SizedBox(width: 10),
+                      const Text('Label DPI:',
+                          style: TextStyle(color: Colors.black87, fontSize: 13)),
+                      const Spacer(),
+                      ToggleButtons(
+                        borderRadius: BorderRadius.circular(8),
+                        selectedColor: Colors.white,
+                        fillColor: _crimson,
+                        color: _crimson,
+                        borderColor: _crimson,
+                        selectedBorderColor: _crimson,
+                        constraints: const BoxConstraints(minHeight: 32, minWidth: 68),
+                        isSelected: PrintService.supportedDpi
+                            .map((dpi) => dpi == _dpi)
+                            .toList(),
+                        onPressed: (index) =>
+                            _setDpi(PrintService.supportedDpi[index]),
+                        children: PrintService.supportedDpi
+                            .map((dpi) => Text('$dpi dpi',
+                                style: const TextStyle(fontSize: 12)))
+                            .toList(),
+                      ),
+                    ],
+                  ),
+                ),
 
                 // ── Manual MAC entry ──────────────────────────────────────────
                 Padding(
@@ -387,9 +490,14 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
                                         fontSize: 12)),
                                 trailing: ElevatedButton.icon(
                                   onPressed: () => _printTo(p),
-                                  icon: const Icon(Icons.print, size: 15),
-                                  label: const Text('Print',
-                                      style: TextStyle(fontSize: 13)),
+                                  icon: Icon(
+                                      widget.selectOnly
+                                          ? Icons.check
+                                          : Icons.print,
+                                      size: 15),
+                                  label: Text(
+                                      widget.selectOnly ? 'Select' : 'Print',
+                                      style: const TextStyle(fontSize: 13)),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: _crimson,
                                     foregroundColor: Colors.white,

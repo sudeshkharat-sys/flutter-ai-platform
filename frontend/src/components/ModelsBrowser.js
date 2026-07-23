@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Brain, Trash2, Plus, CheckCircle2 } from 'lucide-react';
-import { getModels, deleteModel } from '../api';
+import { Brain, Trash2, Plus, CheckCircle2, Download } from 'lucide-react';
+import { getModels, deleteModel, downloadModelPt } from '../api';
 import ConfirmModal from './ConfirmModal';
 import '../styles/ModelsBrowser.css';
 
@@ -18,6 +18,18 @@ export default function ModelLibrary() {
       })
       .catch(() => setLoading(false));
   }, []);
+
+  const handleDownloadPt = async (id, name) => {
+    try {
+      const r = await downloadModelPt(id);
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${name.toLowerCase().replace(/ /g, '_')}.pt`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch {
+      alert('PT download failed.');
+    }
+  };
 
   const handleDelete = (id, name) => {
     setConfirmConfig({
@@ -95,10 +107,16 @@ export default function ModelLibrary() {
                   <CheckCircle2 size={12} />
                   Ready
                 </div>
-                <button className="btn-danger" onClick={() => handleDelete(model.id, model.vision_project_name)}>
-                  <Trash2 size={13} />
-                  Delete
-                </button>
+                <div className="model-card-actions">
+                  <button className="btn-secondary" onClick={() => handleDownloadPt(model.id, model.vision_project_name)}>
+                    <Download size={13} />
+                    Download .pt
+                  </button>
+                  <button className="btn-danger" onClick={() => handleDelete(model.id, model.vision_project_name)}>
+                    <Trash2 size={13} />
+                    Delete
+                  </button>
+                </div>
               </div>
             </div>
           ))}

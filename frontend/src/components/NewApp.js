@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UploadCloud, Check, Box, Zap } from 'lucide-react';
-import { uploadModel, getModelStatus, resetModelConversion, getModels, createApp, extractClasses } from '../api';
+import { uploadModel, getModelStatus, getModels, createApp, extractClasses } from '../api';
 import '../styles/NewApp.css';
 
 function DropZone({ onFile, analyzing }) {
@@ -63,8 +63,6 @@ export default function NewApp() {
   const [analyzing, setAnalyzing] = useState(false);
   const [converting, setConverting] = useState(false);
   const [conversionLog, setConversionLog] = useState('');
-  const [currentAssetId, setCurrentAssetId] = useState(null);
-  const [conversionStuck, setConversionStuck] = useState(false);
 
   const [existingModels, setExistingModels] = useState([]);
   const [appName, setAppName] = useState('');
@@ -84,8 +82,11 @@ export default function NewApp() {
   }, []);
 
   useEffect(() => {
-    const slug = appName.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    setPackageName(`com.inspection.${slug || 'app'}`);
+    let slug = appName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    if (!slug) slug = 'app';
+    // Java package segments can't start with a digit (e.g. "4x4_reverse").
+    if (/^[0-9]/.test(slug)) slug = `app_${slug}`;
+    setPackageName(`com.inspection.${slug}`);
   }, [appName]);
 
   const handleFileDrop = async (file) => {
@@ -103,38 +104,6 @@ export default function NewApp() {
     }
   };
 
-  const _startPolling = (assetId, nameForAdd) => {
-    setConversionStuck(false);
-    // Show retry option after 45 s in case Celery worker isn't responding
-    const stuckTimer = setTimeout(() => setConversionStuck(true), 45000);
-    pollRef.current = setInterval(async () => {
-      try {
-        const s = await getModelStatus(assetId);
-        setConversionLog(s.data.conversion_log || 'Processing...');
-        if (s.data.status === 'ready') {
-          clearInterval(pollRef.current);
-          clearTimeout(stuckTimer);
-          setConverting(false);
-          setConversionStuck(false);
-          setCurrentAssetId(null);
-          setSelectedModelIds(prev => [...prev, assetId]);
-          setSelectedModelNames(prev => [...prev, nameForAdd]);
-          setPtFile(null);
-          setModelName('');
-          setClasses([]);
-          setConversionLog('');
-        }
-        if (s.data.status === 'error') {
-          clearInterval(pollRef.current);
-          clearTimeout(stuckTimer);
-          setConverting(false);
-          setConversionStuck(false);
-          alert('Conversion error: ' + (s.data.error_message || 'Unknown error. Check logs/launcher.log'));
-        }
-      } catch {}
-    }, 1500);
-  };
-
   const startConvert = async () => {
     if (!ptFile) return;
     setConverting(true);
@@ -142,24 +111,30 @@ export default function NewApp() {
     try {
       const r = await uploadModel(ptFile, modelName || ptFile.name, classes, 640);
       const assetId = r.data.id;
-      setCurrentAssetId(assetId);
-      _startPolling(assetId, modelName || ptFile.name);
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await getModelStatus(assetId);
+          setConversionLog(s.data.conversion_log || 'Processing...');
+          if (s.data.status === 'ready') {
+            clearInterval(pollRef.current);
+            setConverting(false);
+            setSelectedModelIds(prev => [...prev, assetId]);
+            setSelectedModelNames(prev => [...prev, modelName || ptFile.name]);
+            setPtFile(null);
+            setModelName('');
+            setClasses([]);
+            setConversionLog('');
+          }
+          if (s.data.status === 'error') {
+            clearInterval(pollRef.current);
+            setConverting(false);
+            alert('Error: ' + s.data.error_message);
+          }
+        } catch {}
+      }, 1500);
     } catch {
       setConverting(false);
       alert('Upload failed');
-    }
-  };
-
-  const retryConversion = async () => {
-    if (!currentAssetId) return;
-    setConversionStuck(false);
-    setConversionLog('Retrying conversion...\n');
-    clearInterval(pollRef.current);
-    try {
-      await resetModelConversion(currentAssetId);
-      _startPolling(currentAssetId, modelName || (ptFile && ptFile.name) || 'Model');
-    } catch {
-      alert('Could not retry. Check that the app is running.');
     }
   };
 
@@ -253,17 +228,6 @@ export default function NewApp() {
                   <div className="conversion-log">
                     <pre>{conversionLog}</pre>
                     <div ref={logEndRef} />
-                    {conversionStuck && (
-                      <div style={{ marginTop: 10 }}>
-                        <div style={{ color: '#f59e0b', fontSize: 13, marginBottom: 6 }}>
-                          Conversion is taking longer than expected. The worker may have crashed.
-                          Check <code>logs/launcher.log</code> for details.
-                        </div>
-                        <button className="convert-btn" onClick={retryConversion}>
-                          Retry Conversion
-                        </button>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>

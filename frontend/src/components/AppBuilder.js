@@ -333,6 +333,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   const [profileName, setProfileName] = useState(existingApp?.name || '');
   const [scanType, setScanType] = useState(existingApp?.app_settings?.scan_type || 'model');
+  // Detection engine: 'default' (single target class) or 'multiclass'
+  // (mandatory-class checklist + per-class OCR verification).
+  const [detectionMethod, setDetectionMethod] = useState(existingApp?.app_settings?.detection_method || 'default');
   const [selectedModelCodes, setSelectedModelCodes] = useState([]);
   const [selectedEngineCodes, setSelectedEngineCodes] = useState([]);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -340,7 +343,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [engineSearchTerm, setEngineSearchTerm] = useState('');
 
-  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', mandatoryClasses: [], instruction: '' }]);
+  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', mandatoryClasses: [], classOcrConfig: {}, instruction: '' }]);
 
   const [isReviewing, setIsReviewing] = useState(startAtReview);
   const [reviewData, setReviewData] = useState([]); 
@@ -374,12 +377,18 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         }
 
         if (existingApp.app_settings?.default_configs) {
-          // Migrate old single-class format to mandatoryClasses array
-          const migrated = existingApp.app_settings.default_configs.map(c => ({
+          // Ensure both the single-class ('class') and multi-class
+          // ('mandatoryClasses'/'classOcrConfig') fields exist on every config.
+          // Note: mandatoryClasses must NOT be back-filled from the legacy
+          // single 'class' field — that would silently pre-check a class the
+          // user never selected in the Multi-Class checklist.
+          const restored = existingApp.app_settings.default_configs.map(c => ({
             ...c,
-            mandatoryClasses: c.mandatoryClasses || (c.class ? [c.class] : []),
+            class: c.class || '',
+            mandatoryClasses: c.mandatoryClasses || [],
+            classOcrConfig: c.classOcrConfig || {},
           }));
-          setDefaultAIConfigs(migrated);
+          setDefaultAIConfigs(restored);
         }
 
         if (existingApp.inspection_tasks && existingApp.inspection_tasks.length > 0) {
@@ -388,7 +397,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             if (!acc[code]) acc[code] = [];
             acc[code].push({
               modelId: t.modelId,
+              class: t.classes?.[0] || '',
               mandatoryClasses: t.mandatoryClasses || [],
+              classOcrConfig: t.classOcrConfig || {},
               instruction: t.instruction || t.taskName || '',
               referenceImage: t.referenceImage || null,
             });
@@ -432,7 +443,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleAddDefaultAI = () => {
-    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', mandatoryClasses: [], instruction: '' }]);
+    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', class: '', mandatoryClasses: [], classOcrConfig: {}, instruction: '' }]);
   };
 
   const handleRemoveDefaultAI = (index) => {
@@ -443,11 +454,15 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newConfigs = [...defaultAIConfigs];
     newConfigs[index][field] = value;
     if (field === 'modelId') {
+      const m = models.find(mod => mod.id === value);
+      newConfigs[index].class = m?.classes[0] || '';
       newConfigs[index].mandatoryClasses = [];
+      newConfigs[index].classOcrConfig = {};
     }
     setDefaultAIConfigs(newConfigs);
   };
 
+  // ── Multi-class config handlers (default AI configs) ──────────────────────
   const handleToggleMandatoryClass = (index, cls) => {
     const newConfigs = [...defaultAIConfigs];
     const current = newConfigs[index].mandatoryClasses || [];
@@ -457,13 +472,33 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     setDefaultAIConfigs(newConfigs);
   };
 
+  const handleToggleClassOcr = (index, cls) => {
+    const newConfigs = [...defaultAIConfigs];
+    const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
+    if (ocr[cls]?.ocrEnabled) {
+      ocr[cls] = { ocrEnabled: false, ocrTargetText: '' };
+    } else {
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '' };
+    }
+    newConfigs[index].classOcrConfig = ocr;
+    setDefaultAIConfigs(newConfigs);
+  };
+
+  const handleClassOcrText = (index, cls, text) => {
+    const newConfigs = [...defaultAIConfigs];
+    const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrTargetText: text };
+    newConfigs[index].classOcrConfig = ocr;
+    setDefaultAIConfigs(newConfigs);
+  };
+
   const handleEnterReview = () => {
     if (scanType === 'engine') {
       if (selectedEngineCodes.length === 0) {
         alert("Please select at least one Engine Code.");
         return;
       }
-      const validAI = defaultAIConfigs.filter(c => c.modelId && c.mandatoryClasses?.length > 0);
+      const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0) : c.class));
       const newReviewData = selectedEngineCodes.map(partNo => {
         const mapping = engineMappings.find(m => m.part_no === partNo) || { part_no: partNo, sheet_name: 'Unknown', description: '' };
         return {
@@ -480,7 +515,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         alert("Please select at least one Vehicle Model Code.");
         return;
       }
-      const validAI = defaultAIConfigs.filter(c => c.modelId && c.mandatoryClasses?.length > 0);
+      const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0) : c.class));
       const newReviewData = selectedModelCodes.map(code => {
         const mapping = masterMappings.find(m => m.model_code === code);
         return {
@@ -500,17 +535,41 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newData = [...reviewData];
     newData[rowIndex].selectedAIModels[aiIdx][field] = value;
     if (field === 'modelId') {
+      const m = models.find(mod => mod.id === value);
+      newData[rowIndex].selectedAIModels[aiIdx].class = m?.classes[0] || '';
       newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = [];
+      newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = {};
     }
     setReviewData(newData);
   };
 
+  // ── Multi-class config handlers (review rows) ─────────────────────────────
   const handleToggleRowMandatoryClass = (rowIndex, aiIdx, cls) => {
     const newData = [...reviewData];
     const current = newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses || [];
     newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = current.includes(cls)
       ? current.filter(c => c !== cls)
       : [...current, cls];
+    setReviewData(newData);
+  };
+
+  const handleToggleRowClassOcr = (rowIndex, aiIdx, cls) => {
+    const newData = [...reviewData];
+    const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
+    if (ocr[cls]?.ocrEnabled) {
+      ocr[cls] = { ocrEnabled: false, ocrTargetText: '' };
+    } else {
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '' };
+    }
+    newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
+    setReviewData(newData);
+  };
+
+  const handleRowClassOcrText = (rowIndex, aiIdx, cls, text) => {
+    const newData = [...reviewData];
+    const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrTargetText: text };
+    newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
     setReviewData(newData);
   };
 
@@ -530,7 +589,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   const handleAddRowAI = (rowIndex) => {
     const newData = [...reviewData];
-    newData[rowIndex].selectedAIModels.push({ modelId: '', mandatoryClasses: [], instruction: '', referenceImage: null });
+    newData[rowIndex].selectedAIModels.push({ modelId: '', class: '', mandatoryClasses: [], classOcrConfig: {}, instruction: '', referenceImage: null });
     setReviewData(newData);
   };
 
@@ -550,12 +609,16 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       row.selectedAIModels.forEach(ai => {
         const model = models.find(m => m.id === ai.modelId);
         if (model) {
+          const isMulti = detectionMethod === 'multiclass';
           finalTasks.push({
             modelId: ai.modelId,
             taskName: ai.instruction || `${row.model_code} - ${model.vision_project_name}`,
             modelName: model.vision_project_name,
-            classes: model.classes,
-            mandatoryClasses: ai.mandatoryClasses || [],
+            // Multi-class detects every trained class and evaluates a checklist;
+            // default detects the single chosen target class.
+            classes: isMulti ? (model.classes || []) : [ai.class],
+            mandatoryClasses: isMulti ? (ai.mandatoryClasses || []) : [],
+            classOcrConfig: isMulti ? (ai.classOcrConfig || {}) : {},
             tflitePath: model.tflite_path,
             labelsPath: model.labels_path,
             vehicleCode: row.model_code,
@@ -573,15 +636,20 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
     try {
       const modelAssetIds = Array.from(new Set(finalTasks.map(t => t.modelId)));
+      let profileSlug = (profileName || 'app').toLowerCase().replace(/[^a-z0-9]/g, '_');
+      if (!profileSlug) profileSlug = 'app';
+      // Java package segments can't start with a digit (e.g. "4x4_reverse").
+      if (/^[0-9]/.test(profileSlug)) profileSlug = `app_${profileSlug}`;
       const payload = {
         name: profileName || 'New Inspection Profile',
-        package_name: existingApp?.package_name || `com.inspection.${(profileName || 'app').toLowerCase().replace(/\s+/g, '_')}`,
+        package_name: existingApp?.package_name || `com.inspection.${profileSlug}`,
         model_asset_ids: modelAssetIds,
         inspection_tasks: finalTasks,
         app_settings: {
           ...(existingApp?.app_settings || {}),
           app_type: 'sequential',
           scan_type: scanType,
+          detection_method: detectionMethod,
           model_codes: selectedModelCodes,
           model_code: selectedModelCodes[0],
           engine_codes: selectedEngineCodes,
@@ -657,10 +725,28 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                 >
                   <option value="model">Model Code (VIN barcode)</option>
                   <option value="engine">Engine Code (Part No + Serial)</option>
+                  <option value="chakan">Chakan Plant (VIN_ModelCode_Garbage)</option>
                 </select>
               </div>
 
-              {scanType === 'model' ? (
+              <div>
+                <label style={labelStyle}>Detection Method</label>
+                <select
+                  style={{ ...inputStyle, cursor: 'pointer' }}
+                  value={detectionMethod}
+                  onChange={e => setDetectionMethod(e.target.value)}
+                >
+                  <option value="default">Default (single target class)</option>
+                  <option value="multiclass">Multi-Class (checklist + OCR verify)</option>
+                </select>
+                <p style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
+                  {detectionMethod === 'multiclass'
+                    ? 'Detects all trained classes, checks a mandatory-class list, and can OCR-verify text per class. Chakan & DPI printing still apply.'
+                    : 'Detects a single chosen class per task (current behaviour). Chakan & DPI printing still apply.'}
+                </p>
+              </div>
+
+              {scanType !== 'engine' ? (
                 <div style={{ position: 'relative' }}>
                   <label style={labelStyle}>Vehicle Model Code (Multi-Select)</label>
                   <div
@@ -805,7 +891,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                           </select>
                         </div>
                         <div>
-                          {(() => {
+                          {detectionMethod !== 'multiclass' ? (
+                            <>
+                              <label style={labelStyle}>Detection Class</label>
+                              <select style={inputStyle} value={config.class} onChange={(e) => handleUpdateDefaultAI(idx, 'class', e.target.value)} disabled={!config.modelId}>
+                                <option value="">Select Class...</option>
+                                {models.find(m => m.id === config.modelId)?.classes.map(c => (
+                                  <option key={c} value={c}>{c}</option>
+                                ))}
+                              </select>
+                            </>
+                          ) : (() => {
                             const modelClasses = models.find(m => m.id === config.modelId)?.classes || [];
                             if (!config.modelId) {
                               return <><label style={labelStyle}>Mandatory Classes</label><span style={{ fontSize: 12, color: C.muted }}>Select a model first</span></>;
@@ -817,22 +913,44 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                   const selected = (config.mandatoryClasses || []).includes(c);
                                   const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
                                   const isNotOk = cn.includes('not') && cn.includes('ok');
+                                  const ocrCfg = (config.classOcrConfig || {})[c] || {};
                                   return (
-                                    <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
-                                      <input
-                                        type="checkbox"
-                                        checked={selected}
-                                        onChange={() => handleToggleMandatoryClass(idx, c)}
-                                        style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
-                                      />
-                                      <span style={{ fontSize: 12, fontWeight: 600, color: selected ? (isNotOk ? '#e74c3c' : 'var(--accent)') : C.muted }}>{c}</span>
-                                      {selected
-                                        ? (isNotOk
-                                            ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
-                                            : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
-                                        : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
-                                      }
-                                    </label>
+                                    <div key={c} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={selected}
+                                          onChange={() => handleToggleMandatoryClass(idx, c)}
+                                          style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                        />
+                                        <span style={{ fontSize: 12, fontWeight: 600, color: selected ? (isNotOk ? '#e74c3c' : 'var(--accent)') : C.muted }}>{c}</span>
+                                        {selected
+                                          ? (isNotOk
+                                              ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                              : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
+                                          : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                        }
+                                      </label>
+                                      {selected && !isNotOk && (
+                                        <div style={{ marginLeft: 23, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={!!ocrCfg.ocrEnabled}
+                                            onChange={() => handleToggleClassOcr(idx, c)}
+                                            style={{ width: 13, height: 13, accentColor: '#f0a500', cursor: 'pointer' }}
+                                          />
+                                          <span style={{ fontSize: 11, color: '#f0a500' }}>OCR verify</span>
+                                          {ocrCfg.ocrEnabled && (
+                                            <input
+                                              style={{ ...inputStyle, padding: '3px 8px', fontSize: 11, width: 160 }}
+                                              placeholder="Target text e.g. AB-1234"
+                                              value={ocrCfg.ocrTargetText || ''}
+                                              onChange={e => handleClassOcrText(idx, c, e.target.value)}
+                                            />
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
                                   );
                                 })}
                               </div>
@@ -905,7 +1023,18 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                 </select>
                               </div>
                               <div style={{ padding: '12px 16px' }}>
-                                {(() => {
+                                {detectionMethod !== 'multiclass' ? (
+                                  <select
+                                    style={{ ...miniSelectStyle, width: '100%' }}
+                                    value={ai.class}
+                                    onChange={(e) => handleUpdateRowAI(rowIndex, aiIdx, 'class', e.target.value)}
+                                    disabled={!ai.modelId}
+                                  >
+                                    {models.find(m => m.id === ai.modelId)?.classes.map(c => (
+                                      <option key={c} value={c}>{c}</option>
+                                    ))}
+                                  </select>
+                                ) : (() => {
                                   if (!ai.modelId) return <span style={{ fontSize: 11, color: '#aaa' }}>Select model</span>;
                                   const mc = models.find(m => m.id === ai.modelId)?.classes || [];
                                   return <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -914,21 +1043,43 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                       const sel = (ai.mandatoryClasses || []).includes(c);
                                       const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
                                       const isNotOk = cn.includes('not') && cn.includes('ok');
-                                      return <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
-                                        <input
-                                          type="checkbox"
-                                          checked={sel}
-                                          onChange={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
-                                          style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
-                                        />
-                                        <span style={{ fontSize: 12, fontWeight: 600, color: sel ? (isNotOk ? '#e74c3c' : 'var(--accent)') : '#aaa' }}>{c}</span>
-                                        {sel
-                                          ? (isNotOk
-                                              ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
-                                              : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
-                                          : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
-                                        }
-                                      </label>;
+                                      const ocrCfg = (ai.classOcrConfig || {})[c] || {};
+                                      return <div key={c} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={sel}
+                                            onChange={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
+                                            style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                                          />
+                                          <span style={{ fontSize: 12, fontWeight: 600, color: sel ? (isNotOk ? '#e74c3c' : 'var(--accent)') : '#aaa' }}>{c}</span>
+                                          {sel
+                                            ? (isNotOk
+                                                ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
+                                                : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
+                                            : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                          }
+                                        </label>
+                                        {sel && !isNotOk && (
+                                          <div style={{ marginLeft: 23, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                            <input
+                                              type="checkbox"
+                                              checked={!!ocrCfg.ocrEnabled}
+                                              onChange={() => handleToggleRowClassOcr(rowIndex, aiIdx, c)}
+                                              style={{ width: 12, height: 12, accentColor: '#f0a500', cursor: 'pointer' }}
+                                            />
+                                            <span style={{ fontSize: 10, color: '#f0a500' }}>OCR</span>
+                                            {ocrCfg.ocrEnabled && (
+                                              <input
+                                                style={{ padding: '2px 6px', fontSize: 10, width: 110, borderRadius: 4, border: '1px solid #444', background: '#111', color: '#fff' }}
+                                                placeholder="Target text"
+                                                value={ocrCfg.ocrTargetText || ''}
+                                                onChange={e => handleRowClassOcrText(rowIndex, aiIdx, c, e.target.value)}
+                                              />
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>;
                                     })}
                                   </div>;
                                 })()}

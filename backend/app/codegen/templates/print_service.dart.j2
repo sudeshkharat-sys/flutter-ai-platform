@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zsdk/zsdk.dart';
 
 /// A Bluetooth printer (bonded or discovered via zsdk).
@@ -18,11 +20,80 @@ class PrintService {
 
   final _zsdk = ZSDK();
 
+  /// Human-readable reason the last print failed (null if it succeeded).
+  /// Callers can show this instead of a generic "Print failed" message.
+  String? lastPrintError;
+
+  static const _kDefaultMacKey = 'default_printer_mac';
+  static const _kDefaultNameKey = 'default_printer_name';
+  static const _kDpiKey = 'printer_dpi';
+
+  /// Supported label print resolutions.
+  static const List<int> supportedDpi = [203, 300];
+  static const int defaultDpi = 300;
+
+  /// Persist the user's chosen printer so auto-print targets it directly
+  /// instead of blindly using the first paired Bluetooth device (which may
+  /// be a laptop/phone, not the Zebra printer).
+  Future<void> setDefaultPrinter(DiscoveredPrinter printer) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kDefaultMacKey, printer.address);
+    await prefs.setString(_kDefaultNameKey, printer.name);
+  }
+
+  /// Returns the saved default printer, or null if none has been chosen yet.
+  Future<DiscoveredPrinter?> getDefaultPrinter() async {
+    final prefs = await SharedPreferences.getInstance();
+    final mac = prefs.getString(_kDefaultMacKey);
+    if (mac == null || mac.isEmpty) return null;
+    return DiscoveredPrinter(
+      name: prefs.getString(_kDefaultNameKey) ?? mac,
+      address: mac,
+    );
+  }
+
+  /// Persist the label print resolution (203 or 300 dpi) so the user can
+  /// switch printers of a different DPI class without mis-scaled labels.
+  Future<void> setPrinterDpi(int dpi) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kDpiKey, dpi);
+  }
+
+  /// Returns the saved DPI setting, defaulting to [defaultDpi] (300) —
+  /// the resolution the label layout was originally designed for.
+  Future<int> getPrinterDpi() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_kDpiKey) ?? defaultDpi;
+  }
+
   // ── Bluetooth discovery ───────────────────────────────────────────────────
+
+  /// Ensure the Bluetooth runtime permissions are granted before any
+  /// classic-Bluetooth call. On Android 12+:
+  ///  - BLUETOOTH_CONNECT → needed for getBondedDevices() (without it the list
+  ///    silently comes back empty even when a printer is paired)
+  ///  - BLUETOOTH_SCAN    → needed because zsdk's print path internally calls
+  ///    BluetoothAdapter.cancelDiscovery(), which throws a SecurityException
+  ///    ("Need BLUETOOTH_SCAN permission ... cancelDiscovery") without it.
+  /// permission_handler works without a BuildContext, so UI-less callers
+  /// (e.g. auto-print) are covered too.
+  Future<bool> _ensureConnectPermission() async {
+    final statuses = await [
+      Permission.bluetoothConnect,
+      Permission.bluetoothScan,
+    ].request();
+    final connect = statuses[Permission.bluetoothConnect]?.isGranted ?? false;
+    final scan = statuses[Permission.bluetoothScan]?.isGranted ?? false;
+    return connect && scan;
+  }
 
   /// Return already-paired (bonded) Bluetooth devices.
   Future<List<DiscoveredPrinter>> getBondedPrinters() async {
     try {
+      if (!await _ensureConnectPermission()) {
+        throw Exception(
+            'Bluetooth permission denied — allow it to find paired printers.');
+      }
       final devices = await _zsdk.getBondedDevices();
       return devices
           .map((d) => DiscoveredPrinter(
@@ -35,13 +106,17 @@ class PrintService {
           .toList();
     } catch (e) {
       debugPrint('[PrintService] getBondedDevices error: $e');
-      return [];
+      rethrow;
     }
   }
 
   /// Actively scan for nearby Zebra Bluetooth printers (Android only).
   Future<List<DiscoveredPrinter>> discoverBluetoothPrinters() async {
     try {
+      if (!await _ensureConnectPermission()) {
+        throw Exception(
+            'Bluetooth permission denied — allow it to scan for printers.');
+      }
       final devices = await _zsdk.discoverBluetoothPrinters();
       return devices
           .map((d) => DiscoveredPrinter(
@@ -54,7 +129,7 @@ class PrintService {
           .toList();
     } catch (e) {
       debugPrint('[PrintService] discoverBluetoothPrinters error: $e');
-      return [];
+      rethrow;
     }
   }
 
@@ -68,14 +143,20 @@ class PrintService {
   }
 
   /// Build a ZPL II label for the inspection report.
-  /// Designed for Zebra ZT411 at 300 dpi, 4-inch wide labels.
+  /// Authored for a Zebra ZT411 at 300 dpi, 4-inch wide labels; all
+  /// coordinates are scaled at print time for [dpi] (e.g. 203 dpi) so the
+  /// label keeps the same physical 4-inch size on either printer class.
   String _buildZpl({
     required String vin,
     required String modelCode,
     required String timestamp,
     required bool overallSuccess,
     required List<Map<String, dynamic>> tasks,
+    int dpi = PrintService.defaultDpi,
   }) {
+    final double scale = dpi / PrintService.defaultDpi;
+    int s(num v) => (v * scale).round();
+
     // Clean up ISO timestamp → "2026-03-26 15:46:09"
     final cleanDate = timestamp
         .replaceFirst('T', ' ')
@@ -86,75 +167,117 @@ class PrintService {
         ? <Map<String, dynamic>>[]
         : tasks.where((t) => t['success'] != true).toList();
 
-    // Dynamic height
-    int taskRows = 0;
-    for (final t in failedTasks) {
-      taskRows += 56 + 8;
-      if (_hasValue(t['detectedPart'] as String?)) taskRows += 40;
-    }
-    final tasksSection = failedTasks.isEmpty ? 0 : 60 + taskRows;
-    final labelHeight = 80 + 140 + 80 + tasksSection + 55;
+    // When there are many failed tasks, lay them out in two columns so the
+    // label stays compact instead of growing very long.
+    final bool twoCol = failedTasks.length > 4;
 
-    final buf = StringBuffer();
-    int y = 20;
-
-    buf.writeln('^XA');
-    buf.writeln('^PW1200');
-    buf.writeln('^LL$labelHeight');
+    // Body is built first so the exact content height (and therefore ^LL)
+    // is known before we emit the header — avoids magic-number height math
+    // drifting out of sync with the layout below.
+    final body = StringBuffer();
+    int y = s(20);
 
     // ── Title ─────────────────────────────────────────────────────────────────
-    buf.writeln('^FO50,$y^A0N,62,44^FDINSPECTION REPORT^FS');
-    y += 75;
-    buf.writeln('^FO50,$y^GB1100,4,4^FS');
-    y += 18;
+    body.writeln(
+        '^FO${s(50)},$y^A0N,${s(46)},${s(32)}^FDDIGITAL EYE INSPECTION REPORT^FS');
+    y += s(75);
+    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
+    y += s(18);
 
-    // ── VIN and DATE only ─────────────────────────────────────────────────────
-    buf.writeln('^FO50,$y^A0N,42,30^FDVIN  : $vin^FS');
-    y += 56;
-    buf.writeln('^FO50,$y^A0N,38,27^FDDATE : $cleanDate^FS');
-    y += 54;
-    buf.writeln('^FO50,$y^GB1100,4,4^FS');
-    y += 18;
+    // ── VIN — its own full-width row, printed extra large for readability ──
+    body.writeln('^FO${s(50)},$y^A0N,${s(30)},${s(20)}^FDVIN :^FS');
+    y += s(34);
+    body.writeln('^FO${s(50)},$y^A0N,${s(90)},${s(60)}^FD$vin^FS');
+    y += s(100);
+    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
+    y += s(18);
+
+    // ── DATE + TIME, single compact row ─────────────────────────────────────
+    final parts = cleanDate.split(' ');
+    final datePart = parts.isNotEmpty ? parts[0] : cleanDate;
+    final timePart = parts.length > 1 ? parts[1] : '';
+    body.writeln(
+        '^FO${s(50)},$y^A0N,${s(26)},${s(18)}^FDDATE : $datePart    TIME : $timePart^FS');
+    y += s(40);
+    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
+    y += s(18);
 
     // ── Status ────────────────────────────────────────────────────────────────
     final statusText = overallSuccess ? '[ PASSED ]' : '[ FAILED ]';
-    buf.writeln('^FO50,$y^A0N,60,44^FD$statusText^FS');
-    y += 75;
-    buf.writeln('^FO50,$y^GB1100,4,4^FS');
-    y += 18;
+    body.writeln('^FO${s(50)},$y^A0N,${s(60)},${s(44)}^FD$statusText^FS');
+    y += s(75);
+    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
+    y += s(18);
 
     // ── Failed tasks only ─────────────────────────────────────────────────────
     if (failedTasks.isNotEmpty) {
-      buf.writeln('^FO50,$y^A0N,32,23^FDFAILED TASKS^FS');
-      y += 44;
-      buf.writeln('^FO50,$y^GB1100,2,2^FS');
-      y += 12;
+      body.writeln('^FO${s(50)},$y^A0N,${s(32)},${s(23)}^FDFAILED TASKS^FS');
+      y += s(44);
+      body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(2)},${s(2)}^FS');
+      y += s(12);
 
-      for (final task in failedTasks) {
-        final name = task['taskName'] as String? ?? 'Task';
-        buf.writeln('^FO50,$y^A0N,38,27^FD$name^FS');
-        y += 50;
+      String fit(String str, int max) =>
+          str.length > max ? '${str.substring(0, max - 3)}...' : str;
 
-        final part = task['detectedPart'] as String?;
-        if (_hasValue(part)) {
-          buf.writeln('^FO70,$y^A0N,30,22^FD> ${part!.trim()}^FS');
-          y += 40;
+      if (!twoCol) {
+        // Single column — one task per row, full width.
+        for (final task in failedTasks) {
+          final name = fit(task['taskName'] as String? ?? 'Task', 40);
+          body.writeln('^FO${s(50)},$y^A0N,${s(38)},${s(27)}^FD$name^FS');
+          y += s(50);
+
+          final part = task['detectedPart'] as String?;
+          if (_hasValue(part)) {
+            body.writeln(
+                '^FO${s(70)},$y^A0N,${s(30)},${s(22)}^FD> ${fit(part!.trim(), 44)}^FS');
+            y += s(40);
+          }
+
+          body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(2)},${s(2)}^FS');
+          y += s(8);
         }
+        y += s(6);
+      } else {
+        // Two columns — left column fills first, then right column.
+        final startY = y;
+        final half = (failedTasks.length / 2).ceil();
+        final rowH = s(98);
+        final colX = [s(50), s(620)];
+        for (int i = 0; i < failedTasks.length; i++) {
+          final col = i < half ? 0 : 1;
+          final rowIdx = i < half ? i : i - half;
+          final rx = colX[col];
+          final ry = startY + rowIdx * rowH;
+          final task = failedTasks[i];
 
-        buf.writeln('^FO50,$y^GB1100,2,2^FS');
-        y += 8;
+          // ~22 chars fit in a ~550-dot column at width 24.
+          final name = fit(task['taskName'] as String? ?? 'Task', 22);
+          body.writeln('^FO$rx,$ry^A0N,${s(34)},${s(24)}^FD$name^FS');
+
+          final part = task['detectedPart'] as String?;
+          if (_hasValue(part)) {
+            body.writeln(
+                '^FO${rx + s(20)},${ry + s(44)}^A0N,${s(28)},${s(20)}^FD> ${fit(part!.trim(), 24)}^FS');
+          }
+        }
+        y = startY + half * rowH + s(6);
       }
-      y += 6;
     }
 
-    buf.writeln('^FO50,$y^GB1100,4,4^FS');
-    y += 14;
+    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
+    y += s(14);
 
     // ── Footer ────────────────────────────────────────────────────────────────
-    buf.writeln('^FO50,$y^A0N,30,22^FDFlutter AI Inspection System^FS');
+    body.writeln(
+        '^FO${s(50)},$y^A0N,${s(30)},${s(22)}^FD* Digital Eye Inspection System *^FS');
+    y += s(40);
 
-    buf.writeln('^XZ');
-    return buf.toString();
+    final header = StringBuffer();
+    header.writeln('^XA');
+    header.writeln('^PW${s(1200)}');
+    header.writeln('^LL$y');
+
+    return header.toString() + body.toString() + '^XZ\n';
   }
 
   // ── Print ─────────────────────────────────────────────────────────────────
@@ -168,13 +291,20 @@ class PrintService {
     required bool overallSuccess,
     required List<Map<String, dynamic>> tasks,
   }) async {
+    lastPrintError = null;
     try {
+      if (!await _ensureConnectPermission()) {
+        lastPrintError = 'Bluetooth permission denied';
+        debugPrint('[PrintService] print aborted — BLUETOOTH_CONNECT denied');
+        return false;
+      }
       final zpl = _buildZpl(
         vin: vin,
         modelCode: modelCode,
         timestamp: timestamp,
         overallSuccess: overallSuccess,
         tasks: tasks,
+        dpi: await getPrinterDpi(),
       );
 
       final result = await _zsdk.printZplDataOverBluetooth(
@@ -186,9 +316,12 @@ class PrintService {
       if (response.errorCode == ErrorCode.SUCCESS) {
         return true;
       }
-      debugPrint('[PrintService] ZPL BT print failed: ${response.statusInfo?.cause}');
+      lastPrintError = response.statusInfo?.cause?.toString() ??
+          'Printer rejected the job (code ${response.errorCode})';
+      debugPrint('[PrintService] ZPL BT print failed: $lastPrintError');
       return false;
     } catch (e) {
+      lastPrintError = e.toString();
       debugPrint('[PrintService] ZPL BT print error: $e');
       return false;
     }

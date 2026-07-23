@@ -31,9 +31,10 @@ export const extractClasses = (file) => {
 
 export const getModels      = ()         => api.get('/models');
 export const getModelStatus = (id) => api.get(`/models/${id}/status`);
-export const resetModelConversion = (id) => api.post(`/models/${id}/reset`);
 export const detectModelClasses = (id) => api.post(`/models/${id}/detect-classes`);
 export const deleteModel = (id) => api.delete(`/models/${id}`);
+export const downloadModelPt = (id) =>
+  api.get(`/models/${id}/download-pt`, { responseType: 'blob' });
 
 
 export const getApps    = ()         => api.get('/apps');
@@ -52,7 +53,6 @@ export const exportApp = (id) =>
   api.post(`/apps/${id}/export`, {}, { responseType: 'blob' });
 
 export const buildAPK = (id) => api.post(`/apps/${id}/build`);
-export const cancelBuild = (id) => api.post(`/apps/${id}/cancel-build`);
 
 export const downloadAPK = (id) =>
   api.get(`/apps/${id}/apk`, { responseType: 'blob' });
