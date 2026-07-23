@@ -25,7 +25,7 @@ if exist "D:\FlutterAI-App\FlutterAI\data" (
 :: Pull latest code
 echo [3] Pulling latest code...
 pushd "%~dp0..\.."
-git pull origin exe/latest-build
+git pull origin exe/v2-clean-build
 popd
 
 :: Rebuild EXE
