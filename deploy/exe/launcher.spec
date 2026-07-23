@@ -29,7 +29,18 @@ if _stdlib_dir and os.path.isdir(_stdlib_dir):
 if _platstdlib_dir and os.path.isdir(_platstdlib_dir) and _platstdlib_dir != _stdlib_dir:
     datas += [(_platstdlib_dir, "lib-platstdlib")]
 
-binaries      = []
+# ---------------------------------------------------------------------------
+# SSL DLL fix — bundle libssl / libcrypto from conda env so _ssl.pyd loads
+# ---------------------------------------------------------------------------
+binaries = []
+_conda_bin = Path(sys.executable).parent
+for _dll in ["libssl-3-x64.dll", "libcrypto-3-x64.dll",
+             "libssl-1_1-x64.dll", "libcrypto-1_1-x64.dll"]:
+    _dll_path = _conda_bin / _dll
+    if _dll_path.exists():
+        binaries += [( str(_dll_path), "." )]
+        print(f"[spec] Bundling SSL DLL: {_dll_path}")
+
 hiddenimports = []
 
 hiddenimports += collect_submodules("encodings")
