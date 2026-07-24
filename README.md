@@ -18,12 +18,15 @@ flutter-ai-platform/
 │   │   ├── tasks/             # Celery Background Tasks (APK Build, Conversion)
 │   │   └── queries.py         # SQL Query Definitions
 │   └── requirements.txt       # Backend Dependencies
-└── frontend/                  # React.js Web Dashboard
-    ├── src/
-    │   ├── components/        # React UI Components (AppBuilder, Dashboard)
-    │   ├── api.js             # API Client Configuration
-    │   └── puckConfig.js      # App Builder Configuration (Puck Editor)
-    └── package.json           # Frontend Dependencies
+├── frontend/                  # React.js Web Dashboard
+│   ├── src/
+│   │   ├── components/        # React UI Components (AppBuilder, Dashboard)
+│   │   ├── api.js             # API Client Configuration
+│   │   └── puckConfig.js      # App Builder Configuration (Puck Editor)
+│   └── package.json           # Frontend Dependencies
+└── pc_receiver/                # Standalone PC-side companion app
+    ├── receiver.py             # mDNS + HTTP server that receives phone data
+    └── README.md                # Usage & how to build a no-install .exe
 ```
 
 ---

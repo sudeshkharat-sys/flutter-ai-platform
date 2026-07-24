@@ -1,0 +1,240 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:archive/archive.dart';
+import 'package:crypto/crypto.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+import 'package:multicast_dns/multicast_dns.dart';
+import 'package:path_provider/path_provider.dart';
+import '../database/database.dart';
+
+/// mDNS service type the PC receiver app advertises on the LAN. Discovery
+/// only ever sees devices on the same WiFi/hotspot -- it does not reach
+/// outside the local network.
+const String kSyncServiceType = '_flutteraisync._tcp';
+
+class DiscoveredPc {
+  final String name;
+  final String ip;
+  final int port;
+  const DiscoveredPc({required this.name, required this.ip, required this.port});
+}
+
+/// A PC this phone has completed the one-time QR pairing handshake with.
+/// [secret] is only ever known to this phone and that PC -- it's what lets
+/// the PC reject data from any other device on the network.
+class PairedPc {
+  final String deviceId;
+  final String name;
+  String ip;
+  int port;
+  final String secret;
+
+  PairedPc({
+    required this.deviceId,
+    required this.name,
+    required this.ip,
+    required this.port,
+    required this.secret,
+  });
+
+  Map<String, dynamic> toJson() =>
+      {'deviceId': deviceId, 'name': name, 'ip': ip, 'port': port, 'secret': secret};
+
+  factory PairedPc.fromJson(Map<String, dynamic> j) => PairedPc(
+        deviceId: j['deviceId'] as String,
+        name: j['name'] as String,
+        ip: j['ip'] as String,
+        port: j['port'] as int,
+        secret: j['secret'] as String,
+      );
+}
+
+class SyncResult {
+  final bool success;
+  final String message;
+  const SyncResult(this.success, this.message);
+}
+
+class SyncService {
+  static final SyncService instance = SyncService._();
+  SyncService._();
+
+  static const _storage = FlutterSecureStorage();
+  static const _kPairedDevicesKey = 'synced_pc_devices';
+
+  /// Discover PC receivers advertising on the local network via mDNS.
+  Future<List<DiscoveredPc>> discoverPcs({Duration timeout = const Duration(seconds: 4)}) async {
+    final client = MDnsClient();
+    final found = <String, DiscoveredPc>{};
+    try {
+      await client.start();
+      await for (final ptr in client
+          .lookup<PtrResourceRecord>(ResourceRecordQuery.serverPointer('$kSyncServiceType.local'))
+          .timeout(timeout, onTimeout: (sink) => sink.close())) {
+        await for (final srv in client
+            .lookup<SrvResourceRecord>(ResourceRecordQuery.service(ptr.domainName))
+            .timeout(const Duration(seconds: 2), onTimeout: (sink) => sink.close())) {
+          await for (final ip in client
+              .lookup<IPAddressResourceRecord>(ResourceRecordQuery.addressIPv4(srv.target))
+              .timeout(const Duration(seconds: 2), onTimeout: (sink) => sink.close())) {
+            final name = ptr.domainName.split('.').first;
+            found[srv.target] = DiscoveredPc(name: name, ip: ip.address.address, port: srv.port);
+          }
+        }
+      }
+    } catch (_) {
+      // mDNS blocked/unsupported on this network -- caller falls back to the
+      // last known IP for already-paired PCs, or manual QR pairing.
+    } finally {
+      client.stop();
+    }
+    return found.values.toList();
+  }
+
+  Future<List<PairedPc>> getPairedPcs() async {
+    final raw = await _storage.read(key: _kPairedDevicesKey);
+    if (raw == null || raw.isEmpty) return [];
+    final list = jsonDecode(raw) as List;
+    return list.map((e) => PairedPc.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  Future<void> _savePairedPcs(List<PairedPc> devices) async {
+    await _storage.write(
+        key: _kPairedDevicesKey, value: jsonEncode(devices.map((d) => d.toJson()).toList()));
+  }
+
+  Future<void> removePairedPc(String deviceId) async {
+    final devices = await getPairedPcs();
+    devices.removeWhere((d) => d.deviceId == deviceId);
+    await _savePairedPcs(devices);
+  }
+
+  /// Complete one-time pairing using the JSON payload scanned from the QR
+  /// code the PC receiver shows on screen: {name, ip, port, token}. The
+  /// token is single-use and expires PC-side after a few minutes, so a
+  /// screenshot of an old QR code can't be replayed later to pair a
+  /// different phone.
+  Future<PairedPc> pairFromQrData(String qrRaw) async {
+    final data = jsonDecode(qrRaw) as Map<String, dynamic>;
+    final ip = data['ip'] as String;
+    final port = data['port'] as int;
+    final pcName = data['name'] as String? ?? 'PC';
+    final token = data['token'] as String;
+
+    final resp = await http
+        .post(
+          Uri.parse('http://$ip:$port/pair'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'token': token, 'deviceName': _shortDeviceLabel()}),
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (resp.statusCode != 200) {
+      throw Exception('Pairing rejected by PC (${resp.statusCode}): ${resp.body}');
+    }
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    final paired = PairedPc(
+      deviceId: body['deviceId'] as String,
+      name: pcName,
+      ip: ip,
+      port: port,
+      secret: body['secret'] as String,
+    );
+
+    final devices = await getPairedPcs();
+    devices.removeWhere((d) => d.name == pcName && d.ip == ip);
+    devices.add(paired);
+    await _savePairedPcs(devices);
+    return paired;
+  }
+
+  String _shortDeviceLabel() => 'android-${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
+
+  /// Exports the local SQLite database plus every captured inspection image
+  /// into a single zip, then uploads it to [pc] with an HMAC-signed request.
+  /// Only a phone that completed the QR pairing handshake with that specific
+  /// PC holds the secret needed to produce a valid signature, so even other
+  /// PCs visible on the same WiFi will reject the upload with 401.
+  Future<SyncResult> sendToPc(PairedPc pc) async {
+    try {
+      // Refresh the PC's current LAN IP in case DHCP changed it since
+      // pairing; fall back to the last known IP if discovery finds nothing.
+      final discovered = await discoverPcs(timeout: const Duration(seconds: 2));
+      final match = discovered.where((d) => d.name == pc.name);
+      if (match.isNotEmpty) {
+        pc.ip = match.first.ip;
+        pc.port = match.first.port;
+        final devices = await getPairedPcs();
+        final idx = devices.indexWhere((d) => d.deviceId == pc.deviceId);
+        if (idx != -1) {
+          devices[idx] = pc;
+          await _savePairedPcs(devices);
+        }
+      }
+
+      final zipBytes = await _buildExportZip();
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final bodyHash = sha256.convert(zipBytes).toString();
+      final signaturePayload = '${pc.deviceId}:$timestamp:$bodyHash';
+      final signature =
+          Hmac(sha256, utf8.encode(pc.secret)).convert(utf8.encode(signaturePayload)).toString();
+
+      final uri = Uri.parse('http://${pc.ip}:${pc.port}/upload');
+      final request = http.MultipartRequest('POST', uri)
+        ..headers['X-Device-Id'] = pc.deviceId
+        ..headers['X-Timestamp'] = timestamp
+        ..headers['X-Signature'] = signature
+        ..files.add(http.MultipartFile.fromBytes('data', zipBytes, filename: 'inspection_export.zip'));
+
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
+      final resp = await http.Response.fromStream(streamed);
+
+      if (resp.statusCode == 200) {
+        return const SyncResult(true, 'Data sent successfully.');
+      }
+      if (resp.statusCode == 401) {
+        return const SyncResult(false, 'Rejected: this phone is not paired with that PC.');
+      }
+      return SyncResult(false, 'PC rejected the upload (${resp.statusCode}).');
+    } on TimeoutException {
+      return const SyncResult(false, "Timed out -- is the PC still on this WiFi/hotspot and the receiver running?");
+    } catch (e) {
+      return SyncResult(false, 'Send failed: $e');
+    }
+  }
+
+  Future<Uint8List> _buildExportZip() async {
+    final archive = Archive();
+
+    final appDir = await getApplicationSupportDirectory();
+    final dbFile = File('${appDir.path}/inspection_database.sqlite');
+    if (await dbFile.exists()) {
+      final bytes = await dbFile.readAsBytes();
+      archive.addFile(ArchiveFile('inspection_database.sqlite', bytes.length, bytes));
+    }
+
+    final inspections = await db.getAllInspections();
+    final seenImagePaths = <String>{};
+    for (final insp in inspections) {
+      final results = await db.getResultsForInspection(insp.id);
+      for (final r in results) {
+        for (final path in [r.imagePath, r.backupImagePath]) {
+          if (path == null || path.isEmpty || seenImagePaths.contains(path)) continue;
+          final f = File(path);
+          if (await f.exists()) {
+            seenImagePaths.add(path);
+            final bytes = await f.readAsBytes();
+            archive.addFile(ArchiveFile('images/${f.uri.pathSegments.last}', bytes.length, bytes));
+          }
+        }
+      }
+    }
+
+    final zipped = ZipEncoder().encode(archive);
+    return Uint8List.fromList(zipped ?? const []);
+  }
+}

@@ -1,0 +1,312 @@
+import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import '../services/sync_service.dart';
+
+const _crimson = Color(0xFFDC143C);
+const _gold = Color(0xFFD4AF37);
+
+class SyncScreen extends StatefulWidget {
+  const SyncScreen({super.key});
+
+  @override
+  State<SyncScreen> createState() => _SyncScreenState();
+}
+
+class _SyncScreenState extends State<SyncScreen> {
+  List<PairedPc> _pairedPcs = [];
+  List<DiscoveredPc> _discovered = [];
+  bool _loadingPaired = true;
+  bool _scanning = false;
+  String? _busyDeviceId;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPaired();
+  }
+
+  Future<void> _loadPaired() async {
+    setState(() => _loadingPaired = true);
+    final devices = await SyncService.instance.getPairedPcs();
+    if (mounted) setState(() {
+      _pairedPcs = devices;
+      _loadingPaired = false;
+    });
+  }
+
+  Future<void> _discover() async {
+    setState(() => _scanning = true);
+    final found = await SyncService.instance.discoverPcs();
+    if (mounted) setState(() {
+      _discovered = found;
+      _scanning = false;
+    });
+  }
+
+  Future<void> _openScanner() async {
+    final code = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const _QrScanScreen()),
+    );
+    if (code == null || !mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator(color: _crimson)),
+    );
+
+    try {
+      final paired = await SyncService.instance.pairFromQrData(code);
+      if (!mounted) return;
+      Navigator.of(context).pop(); // close spinner
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Paired with ${paired.name}'),
+        backgroundColor: Colors.green[700],
+      ));
+      _loadPaired();
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Pairing failed: $e'),
+        backgroundColor: _crimson,
+        duration: const Duration(seconds: 5),
+      ));
+    }
+  }
+
+  Future<void> _sendTo(PairedPc pc) async {
+    setState(() => _busyDeviceId = pc.deviceId);
+    final result = await SyncService.instance.sendToPc(pc);
+    if (!mounted) return;
+    setState(() => _busyDeviceId = null);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(result.message),
+      backgroundColor: result.success ? Colors.green[700] : _crimson,
+      duration: const Duration(seconds: 5),
+    ));
+  }
+
+  Future<void> _remove(PairedPc pc) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove paired PC?'),
+        content: Text('This phone will no longer be able to send data to "${pc.name}" until you re-pair.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Remove', style: TextStyle(color: _crimson)),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await SyncService.instance.removePairedPc(pc.deviceId);
+      _loadPaired();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFFFF5F5),
+      appBar: AppBar(
+        backgroundColor: _crimson,
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.white),
+        title: const Text('Send to PC',
+            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+      ),
+      body: RefreshIndicator(
+        onRefresh: _loadPaired,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _gold),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Paired PCs',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: _crimson)),
+                  const SizedBox(height: 4),
+                  Text(
+                    'One tap sends the local inspection data (database + images) to a PC you have paired with by scanning its QR code. Both devices must be on the same WiFi/hotspot.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                  ),
+                  const SizedBox(height: 12),
+                  if (_loadingPaired)
+                    const Center(child: CircularProgressIndicator(color: _crimson))
+                  else if (_pairedPcs.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: Center(
+                        child: Text('No PC paired yet. Scan a PC\'s QR code below to get started.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+                      ),
+                    )
+                  else
+                    ..._pairedPcs.map((pc) => Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFFF5F5),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFFE8E8E8)),
+                          ),
+                          child: ListTile(
+                            leading: const CircleAvatar(
+                              backgroundColor: Color(0xFFFFEBEE),
+                              child: Icon(Icons.computer, color: _crimson),
+                            ),
+                            title: Text(pc.name,
+                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                            subtitle: Text('Paired device',
+                                style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (_busyDeviceId == pc.deviceId)
+                                  const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: _crimson),
+                                  )
+                                else
+                                  ElevatedButton.icon(
+                                    onPressed: () => _sendTo(pc),
+                                    icon: const Icon(Icons.send, size: 15),
+                                    label: const Text('Send', style: TextStyle(fontSize: 12)),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: _crimson,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                      shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(8)),
+                                    ),
+                                  ),
+                                IconButton(
+                                  icon: const Icon(Icons.close, size: 18, color: Colors.grey),
+                                  tooltip: 'Remove pairing',
+                                  onPressed: () => _remove(pc),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )),
+                  const SizedBox(height: 4),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _openScanner,
+                      icon: const Icon(Icons.qr_code_scanner, color: _crimson),
+                      label: const Text('Pair New PC (Scan QR)', style: TextStyle(color: _crimson)),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: _crimson),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE8E8E8)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text('PCs visible on this network',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                      ),
+                      TextButton.icon(
+                        onPressed: _scanning ? null : _discover,
+                        icon: _scanning
+                            ? const SizedBox(
+                                width: 12,
+                                height: 12,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: _crimson))
+                            : const Icon(Icons.refresh, size: 15, color: _crimson),
+                        label: const Text('Scan', style: TextStyle(fontSize: 12, color: _crimson)),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    'This list is just for confirming a PC is reachable -- pairing still requires scanning its QR code, so being visible here is not enough to receive data.',
+                    style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                  ),
+                  const SizedBox(height: 8),
+                  if (_discovered.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text('No PCs found. Tap "Scan".',
+                          style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+                    )
+                  else
+                    ..._discovered.map((d) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.wifi, size: 14, color: Colors.grey),
+                              const SizedBox(width: 8),
+                              Text(d.name, style: const TextStyle(fontSize: 13)),
+                            ],
+                          ),
+                        )),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QrScanScreen extends StatefulWidget {
+  const _QrScanScreen();
+
+  @override
+  State<_QrScanScreen> createState() => _QrScanScreenState();
+}
+
+class _QrScanScreenState extends State<_QrScanScreen> {
+  bool _handled = false;
+
+  void _onDetect(BarcodeCapture capture) {
+    if (_handled) return;
+    final value = capture.barcodes.isNotEmpty ? capture.barcodes.first.rawValue : null;
+    if (value == null) return;
+    _handled = true;
+    Navigator.of(context).pop(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: _crimson,
+        title: const Text('Scan PC Pairing QR', style: TextStyle(color: Colors.white, fontSize: 15)),
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: MobileScanner(onDetect: _onDetect),
+    );
+  }
+}
