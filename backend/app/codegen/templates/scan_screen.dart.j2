@@ -6,6 +6,7 @@ import 'home_screen.dart';
 import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
+import '../services/sync_service.dart';
 
 class ScanScreen extends StatefulWidget {
   final String modelCode;
@@ -20,6 +21,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   List<dynamic> _scanData = [];
   String? _pendingBarcode;
   bool _manualMode = false;
+  int _unsyncedCount = 0;
 
   final MobileScannerController _scannerController = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
@@ -31,6 +33,12 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadScanData();
+    _refreshUnsyncedBadge();
+  }
+
+  Future<void> _refreshUnsyncedBadge() async {
+    final count = await SyncService.instance.getUnsyncedCount();
+    if (mounted) setState(() => _unsyncedCount = count);
   }
 
   Future<void> _loadScanData() async {
@@ -178,6 +186,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
           _isProcessing = false;
           _pendingBarcode = null;
         });
+        _refreshUnsyncedBadge();
       }
     });
   }
@@ -221,6 +230,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
           _isProcessing = false;
           _pendingBarcode = null;
         });
+        _refreshUnsyncedBadge();
       }
     });
   }
@@ -267,6 +277,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
           _isProcessing = false;
           _pendingBarcode = null;
         });
+        _refreshUnsyncedBadge();
       }
     });
   }
@@ -345,6 +356,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
           _isProcessing = false;
           _pendingBarcode = null;
         });
+        _refreshUnsyncedBadge();
       }
     });
   }
@@ -388,6 +400,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
           _isProcessing = false;
           _pendingBarcode = null;
         });
+        _refreshUnsyncedBadge();
       }
     });
   }
@@ -454,13 +467,37 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                       child: const Icon(Icons.history, color: Colors.white, size: 26),
                     ),
                     GestureDetector(
-                      onTap: () {
+                      onTap: () async {
                         setState(() => _pendingBarcode = null);
-                        Navigator.push(context, MaterialPageRoute(builder: (_) => const SyncScreen()));
+                        await Navigator.push(context, MaterialPageRoute(builder: (_) => const SyncScreen()));
+                        _refreshUnsyncedBadge();
                       },
-                      child: const Padding(
-                        padding: EdgeInsets.only(left: 16),
-                        child: Icon(Icons.sync, color: Colors.white, size: 26),
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 16),
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            const Icon(Icons.sync, color: Colors.white, size: 26),
+                            if (_unsyncedCount > 0)
+                              Positioned(
+                                right: -4,
+                                top: -4,
+                                child: Container(
+                                  padding: const EdgeInsets.all(2),
+                                  constraints: const BoxConstraints(minWidth: 15, minHeight: 15),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.orangeAccent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Text(
+                                    _unsyncedCount > 9 ? '9+' : '$_unsyncedCount',
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(fontSize: 9, color: Colors.white, fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
                   ],

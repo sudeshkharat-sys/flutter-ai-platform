@@ -9,6 +9,7 @@ import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
 import '../services/print_service.dart';
+import '../services/sync_service.dart';
 import '../database/database.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -172,6 +173,21 @@ class _HomeScreenState extends State<HomeScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text("Inspection Persisted to Local Database!"), backgroundColor: Colors.green),
     );
+
+    // Auto-send to the paired PC, mirroring auto-print -- silent on success,
+    // but flagged clearly if it fails so the inspector knows the data is
+    // still only on the phone. A null result means no PC has been paired
+    // yet, which isn't an error worth interrupting the flow for.
+    final syncResult = await SyncService.instance.autoSendIfPaired();
+    if (mounted && syncResult != null && !syncResult.success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("⚠ Not uploaded to PC yet: ${syncResult.message}"),
+          backgroundColor: Colors.orange[800],
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    }
 
     // Build task list for printing
     final printTasks = List.generate(_tasks.length, (i) {

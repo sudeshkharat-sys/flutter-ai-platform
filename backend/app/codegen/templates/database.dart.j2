@@ -69,9 +69,24 @@ class AppDatabase extends _$AppDatabase {
   Future saveTaskResult(TaskResultsCompanion entry) => into(taskResults).insert(entry);
   
   Future<List<Inspection>> getAllInspections() => (select(inspections)..orderBy([(t) => OrderingTerm.desc(t.createdAt)])).get();
-  
-  Future<List<TaskResult>> getResultsForInspection(int inspectionId) => 
+
+  Future<List<TaskResult>> getResultsForInspection(int inspectionId) =>
     (select(taskResults)..where((t) => t.inspectionId.equals(inspectionId))).get();
+
+  // ── PC sync status ────────────────────────────────────────────────────
+  Future<List<Inspection>> getUnsyncedInspections() =>
+      (select(inspections)..where((t) => t.isSynced.equals(false))).get();
+
+  Future<int> countUnsyncedInspections() async {
+    final rows = await getUnsyncedInspections();
+    return rows.length;
+  }
+
+  Future<void> markInspectionsSynced(List<int> ids) async {
+    if (ids.isEmpty) return;
+    await (update(inspections)..where((t) => t.id.isIn(ids)))
+        .write(const InspectionsCompanion(isSynced: Value(true)));
+  }
 
   // For checking task progress in current session
   Future<List<TaskResult>> getLatestResultsForVin(String vin) async {

@@ -6,6 +6,7 @@ import '../database/database.dart';
 import '../ml/detection_result.dart';
 import '../widgets/detection_overlay.dart';
 import '../services/print_service.dart';
+import '../services/sync_service.dart';
 
 class _ShiftSummary {
   final DateTime date;
@@ -35,14 +36,44 @@ class _HistoryScreenState extends State<HistoryScreen> {
   bool _loading = true;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  int _unsyncedCount = 0;
+  bool _resending = false;
 
   @override
   void initState() {
     super.initState();
     _loadHistoryFromDb();
+    _loadUnsyncedCount();
     _searchController.addListener(() {
       setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
     });
+  }
+
+  Future<void> _loadUnsyncedCount() async {
+    final count = await SyncService.instance.getUnsyncedCount();
+    if (mounted) setState(() => _unsyncedCount = count);
+  }
+
+  Future<void> _resendUnsynced() async {
+    final paired = await SyncService.instance.getPairedPcs();
+    if (paired.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No PC paired yet. Go to "Send to PC" to pair one first.'),
+        backgroundColor: Colors.orange,
+      ));
+      return;
+    }
+    setState(() => _resending = true);
+    final result = await SyncService.instance.sendToPc(paired.first);
+    if (!mounted) return;
+    setState(() => _resending = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(result.message),
+      backgroundColor: result.success ? Colors.green[700] : const Color(0xFFDC143C),
+      duration: const Duration(seconds: 4),
+    ));
+    _loadHistoryFromDb();
+    _loadUnsyncedCount();
   }
 
   @override
@@ -77,6 +108,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           'modelCode': insp.modelCode,
           'timestamp': insp.createdAt.toIso8601String(),
           'overallSuccess': overallSuccess,
+          'isSynced': insp.isSynced,
           'tasks': taskResults
               .map((tr) => {
                     'taskName': tr.taskName,
@@ -517,6 +549,37 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final filtered = _filteredHistory;
     return Column(
       children: [
+        if (_unsyncedCount > 0)
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.orange.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.orange.shade300),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.cloud_off, color: Colors.orange, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '$_unsyncedCount inspection${_unsyncedCount == 1 ? '' : 's'} not uploaded to PC',
+                    style: const TextStyle(fontSize: 12, color: Colors.black87, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                _resending
+                    ? const SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.orange))
+                    : TextButton(
+                        onPressed: _resendUnsynced,
+                        style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
+                        child: const Text('Resend Now', style: TextStyle(fontSize: 12, color: Colors.orange, fontWeight: FontWeight.bold)),
+                      ),
+              ],
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: TextField(
@@ -574,6 +637,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   itemBuilder: (context, index) {
                     final item = filtered[index];
         final bool overallSuccess = item['overallSuccess'] ?? false;
+        final bool isSynced = item['isSynced'] ?? false;
         final DateTime date = DateTime.parse(item['timestamp']);
         final List<dynamic> tasks = item['tasks'] ?? [];
         final shift = _getShift(date);
@@ -641,6 +705,27 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     ),
                   ),
                 ),
+                if (!isSynced)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 6, top: 2),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.orange, width: 0.8),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.cloud_off, size: 10, color: Colors.orange),
+                          SizedBox(width: 3),
+                          Text('Not uploaded',
+                              style: TextStyle(fontSize: 9, color: Colors.orange, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
             trailing: Row(

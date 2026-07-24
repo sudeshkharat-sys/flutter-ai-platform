@@ -74,6 +74,13 @@ def _save_devices():
     DEVICES_FILE.write_text(json.dumps(_paired_devices, indent=2))
 
 
+def _safe_name(name: str) -> str:
+    """Sanitize a phone/app-supplied name for use as a folder path segment."""
+    cleaned = "".join(c for c in name if c.isalnum() or c in (" ", "-", "_")).strip()
+    cleaned = cleaned.replace(" ", "_")
+    return cleaned or "unknown"
+
+
 # ── Local IP discovery (for the QR payload / mDNS registration) ────────────
 
 def _local_ip() -> str:
@@ -114,6 +121,7 @@ async def pair(request: Request):
     body = await request.json()
     token = body.get("token")
     device_name = body.get("deviceName", "unknown-device")
+    app_name = body.get("appName", "app")
 
     with _lock:
         pending = _pending_token
@@ -131,11 +139,12 @@ async def pair(request: Request):
         _paired_devices[device_id] = {
             "secret": secret,
             "deviceName": device_name,
+            "appName": app_name,
             "pairedAt": datetime.now().isoformat(),
         }
         _save_devices()
 
-    print(f"[paired] New device paired: {device_name} ({device_id})")
+    print(f"[paired] New device paired: {device_name} / {app_name} ({device_id})")
     return {"deviceId": device_id, "secret": secret}
 
 
@@ -192,20 +201,27 @@ async def upload(
         _record_failure(client_ip)
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-    device_name = device["deviceName"].replace("/", "_")
+    device_name = _safe_name(device["deviceName"])
+    app_name = _safe_name(device.get("appName", "app"))
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_zip = DATA_DIR / f"{device_name}_{stamp}.zip"
+
+    # received_data/<phone name>/<app name>/<timestamp>/ -- keeps every
+    # phone's data, and every generated app's data, in its own folder even
+    # when many phones send to the same PC.
+    device_dir = DATA_DIR / device_name / app_name
+    device_dir.mkdir(parents=True, exist_ok=True)
+
+    out_zip = device_dir / f"{stamp}.zip"
     out_zip.write_bytes(body_bytes)
 
-    # Extract alongside the zip for convenience.
-    extract_dir = DATA_DIR / f"{device_name}_{stamp}"
+    extract_dir = device_dir / stamp
     try:
         with zipfile.ZipFile(out_zip) as zf:
             zf.extractall(extract_dir)
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="Corrupt upload")
 
-    print(f"[received] {len(body_bytes)} bytes from '{device['deviceName']}' -> {extract_dir}")
+    print(f"[received] {len(body_bytes)} bytes from '{device['deviceName']}' / '{app_name}' -> {extract_dir}")
     return {"status": "ok", "savedTo": str(extract_dir)}
 
 
@@ -242,7 +258,7 @@ def console_loop():
                 if not _paired_devices:
                     print("No devices paired yet.")
                 for did, d in _paired_devices.items():
-                    print(f"  {d['deviceName']}  (paired {d['pairedAt']})  id={did}")
+                    print(f"  {d['deviceName']} / {d.get('appName', 'app')}  (paired {d['pairedAt']})  id={did}")
         elif cmd in ("q", "quit", "exit"):
             print("Shutting down...")
             import os
