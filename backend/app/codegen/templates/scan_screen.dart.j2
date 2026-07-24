@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'home_screen.dart';
 import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
+import 'sync_screen.dart';
 
 class ScanScreen extends StatefulWidget {
   final String modelCode;
@@ -451,6 +452,16 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                         Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()));
                       },
                       child: const Icon(Icons.history, color: Colors.white, size: 26),
+                    ),
+                    GestureDetector(
+                      onTap: () {
+                        setState(() => _pendingBarcode = null);
+                        Navigator.push(context, MaterialPageRoute(builder: (_) => const SyncScreen()));
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.only(left: 16),
+                        child: Icon(Icons.sync, color: Colors.white, size: 26),
+                      ),
                     ),
                   ],
                 ),
