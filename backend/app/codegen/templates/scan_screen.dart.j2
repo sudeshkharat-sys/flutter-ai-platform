@@ -23,6 +23,11 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   bool _manualMode = false;
   int _unsyncedCount = 0;
 
+  // Whether the user wants the flash to stay on -- once turned on it stays
+  // on across scans/mode switches (each of which briefly stops+starts the
+  // camera), instead of silently resetting off like a single-shot toggle.
+  bool _torchWanted = false;
+
   final MobileScannerController _scannerController = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
     facing: CameraFacing.back,
@@ -39,6 +44,23 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   Future<void> _refreshUnsyncedBadge() async {
     final count = await SyncService.instance.getUnsyncedCount();
     if (mounted) setState(() => _unsyncedCount = count);
+  }
+
+  Future<void> _toggleTorch() async {
+    await _scannerController.toggleTorch();
+    _torchWanted = _scannerController.torchState.value == TorchState.on;
+  }
+
+  /// Stops and restarts the camera session (used whenever we need to reset
+  /// scanner state, e.g. switching Auto/Manual mode, or handing the camera
+  /// back after another screen used it) while keeping the flash on if the
+  /// user had turned it on -- start() can otherwise silently drop torch.
+  Future<void> _restartScanner() async {
+    await _scannerController.stop();
+    await _scannerController.start();
+    if (_torchWanted && _scannerController.torchState.value != TorchState.on) {
+      await _scannerController.toggleTorch();
+    }
   }
 
   Future<void> _loadScanData() async {
@@ -68,7 +90,11 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       setState(() => _pendingBarcode = null);
-      _scannerController.start();
+      _scannerController.start().then((_) {
+        if (_torchWanted && _scannerController.torchState.value != TorchState.on) {
+          _scannerController.toggleTorch();
+        }
+      });
     } else if (state == AppLifecycleState.inactive) {
       _scannerController.stop();
     }
@@ -91,7 +117,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                   _isProcessing = false;
                   _pendingBarcode = null;
                 });
-                _scannerController.start();
+                _restartScanner();
               }
             },
             child: const Text('OK', style: TextStyle(color: Color(0xFFDC143C))),
@@ -180,8 +206,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       ),
     ).then((_) async {
       if (mounted) {
-        await _scannerController.stop();
-        await _scannerController.start();
+        await _restartScanner();
         setState(() {
           _isProcessing = false;
           _pendingBarcode = null;
@@ -224,8 +249,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       ),
     ).then((_) async {
       if (mounted) {
-        await _scannerController.stop();
-        await _scannerController.start();
+        await _restartScanner();
         setState(() {
           _isProcessing = false;
           _pendingBarcode = null;
@@ -271,8 +295,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       ),
     ).then((_) async {
       if (mounted) {
-        await _scannerController.stop();
-        await _scannerController.start();
+        await _restartScanner();
         setState(() {
           _isProcessing = false;
           _pendingBarcode = null;
@@ -350,8 +373,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       ),
     ).then((_) async {
       if (mounted) {
-        await _scannerController.stop();
-        await _scannerController.start();
+        await _restartScanner();
         setState(() {
           _isProcessing = false;
           _pendingBarcode = null;
@@ -394,8 +416,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
       ),
     ).then((_) async {
       if (mounted) {
-        await _scannerController.stop();
-        await _scannerController.start();
+        await _restartScanner();
         setState(() {
           _isProcessing = false;
           _pendingBarcode = null;
@@ -469,7 +490,16 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                     GestureDetector(
                       onTap: () async {
                         setState(() => _pendingBarcode = null);
+                        // Stop this screen's camera before handing off to the
+                        // Sync screen -- it may open its own camera session
+                        // (QR pairing scan), and two MobileScannerController
+                        // instances fighting over the same camera hardware at
+                        // once is what breaks VIN scanning until app restart.
+                        await _scannerController.stop();
                         await Navigator.push(context, MaterialPageRoute(builder: (_) => const SyncScreen()));
+                        if (mounted) {
+                          await _restartScanner();
+                        }
                         _refreshUnsyncedBadge();
                       },
                       child: Padding(
@@ -533,8 +563,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                             _pendingBarcode = null;
                           });
                           // Restart scanner to reset noDuplicates dedup state
-                          await _scannerController.stop();
-                          await _scannerController.start();
+                          await _restartScanner();
                         },
                         activeColor: const Color(0xFFDC143C),
                       ),
@@ -557,6 +586,31 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                   MobileScanner(
                     controller: _scannerController,
                     onDetect: _onDetect,
+                  ),
+                  Positioned(
+                    top: 12,
+                    right: 12,
+                    child: ValueListenableBuilder<TorchState>(
+                      valueListenable: _scannerController.torchState,
+                      builder: (context, torchState, child) {
+                        final isOn = torchState == TorchState.on;
+                        return GestureDetector(
+                          onTap: _toggleTorch,
+                          child: Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              isOn ? Icons.flash_on : Icons.flash_off,
+                              color: isOn ? Colors.amberAccent : Colors.white,
+                              size: 22,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
                   ),
                   Center(
                     child: Column(

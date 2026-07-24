@@ -49,7 +49,7 @@ class _SyncScreenState extends State<SyncScreen> {
   }
 
   /// Prompts for a name the first time (so data lands in a clearly-labelled
-  /// folder on the PC, e.g. "Sudesh"), and lets it be changed afterward.
+  /// folder on the PC, e.g. "Samsung"), and lets it be changed afterward.
   Future<String?> _promptDeviceLabel({required bool required}) async {
     final controller = TextEditingController(text: _deviceLabel ?? '');
     return showDialog<String>(
@@ -62,7 +62,7 @@ class _SyncScreenState extends State<SyncScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'This name is used to label your data on the PC (e.g. "Sudesh") so it stays separate from other phones\' data.',
+              'This name is used to label your data on the PC (e.g. "Samsung") so it stays separate from other phones\' data.',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 12),
@@ -70,7 +70,7 @@ class _SyncScreenState extends State<SyncScreen> {
               controller: controller,
               autofocus: true,
               decoration: const InputDecoration(
-                hintText: 'e.g. Sudesh',
+                hintText: 'e.g. Samsung',
                 border: OutlineInputBorder(),
               ),
             ),
