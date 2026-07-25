@@ -144,6 +144,40 @@ def _style_worksheet(ws):
         ws.column_dimensions[get_column_letter(i)].width = max(12, len(label) + 4)
 
 
+def _open_or_migrate_master_workbook(xlsx_path: Path):
+    """Opens the existing data.xlsx, migrating its header/columns first if a
+    newer app build (or a codegen update) changed the column set since it
+    was created -- e.g. adding a Model Name column later shouldn't shift
+    every subsequent row out of alignment with a file that predates it.
+    Existing values are preserved by matching on column label; any brand
+    new column is simply blank for the older rows that predate it."""
+    current_header = [label for label, _key in EXCEL_COLUMNS]
+
+    if not xlsx_path.exists():
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        ws.append(current_header)
+        return wb, ws
+
+    wb = load_workbook(xlsx_path)
+    ws = wb.active
+    existing_header = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+
+    if existing_header == current_header:
+        return wb, ws
+
+    old_rows = [dict(zip(existing_header, row)) for row in ws.iter_rows(min_row=2, values_only=True)]
+    migrated = Workbook()
+    mws = migrated.active
+    mws.title = "Data"
+    mws.append(current_header)
+    for old_row in old_rows:
+        mws.append([old_row.get(label, "") for label in current_header])
+    print(f"[info] migrated {xlsx_path} to the current column set ({len(old_rows)} existing row(s) kept)")
+    return migrated, mws
+
+
 def _append_to_master_excel(app_dir: Path, rows: list[dict]):
     """Every app gets ONE running Excel file (data.xlsx) that new rows are
     appended to on each successful upload, instead of a separate export
@@ -154,14 +188,7 @@ def _append_to_master_excel(app_dir: Path, rows: list[dict]):
         return
     xlsx_path = app_dir / "data.xlsx"
     with _lock:
-        if xlsx_path.exists():
-            wb = load_workbook(xlsx_path)
-            ws = wb.active
-        else:
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Data"
-            ws.append([label for label, _key in EXCEL_COLUMNS])
+        wb, ws = _open_or_migrate_master_workbook(xlsx_path)
         for row in rows:
             ws.append([row.get(key, "") for _label, key in EXCEL_COLUMNS])
         _style_worksheet(ws)
