@@ -611,11 +611,20 @@ DASHBOARD_HTML = """<!doctype html>
   .app-row .a-info { flex: 1; min-width: 0; }
   .app-row .a-stats { display: flex; gap: 16px; font-size: 11px; color: var(--muted); text-align: center; }
   .app-row .a-stats b { display: block; font-size: 13px; color: var(--text); }
-  .app-row.pulse { animation: rowPulse 1.8s ease-out; }
+  .app-row.pulse, .card.pulse { animation: rowPulse 1.8s ease-out; }
   @keyframes rowPulse {
     0%   { background: #ffeef0; box-shadow: 0 0 0 0 rgba(220,20,60,0.35); }
     100% { background: var(--card); box-shadow: 0 0 0 16px rgba(220,20,60,0); }
   }
+
+  .card.clickable { cursor: pointer; }
+  .card.clickable:hover { border-color: var(--crimson); }
+  .card .chevron { color: var(--muted); font-size: 18px; margin-left: 4px; }
+
+  .breadcrumb { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+  .breadcrumb .crumb-link { color: var(--crimson); cursor: pointer; text-decoration: underline; }
+  .breadcrumb .crumb-sep { margin: 0 6px; }
+  .breadcrumb .crumb-current { color: var(--text); font-weight: 600; }
 
   /* Header "receiving" pulse, flashed briefly on new uploads */
   .live-indicator { display: none; align-items: center; gap: 6px; font-size: 11px; color: #ffb4c2; margin-left: 18px; }
@@ -672,6 +681,7 @@ DASHBOARD_HTML = """<!doctype html>
       <h2>Paired Devices</h2>
       <button class="primary" onclick="openPairModal()">+ Add New Device</button>
     </div>
+    <div class="breadcrumb" id="devicesBreadcrumb"></div>
     <div id="devicesList"><div class="empty">Loading…</div></div>
   </section>
 
@@ -810,6 +820,8 @@ function timeAgo(date) {
 }
 
 let lastDevicesData = [];
+// null = showing the phone list; a phone name = drilled into that phone's apps.
+let currentPhone = null;
 
 async function loadDevices() {
   try {
@@ -821,53 +833,81 @@ async function loadDevices() {
   }
 }
 
-function renderDevices() {
-  const el = document.getElementById('devicesList');
-  if (!lastDevicesData.length) {
-    el.innerHTML = '<div class="empty">No phones paired yet. Tap "+ Add New Device" to pair one.</div>';
-    return;
-  }
-
-  // One phone can have several different generated apps paired separately
-  // (e.g. an Engine Inspection app and a per-model app) -- group by phone
-  // name so each physical device shows once, with its apps listed inside.
+function groupByPhone() {
   const byPhone = {};
   for (const d of lastDevicesData) {
     (byPhone[d.deviceName] = byPhone[d.deviceName] || []).push(d);
   }
+  return byPhone;
+}
 
-  el.innerHTML = Object.keys(byPhone).sort().map(phone => {
-    const apps = byPhone[phone];
-    const totalSends = apps.reduce((a, d) => a + d.batchCount, 0);
-    const totalBytes = apps.reduce((a, d) => a + d.totalBytes, 0);
-    return `
-      <div class="device-group">
-        <div class="dg-head">
+function openPhone(phone) {
+  currentPhone = phone;
+  renderDevices();
+}
+
+function backToPhones() {
+  currentPhone = null;
+  renderDevices();
+}
+
+// Devices → Phone → Apps → (View Data button) → actual data table.
+function renderDevices() {
+  const el = document.getElementById('devicesList');
+  const crumb = document.getElementById('devicesBreadcrumb');
+
+  if (!lastDevicesData.length) {
+    el.innerHTML = '<div class="empty">No phones paired yet. Tap "+ Add New Device" to pair one.</div>';
+    crumb.innerHTML = '';
+    return;
+  }
+
+  const byPhone = groupByPhone();
+  if (currentPhone && !byPhone[currentPhone]) currentPhone = null; // phone fully removed
+
+  if (!currentPhone) {
+    // Level 1: phone list.
+    crumb.innerHTML = '<span class="crumb-current">All Phones</span>';
+    el.innerHTML = Object.keys(byPhone).sort().map(phone => {
+      const apps = byPhone[phone];
+      const totalSends = apps.reduce((a, d) => a + d.batchCount, 0);
+      const totalBytes = apps.reduce((a, d) => a + d.totalBytes, 0);
+      const lastTs = apps.map(d => parseBatchTimestamp(d.lastReceivedAt)).filter(Boolean).sort((a, b) => b - a)[0];
+      return `
+        <div class="card clickable" data-phone="${phone}" onclick="openPhone('${phone.replace(/'/g, "\\'")}')">
           <div class="avatar">${initials(phone)}</div>
           <div class="info">
             <div class="name">${phone}</div>
-            <div class="meta">${apps.length} app${apps.length === 1 ? '' : 's'} paired • ${totalSends} total send${totalSends === 1 ? '' : 's'} • ${fmtBytes(totalBytes)}</div>
+            <div class="meta">${apps.length} app${apps.length === 1 ? '' : 's'} • Last received ${timeAgo(lastTs)}</div>
           </div>
+          <div class="stats">
+            <div><b>${totalSends}</b>sends</div>
+            <div><b>${fmtBytes(totalBytes)}</b>size</div>
+          </div>
+          <span class="chevron">›</span>
         </div>
-        <div class="dg-apps">
-          ${apps.map(d => `
-            <div class="app-row" data-device-id="${d.deviceId}">
-              <div class="a-info">
-                <div class="a-name">${d.appName}</div>
-                <div class="a-meta" data-last-received="${d.lastReceivedAt || ''}">Paired ${new Date(d.pairedAt).toLocaleDateString()} • Last received ${timeAgo(parseBatchTimestamp(d.lastReceivedAt))}</div>
-              </div>
-              <div class="a-stats">
-                <div><b>${d.batchCount}</b>sends</div>
-                <div><b>${fmtBytes(d.totalBytes)}</b>size</div>
-              </div>
-              <button class="primary" onclick="openDataViewer('${d.deviceId}')">View Data</button>
-              <button class="icon-btn" title="Remove pairing" onclick="removeDevice('${d.deviceId}', '${phone} — ${d.appName}')">✕</button>
-            </div>
-          `).join('')}
-        </div>
+      `;
+    }).join('');
+    return;
+  }
+
+  // Level 2: apps for the selected phone.
+  const apps = byPhone[currentPhone];
+  crumb.innerHTML = `<span class="crumb-link" onclick="backToPhones()">All Phones</span><span class="crumb-sep">›</span><span class="crumb-current">${currentPhone}</span>`;
+  el.innerHTML = apps.map(d => `
+    <div class="app-row" data-device-id="${d.deviceId}">
+      <div class="a-info">
+        <div class="a-name">${d.appName}</div>
+        <div class="a-meta">Paired ${new Date(d.pairedAt).toLocaleDateString()} • Last received ${timeAgo(parseBatchTimestamp(d.lastReceivedAt))}</div>
       </div>
-    `;
-  }).join('');
+      <div class="a-stats">
+        <div><b>${d.batchCount}</b>sends</div>
+        <div><b>${fmtBytes(d.totalBytes)}</b>size</div>
+      </div>
+      <button class="primary" onclick="openDataViewer('${d.deviceId}')">View Data</button>
+      <button class="icon-btn" title="Remove pairing" onclick="removeDevice('${d.deviceId}', '${currentPhone} — ${d.appName}')">✕</button>
+    </div>
+  `).join('');
 }
 
 // Re-render every 20s from the already-fetched data so "Last received: Xm
@@ -1093,13 +1133,16 @@ function handleNewEvents(events) {
   }
 
   loadDevices().then(() => {
-    // Pulse the row(s) that just received data.
-    const ids = new Set(events.map(e => e.deviceId));
-    ids.forEach(id => {
-      const row = document.querySelector(`.app-row[data-device-id="${id}"]`);
-      if (row) {
-        row.classList.add('pulse');
-        setTimeout(() => row.classList.remove('pulse'), 1800);
+    // Pulse whichever level is currently showing: the phone card if we're
+    // at the top level, or the specific app row if we've drilled into it.
+    events.forEach(ev => {
+      const selector = currentPhone === null
+        ? `.card[data-phone="${CSS.escape(ev.deviceName)}"]`
+        : (currentPhone === ev.deviceName ? `.app-row[data-device-id="${ev.deviceId}"]` : null);
+      const el = selector && document.querySelector(selector);
+      if (el) {
+        el.classList.add('pulse');
+        setTimeout(() => el.classList.remove('pulse'), 1800);
       }
     });
   });
