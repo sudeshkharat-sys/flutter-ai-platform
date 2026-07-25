@@ -721,6 +721,11 @@ DASHBOARD_HTML = """<!doctype html>
 
   /* Pie chart panel */
   .charts-panel { padding: 4px 24px 4px; max-height: 280px; overflow-y: auto; flex-shrink: 0; border-bottom: 1px solid var(--border); }
+  /* Sections (Overall, By Shift, By VIN...) flow left-to-right and only
+     wrap to the next line when they actually run out of horizontal room,
+     instead of each one claiming a full-width row regardless of how few
+     cards it holds. */
+  .charts-flow { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 22px; }
   .chart-row { margin-bottom: 10px; }
   .chart-row-title { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; display: flex; align-items: center; gap: 6px; }
   .chart-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1; }
@@ -731,7 +736,7 @@ DASHBOARD_HTML = """<!doctype html>
   .chart-card.clickable-chart:hover { border-color: var(--crimson); box-shadow: 0 2px 8px rgba(220,20,60,0.15); }
   .chart-card .chart-label { font-size: 11px; font-weight: 700; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chart-card .chart-meta { font-size: 10px; color: var(--muted); margin-top: 2px; }
-  .chart-note { font-size: 12px; color: var(--muted); font-style: italic; }
+  .chart-note { font-size: 12px; color: var(--muted); font-style: italic; max-width: 280px; }
   .chart-hidden-bar { font-size: 11px; color: var(--muted); margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
   .chart-hidden-bar b { color: var(--text); }
   .chart-hidden-bar button.ghost { padding: 3px 10px; font-size: 11px; }
@@ -1484,14 +1489,14 @@ function renderCharts(filtered) {
     html += `<div class="chart-hidden-bar">Pinned to day: <b>${pinnedDay}</b>
       <button class="ghost" onclick="clearPinnedDay()">✕ Clear</button></div>`;
   }
-  html += visible.map(s => `
+  html += '<div class="charts-flow">' + visible.map(s => `
     <div class="chart-row">
       <div class="chart-row-title">${s.title}
         <button class="chart-close" title="Hide this chart" onclick="hideChartSection('${s.title.replace(/'/g, "\\'")}')">✕</button>
       </div>
       ${s.note ? `<div class="chart-note">${s.note}</div>` : `<div class="chart-cards">${s.cards.join('')}</div>`}
     </div>
-  `).join('');
+  `).join('') + '</div>';
   el.innerHTML = html;
 
   el.querySelectorAll('.chart-card.clickable-chart').forEach(card => {
