@@ -74,6 +74,8 @@ _paired_devices: dict[str, dict] = {}          # deviceId -> {secret, deviceName
 _pending_token: dict | None = None              # {token, expiresAt}
 _pairing_results: dict[str, dict] = {}          # token -> {deviceId, deviceName, appName} once paired
 _failed_attempts: dict[str, list[float]] = {}   # client ip -> [failure timestamps]
+_recent_events: list[dict] = []                 # recent uploads, for the dashboard's live activity feed
+_MAX_RECENT_EVENTS = 50
 
 
 # ── Persistence ──────────────────────────────────────────────────────────
@@ -259,6 +261,17 @@ async def upload(
         raise HTTPException(status_code=400, detail="Corrupt upload")
 
     print(f"[received] {len(body_bytes)} bytes from '{device['deviceName']}' / '{app_name}' -> {extract_dir}")
+
+    with _lock:
+        _recent_events.append({
+            "deviceId": x_device_id,
+            "deviceName": device["deviceName"],
+            "appName": device.get("appName", "app"),
+            "bytes": len(body_bytes),
+            "receivedAtMs": int(time.time() * 1000),
+        })
+        del _recent_events[:-_MAX_RECENT_EVENTS]
+
     return {"status": "ok", "savedTo": str(extract_dir)}
 
 
@@ -266,7 +279,17 @@ async def upload(
 
 @app.get("/api/status")
 async def api_status(_: None = Depends(_require_local)):
-    return {"pcName": PC_NAME, "ip": _local_ip(), "port": PORT}
+    return {"pcName": PC_NAME, "ip": _local_ip(), "port": PORT, "serverTimeMs": int(time.time() * 1000)}
+
+
+@app.get("/api/events")
+async def api_events(since: int = 0, _: None = Depends(_require_local)):
+    """Uploads received after [since] (epoch ms) -- polled by the dashboard
+    to trigger the "new data received" toast/animation without needing a
+    full devices/storage refresh on every tick."""
+    with _lock:
+        events = [e for e in _recent_events if e["receivedAtMs"] > since]
+    return {"events": events, "serverTimeMs": int(time.time() * 1000)}
 
 
 def _dir_stats(path: Path):
@@ -575,6 +598,31 @@ DASHBOARD_HTML = """<!doctype html>
   .card .stats { display: flex; gap: 18px; font-size: 11px; color: var(--muted); text-align: center; }
   .card .stats b { display: block; font-size: 14px; color: var(--text); }
 
+  /* Devices grouped by phone, each with one or more paired apps */
+  .device-group { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+  .device-group .dg-head { padding: 14px 16px; display: flex; align-items: center; gap: 14px; background: #fafafc; border-bottom: 1px solid var(--border); }
+  .device-group .dg-head .name { font-weight: 700; font-size: 14px; }
+  .device-group .dg-head .meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .device-group .dg-apps { padding: 10px 16px; }
+  .app-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; transition: background 0.4s; }
+  .app-row:last-child { margin-bottom: 0; }
+  .app-row .a-name { font-weight: 600; font-size: 13px; }
+  .app-row .a-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .app-row .a-info { flex: 1; min-width: 0; }
+  .app-row .a-stats { display: flex; gap: 16px; font-size: 11px; color: var(--muted); text-align: center; }
+  .app-row .a-stats b { display: block; font-size: 13px; color: var(--text); }
+  .app-row.pulse { animation: rowPulse 1.8s ease-out; }
+  @keyframes rowPulse {
+    0%   { background: #ffeef0; box-shadow: 0 0 0 0 rgba(220,20,60,0.35); }
+    100% { background: var(--card); box-shadow: 0 0 0 16px rgba(220,20,60,0); }
+  }
+
+  /* Header "receiving" pulse, flashed briefly on new uploads */
+  .live-indicator { display: none; align-items: center; gap: 6px; font-size: 11px; color: #ffb4c2; margin-left: 18px; }
+  .live-indicator.show { display: flex; }
+  .live-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: #ff4d6d; animation: dotPulse 1s infinite; }
+  @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.4); } }
+
   .accordion { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
   .accordion > .head { padding: 12px 16px; font-weight: 700; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; background: #fafafc; }
   .accordion > .body { padding: 4px 16px 12px; }
@@ -609,6 +657,7 @@ DASHBOARD_HTML = """<!doctype html>
     <h1>DIGITAL EYE — STORAGE BANK</h1>
     <p>Receives inspection data from paired phones on this WiFi/hotspot</p>
   </div>
+  <div class="live-indicator" id="liveIndicator"><span class="dot"></span>Receiving…</div>
   <div class="status" id="pcStatus">Loading…</div>
 </header>
 
@@ -738,34 +787,92 @@ function initials(name) {
   return (name || '?').trim().slice(0, 2).toUpperCase();
 }
 
+// Batch folder names are "YYYYMMDD_HHMMSS" -- parse into a real Date so we
+// can show/live-tick a relative "x minutes ago" instead of a raw timestamp.
+function parseBatchTimestamp(name) {
+  if (!name || name.length < 15) return null;
+  const y = +name.slice(0, 4), mo = +name.slice(4, 6) - 1, d = +name.slice(6, 8);
+  const h = +name.slice(9, 11), mi = +name.slice(11, 13), s = +name.slice(13, 15);
+  const dt = new Date(y, mo, d, h, mi, s);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
+function timeAgo(date) {
+  if (!date) return 'no data received yet';
+  const secs = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (secs < 5) return 'just now';
+  if (secs < 60) return secs + 's ago';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  return Math.floor(hrs / 24) + 'd ago';
+}
+
+let lastDevicesData = [];
+
 async function loadDevices() {
-  const el = document.getElementById('devicesList');
   try {
     const r = await fetch('/api/devices');
-    const devices = await r.json();
-    if (!devices.length) {
-      el.innerHTML = '<div class="empty">No phones paired yet. Tap "+ Add New Device" to pair one.</div>';
-      return;
-    }
-    el.innerHTML = devices.map(d => `
-      <div class="card">
-        <div class="avatar">${initials(d.deviceName)}</div>
-        <div class="info">
-          <div class="name">${d.deviceName} <span style="color:var(--muted);font-weight:400;">— ${d.appName}</span></div>
-          <div class="meta">Paired ${new Date(d.pairedAt).toLocaleString()}${d.lastReceivedAt ? ' • Last received ' + d.lastReceivedAt : ' • No data received yet'}</div>
-        </div>
-        <div class="stats">
-          <div><b>${d.batchCount}</b>sends</div>
-          <div><b>${fmtBytes(d.totalBytes)}</b>size</div>
-        </div>
-        <button class="primary" onclick="openDataViewer('${d.deviceId}')">View Data</button>
-        <button class="icon-btn" title="Remove pairing" onclick="removeDevice('${d.deviceId}', '${d.deviceName}')">✕</button>
-      </div>
-    `).join('');
+    lastDevicesData = await r.json();
+    renderDevices();
   } catch (e) {
-    el.innerHTML = '<div class="empty">Could not load devices.</div>';
+    document.getElementById('devicesList').innerHTML = '<div class="empty">Could not load devices.</div>';
   }
 }
+
+function renderDevices() {
+  const el = document.getElementById('devicesList');
+  if (!lastDevicesData.length) {
+    el.innerHTML = '<div class="empty">No phones paired yet. Tap "+ Add New Device" to pair one.</div>';
+    return;
+  }
+
+  // One phone can have several different generated apps paired separately
+  // (e.g. an Engine Inspection app and a per-model app) -- group by phone
+  // name so each physical device shows once, with its apps listed inside.
+  const byPhone = {};
+  for (const d of lastDevicesData) {
+    (byPhone[d.deviceName] = byPhone[d.deviceName] || []).push(d);
+  }
+
+  el.innerHTML = Object.keys(byPhone).sort().map(phone => {
+    const apps = byPhone[phone];
+    const totalSends = apps.reduce((a, d) => a + d.batchCount, 0);
+    const totalBytes = apps.reduce((a, d) => a + d.totalBytes, 0);
+    return `
+      <div class="device-group">
+        <div class="dg-head">
+          <div class="avatar">${initials(phone)}</div>
+          <div class="info">
+            <div class="name">${phone}</div>
+            <div class="meta">${apps.length} app${apps.length === 1 ? '' : 's'} paired • ${totalSends} total send${totalSends === 1 ? '' : 's'} • ${fmtBytes(totalBytes)}</div>
+          </div>
+        </div>
+        <div class="dg-apps">
+          ${apps.map(d => `
+            <div class="app-row" data-device-id="${d.deviceId}">
+              <div class="a-info">
+                <div class="a-name">${d.appName}</div>
+                <div class="a-meta" data-last-received="${d.lastReceivedAt || ''}">Paired ${new Date(d.pairedAt).toLocaleDateString()} • Last received ${timeAgo(parseBatchTimestamp(d.lastReceivedAt))}</div>
+              </div>
+              <div class="a-stats">
+                <div><b>${d.batchCount}</b>sends</div>
+                <div><b>${fmtBytes(d.totalBytes)}</b>size</div>
+              </div>
+              <button class="primary" onclick="openDataViewer('${d.deviceId}')">View Data</button>
+              <button class="icon-btn" title="Remove pairing" onclick="removeDevice('${d.deviceId}', '${phone} — ${d.appName}')">✕</button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// Re-render every 20s from the already-fetched data so "Last received: Xm
+// ago" keeps ticking without hitting the server again.
+setInterval(renderDevices, 20000);
 
 async function removeDevice(id, name) {
   if (!confirm(`Remove pairing for "${name}"? The phone will need to scan a new QR code to send data again.`)) return;
@@ -958,9 +1065,54 @@ async function downloadExcel() {
   URL.revokeObjectURL(url);
 }
 
+// ── Live "receiving" activity feed ──────────────────────────────────────
+// Polls for uploads that landed since the page opened, then flashes the
+// header indicator, toasts, glows the affected app row, and refreshes the
+// device list/storage bank so counts and "last received" update live --
+// no manual refresh needed while data comes in.
+let eventsCursor = Date.now();
+
+async function pollEvents() {
+  try {
+    const r = await fetch('/api/events?since=' + eventsCursor);
+    const d = await r.json();
+    eventsCursor = d.serverTimeMs;
+    if (d.events && d.events.length) {
+      handleNewEvents(d.events);
+    }
+  } catch (e) {}
+}
+
+function handleNewEvents(events) {
+  const indicator = document.getElementById('liveIndicator');
+  indicator.classList.add('show');
+  setTimeout(() => indicator.classList.remove('show'), 2500);
+
+  for (const ev of events) {
+    showToast(`📥 New data from ${ev.deviceName} — ${ev.appName}`);
+  }
+
+  loadDevices().then(() => {
+    // Pulse the row(s) that just received data.
+    const ids = new Set(events.map(e => e.deviceId));
+    ids.forEach(id => {
+      const row = document.querySelector(`.app-row[data-device-id="${id}"]`);
+      if (row) {
+        row.classList.add('pulse');
+        setTimeout(() => row.classList.remove('pulse'), 1800);
+      }
+    });
+  });
+
+  if (document.getElementById('tab-storage').classList.contains('active')) {
+    loadStorage();
+  }
+}
+
 loadStatus();
 loadDevices();
 setInterval(loadDevices, 15000);
+setInterval(pollEvents, 3000);
 </script>
 </body>
 </html>
