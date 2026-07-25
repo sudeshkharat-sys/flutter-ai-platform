@@ -39,10 +39,14 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
+import mimetypes
+
 import qrcode
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from zeroconf import ServiceInfo, Zeroconf
 
 from assets import LOGO_PNG_BASE64
@@ -347,6 +351,125 @@ async def api_storage_download(path: str, _: None = Depends(_require_local)):
     return FileResponse(target, filename=target.name)
 
 
+def _resolve_under_data_dir(rel_path: str) -> Path:
+    """Resolves a phone/app-relative path safely under DATA_DIR, or raises 404."""
+    target = (DATA_DIR / rel_path).resolve()
+    try:
+        target.relative_to(DATA_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+    return target
+
+
+@app.get("/api/device-data")
+async def api_device_data(deviceId: str, _: None = Depends(_require_local)):
+    """Every task-result row this device has ever sent, flattened for the
+    data-viewer table -- one row per inspection task, with the image path
+    already rewritten into a URL the browser can load directly."""
+    with _lock:
+        device = _paired_devices.get(deviceId)
+    if not device:
+        raise HTTPException(status_code=404, detail="Unknown device")
+
+    device_name = _safe_name(device["deviceName"])
+    app_name = _safe_name(device.get("appName", "app"))
+    device_dir = DATA_DIR / device_name / app_name
+
+    rows = []
+    if device_dir.exists():
+        for batch_dir in sorted(device_dir.iterdir()):
+            if not batch_dir.is_dir():
+                continue
+            manifest_path = batch_dir / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                inspections = json.loads(manifest_path.read_text())
+            except Exception:
+                continue
+
+            def _image_url(rel):
+                if not rel:
+                    return None
+                return f"/api/storage/image?path={device_name}/{app_name}/{batch_dir.name}/{rel}"
+
+            for insp in inspections:
+                tasks = insp.get("tasks") or []
+                if not tasks:
+                    # Inspection with no task rows (shouldn't normally happen) --
+                    # still surface it as one row so it's not silently dropped.
+                    tasks = [{}]
+                for task in tasks:
+                    rows.append({
+                        "batch": batch_dir.name,
+                        "vin": insp.get("vin"),
+                        "modelCode": insp.get("modelCode"),
+                        "date": insp.get("date"),
+                        "time": insp.get("time"),
+                        "shift": insp.get("shift"),
+                        "taskName": task.get("taskName"),
+                        "className": task.get("className"),
+                        "result": "OK" if task.get("success") else "NOT OK",
+                        "imageUrl": _image_url(task.get("imagePath")),
+                        "backupImageUrl": _image_url(task.get("backupImagePath")),
+                    })
+
+    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    return {"deviceName": device["deviceName"], "appName": device.get("appName", "app"), "rows": rows}
+
+
+@app.get("/api/storage/image")
+async def api_storage_image(path: str, _: None = Depends(_require_local)):
+    target = _resolve_under_data_dir(path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    return Response(content=target.read_bytes(), media_type=media_type)
+
+
+@app.post("/api/export/excel")
+async def api_export_excel(request: Request, _: None = Depends(_require_local)):
+    body = await request.json()
+    rows = body.get("rows") or []
+    title = _safe_name(body.get("title", "storage_bank_export"))
+
+    columns = [
+        ("VIN", "vin"),
+        ("Model Code", "modelCode"),
+        ("Date", "date"),
+        ("Time", "time"),
+        ("Shift", "shift"),
+        ("Task", "taskName"),
+        ("Detected", "className"),
+        ("Result", "result"),
+        ("Batch", "batch"),
+    ]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append([label for label, _key in columns])
+    for row in rows:
+        ws.append([row.get(key, "") for _label, key in columns])
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{max(len(rows) + 1, 1)}"
+    for i, (label, _key) in enumerate(columns, start=1):
+        width = max(12, len(label) + 4)
+        ws.column_dimensions[get_column_letter(i)].width = width
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{title}.xlsx"'},
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(_: None = Depends(_require_local)):
     return DASHBOARD_HTML
@@ -413,8 +536,36 @@ DASHBOARD_HTML = """<!doctype html>
   button.primary:hover { background: var(--crimson-dark); }
   button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
   button.ghost:hover { border-color: var(--crimson); color: var(--crimson); }
+  button.icon-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); width: 30px; height: 30px; border-radius: 50%; cursor: pointer; font-size: 13px; line-height: 1; }
+  button.icon-btn:hover { border-color: var(--crimson); color: var(--crimson); }
 
   .empty { text-align: center; padding: 48px 12px; color: var(--muted); font-size: 13px; }
+
+  /* Data viewer */
+  .viewer-page { position: fixed; inset: 0; background: var(--bg); z-index: 40; display: none; flex-direction: column; }
+  .viewer-page.open { display: flex; }
+  .viewer-header { background: var(--navy); color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 14px; }
+  .viewer-header h2 { margin: 0; font-size: 15px; }
+  .viewer-header p { margin: 2px 0 0; font-size: 11px; color: #9aa0ad; }
+  .viewer-header .spacer { flex: 1; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 24px; background: var(--card); border-bottom: 1px solid var(--border); }
+  .filters input, .filters select { padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+  .filters input { width: 130px; }
+  .filter-count { font-size: 11px; color: var(--muted); margin-left: auto; align-self: center; white-space: nowrap; }
+  .table-wrap { flex: 1; overflow: auto; padding: 0 24px 24px; }
+  table.data-table { width: 100%; border-collapse: collapse; background: var(--card); font-size: 12px; }
+  table.data-table thead th { position: sticky; top: 0; background: #fafafc; border-bottom: 2px solid var(--border); padding: 10px 10px; text-align: left; white-space: nowrap; z-index: 2; }
+  table.data-table tbody td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  table.data-table tbody tr:hover { background: #fbfbfd; }
+  .badge-ok { color: var(--green); font-weight: 700; }
+  .badge-fail { color: var(--crimson); font-weight: 700; }
+  .img-link { color: var(--crimson); cursor: pointer; text-decoration: underline; font-size: 11px; background: none; border: none; padding: 0; }
+  .img-link:disabled { color: var(--muted); text-decoration: none; cursor: default; }
+
+  .lightbox { position: fixed; inset: 0; background: rgba(10,12,18,0.85); display: none; align-items: center; justify-content: center; z-index: 70; }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 90vw; max-height: 85vh; border-radius: 8px; }
+  .lightbox .lb-close { position: absolute; top: 20px; right: 28px; color: #fff; font-size: 28px; cursor: pointer; background: none; border: none; }
 
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 14px; }
   .card .avatar { width: 42px; height: 42px; border-radius: 50%; background: #fdeaea; color: var(--crimson); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; flex-shrink: 0; }
@@ -495,6 +646,55 @@ DASHBOARD_HTML = """<!doctype html>
   </div>
 </div>
 
+<div class="viewer-page" id="viewerPage">
+  <div class="viewer-header">
+    <button class="ghost" style="border-color:#3a4152;color:#c9ccd4;" onclick="closeDataViewer()">← Back</button>
+    <div>
+      <h2 id="viewerTitle">Device Data</h2>
+      <p id="viewerSubtitle"></p>
+    </div>
+    <div class="spacer"></div>
+    <button class="primary" onclick="downloadExcel()">Download Excel (filtered)</button>
+  </div>
+  <div class="filters">
+    <input id="fVin" placeholder="Filter VIN…" oninput="renderTable()">
+    <input id="fModel" placeholder="Filter Model Code…" oninput="renderTable()">
+    <input id="fDate" placeholder="Filter Date…" oninput="renderTable()">
+    <select id="fShift" onchange="renderTable()">
+      <option value="">All Shifts</option>
+      <option value="A">Shift A</option>
+      <option value="B">Shift B</option>
+      <option value="C">Shift C</option>
+    </select>
+    <input id="fTask" placeholder="Filter Task…" oninput="renderTable()">
+    <input id="fClass" placeholder="Filter Detected…" oninput="renderTable()">
+    <select id="fResult" onchange="renderTable()">
+      <option value="">All Results</option>
+      <option value="OK">OK</option>
+      <option value="NOT OK">NOT OK</option>
+    </select>
+    <input id="fBatch" placeholder="Filter Send/Batch…" oninput="renderTable()">
+    <button class="ghost" onclick="clearFilters()">Clear Filters</button>
+    <div class="filter-count" id="filterCount"></div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>VIN</th><th>Model Code</th><th>Date</th><th>Time</th><th>Shift</th>
+          <th>Task</th><th>Detected</th><th>Result</th><th>Batch</th><th>Image</th>
+        </tr>
+      </thead>
+      <tbody id="viewerRows"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <button class="lb-close" onclick="closeLightbox()">✕</button>
+  <img id="lightboxImg" src="" alt="Inspection image">
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -558,7 +758,8 @@ async function loadDevices() {
           <div><b>${d.batchCount}</b>sends</div>
           <div><b>${fmtBytes(d.totalBytes)}</b>size</div>
         </div>
-        <button class="ghost" onclick="removeDevice('${d.deviceId}', '${d.deviceName}')">Remove</button>
+        <button class="primary" onclick="openDataViewer('${d.deviceId}')">View Data</button>
+        <button class="icon-btn" title="Remove pairing" onclick="removeDevice('${d.deviceId}', '${d.deviceName}')">✕</button>
       </div>
     `).join('');
   } catch (e) {
@@ -647,6 +848,114 @@ function closePairModal() {
   document.getElementById('pairOverlay').classList.remove('open');
   clearInterval(pairPollTimer);
   currentToken = null;
+}
+
+// ── Data viewer ──────────────────────────────────────────────────────────
+let viewerRows = [];
+let viewerDeviceLabel = '';
+
+async function openDataViewer(deviceId) {
+  document.getElementById('viewerPage').classList.add('open');
+  document.getElementById('viewerTitle').textContent = 'Loading…';
+  document.getElementById('viewerRows').innerHTML = '';
+  try {
+    const r = await fetch('/api/device-data?deviceId=' + encodeURIComponent(deviceId));
+    if (!r.ok) throw new Error('fetch failed');
+    const d = await r.json();
+    viewerRows = d.rows;
+    viewerDeviceLabel = `${d.deviceName} — ${d.appName}`;
+    document.getElementById('viewerTitle').textContent = viewerDeviceLabel;
+    document.getElementById('viewerSubtitle').textContent = `${viewerRows.length} task result(s) across all sends`;
+    clearFilters();
+  } catch (e) {
+    document.getElementById('viewerTitle').textContent = 'Could not load data';
+  }
+}
+
+function closeDataViewer() {
+  document.getElementById('viewerPage').classList.remove('open');
+}
+
+function clearFilters() {
+  ['fVin', 'fModel', 'fDate', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
+  ['fShift', 'fResult'].forEach(id => document.getElementById(id).value = '');
+  renderTable();
+}
+
+function getFilteredRows() {
+  const vin = document.getElementById('fVin').value.toLowerCase();
+  const model = document.getElementById('fModel').value.toLowerCase();
+  const date = document.getElementById('fDate').value.toLowerCase();
+  const shift = document.getElementById('fShift').value;
+  const task = document.getElementById('fTask').value.toLowerCase();
+  const cls = document.getElementById('fClass').value.toLowerCase();
+  const result = document.getElementById('fResult').value;
+  const batch = document.getElementById('fBatch').value.toLowerCase();
+
+  return viewerRows.filter(row =>
+    (!vin || (row.vin || '').toLowerCase().includes(vin)) &&
+    (!model || (row.modelCode || '').toLowerCase().includes(model)) &&
+    (!date || (row.date || '').toLowerCase().includes(date)) &&
+    (!shift || row.shift === shift) &&
+    (!task || (row.taskName || '').toLowerCase().includes(task)) &&
+    (!cls || (row.className || '').toLowerCase().includes(cls)) &&
+    (!result || row.result === result) &&
+    (!batch || (row.batch || '').toLowerCase().includes(batch))
+  );
+}
+
+function renderTable() {
+  const filtered = getFilteredRows();
+  document.getElementById('filterCount').textContent = `${filtered.length} of ${viewerRows.length} row(s)`;
+  const tbody = document.getElementById('viewerRows');
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:24px;">No rows match these filters.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(row => `
+    <tr>
+      <td>${row.vin || ''}</td>
+      <td>${row.modelCode || ''}</td>
+      <td>${row.date || ''}</td>
+      <td>${row.time || ''}</td>
+      <td>${row.shift || ''}</td>
+      <td>${row.taskName || ''}</td>
+      <td>${row.className || ''}</td>
+      <td class="${row.result === 'OK' ? 'badge-ok' : 'badge-fail'}">${row.result || ''}</td>
+      <td>${row.batch || ''}</td>
+      <td>${row.imageUrl ? `<button class="img-link" onclick="openLightbox('${row.imageUrl}')">View</button>` : '<button class="img-link" disabled>—</button>'}</td>
+    </tr>
+  `).join('');
+}
+
+function openLightbox(url) {
+  document.getElementById('lightboxImg').src = url;
+  document.getElementById('lightbox').classList.add('open');
+}
+
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lightboxImg').src = '';
+}
+
+async function downloadExcel() {
+  const filtered = getFilteredRows();
+  if (!filtered.length) { showToast('No rows to export'); return; }
+  const r = await fetch('/api/export/excel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows: filtered, title: viewerDeviceLabel.replace(/[^a-zA-Z0-9]+/g, '_') }),
+  });
+  if (!r.ok) { showToast('Export failed'); return; }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = viewerDeviceLabel.replace(/[^a-zA-Z0-9]+/g, '_') + '.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 loadStatus();

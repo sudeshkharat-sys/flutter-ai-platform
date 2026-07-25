@@ -262,6 +262,15 @@ class SyncService {
     }
   }
 
+  // Same A/B/C shift windows used by the History screen, so the PC-side
+  // data matches what the inspector sees on the phone.
+  String _shiftFor(DateTime dt) {
+    final mins = dt.hour * 60 + dt.minute;
+    if (mins >= 420 && mins < 930) return 'A';
+    if (mins >= 930) return 'B';
+    return 'C';
+  }
+
   Future<_ExportBundle> _buildExportBundle() async {
     final archive = Archive();
     final unsynced = await db.getUnsyncedInspections();
@@ -303,11 +312,15 @@ class SyncService {
         });
       }
 
+      final dt = insp.createdAt;
       manifest.add({
         'inspectionId': insp.id,
         'vin': insp.vin,
         'modelCode': insp.modelCode,
-        'createdAt': insp.createdAt.toIso8601String(),
+        'createdAt': dt.toIso8601String(),
+        'date': '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}',
+        'time': '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}',
+        'shift': _shiftFor(dt),
         'tasks': taskList,
       });
     }
