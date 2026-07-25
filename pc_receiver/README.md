@@ -85,6 +85,22 @@ Notes:
   Keep the exe in a writable folder (not `C:\Program Files`) unless you
   redirect those paths.
 
+## Running alongside another local app on the same PC
+
+This only ever reads/writes inside its own folder (`received_data/`,
+`paired_devices.json`, per-app `data.xlsx`) -- it can't touch another app's
+files or database. The one thing that *can* clash with another local app is
+the port: if something else on the PC already uses `8765`, override it:
+
+```powershell
+set PCRECEIVER_PORT=9090
+PCReceiver.exe
+```
+
+The port is embedded in the pairing QR code, so phones always pick up
+whatever port was actually running when they paired -- no phone-side change
+needed if you change this.
+
 ## Security model
 
 - Any device on the same WiFi/hotspot can technically *see* this PC (mDNS +

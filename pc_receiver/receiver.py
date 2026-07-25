@@ -30,6 +30,7 @@ import ipaddress
 import json
 import secrets
 import socket
+import os
 import sys
 import threading
 import time
@@ -58,7 +59,12 @@ DATA_DIR = APP_DIR / "received_data"
 DEVICES_FILE = APP_DIR / "paired_devices.json"
 DATA_DIR.mkdir(exist_ok=True)
 
-PORT = 8765
+
+# Configurable in case another local app on this PC already uses 8765 --
+# the port is embedded in the pairing QR code, so phones always pick up
+# whatever port was actually in use at pairing time; nothing on the phone
+# side needs to change when this is overridden.
+PORT = int(os.environ.get("PCRECEIVER_PORT", "8765"))
 SERVICE_TYPE = "_flutteraisync._tcp.local."
 PAIRING_TOKEN_TTL = 300  # seconds
 SIGNATURE_WINDOW = 300   # seconds -- rejects replayed requests older than this
