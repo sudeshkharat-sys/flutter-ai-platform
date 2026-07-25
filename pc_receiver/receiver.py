@@ -49,7 +49,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from zeroconf import ServiceInfo, Zeroconf
 
-from assets import LOGO_PNG_BASE64
+from assets import FAVICON_PNG_BASE64, LOGO_PNG_BASE64
 
 # ── Paths (work both as a plain script and a PyInstaller --onefile exe) ────
 
@@ -585,6 +585,7 @@ DASHBOARD_HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mahindra Digital Eye — Storage Bank</title>
+<link rel="icon" type="image/png" href="data:image/png;base64,__FAVICON_B64__">
 <style>
   :root {
     --crimson: #DC143C;
@@ -1221,7 +1222,7 @@ setInterval(pollEvents, 3000);
 </script>
 </body>
 </html>
-""".replace("__LOGO_B64__", LOGO_PNG_BASE64.replace("\n", ""))
+""".replace("__LOGO_B64__", LOGO_PNG_BASE64.replace("\n", "")).replace("__FAVICON_B64__", FAVICON_PNG_BASE64.replace("\n", ""))
 
 
 def main():
