@@ -104,9 +104,11 @@ def _save_devices():
 EXCEL_COLUMNS = [
     ("VIN", "vin"),
     ("Model Code", "modelCode"),
+    ("Model Name", "modelName"),
     ("Date", "date"),
     ("Time", "time"),
     ("Shift", "shift"),
+    ("Shift Date", "shiftDate"),
     ("Task", "taskName"),
     ("Detected", "className"),
     ("Result", "result"),
@@ -123,11 +125,19 @@ def _flatten_manifest_rows(inspections: list, batch_name: str) -> list[dict]:
         for task in tasks:
             rows.append({
                 "batch": batch_name,
+                "inspectionId": insp.get("inspectionId"),
                 "vin": insp.get("vin"),
                 "modelCode": insp.get("modelCode"),
+                "modelName": insp.get("modelName"),
                 "date": insp.get("date"),
                 "time": insp.get("time"),
                 "shift": insp.get("shift"),
+                # Shift C runs past midnight into the next calendar date --
+                # shiftDate is the shift's own "day" (a 1am scan still
+                # belongs to the previous day's shift), falling back to the
+                # raw date for phones running an older build that doesn't
+                # send it yet.
+                "shiftDate": insp.get("shiftDate") or insp.get("date"),
                 "taskName": task.get("taskName"),
                 "className": task.get("className"),
                 "result": "OK" if task.get("success") else "NOT OK",
@@ -274,14 +284,28 @@ async def pair(request: Request):
         # One-shot: consume the token so a screenshot can't be reused.
         _pending_token = None
 
-        device_id = str(uuid.uuid4())
+        # Re-pairing the same phone+app (reinstall, cleared storage, a
+        # second manual pairing) previously minted a brand new deviceId
+        # every time, splitting one phone's history across duplicate
+        # entries. Reuse the existing entry and just rotate its secret.
+        existing_id = next(
+            (did for did, d in _paired_devices.items()
+             if d["deviceName"] == device_name and d.get("appName") == app_name),
+            None,
+        )
         secret = secrets.token_hex(32)
-        _paired_devices[device_id] = {
-            "secret": secret,
-            "deviceName": device_name,
-            "appName": app_name,
-            "pairedAt": datetime.now().isoformat(),
-        }
+        if existing_id:
+            device_id = existing_id
+            _paired_devices[device_id]["secret"] = secret
+            _paired_devices[device_id]["pairedAt"] = datetime.now().isoformat()
+        else:
+            device_id = str(uuid.uuid4())
+            _paired_devices[device_id] = {
+                "secret": secret,
+                "deviceName": device_name,
+                "appName": app_name,
+                "pairedAt": datetime.now().isoformat(),
+            }
         _save_devices()
         _pairing_results[token] = {"deviceId": device_id, "deviceName": device_name, "appName": app_name}
 
@@ -682,6 +706,29 @@ DASHBOARD_HTML = """<!doctype html>
   .img-link { color: var(--crimson); cursor: pointer; text-decoration: underline; font-size: 11px; background: none; border: none; padding: 0; }
   .img-link:disabled { color: var(--muted); text-decoration: none; cursor: default; }
 
+  /* Grouped VIN rows with expand/collapse */
+  .group-row { cursor: pointer; }
+  .group-row .chevron { display: inline-block; transition: transform 0.15s; color: var(--muted); }
+  .group-row.expanded .chevron { transform: rotate(90deg); }
+  .task-count-ok { color: var(--green); font-weight: 700; }
+  .task-count-fail { color: var(--crimson); font-weight: 700; }
+  .detail-row { display: none; background: #fafafc; }
+  .detail-row.open { display: table-row; }
+  .detail-row td { padding: 10px 10px 14px 34px !important; }
+  table.mini-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  table.mini-table th { text-align: left; padding: 4px 8px; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+  table.mini-table td { padding: 5px 8px; border-bottom: 1px solid #f0f0f3; }
+
+  /* Pie chart panel */
+  .charts-panel { padding: 4px 24px 4px; max-height: 280px; overflow-y: auto; flex-shrink: 0; border-bottom: 1px solid var(--border); }
+  .chart-row { margin-bottom: 10px; }
+  .chart-row-title { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .chart-cards { display: flex; gap: 14px; flex-wrap: wrap; }
+  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px; text-align: center; width: 118px; }
+  .chart-card .chart-label { font-size: 11px; font-weight: 700; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chart-card .chart-meta { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .chart-note { font-size: 12px; color: var(--muted); font-style: italic; }
+
   .lightbox { position: fixed; inset: 0; background: rgba(10,12,18,0.85); display: none; align-items: center; justify-content: center; z-index: 70; }
   .lightbox.open { display: flex; }
   .lightbox img { max-width: 90vw; max-height: 85vh; border-radius: 8px; }
@@ -817,6 +864,8 @@ DASHBOARD_HTML = """<!doctype html>
     <datalist id="dlVin"></datalist>
     <input id="fModel" list="dlModel" placeholder="Filter Model Code…" oninput="renderTable()">
     <datalist id="dlModel"></datalist>
+    <input id="fModelName" list="dlModelName" placeholder="Filter Model Name…" oninput="renderTable()">
+    <datalist id="dlModelName"></datalist>
     <select id="fYear" onchange="renderTable()">
       <option value="">All Years</option>
     </select>
@@ -847,12 +896,13 @@ DASHBOARD_HTML = """<!doctype html>
     <button class="ghost" onclick="clearFilters()">Clear Filters</button>
     <div class="filter-count" id="filterCount"></div>
   </div>
+  <div class="charts-panel" id="chartsPanel"></div>
   <div class="table-wrap">
     <table class="data-table">
       <thead>
         <tr>
-          <th>VIN</th><th>Model Code</th><th>Date</th><th>Time</th><th>Shift</th>
-          <th>Task</th><th>Detected</th><th>Result</th><th>Batch</th><th>Image</th>
+          <th></th><th>VIN</th><th>Model Code</th><th>Model Name</th><th>Date</th><th>Time</th>
+          <th>Shift</th><th>Tasks</th><th>Batch</th>
         </tr>
       </thead>
       <tbody id="viewerRows"></tbody>
@@ -1136,7 +1186,7 @@ function closeDataViewer() {
 // that) instead of the user having to type an exact value from memory.
 function populateFilterSuggestions() {
   const fields = [
-    ['dlVin', 'vin'], ['dlModel', 'modelCode'],
+    ['dlVin', 'vin'], ['dlModel', 'modelCode'], ['dlModelName', 'modelName'],
     ['dlTask', 'taskName'], ['dlClass', 'className'], ['dlBatch', 'batch'],
   ];
   fields.forEach(([listId, key]) => {
@@ -1153,7 +1203,7 @@ function populateFilterSuggestions() {
 }
 
 function clearFilters() {
-  ['fVin', 'fModel', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
+  ['fVin', 'fModel', 'fModelName', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
   ['fYear', 'fMonth', 'fShift', 'fResult'].forEach(id => document.getElementById(id).value = '');
   renderTable();
 }
@@ -1161,6 +1211,7 @@ function clearFilters() {
 function getFilteredRows() {
   const vin = document.getElementById('fVin').value.toLowerCase();
   const model = document.getElementById('fModel').value.toLowerCase();
+  const modelName = document.getElementById('fModelName').value.toLowerCase();
   const year = document.getElementById('fYear').value;
   const month = document.getElementById('fMonth').value;
   const shift = document.getElementById('fShift').value;
@@ -1174,6 +1225,7 @@ function getFilteredRows() {
     const rowMonth = (row.date || '').slice(5, 7);
     return (!vin || (row.vin || '').toLowerCase().includes(vin)) &&
       (!model || (row.modelCode || '').toLowerCase().includes(model)) &&
+      (!modelName || (row.modelName || '').toLowerCase().includes(modelName)) &&
       (!year || rowYear === year) &&
       (!month || rowMonth === month) &&
       (!shift || row.shift === shift) &&
@@ -1184,27 +1236,201 @@ function getFilteredRows() {
   });
 }
 
+// Groups flat task rows into one row per inspection (VIN scanned once, may
+// have several task results) so an "integrated" multi-task VIN shows as a
+// single expandable row instead of N flat rows repeating the same VIN.
+function groupRowsByInspection(rows) {
+  const groups = {};
+  const order = [];
+  rows.forEach((r, idx) => {
+    const key = `${r.batch}|${r.inspectionId ?? ''}|${r.vin}|${r.date}|${r.time}`;
+    if (!groups[key]) {
+      groups[key] = {
+        key, vin: r.vin, modelCode: r.modelCode, modelName: r.modelName,
+        date: r.date, time: r.time, shift: r.shift, batch: r.batch, tasks: [],
+      };
+      order.push(key);
+    }
+    groups[key].tasks.push(r);
+  });
+  return order.map(k => groups[k]);
+}
+
+const _expandedGroups = new Set();
+
+function toggleGroup(key) {
+  if (_expandedGroups.has(key)) _expandedGroups.delete(key); else _expandedGroups.add(key);
+  renderTable();
+}
+
 function renderTable() {
   const filtered = getFilteredRows();
   document.getElementById('filterCount').textContent = `${filtered.length} of ${viewerRows.length} row(s)`;
+  renderCharts(filtered);
+
   const tbody = document.getElementById('viewerRows');
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:24px;">No rows match these filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:24px;">No rows match these filters.</td></tr>';
     return;
   }
-  tbody.innerHTML = filtered.map(row => `
-    <tr>
-      <td>${row.vin || ''}</td>
-      <td>${row.modelCode || ''}</td>
-      <td>${row.date || ''}</td>
-      <td>${row.time || ''}</td>
-      <td>${row.shift || ''}</td>
-      <td>${row.taskName || ''}</td>
-      <td>${row.className || ''}</td>
-      <td class="${row.result === 'OK' ? 'badge-ok' : 'badge-fail'}">${row.result || ''}</td>
-      <td>${row.batch || ''}</td>
-      <td>${row.imageUrl ? `<button class="img-link" onclick="openLightbox('${row.imageUrl}')">View</button>` : '<button class="img-link" disabled>—</button>'}</td>
-    </tr>
+
+  const groups = groupRowsByInspection(filtered);
+  tbody.innerHTML = groups.map(g => {
+    const okCount = g.tasks.filter(t => t.result === 'OK').length;
+    const failCount = g.tasks.length - okCount;
+    const expanded = _expandedGroups.has(g.key);
+    const taskSummary = g.tasks.length === 1
+      ? `<span class="${okCount ? 'task-count-ok' : 'task-count-fail'}">${g.tasks[0].result}</span>`
+      : `<span class="task-count-ok">${okCount} OK</span>${failCount ? ` / <span class="task-count-fail">${failCount} NOT OK</span>` : ''} (${g.tasks.length} tasks)`;
+
+    const detailRows = g.tasks.map(t => `
+      <tr>
+        <td>${t.taskName || ''}</td>
+        <td>${t.className || ''}</td>
+        <td class="${t.result === 'OK' ? 'badge-ok' : 'badge-fail'}">${t.result || ''}</td>
+        <td>${t.imageUrl ? `<button class="img-link" onclick="openLightbox('${t.imageUrl}')">View</button>` : '<button class="img-link" disabled>—</button>'}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <tr class="group-row ${expanded ? 'expanded' : ''}" onclick="toggleGroup('${g.key.replace(/'/g, "\\'")}')">
+        <td><span class="chevron">▸</span></td>
+        <td>${g.vin || ''}</td>
+        <td>${g.modelCode || ''}</td>
+        <td>${g.modelName || ''}</td>
+        <td>${g.date || ''}</td>
+        <td>${g.time || ''}</td>
+        <td>${g.shift || ''}</td>
+        <td>${taskSummary}</td>
+        <td>${g.batch || ''}</td>
+      </tr>
+      <tr class="detail-row ${expanded ? 'open' : ''}">
+        <td colspan="9">
+          <table class="mini-table">
+            <thead><tr><th>Task</th><th>Detected</th><th>Result</th><th>Image</th></tr></thead>
+            <tbody>${detailRows}</tbody>
+          </table>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// ── Pie charts (hand-drawn SVG, no external chart library needed) ────────
+
+function pieSvg(ok, fail, size) {
+  size = size || 88;
+  const total = ok + fail;
+  const r = size / 2 - 4, cx = size / 2, cy = size / 2;
+  if (total === 0) {
+    return `<svg width="${size}" height="${size}"><circle cx="${cx}" cy="${cy}" r="${r}" fill="#eee"/></svg>`;
+  }
+  const p = ok / total;
+  let slices;
+  if (p >= 0.999) {
+    slices = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#1f9d55"/>`;
+  } else if (p <= 0.001) {
+    slices = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#DC143C"/>`;
+  } else {
+    const toXY = (deg) => {
+      const rad = (deg - 90) * Math.PI / 180;
+      return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
+    };
+    const angle = p * 360;
+    const [sx, sy] = toXY(0);
+    const [ex, ey] = toXY(angle);
+    const largeArc1 = angle > 180 ? 1 : 0;
+    const greenPath = `M${cx},${cy} L${sx},${sy} A${r},${r} 0 ${largeArc1} 1 ${ex},${ey} Z`;
+    const [sx2, sy2] = toXY(angle);
+    const [ex2, ey2] = toXY(360);
+    const largeArc2 = (360 - angle) > 180 ? 1 : 0;
+    const redPath = `M${cx},${cy} L${sx2},${sy2} A${r},${r} 0 ${largeArc2} 1 ${ex2},${ey2} Z`;
+    slices = `<path d="${greenPath}" fill="#1f9d55"/><path d="${redPath}" fill="#DC143C"/>`;
+  }
+  const pct = Math.round(p * 100);
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    ${slices}
+    <circle cx="${cx}" cy="${cy}" r="${r * 0.55}" fill="white"/>
+    <text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="12" font-weight="700" fill="#1c1f26">${pct}%</text>
+  </svg>`;
+}
+
+function chartCard(label, ok, fail) {
+  return `<div class="chart-card">${pieSvg(ok, fail)}
+    <div class="chart-label" title="${label}">${label}</div>
+    <div class="chart-meta">${ok} OK / ${fail} NOT OK</div>
+  </div>`;
+}
+
+function bucketize(rows, keyFn) {
+  const buckets = {};
+  for (const r of rows) {
+    const k = keyFn(r);
+    if (k === null || k === undefined || k === '') continue;
+    if (!buckets[k]) buckets[k] = { ok: 0, fail: 0 };
+    if (r.result === 'OK') buckets[k].ok++; else buckets[k].fail++;
+  }
+  return buckets;
+}
+
+// Pies work well for a handful of slices/cards, but not for dozens of
+// buckets (e.g. every single day across a year) -- past this many cards in
+// one row we show a note asking to narrow the filter instead of rendering
+// an unreadable wall of tiny pies.
+const MAX_PIE_BUCKETS = 12;
+
+function renderCharts(filtered) {
+  const el = document.getElementById('chartsPanel');
+  if (!filtered.length) {
+    el.innerHTML = '';
+    return;
+  }
+
+  const overallOk = filtered.filter(r => r.result === 'OK').length;
+  const overallFail = filtered.length - overallOk;
+
+  const sections = [];
+  sections.push({ title: 'Overall (current filters)', cards: [chartCard('All Results', overallOk, overallFail)] });
+
+  const byShift = bucketize(filtered, r => r.shift);
+  const shiftKeys = Object.keys(byShift).sort();
+  if (shiftKeys.length) {
+    sections.push({ title: 'By Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail)) });
+  }
+
+  const byVin = bucketize(filtered, r => r.vin);
+  const vinKeys = Object.keys(byVin);
+  if (vinKeys.length === 1) {
+    sections.push({ title: 'This VIN', cards: [chartCard(vinKeys[0], byVin[vinKeys[0]].ok, byVin[vinKeys[0]].fail)] });
+  } else if (vinKeys.length > 1 && vinKeys.length <= MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By VIN', cards: vinKeys.map(k => chartCard(k, byVin[k].ok, byVin[k].fail)) });
+  } else if (vinKeys.length > MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By VIN', note: `${vinKeys.length} VINs in view -- filter down to ${MAX_PIE_BUCKETS} or fewer (e.g. one VIN, one shift, or one day) to see per-VIN pies.` });
+  }
+
+  // Uses shiftDate so a post-midnight Shift C scan groups with the shift
+  // it belongs to, not the raw calendar date it happened to tick over into.
+  const byDay = bucketize(filtered, r => r.shiftDate || r.date);
+  const dayKeys = Object.keys(byDay).sort();
+  if (dayKeys.length && dayKeys.length <= MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By Day (shift-day)', cards: dayKeys.map(k => chartCard(k, byDay[k].ok, byDay[k].fail)) });
+  } else if (dayKeys.length > MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By Day (shift-day)', note: `${dayKeys.length} days in view -- pick a Month filter to see day-wise pies.` });
+  }
+
+  const byMonth = bucketize(filtered, r => (r.date || '').slice(0, 7));
+  const monthKeys = Object.keys(byMonth).sort();
+  if (monthKeys.length && monthKeys.length <= MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By Month', cards: monthKeys.map(k => chartCard(k, byMonth[k].ok, byMonth[k].fail)) });
+  } else if (monthKeys.length > MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By Month', note: `${monthKeys.length} months in view -- pick a Year filter to see month-wise pies.` });
+  }
+
+  el.innerHTML = sections.map(s => `
+    <div class="chart-row">
+      <div class="chart-row-title">${s.title}</div>
+      ${s.note ? `<div class="chart-note">${s.note}</div>` : `<div class="chart-cards">${s.cards.join('')}</div>`}
+    </div>
   `).join('');
 }
 

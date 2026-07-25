@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:multicast_dns/multicast_dns.dart';
@@ -271,11 +272,45 @@ class SyncService {
     return 'C';
   }
 
+  // Shift C runs past midnight, so a 1am scan belongs to the *previous*
+  // day's shift for reporting purposes -- same rollover rule as the
+  // History screen's shift-day grouping.
+  String _shiftDateFor(DateTime dt) {
+    final d = dt.hour < 7 ? dt.subtract(const Duration(days: 1)) : dt;
+    return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  }
+
+  /// Maps model/engine code -> human-readable name using the same lookup
+  /// data already bundled for VIN/engine-code scanning, so the PC side gets
+  /// a readable name without needing its own copy of the master data.
+  Future<Map<String, String>> _loadModelNameMap() async {
+    try {
+{% if scan_type == 'engine' %}
+      final raw = await rootBundle.loadString('assets/engine_data.json');
+      final List<dynamic> data = jsonDecode(raw);
+      return {
+        for (final e in data)
+          (e['part_no'] as String? ?? '').toUpperCase(): (e['model_name'] as String? ?? ''),
+      };
+{% else %}
+      final raw = await rootBundle.loadString('assets/master_data.json');
+      final List<dynamic> data = jsonDecode(raw);
+      return {
+        for (final e in data)
+          (e['model_code'] as String? ?? '').toUpperCase(): (e['platform_name'] as String? ?? ''),
+      };
+{% endif %}
+    } catch (_) {
+      return {};
+    }
+  }
+
   Future<_ExportBundle> _buildExportBundle() async {
     final archive = Archive();
     final unsynced = await db.getUnsyncedInspections();
     final manifest = <Map<String, dynamic>>[];
     final seenImagePaths = <String>{};
+    final modelNames = await _loadModelNameMap();
 
     for (final insp in unsynced) {
       final results = await db.getResultsForInspection(insp.id);
@@ -317,10 +352,12 @@ class SyncService {
         'inspectionId': insp.id,
         'vin': insp.vin,
         'modelCode': insp.modelCode,
+        'modelName': modelNames[insp.modelCode.toUpperCase()] ?? '',
         'createdAt': dt.toIso8601String(),
         'date': '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}',
         'time': '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}',
         'shift': _shiftFor(dt),
+        'shiftDate': _shiftDateFor(dt),
         'tasks': taskList,
       });
     }
