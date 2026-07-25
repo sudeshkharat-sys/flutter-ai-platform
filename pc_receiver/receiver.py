@@ -538,12 +538,10 @@ DASHBOARD_HTML = """<!doctype html>
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
-  header { background: var(--navy); color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
-  header img { height: 42px; }
+  header { background: var(--navy); color: #fff; padding: 10px 24px; display: flex; align-items: center; gap: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+  header img { height: 64px; }
   header .titles h1 { margin: 0; font-size: 16px; letter-spacing: 0.5px; }
   header .titles p { margin: 2px 0 0; font-size: 11px; color: #9aa0ad; }
-  header .status { margin-left: auto; text-align: right; font-size: 11px; color: #c9ccd4; }
-  header .status b { color: #fff; }
 
   nav { display: flex; gap: 4px; padding: 12px 24px 0; background: var(--bg); }
   nav button { border: none; background: transparent; padding: 10px 18px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 3px solid transparent; }
@@ -627,7 +625,7 @@ DASHBOARD_HTML = """<!doctype html>
   .breadcrumb .crumb-current { color: var(--text); font-weight: 600; }
 
   /* Header "receiving" pulse, flashed briefly on new uploads */
-  .live-indicator { display: none; align-items: center; gap: 6px; font-size: 11px; color: #ffb4c2; margin-left: 18px; }
+  .live-indicator { display: none; align-items: center; gap: 6px; font-size: 11px; color: #ffb4c2; margin-left: auto; }
   .live-indicator.show { display: flex; }
   .live-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: #ff4d6d; animation: dotPulse 1s infinite; }
   @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.4); } }
@@ -667,7 +665,6 @@ DASHBOARD_HTML = """<!doctype html>
     <p>Receives inspection data from paired phones on this WiFi/hotspot</p>
   </div>
   <div class="live-indicator" id="liveIndicator"><span class="dot"></span>Receiving…</div>
-  <div class="status" id="pcStatus">Loading…</div>
 </header>
 
 <nav>
@@ -776,14 +773,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'storage') loadStorage();
   });
 });
-
-async function loadStatus() {
-  try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
-    document.getElementById('pcStatus').innerHTML = `<b>${d.pcName}</b><br>${d.ip}:${d.port}`;
-  } catch (e) {}
-}
 
 function fmtBytes(n) {
   if (!n) return '0 B';
@@ -1152,7 +1141,6 @@ function handleNewEvents(events) {
   }
 }
 
-loadStatus();
 loadDevices();
 setInterval(loadDevices, 15000);
 setInterval(pollEvents, 3000);
