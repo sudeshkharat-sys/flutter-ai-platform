@@ -1,8 +1,9 @@
-# PC Receiver
+# PC Receiver — "Mahindra Digital Eye — Storage Bank"
 
 Companion app for the "Send to PC" feature in Flutter AI Studio-generated
-apps. Runs on the PC and receives inspection data (SQLite DB + images) sent
-from the phone over the local WiFi/hotspot, with password-equivalent
+apps. Runs on the PC, opens a local web dashboard for pairing phones and
+browsing received data, and receives inspection data (SQLite DB + images)
+sent from phones over the local WiFi/hotspot, with password-equivalent
 authentication (HMAC pairing) so only a phone that scanned this PC's QR code
 can push data to it.
 
@@ -14,20 +15,31 @@ pip install -r requirements.txt
 python receiver.py
 ```
 
-On first run it prints something like:
+It prints something like:
 
 ```
-PC Receiver running as 'DESKTOP-ABC123' on 192.168.1.42:8765
-Commands: [p]air new phone   [l]ist paired devices   [q]uit
+Mahindra Digital Eye — Storage Bank
+Dashboard (this PC only): http://127.0.0.1:8765
+Phones on this WiFi/hotspot send to: 192.168.1.42:8765
 ```
 
-Type `p` and press Enter to generate a pairing QR code (ASCII, printed
-directly to the console) — scan it from the app's *Send to PC → Pair New PC*
-screen. Pairing is one-time per phone; after that, the phone can just tap
-"Send" going forward.
+...and automatically opens the dashboard in your default browser. From there:
 
-Received files land in `./received_data/<phone>_<timestamp>.zip` (also
-auto-extracted into a matching folder).
+- **Devices tab** — tap **"+ Add New Device"** to show a QR code; scan it
+  from the app's *Send to PC → Pair New PC* screen. Pairing is one-time per
+  phone; after that the phone can just tap "Send" going forward. Each paired
+  phone is listed with how much data it's sent and when it last sent.
+- **Storage Bank tab** — browse received data grouped by **phone name →
+  app name → each send**, with file counts, sizes, and a **Download** button
+  per batch (grabs the original zip).
+
+The dashboard and all `/api/*` routes only answer requests from the PC
+itself (127.0.0.1) — they're not reachable by other devices on the WiFi.
+Only the `/pair` and `/upload` endpoints, which phones need to reach, listen
+on the network, and both are protected by the pairing handshake.
+
+Received files land in `./received_data/<phone name>/<app name>/<timestamp>/`
+(the original zip sits alongside the extracted folder).
 
 ## Building a single no-install .exe (Windows)
 
