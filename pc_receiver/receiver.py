@@ -722,12 +722,19 @@ DASHBOARD_HTML = """<!doctype html>
   /* Pie chart panel */
   .charts-panel { padding: 4px 24px 4px; max-height: 280px; overflow-y: auto; flex-shrink: 0; border-bottom: 1px solid var(--border); }
   .chart-row { margin-bottom: 10px; }
-  .chart-row-title { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .chart-row-title { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; display: flex; align-items: center; gap: 6px; }
+  .chart-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1; }
+  .chart-close:hover { color: var(--crimson); }
   .chart-cards { display: flex; gap: 14px; flex-wrap: wrap; }
   .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px; text-align: center; width: 118px; }
+  .chart-card.clickable-chart { cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; }
+  .chart-card.clickable-chart:hover { border-color: var(--crimson); box-shadow: 0 2px 8px rgba(220,20,60,0.15); }
   .chart-card .chart-label { font-size: 11px; font-weight: 700; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chart-card .chart-meta { font-size: 10px; color: var(--muted); margin-top: 2px; }
   .chart-note { font-size: 12px; color: var(--muted); font-style: italic; }
+  .chart-hidden-bar { font-size: 11px; color: var(--muted); margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+  .chart-hidden-bar b { color: var(--text); }
+  .chart-hidden-bar button.ghost { padding: 3px 10px; font-size: 11px; }
 
   .lightbox { position: fixed; inset: 0; background: rgba(10,12,18,0.85); display: none; align-items: center; justify-content: center; z-index: 70; }
   .lightbox.open { display: flex; }
@@ -1158,6 +1165,7 @@ let currentViewerDeviceId = null;
 
 async function openDataViewer(deviceId) {
   currentViewerDeviceId = deviceId;
+  pinnedDay = null;
   document.getElementById('viewerPage').classList.add('open');
   document.getElementById('viewerTitle').textContent = 'Loading…';
   document.getElementById('viewerRows').innerHTML = '';
@@ -1205,6 +1213,7 @@ function populateFilterSuggestions() {
 function clearFilters() {
   ['fVin', 'fModel', 'fModelName', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
   ['fYear', 'fMonth', 'fShift', 'fResult'].forEach(id => document.getElementById(id).value = '');
+  pinnedDay = null;
   renderTable();
 }
 
@@ -1228,6 +1237,7 @@ function getFilteredRows() {
       (!modelName || (row.modelName || '').toLowerCase().includes(modelName)) &&
       (!year || rowYear === year) &&
       (!month || rowMonth === month) &&
+      (!pinnedDay || (row.shiftDate || row.date) === pinnedDay) &&
       (!shift || row.shift === shift) &&
       (!task || (row.taskName || '').toLowerCase().includes(task)) &&
       (!cls || (row.className || '').toLowerCase().includes(cls)) &&
@@ -1355,8 +1365,16 @@ function pieSvg(ok, fail, size) {
   </svg>`;
 }
 
-function chartCard(label, ok, fail) {
-  return `<div class="chart-card">${pieSvg(ok, fail)}
+function escapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+}
+
+// section/value make the card clickable -- clicking it applies the
+// matching filter (e.g. click the "Shift A" pie to filter the table to
+// Shift A). Omit them for a non-clickable card like Overall.
+function chartCard(label, ok, fail, section, value) {
+  const attrs = section ? ` data-section="${section}" data-value="${escapeAttr(value)}" class="chart-card clickable-chart" title="Click to filter to ${escapeAttr(label)}"` : ' class="chart-card"';
+  return `<div${attrs}>${pieSvg(ok, fail)}
     <div class="chart-label" title="${label}">${label}</div>
     <div class="chart-meta">${ok} OK / ${fail} NOT OK</div>
   </div>`;
@@ -1379,6 +1397,34 @@ function bucketize(rows, keyFn) {
 // an unreadable wall of tiny pies.
 const MAX_PIE_BUCKETS = 12;
 
+// Which day (shiftDate) a "By Day" pie click has drilled into, on top of
+// whatever the regular filters are set to. Cleared via its own chip, not
+// by other filter changes, so "this VIN in this exact shift-day" combos
+// stay possible.
+let pinnedDay = null;
+
+// Chart sections the user has dismissed with the row's "✕" -- remembered
+// across restarts (same browser) via localStorage, since this is a local,
+// single-user dashboard.
+let hiddenChartSections = new Set(JSON.parse(localStorage.getItem('hiddenChartSections') || '[]'));
+
+function hideChartSection(title) {
+  hiddenChartSections.add(title);
+  localStorage.setItem('hiddenChartSections', JSON.stringify([...hiddenChartSections]));
+  renderTable();
+}
+
+function showAllChartSections() {
+  hiddenChartSections.clear();
+  localStorage.setItem('hiddenChartSections', '[]');
+  renderTable();
+}
+
+function clearPinnedDay() {
+  pinnedDay = null;
+  renderTable();
+}
+
 function renderCharts(filtered) {
   const el = document.getElementById('chartsPanel');
   if (!filtered.length) {
@@ -1395,7 +1441,7 @@ function renderCharts(filtered) {
   const byShift = bucketize(filtered, r => r.shift);
   const shiftKeys = Object.keys(byShift).sort();
   if (shiftKeys.length) {
-    sections.push({ title: 'By Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail)) });
+    sections.push({ title: 'By Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
   }
 
   const byVin = bucketize(filtered, r => r.vin);
@@ -1403,7 +1449,7 @@ function renderCharts(filtered) {
   if (vinKeys.length === 1) {
     sections.push({ title: 'This VIN', cards: [chartCard(vinKeys[0], byVin[vinKeys[0]].ok, byVin[vinKeys[0]].fail)] });
   } else if (vinKeys.length > 1 && vinKeys.length <= MAX_PIE_BUCKETS) {
-    sections.push({ title: 'By VIN', cards: vinKeys.map(k => chartCard(k, byVin[k].ok, byVin[k].fail)) });
+    sections.push({ title: 'By VIN', cards: vinKeys.map(k => chartCard(k, byVin[k].ok, byVin[k].fail, 'vin', k)) });
   } else if (vinKeys.length > MAX_PIE_BUCKETS) {
     sections.push({ title: 'By VIN', note: `${vinKeys.length} VINs in view -- filter down to ${MAX_PIE_BUCKETS} or fewer (e.g. one VIN, one shift, or one day) to see per-VIN pies.` });
   }
@@ -1413,7 +1459,7 @@ function renderCharts(filtered) {
   const byDay = bucketize(filtered, r => r.shiftDate || r.date);
   const dayKeys = Object.keys(byDay).sort();
   if (dayKeys.length && dayKeys.length <= MAX_PIE_BUCKETS) {
-    sections.push({ title: 'By Day (shift-day)', cards: dayKeys.map(k => chartCard(k, byDay[k].ok, byDay[k].fail)) });
+    sections.push({ title: 'By Day (shift-day)', cards: dayKeys.map(k => chartCard(k, byDay[k].ok, byDay[k].fail, 'day', k)) });
   } else if (dayKeys.length > MAX_PIE_BUCKETS) {
     sections.push({ title: 'By Day (shift-day)', note: `${dayKeys.length} days in view -- pick a Month filter to see day-wise pies.` });
   }
@@ -1421,17 +1467,51 @@ function renderCharts(filtered) {
   const byMonth = bucketize(filtered, r => (r.date || '').slice(0, 7));
   const monthKeys = Object.keys(byMonth).sort();
   if (monthKeys.length && monthKeys.length <= MAX_PIE_BUCKETS) {
-    sections.push({ title: 'By Month', cards: monthKeys.map(k => chartCard(k, byMonth[k].ok, byMonth[k].fail)) });
+    sections.push({ title: 'By Month', cards: monthKeys.map(k => chartCard(k, byMonth[k].ok, byMonth[k].fail, 'month', k)) });
   } else if (monthKeys.length > MAX_PIE_BUCKETS) {
     sections.push({ title: 'By Month', note: `${monthKeys.length} months in view -- pick a Year filter to see month-wise pies.` });
   }
 
-  el.innerHTML = sections.map(s => `
+  const visible = sections.filter(s => !hiddenChartSections.has(s.title));
+  const hidden = sections.filter(s => hiddenChartSections.has(s.title));
+
+  let html = '';
+  if (hidden.length) {
+    html += `<div class="chart-hidden-bar">Hidden: ${hidden.map(s => s.title).join(', ')}
+      <button class="ghost" onclick="showAllChartSections()">Show All</button></div>`;
+  }
+  if (pinnedDay) {
+    html += `<div class="chart-hidden-bar">Pinned to day: <b>${pinnedDay}</b>
+      <button class="ghost" onclick="clearPinnedDay()">✕ Clear</button></div>`;
+  }
+  html += visible.map(s => `
     <div class="chart-row">
-      <div class="chart-row-title">${s.title}</div>
+      <div class="chart-row-title">${s.title}
+        <button class="chart-close" title="Hide this chart" onclick="hideChartSection('${s.title.replace(/'/g, "\\'")}')">✕</button>
+      </div>
       ${s.note ? `<div class="chart-note">${s.note}</div>` : `<div class="chart-cards">${s.cards.join('')}</div>`}
     </div>
   `).join('');
+  el.innerHTML = html;
+
+  el.querySelectorAll('.chart-card.clickable-chart').forEach(card => {
+    card.addEventListener('click', () => {
+      const section = card.dataset.section;
+      const value = card.dataset.value;
+      if (section === 'shift') {
+        document.getElementById('fShift').value = value;
+      } else if (section === 'vin') {
+        document.getElementById('fVin').value = value;
+      } else if (section === 'month') {
+        const [y, m] = value.split('-');
+        document.getElementById('fYear').value = y;
+        document.getElementById('fMonth').value = m;
+      } else if (section === 'day') {
+        pinnedDay = value;
+      }
+      renderTable();
+    });
+  });
 }
 
 function openLightbox(url) {
