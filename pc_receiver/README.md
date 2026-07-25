@@ -59,6 +59,20 @@ finds it, or pass a full path otherwise.
 The output is `dist\PCReceiver.exe` — a single file with no Python
 installation required on the target PC. Double-click to run.
 
+### Add a desktop shortcut (with the logo)
+
+Since the exe already has the Digital Eye icon baked in, any shortcut to it
+automatically shows that logo too. Two ways to create one:
+
+- **Automatic:** from inside `dist\`, run:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File ..\create_desktop_shortcut.ps1
+  ```
+  (or copy `create_desktop_shortcut.ps1` next to `PCReceiver.exe` first).
+  Creates a "Digital Eye - Storage Bank" shortcut on the Desktop.
+- **Manual:** right-click `PCReceiver.exe` → *Send to* → *Desktop (create
+  shortcut)`. The logo appears automatically since it's part of the exe.
+
 Notes:
 - Windows Defender Firewall will prompt to allow network access the first
   time it runs — **allow it** (both private/public network as needed),
