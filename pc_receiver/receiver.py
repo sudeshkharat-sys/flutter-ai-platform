@@ -784,8 +784,16 @@ DASHBOARD_HTML = """<!doctype html>
     <datalist id="dlVin"></datalist>
     <input id="fModel" list="dlModel" placeholder="Filter Model Code…" oninput="renderTable()">
     <datalist id="dlModel"></datalist>
-    <input id="fDate" list="dlDate" placeholder="Filter Date…" oninput="renderTable()">
-    <datalist id="dlDate"></datalist>
+    <select id="fYear" onchange="renderTable()">
+      <option value="">All Years</option>
+    </select>
+    <select id="fMonth" onchange="renderTable()">
+      <option value="">All Months</option>
+      <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
+      <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
+      <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
+      <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+    </select>
     <select id="fShift" onchange="renderTable()">
       <option value="">All Shifts</option>
       <option value="A">Shift A</option>
@@ -1095,41 +1103,52 @@ function closeDataViewer() {
 // that) instead of the user having to type an exact value from memory.
 function populateFilterSuggestions() {
   const fields = [
-    ['dlVin', 'vin'], ['dlModel', 'modelCode'], ['dlDate', 'date'],
+    ['dlVin', 'vin'], ['dlModel', 'modelCode'],
     ['dlTask', 'taskName'], ['dlClass', 'className'], ['dlBatch', 'batch'],
   ];
   fields.forEach(([listId, key]) => {
     const unique = [...new Set(viewerRows.map(r => r[key]).filter(Boolean))].sort();
     document.getElementById(listId).innerHTML = unique.map(v => `<option value="${v}"></option>`).join('');
   });
+
+  // Year dropdown: only years that actually have data, newest first.
+  const years = [...new Set(viewerRows.map(r => (r.date || '').slice(0, 4)).filter(Boolean))].sort().reverse();
+  const yearSelect = document.getElementById('fYear');
+  const keepYear = yearSelect.value;
+  yearSelect.innerHTML = '<option value="">All Years</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
+  yearSelect.value = years.includes(keepYear) ? keepYear : '';
 }
 
 function clearFilters() {
-  ['fVin', 'fModel', 'fDate', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
-  ['fShift', 'fResult'].forEach(id => document.getElementById(id).value = '');
+  ['fVin', 'fModel', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
+  ['fYear', 'fMonth', 'fShift', 'fResult'].forEach(id => document.getElementById(id).value = '');
   renderTable();
 }
 
 function getFilteredRows() {
   const vin = document.getElementById('fVin').value.toLowerCase();
   const model = document.getElementById('fModel').value.toLowerCase();
-  const date = document.getElementById('fDate').value.toLowerCase();
+  const year = document.getElementById('fYear').value;
+  const month = document.getElementById('fMonth').value;
   const shift = document.getElementById('fShift').value;
   const task = document.getElementById('fTask').value.toLowerCase();
   const cls = document.getElementById('fClass').value.toLowerCase();
   const result = document.getElementById('fResult').value;
   const batch = document.getElementById('fBatch').value.toLowerCase();
 
-  return viewerRows.filter(row =>
-    (!vin || (row.vin || '').toLowerCase().includes(vin)) &&
-    (!model || (row.modelCode || '').toLowerCase().includes(model)) &&
-    (!date || (row.date || '').toLowerCase().includes(date)) &&
-    (!shift || row.shift === shift) &&
-    (!task || (row.taskName || '').toLowerCase().includes(task)) &&
-    (!cls || (row.className || '').toLowerCase().includes(cls)) &&
-    (!result || row.result === result) &&
-    (!batch || (row.batch || '').toLowerCase().includes(batch))
-  );
+  return viewerRows.filter(row => {
+    const rowYear = (row.date || '').slice(0, 4);
+    const rowMonth = (row.date || '').slice(5, 7);
+    return (!vin || (row.vin || '').toLowerCase().includes(vin)) &&
+      (!model || (row.modelCode || '').toLowerCase().includes(model)) &&
+      (!year || rowYear === year) &&
+      (!month || rowMonth === month) &&
+      (!shift || row.shift === shift) &&
+      (!task || (row.taskName || '').toLowerCase().includes(task)) &&
+      (!cls || (row.className || '').toLowerCase().includes(cls)) &&
+      (!result || row.result === result) &&
+      (!batch || (row.batch || '').toLowerCase().includes(batch));
+  });
 }
 
 function renderTable() {
