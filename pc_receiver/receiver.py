@@ -780,23 +780,29 @@ DASHBOARD_HTML = """<!doctype html>
     <button class="primary" onclick="downloadExcel()">Download Excel (filtered)</button>
   </div>
   <div class="filters">
-    <input id="fVin" placeholder="Filter VIN…" oninput="renderTable()">
-    <input id="fModel" placeholder="Filter Model Code…" oninput="renderTable()">
-    <input id="fDate" placeholder="Filter Date…" oninput="renderTable()">
+    <input id="fVin" list="dlVin" placeholder="Filter VIN…" oninput="renderTable()">
+    <datalist id="dlVin"></datalist>
+    <input id="fModel" list="dlModel" placeholder="Filter Model Code…" oninput="renderTable()">
+    <datalist id="dlModel"></datalist>
+    <input id="fDate" list="dlDate" placeholder="Filter Date…" oninput="renderTable()">
+    <datalist id="dlDate"></datalist>
     <select id="fShift" onchange="renderTable()">
       <option value="">All Shifts</option>
       <option value="A">Shift A</option>
       <option value="B">Shift B</option>
       <option value="C">Shift C</option>
     </select>
-    <input id="fTask" placeholder="Filter Task…" oninput="renderTable()">
-    <input id="fClass" placeholder="Filter Detected…" oninput="renderTable()">
+    <input id="fTask" list="dlTask" placeholder="Filter Task…" oninput="renderTable()">
+    <datalist id="dlTask"></datalist>
+    <input id="fClass" list="dlClass" placeholder="Filter Detected…" oninput="renderTable()">
+    <datalist id="dlClass"></datalist>
     <select id="fResult" onchange="renderTable()">
       <option value="">All Results</option>
       <option value="OK">OK</option>
       <option value="NOT OK">NOT OK</option>
     </select>
-    <input id="fBatch" placeholder="Filter Send/Batch…" oninput="renderTable()">
+    <input id="fBatch" list="dlBatch" placeholder="Filter Send/Batch…" oninput="renderTable()">
+    <datalist id="dlBatch"></datalist>
     <button class="ghost" onclick="clearFilters()">Clear Filters</button>
     <div class="filter-count" id="filterCount"></div>
   </div>
@@ -1072,6 +1078,7 @@ async function openDataViewer(deviceId) {
     viewerDeviceLabel = `${d.deviceName} — ${d.appName}`;
     document.getElementById('viewerTitle').textContent = viewerDeviceLabel;
     document.getElementById('viewerSubtitle').textContent = `${viewerRows.length} task result(s) across all sends`;
+    populateFilterSuggestions();
     clearFilters();
   } catch (e) {
     document.getElementById('viewerTitle').textContent = 'Could not load data';
@@ -1080,6 +1087,21 @@ async function openDataViewer(deviceId) {
 
 function closeDataViewer() {
   document.getElementById('viewerPage').classList.remove('open');
+}
+
+// Fills each filter's <datalist> with the unique values actually present in
+// this app's data, so typing a couple of characters suggests real matches
+// (e.g. typing "MA3E" in the VIN filter offers the full VINs starting with
+// that) instead of the user having to type an exact value from memory.
+function populateFilterSuggestions() {
+  const fields = [
+    ['dlVin', 'vin'], ['dlModel', 'modelCode'], ['dlDate', 'date'],
+    ['dlTask', 'taskName'], ['dlClass', 'className'], ['dlBatch', 'batch'],
+  ];
+  fields.forEach(([listId, key]) => {
+    const unique = [...new Set(viewerRows.map(r => r[key]).filter(Boolean))].sort();
+    document.getElementById(listId).innerHTML = unique.map(v => `<option value="${v}"></option>`).join('');
+  });
 }
 
 function clearFilters() {
