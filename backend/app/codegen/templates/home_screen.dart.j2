@@ -89,25 +89,31 @@ class _HomeScreenState extends State<HomeScreen> {
         return task['vehicle_code'] == widget.modelCode;
       }).toList();
 
-      // 2. Load existing progress from local DB for this VIN
+      // 2. Resume progress from local DB for this VIN, but only if the most
+      // recent inspection for it was left genuinely incomplete (app closed
+      // mid-inspection, etc). Otherwise this is a *new* scan of a VIN that
+      // already has finished inspection history (e.g. a legitimate re-scan)
+      // -- restoring its old per-task results would wrongly show tasks the
+      // inspector hasn't touched yet in this session as already OK/NOT OK.
       if (widget.vin != null) {
         final existingResults = await db.getLatestResultsForVin(widget.vin!);
-        final Map<int, dynamic> restored = {};
-        
-        for (var res in existingResults) {
-          // Try to match by task name
-          final idx = filtered.indexWhere((t) => t['name'] == res.taskName);
-          if (idx != -1) {
-            restored[idx] = {
-              'className': res.className,
-              'success': res.success,
-              'imagePath': res.imagePath,
-              'backupImagePath': res.backupImagePath,
-              'detectionsJson': res.detectionsJson,
-            };
+        if (existingResults.isNotEmpty && existingResults.length < filtered.length) {
+          final Map<int, dynamic> restored = {};
+          for (var res in existingResults) {
+            // Try to match by task name
+            final idx = filtered.indexWhere((t) => t['name'] == res.taskName);
+            if (idx != -1) {
+              restored[idx] = {
+                'className': res.className,
+                'success': res.success,
+                'imagePath': res.imagePath,
+                'backupImagePath': res.backupImagePath,
+                'detectionsJson': res.detectionsJson,
+              };
+            }
           }
+          _taskResults = restored;
         }
-        _taskResults = restored;
       }
 
       setState(() {
