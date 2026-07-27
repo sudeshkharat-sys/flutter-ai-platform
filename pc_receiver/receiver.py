@@ -96,7 +96,18 @@ def _load_devices():
 
 
 def _save_devices():
-    DEVICES_FILE.write_text(json.dumps(_paired_devices, indent=2))
+    try:
+        DEVICES_FILE.write_text(json.dumps(_paired_devices, indent=2))
+    except OSError as e:
+        # Most commonly the exe is sitting in a folder this user account
+        # can't write to (Program Files, a read-only network share, etc.)
+        # -- surface that plainly instead of letting it bubble up as an
+        # opaque 500 with no clue what actually went wrong.
+        raise RuntimeError(
+            f"Could not write {DEVICES_FILE} -- move the app to a folder "
+            f"this account can write to (e.g. Desktop or Documents), not "
+            f"Program Files or a read-only network location. ({e})"
+        ) from e
 
 
 # Columns for both the persistent per-app master workbook and the
@@ -306,7 +317,10 @@ async def pair(request: Request):
                 "appName": app_name,
                 "pairedAt": datetime.now().isoformat(),
             }
-        _save_devices()
+        try:
+            _save_devices()
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
         _pairing_results[token] = {"deviceId": device_id, "deviceName": device_name, "appName": app_name}
 
     print(f"[paired] New device paired: {device_name} / {app_name} ({device_id})")
@@ -462,7 +476,10 @@ async def api_remove_device(device_id: str, _: None = Depends(_require_local)):
     with _lock:
         if device_id in _paired_devices:
             del _paired_devices[device_id]
-            _save_devices()
+            try:
+                _save_devices()
+            except RuntimeError as e:
+                raise HTTPException(status_code=500, detail=str(e))
     return {"status": "ok"}
 
 
