@@ -1726,6 +1726,12 @@ let pinnedDay = null;
 // single-user dashboard.
 let hiddenChartSections = new Set(JSON.parse(localStorage.getItem('hiddenChartSections') || '[]'));
 
+// The four sections shown by default. Everything else (By VIN, By Day, By
+// Month, ...) is folded away behind "Show All Charts" until asked for --
+// also remembered across restarts.
+const CORE_CHART_TITLES = new Set(['Overall (current filters)', 'Overall Result by Shift', 'VIN Result (Pass/Fail)', 'VIN Result by Shift']);
+let extrasVisible = localStorage.getItem('chartExtrasVisible') === '1';
+
 function hideChartSection(title) {
   hiddenChartSections.add(title);
   localStorage.setItem('hiddenChartSections', JSON.stringify([...hiddenChartSections]));
@@ -1735,6 +1741,14 @@ function hideChartSection(title) {
 function showAllChartSections() {
   hiddenChartSections.clear();
   localStorage.setItem('hiddenChartSections', '[]');
+  extrasVisible = true;
+  localStorage.setItem('chartExtrasVisible', '1');
+  renderTable();
+}
+
+function hideExtraChartSections() {
+  extrasVisible = false;
+  localStorage.setItem('chartExtrasVisible', '0');
   renderTable();
 }
 
@@ -1824,13 +1838,23 @@ function renderCharts(filtered) {
     sections.push({ title: 'By Month', note: `${monthKeys.length} months in view -- pick a Year filter to see month-wise pies.` });
   }
 
-  const visible = sections.filter(s => !hiddenChartSections.has(s.title));
-  const hidden = sections.filter(s => hiddenChartSections.has(s.title));
+  // Only the four core sections are "in play" by default -- By VIN/Day/
+  // Month etc. are folded away until "Show All Charts" is clicked.
+  const inPlay = extrasVisible ? sections : sections.filter(s => CORE_CHART_TITLES.has(s.title));
+  const foldedCount = extrasVisible ? 0 : sections.length - inPlay.length;
+  const visible = inPlay.filter(s => !hiddenChartSections.has(s.title));
+  const hidden = inPlay.filter(s => hiddenChartSections.has(s.title));
 
   let html = '';
   if (hidden.length) {
     html += `<div class="chart-hidden-bar">Hidden: ${hidden.map(s => s.title).join(', ')}
       <button class="ghost" onclick="showAllChartSections()">Show All</button></div>`;
+  }
+  if (!extrasVisible && foldedCount > 0) {
+    html += `<div class="chart-hidden-bar">${foldedCount} more chart${foldedCount === 1 ? '' : 's'} available (By VIN, By Day, By Month...)
+      <button class="ghost" onclick="showAllChartSections()">Show All Charts</button></div>`;
+  } else if (extrasVisible) {
+    html += `<div class="chart-hidden-bar"><button class="ghost" onclick="hideExtraChartSections()">Show Fewer</button></div>`;
   }
   if (pinnedDay) {
     html += `<div class="chart-hidden-bar">Pinned to day: <b>${pinnedDay}</b>
