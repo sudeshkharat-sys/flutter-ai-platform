@@ -416,6 +416,13 @@ class _QrScanScreen extends StatefulWidget {
 
 class _QrScanScreenState extends State<_QrScanScreen> {
   bool _handled = false;
+  // Explicit controller (instead of letting MobileScanner create its own
+  // default one) so we can await its camera being fully released before
+  // handing control back to the VIN scan screen. Without this, the camera
+  // session here can still be tearing down when ScanScreen's own controller
+  // tries to restart, and the two fight over the hardware -- VIN scanning
+  // then stays dead until the app is force-closed and reopened.
+  final MobileScannerController _controller = MobileScannerController();
 
   void _onDetect(BarcodeCapture capture) async {
     if (_handled) return;
@@ -426,38 +433,51 @@ class _QrScanScreenState extends State<_QrScanScreen> {
     // can pop so fast (a QR decodes in a handful of milliseconds) that it's
     // unclear whether a scan actually happened or the screen just closed.
     await Future.delayed(const Duration(milliseconds: 550));
+    await _controller.stop();
     if (mounted) Navigator.of(context).pop(value);
   }
 
   @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: _crimson,
-        title: const Text('Scan PC Pairing QR', style: TextStyle(color: Colors.white, fontSize: 15)),
-        iconTheme: const IconThemeData(color: Colors.white),
-      ),
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          MobileScanner(onDetect: _onDetect),
-          if (_handled)
-            Container(
-              color: Colors.black87,
-              child: const Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.check_circle, color: Colors.greenAccent, size: 72),
-                    SizedBox(height: 14),
-                    Text('QR Code Detected',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                  ],
+    return WillPopScope(
+      onWillPop: () async {
+        await _controller.stop();
+        return true;
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: _crimson,
+          title: const Text('Scan PC Pairing QR', style: TextStyle(color: Colors.white, fontSize: 15)),
+          iconTheme: const IconThemeData(color: Colors.white),
+        ),
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            MobileScanner(controller: _controller, onDetect: _onDetect),
+            if (_handled)
+              Container(
+                color: Colors.black87,
+                child: const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.check_circle, color: Colors.greenAccent, size: 72),
+                      SizedBox(height: 14),
+                      Text('QR Code Detected',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }

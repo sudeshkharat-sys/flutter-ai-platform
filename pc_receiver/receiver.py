@@ -914,7 +914,7 @@ DASHBOARD_HTML = """<!doctype html>
       <thead>
         <tr>
           <th></th><th>VIN</th><th>Model Code</th><th>Model Name</th><th>Date</th><th>Time</th>
-          <th>Shift</th><th>Tasks</th><th>Batch</th>
+          <th>Shift</th><th>Tasks</th><th>Result</th><th>Batch</th>
         </tr>
       </thead>
       <tbody id="viewerRows"></tbody>
@@ -1285,7 +1285,7 @@ function renderTable() {
 
   const tbody = document.getElementById('viewerRows');
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:24px;">No rows match these filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:24px;">No rows match these filters.</td></tr>';
     return;
   }
 
@@ -1297,6 +1297,9 @@ function renderTable() {
     const taskSummary = g.tasks.length === 1
       ? `<span class="${okCount ? 'task-count-ok' : 'task-count-fail'}">${g.tasks[0].result}</span>`
       : `<span class="task-count-ok">${okCount} OK</span>${failCount ? ` / <span class="task-count-fail">${failCount} NOT OK</span>` : ''} (${g.tasks.length} tasks)`;
+    // A VIN passes only if every one of its tasks is OK -- any single NOT
+    // OK task (or more) fails the whole VIN.
+    const vinResult = failCount === 0 ? 'PASS' : 'FAIL';
 
     const detailRows = g.tasks.map(t => `
       <tr>
@@ -1317,10 +1320,11 @@ function renderTable() {
         <td>${g.time || ''}</td>
         <td>${g.shift || ''}</td>
         <td>${taskSummary}</td>
+        <td class="${vinResult === 'PASS' ? 'badge-ok' : 'badge-fail'}">${vinResult}</td>
         <td>${g.batch || ''}</td>
       </tr>
       <tr class="detail-row ${expanded ? 'open' : ''}">
-        <td colspan="9">
+        <td colspan="10">
           <table class="mini-table">
             <thead><tr><th>Task</th><th>Detected</th><th>Result</th><th>Image</th></tr></thead>
             <tbody>${detailRows}</tbody>
@@ -1376,12 +1380,16 @@ function escapeAttr(s) {
 
 // section/value make the card clickable -- clicking it applies the
 // matching filter (e.g. click the "Shift A" pie to filter the table to
-// Shift A). Omit them for a non-clickable card like Overall.
-function chartCard(label, ok, fail, section, value) {
+// Shift A). Omit them for a non-clickable card like Overall. okLabel/failLabel
+// let a card describe something other than task OK/NOT OK counts (e.g. VIN
+// Pass/Fail) while reusing the same green/red pie rendering.
+function chartCard(label, ok, fail, section, value, okLabel, failLabel) {
+  okLabel = okLabel || 'OK';
+  failLabel = failLabel || 'NOT OK';
   const attrs = section ? ` data-section="${section}" data-value="${escapeAttr(value)}" class="chart-card clickable-chart" title="Click to filter to ${escapeAttr(label)}"` : ' class="chart-card"';
   return `<div${attrs}>${pieSvg(ok, fail)}
     <div class="chart-label" title="${label}">${label}</div>
-    <div class="chart-meta">${ok} OK / ${fail} NOT OK</div>
+    <div class="chart-meta">${ok} ${okLabel} / ${fail} ${failLabel}</div>
   </div>`;
 }
 
@@ -1442,6 +1450,20 @@ function renderCharts(filtered) {
 
   const sections = [];
   sections.push({ title: 'Overall (current filters)', cards: [chartCard('All Results', overallOk, overallFail)] });
+
+  // VIN Result (Pass/Fail): one Pass/Fail per VIN *scan* (inspection), not
+  // deduplicated by VIN string -- the same VIN scanned multiple times counts
+  // once per scan. A scan passes only if every one of its tasks is OK.
+  const inspectionGroups = groupRowsByInspection(filtered);
+  let vinPass = 0, vinFail = 0;
+  inspectionGroups.forEach(g => {
+    const hasFail = g.tasks.some(t => t.result !== 'OK');
+    if (hasFail) vinFail++; else vinPass++;
+  });
+  sections.push({
+    title: 'VIN Result (Pass/Fail)',
+    cards: [chartCard('All VIN Scans', vinPass, vinFail, null, null, 'Pass', 'Fail')],
+  });
 
   const byShift = bucketize(filtered, r => r.shift);
   const shiftKeys = Object.keys(byShift).sort();

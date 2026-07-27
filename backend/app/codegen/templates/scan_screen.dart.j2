@@ -2,14 +2,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'home_screen.dart';
 import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
 import '../services/sync_service.dart';
-
-const _kTorchAlwaysOnKey = 'scan_torch_always_on';
 
 class ScanScreen extends StatefulWidget {
   final String modelCode;
@@ -29,13 +26,14 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   // Whether the user wants the flash to stay on -- once turned on it stays
   // on across scans/mode switches (each of which briefly stops+starts the
   // camera), instead of silently resetting off like a single-shot toggle.
-  // This is session-only; _torchAlwaysOn below is what survives an app
-  // restart.
   bool _torchWanted = false;
 
-  // Persisted (SharedPreferences) "always on" mode, set via double-tap on
-  // the flash button -- unlike a single tap, this stays on even after the
-  // app is fully closed and reopened.
+  // "Always on" mode, set via double-tap on the flash button. Unlike a
+  // single tap it survives scans, mode switches and a trip through another
+  // screen (e.g. Sync), staying on until the user explicitly turns it off
+  // (single tap, or double tap again) or leaves the app -- it is
+  // deliberately session-only (not persisted to disk), so it does NOT come
+  // back on its own the next time the app is opened.
   bool _torchAlwaysOn = false;
 
   final MobileScannerController _scannerController = MobileScannerController(
@@ -49,21 +47,6 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _loadScanData();
     _refreshUnsyncedBadge();
-    // The camera is started by the MobileScanner widget itself once it
-    // mounts; wait a frame so toggling the torch here doesn't race that.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadTorchAlwaysOnPref());
-  }
-
-  Future<void> _loadTorchAlwaysOnPref() async {
-    final prefs = await SharedPreferences.getInstance();
-    final persisted = prefs.getBool(_kTorchAlwaysOnKey) ?? false;
-    if (!persisted || !mounted) return;
-    _torchAlwaysOn = true;
-    _torchWanted = true;
-    if (_scannerController.torchState.value != TorchState.on) {
-      await _scannerController.toggleTorch();
-    }
-    if (mounted) setState(() {});
   }
 
   Future<void> _refreshUnsyncedBadge() async {
@@ -73,25 +56,22 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
   /// Single tap: plain on/off for this session only. Turning it off this
   /// way also cancels "always on" mode if it was active -- an explicit
-  /// tap-to-turn-off should stick, not silently re-enable next launch.
+  /// tap-to-turn-off should stick.
   Future<void> _toggleTorch() async {
     await _scannerController.toggleTorch();
     final isOn = _scannerController.torchState.value == TorchState.on;
     _torchWanted = isOn;
     if (!isOn && _torchAlwaysOn) {
       _torchAlwaysOn = false;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kTorchAlwaysOnKey, false);
     }
     if (mounted) setState(() {});
   }
 
-  /// Double tap: toggles persisted "always on" mode -- stays on across app
-  /// restarts until explicitly turned off (single tap, or double tap again).
+  /// Double tap: toggles "always on" mode -- stays on until explicitly
+  /// turned off (single tap, or double tap again) or the app is exited.
   Future<void> _toggleTorchAlwaysOn() async {
-    final prefs = await SharedPreferences.getInstance();
     _torchAlwaysOn = !_torchAlwaysOn;
-    await prefs.setBool(_kTorchAlwaysOnKey, _torchAlwaysOn);
+    _torchWanted = _torchAlwaysOn;
 
     final isOn = _scannerController.torchState.value == TorchState.on;
     if (_torchAlwaysOn && !isOn) {
@@ -99,8 +79,22 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     } else if (!_torchAlwaysOn && isOn) {
       await _scannerController.toggleTorch();
     }
-    _torchWanted = _torchAlwaysOn;
     if (mounted) setState(() {});
+  }
+
+  /// Re-applies torch-on after a (re)start of the camera session if the user
+  /// wants it on. A fresh camera session always starts with the torch
+  /// physically off, but the controller's torchState listenable can briefly
+  /// keep reporting the pre-restart value -- checking it immediately after
+  /// start() can therefore wrongly conclude the torch is "already on" and
+  /// skip re-enabling it, leaving the light off while the UI still thinks
+  /// "always on" is active. The short delay lets that state settle first.
+  Future<void> _reapplyTorchIfWanted() async {
+    if (!_torchWanted) return;
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (mounted && _torchWanted && _scannerController.torchState.value != TorchState.on) {
+      await _scannerController.toggleTorch();
+    }
   }
 
   /// Stops and restarts the camera session (used whenever we need to reset
@@ -110,9 +104,7 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   Future<void> _restartScanner() async {
     await _scannerController.stop();
     await _scannerController.start();
-    if (_torchWanted && _scannerController.torchState.value != TorchState.on) {
-      await _scannerController.toggleTorch();
-    }
+    await _reapplyTorchIfWanted();
   }
 
   Future<void> _loadScanData() async {
@@ -142,13 +134,16 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       setState(() => _pendingBarcode = null);
-      _scannerController.start().then((_) {
-        if (_torchWanted && _scannerController.torchState.value != TorchState.on) {
-          _scannerController.toggleTorch();
-        }
-      });
+      _scannerController.start().then((_) => _reapplyTorchIfWanted());
     } else if (state == AppLifecycleState.inactive) {
       _scannerController.stop();
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      // The user has actually left the app (home button, app switcher, task
+      // kill) rather than a brief interruption -- "always on" torch should
+      // not silently resume the next time the app is opened, so cancel it
+      // here rather than leaving it to reassert itself on resume.
+      _torchAlwaysOn = false;
+      _torchWanted = false;
     }
   }
 
