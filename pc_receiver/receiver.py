@@ -1454,12 +1454,6 @@ function renderCharts(filtered) {
   const sections = [];
   sections.push({ title: 'Overall (current filters)', cards: [chartCard('All Results', overallOk, overallFail)] });
 
-  const byShift = bucketize(filtered, r => r.shift);
-  const shiftKeys = Object.keys(byShift).sort();
-  if (shiftKeys.length) {
-    sections.push({ title: 'By Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
-  }
-
   // VIN Result (Pass/Fail): one Pass/Fail per VIN *scan* (inspection), not
   // deduplicated by VIN string -- the same VIN scanned multiple times counts
   // once per scan. A scan passes only if every one of its tasks is OK.
@@ -1473,6 +1467,12 @@ function renderCharts(filtered) {
     title: 'VIN Result (Pass/Fail)',
     cards: [chartCard('All VIN Scans', vinPass, vinFail, null, null, 'Pass', 'Fail')],
   });
+
+  const byShift = bucketize(filtered, r => r.shift);
+  const shiftKeys = Object.keys(byShift).sort();
+  if (shiftKeys.length) {
+    sections.push({ title: 'By Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
+  }
 
   const byVin = bucketize(filtered, r => r.vin);
   const vinKeys = Object.keys(byVin);
