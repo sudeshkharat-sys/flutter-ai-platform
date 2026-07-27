@@ -253,7 +253,16 @@ class SyncService {
             sentCount: bundle.inspectionIds.length);
       }
       if (resp.statusCode == 401) {
-        return const SyncResult(false, 'Rejected: this phone is not paired with that PC.');
+        // The PC returns 401 for three different reasons (unknown device,
+        // expired/clock-skewed signature, bad signature) -- show its actual
+        // detail instead of one generic phrase, since "not paired" and
+        // "your clock is wrong" need completely different fixes.
+        String reason = 'not paired with that PC';
+        try {
+          final body = jsonDecode(resp.body) as Map<String, dynamic>;
+          if (body['detail'] != null) reason = body['detail'].toString();
+        } catch (_) {}
+        return SyncResult(false, 'Rejected by PC: $reason');
       }
       return SyncResult(false, 'PC rejected the upload (${resp.statusCode}).');
     } on TimeoutException {
