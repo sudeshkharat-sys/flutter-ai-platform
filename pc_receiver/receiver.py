@@ -721,11 +721,11 @@ DASHBOARD_HTML = """<!doctype html>
 
   /* Pie chart panel */
   .charts-panel { padding: 4px 24px 4px; max-height: 280px; overflow-y: auto; flex-shrink: 0; border-bottom: 1px solid var(--border); }
-  /* Sections (Overall, By Shift, By VIN...) flow left-to-right and only
-     wrap to the next line when they actually run out of horizontal room,
-     instead of each one claiming a full-width row regardless of how few
-     cards it holds. */
-  .charts-flow { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 22px; }
+  /* Sections (Overall, By Shift, By VIN...) flow left-to-right, centered as
+     a group, and only wrap to the next line when they actually run out of
+     horizontal room, instead of each one claiming a full-width row
+     regardless of how few cards it holds or being pinned to the left edge. */
+  .charts-flow { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: center; gap: 22px; }
   .chart-row { margin-bottom: 10px; }
   .chart-row-title { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; display: flex; align-items: center; gap: 6px; }
   .chart-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1; }
@@ -878,6 +878,7 @@ DASHBOARD_HTML = """<!doctype html>
     <datalist id="dlModel"></datalist>
     <input id="fModelName" list="dlModelName" placeholder="Filter Model Name…" oninput="renderTable()">
     <datalist id="dlModelName"></datalist>
+    <input id="fDate" type="date" title="Filter Date" onchange="renderTable()">
     <select id="fYear" onchange="renderTable()">
       <option value="">All Years</option>
     </select>
@@ -1217,7 +1218,7 @@ function populateFilterSuggestions() {
 
 function clearFilters() {
   ['fVin', 'fModel', 'fModelName', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
-  ['fYear', 'fMonth', 'fShift', 'fResult'].forEach(id => document.getElementById(id).value = '');
+  ['fDate', 'fYear', 'fMonth', 'fShift', 'fResult'].forEach(id => document.getElementById(id).value = '');
   pinnedDay = null;
   renderTable();
 }
@@ -1226,6 +1227,7 @@ function getFilteredRows() {
   const vin = document.getElementById('fVin').value.toLowerCase();
   const model = document.getElementById('fModel').value.toLowerCase();
   const modelName = document.getElementById('fModelName').value.toLowerCase();
+  const date = document.getElementById('fDate').value;
   const year = document.getElementById('fYear').value;
   const month = document.getElementById('fMonth').value;
   const shift = document.getElementById('fShift').value;
@@ -1240,6 +1242,7 @@ function getFilteredRows() {
     return (!vin || (row.vin || '').toLowerCase().includes(vin)) &&
       (!model || (row.modelCode || '').toLowerCase().includes(model)) &&
       (!modelName || (row.modelName || '').toLowerCase().includes(modelName)) &&
+      (!date || row.date === date) &&
       (!year || rowYear === year) &&
       (!month || rowMonth === month) &&
       (!pinnedDay || (row.shiftDate || row.date) === pinnedDay) &&
@@ -1451,6 +1454,12 @@ function renderCharts(filtered) {
   const sections = [];
   sections.push({ title: 'Overall (current filters)', cards: [chartCard('All Results', overallOk, overallFail)] });
 
+  const byShift = bucketize(filtered, r => r.shift);
+  const shiftKeys = Object.keys(byShift).sort();
+  if (shiftKeys.length) {
+    sections.push({ title: 'By Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
+  }
+
   // VIN Result (Pass/Fail): one Pass/Fail per VIN *scan* (inspection), not
   // deduplicated by VIN string -- the same VIN scanned multiple times counts
   // once per scan. A scan passes only if every one of its tasks is OK.
@@ -1464,12 +1473,6 @@ function renderCharts(filtered) {
     title: 'VIN Result (Pass/Fail)',
     cards: [chartCard('All VIN Scans', vinPass, vinFail, null, null, 'Pass', 'Fail')],
   });
-
-  const byShift = bucketize(filtered, r => r.shift);
-  const shiftKeys = Object.keys(byShift).sort();
-  if (shiftKeys.length) {
-    sections.push({ title: 'By Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
-  }
 
   const byVin = bucketize(filtered, r => r.vin);
   const vinKeys = Object.keys(byVin);
