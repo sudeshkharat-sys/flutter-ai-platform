@@ -1706,6 +1706,26 @@ function renderCharts(filtered) {
     sections.push({ title: 'By Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
   }
 
+  // VIN Result by Shift: the same VIN Pass/Fail-per-scan count as above,
+  // but broken out per shift -- how many VINs passed/failed within Shift
+  // A vs. B vs. C, not just the combined total.
+  const vinResultByShift = {};
+  inspectionGroups.forEach(g => {
+    const shiftKey = g.shift || 'Unknown';
+    if (!vinResultByShift[shiftKey]) vinResultByShift[shiftKey] = { pass: 0, fail: 0 };
+    const hasFail = g.tasks.some(t => t.result !== 'OK');
+    if (hasFail) vinResultByShift[shiftKey].fail++; else vinResultByShift[shiftKey].pass++;
+  });
+  const vinShiftKeys = Object.keys(vinResultByShift).sort();
+  if (vinShiftKeys.length) {
+    sections.push({
+      title: 'VIN Result by Shift',
+      cards: vinShiftKeys.map(k => chartCard(
+        'Shift ' + k, vinResultByShift[k].pass, vinResultByShift[k].fail, 'shift', k, 'Pass', 'Fail',
+      )),
+    });
+  }
+
   const byVin = bucketize(filtered, r => r.vin);
   const vinKeys = Object.keys(byVin);
   if (vinKeys.length === 1) {
