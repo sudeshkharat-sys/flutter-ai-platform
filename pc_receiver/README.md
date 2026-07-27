@@ -89,23 +89,40 @@ Notes:
 ## Storing received data on a different drive (e.g. a large network/SAN volume)
 
 The exe itself should still run from an ordinary local, writable folder --
-that's where the small `paired_devices.json` pairing state always lives.
-But the received inspection data (photos, zips, per-app `data.xlsx`) can be
-much bigger, so its location is separately overridable via
-`PCRECEIVER_DATA_DIR`:
+that's where `paired_devices.json` and `config.json` always live. But the
+received inspection data (photos, zips, per-app `data.xlsx`) can be much
+bigger, so where it's stored is a separate, changeable setting -- pick it
+right from the dashboard, no need to touch a command line or reinstall
+anything, which matters since the same exe gets dropped on different
+PCs/servers:
+
+1. Open the dashboard → **⚙ Settings** (top right).
+2. Type the folder path (local, e.g. `C:\PCReceiverData`, or a network/SAN
+   drive, e.g. `S:\PCReceiverData`) into **Change to** and click **Save & Use
+   This Folder**.
+3. The app tries writing a real test file to that folder before accepting
+   it -- if it isn't writable, it tells you why right there instead of
+   failing later mid-pairing. If accepted, it's remembered (in `config.json`
+   next to the exe) and used from then on, including after a restart.
+
+If the current folder ever stops being writable (e.g. a network drive got
+disconnected, or permissions changed), a banner appears at the top of the
+dashboard telling you to fix it from Settings -- the rest of the dashboard
+stays usable in the meantime.
+
+For scripted/first-run setups, `PCRECEIVER_DATA_DIR` still works as the
+initial default (used only if nothing has been saved from Settings yet):
 
 ```powershell
 set PCRECEIVER_DATA_DIR=S:\PCReceiverData
 PCReceiver.exe
 ```
 
-Requirements:
-- The folder (create it first, or let the app create it) must be writable
-  by whatever Windows account runs the exe -- if it's on a shared/SAN drive,
-  that usually means asking whoever administers that drive to grant this
-  account **Modify** permission on that specific folder (not necessarily the
-  whole drive). If it isn't writable, the app prints a clear error and exits
-  on startup rather than failing later mid-pairing.
+Either way:
+- The folder must be writable by whatever Windows account runs the exe --
+  if it's on a shared/SAN drive, that usually means asking whoever
+  administers that drive to grant this account **Modify** permission on
+  that specific folder (not necessarily the whole drive).
 - Don't point this at a drive/folder reserved for something else (e.g. a
   database's own data volume) without checking with whoever manages it --
   unrelated app data mixed in there can complicate that system's backups,

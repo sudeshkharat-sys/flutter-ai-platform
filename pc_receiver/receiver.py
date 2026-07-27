@@ -56,24 +56,69 @@ from assets import FAVICON_PNG_BASE64, LOGO_PNG_BASE64
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 
-# Where received inspection data (photos, zips, per-app data.xlsx) is stored.
-# Defaults to a folder next to the exe, but is overridable -- e.g. to point
-# it at a large network/SAN volume for long-term storage -- via
-# PCRECEIVER_DATA_DIR, independent of where the exe itself lives. The exe
-# should still run from a local, normally-writable folder (paired_devices.json
-# always stays next to it); only the -- much bigger -- received data needs to
-# live elsewhere.
-DATA_DIR = Path(os.environ.get("PCRECEIVER_DATA_DIR") or (APP_DIR / "received_data"))
+# config.json and paired_devices.json always live next to the exe -- that
+# folder is expected to be an ordinary local, writable location (the app
+# will have already refused to run at all if it isn't, since these are
+# required). Where received inspection data (photos, zips, per-app
+# data.xlsx) is stored is a separate, changeable choice: picked once from
+# the dashboard's Settings panel (persisted here), an environment variable
+# (PCRECEIVER_DATA_DIR, for scripted/first-run setups), or defaulting to a
+# folder next to the exe -- in that priority order. This lets the same exe
+# be dropped on any PC/server and pointed at wherever that machine's
+# operator wants the (potentially large) received data to actually live,
+# e.g. a network/SAN volume, without editing any config file by hand.
+CONFIG_FILE = APP_DIR / "config.json"
 DEVICES_FILE = APP_DIR / "paired_devices.json"
-try:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-except OSError as e:
+
+
+def _load_config() -> dict:
+    if CONFIG_FILE.exists():
+        try:
+            return json.loads(CONFIG_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_config(cfg: dict):
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+
+
+def _ensure_writable_dir(path: Path) -> str | None:
+    """Creates `path` if needed and proves it's actually writable by writing
+    and removing a small probe file. Returns None on success, or an error
+    message on failure -- never raises, so callers can show it in the UI."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".pcreceiver_write_test"
+        probe.write_text("ok")
+        probe.unlink()
+        return None
+    except OSError as e:
+        return str(e)
+
+
+_config = _load_config()
+DATA_DIR = Path(
+    _config.get("dataDir")
+    or os.environ.get("PCRECEIVER_DATA_DIR")
+    or (APP_DIR / "received_data")
+)
+_data_dir_error = _ensure_writable_dir(DATA_DIR)
+if _data_dir_error:
+    # Deliberately non-fatal: the dashboard (which only needs APP_DIR to be
+    # writable, checked separately below) stays usable so the folder can be
+    # fixed from Settings instead of only from a command line.
+    print(f"[warn] Storage folder {DATA_DIR} is not writable: {_data_dir_error}")
+    print("       Open the dashboard and use Settings to choose a writable folder.")
+
+_app_dir_error = _ensure_writable_dir(APP_DIR)
+if _app_dir_error:
     sys.exit(
-        f"Could not create/write the data folder {DATA_DIR}\n"
-        f"({e})\n"
-        f"If this is PCRECEIVER_DATA_DIR pointing at a network/shared drive, "
-        f"confirm this Windows account has write (Modify) permission on that "
-        f"exact folder, then try again."
+        f"Could not write to {APP_DIR} ({_app_dir_error})\n"
+        f"This app needs to run from a folder this Windows account can write "
+        f"to (e.g. Desktop, Documents, or a plain local folder) -- not "
+        f"Program Files or a read-only network location."
     )
 
 
@@ -446,6 +491,31 @@ async def upload(
 @app.get("/api/status")
 async def api_status(_: None = Depends(_require_local)):
     return {"pcName": PC_NAME, "ip": _local_ip(), "port": PORT, "serverTimeMs": int(time.time() * 1000)}
+
+
+@app.get("/api/settings")
+async def api_get_settings(_: None = Depends(_require_local)):
+    error = _ensure_writable_dir(DATA_DIR)
+    return {"dataDir": str(DATA_DIR), "writable": error is None, "error": error}
+
+
+@app.post("/api/settings/data-dir")
+async def api_set_data_dir(request: Request, _: None = Depends(_require_local)):
+    global DATA_DIR, _config
+    body = await request.json()
+    raw_path = (body.get("path") or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="Folder path is required")
+
+    new_path = Path(raw_path)
+    error = _ensure_writable_dir(new_path)
+    if error:
+        raise HTTPException(status_code=400, detail=f"That folder isn't writable: {error}")
+
+    DATA_DIR = new_path
+    _config["dataDir"] = str(new_path)
+    _save_config(_config)
+    return {"status": "ok", "dataDir": str(DATA_DIR)}
 
 
 @app.get("/api/events")
@@ -842,7 +912,23 @@ DASHBOARD_HTML = """<!doctype html>
   .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--crimson); border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .modal .success { color: var(--green); font-weight: 700; margin-top: 14px; }
-  .modal .close-btn { margin-top: 16px; }
+  .modal .close-btn { margin-top: 16px; display: flex; gap: 8px; justify-content: center; }
+
+  .settings-modal { width: 420px; text-align: left; }
+  .settings-modal p { text-align: left; }
+  .settings-current { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; }
+  .settings-current-label { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+  .settings-current-path { font-size: 13px; font-weight: 600; margin-top: 3px; word-break: break-all; }
+  .settings-current-status { font-size: 12px; margin-top: 4px; font-weight: 600; }
+  .settings-current-status.ok { color: var(--green); }
+  .settings-current-status.bad { color: var(--crimson); }
+  .settings-field-label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  #settingsPathInput { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .settings-msg { font-size: 12px; margin-top: 10px; min-height: 16px; }
+  .settings-msg.ok { color: var(--green); font-weight: 600; }
+  .settings-msg.bad { color: var(--crimson); font-weight: 600; }
+  .settings-banner { background: #fff4e5; border-bottom: 1px solid #f0c987; color: #8a5a00; font-size: 13px; font-weight: 600; padding: 10px 24px; cursor: pointer; text-align: center; }
+  .settings-banner:hover { background: #ffe9c7; }
 
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--navy); color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 12px; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 60; }
   .toast.show { opacity: 1; }
@@ -857,7 +943,12 @@ DASHBOARD_HTML = """<!doctype html>
     <p>Receives inspection data from paired phones on this WiFi/hotspot</p>
   </div>
   <div class="live-indicator" id="liveIndicator"><span class="dot"></span>Receiving…</div>
+  <button class="ghost" style="border-color:#3a4152;color:#c9ccd4;margin-left:10px;" onclick="openSettingsModal()">⚙ Settings</button>
 </header>
+
+<div class="settings-banner" id="settingsBanner" style="display:none;" onclick="openSettingsModal()">
+  ⚠ Storage folder isn't writable -- data can't be saved. Click here to choose a different folder.
+</div>
 
 <nav>
   <button class="tab-btn active" data-tab="devices">Devices</button>
@@ -891,6 +982,25 @@ DASHBOARD_HTML = """<!doctype html>
     <div class="waiting" id="pairWaiting"><div class="spinner"></div> Waiting for phone to scan…</div>
     <div class="success" id="pairSuccess" style="display:none;"></div>
     <div class="close-btn"><button class="ghost" onclick="closePairModal()">Close</button></div>
+  </div>
+</div>
+
+<div class="overlay" id="settingsOverlay">
+  <div class="modal settings-modal">
+    <h3>Storage Folder</h3>
+    <p>Where received inspection data (photos, zips, per-app Excel files) is saved on this PC. Can be a local folder or a network/shared drive this account has write access to.</p>
+    <div class="settings-current">
+      <div class="settings-current-label">Current folder</div>
+      <div class="settings-current-path" id="settingsCurrentPath">Loading…</div>
+      <div class="settings-current-status" id="settingsCurrentStatus"></div>
+    </div>
+    <label class="settings-field-label" for="settingsPathInput">Change to</label>
+    <input id="settingsPathInput" type="text" placeholder="e.g. C:\PCReceiverData or S:\PCReceiverData">
+    <div class="settings-msg" id="settingsMsg"></div>
+    <div class="close-btn">
+      <button class="ghost" onclick="closeSettingsModal()">Close</button>
+      <button class="primary" onclick="saveDataDir()">Save &amp; Use This Folder</button>
+    </div>
   </div>
 </div>
 
@@ -1196,6 +1306,84 @@ function closePairModal() {
   document.getElementById('pairOverlay').classList.remove('open');
   clearInterval(pairPollTimer);
   currentToken = null;
+}
+
+// ── Settings (storage folder) ───────────────────────────────────────────
+
+async function checkStorageBanner() {
+  try {
+    const r = await fetch('/api/settings');
+    const d = await r.json();
+    document.getElementById('settingsBanner').style.display = d.writable ? 'none' : 'block';
+  } catch (e) { /* dashboard still usable even if this check fails */ }
+}
+
+async function openSettingsModal() {
+  document.getElementById('settingsOverlay').classList.add('open');
+  document.getElementById('settingsPathInput').value = '';
+  document.getElementById('settingsMsg').textContent = '';
+  document.getElementById('settingsMsg').className = 'settings-msg';
+  await refreshSettingsCurrent();
+}
+
+async function refreshSettingsCurrent() {
+  const pathEl = document.getElementById('settingsCurrentPath');
+  const statusEl = document.getElementById('settingsCurrentStatus');
+  pathEl.textContent = 'Loading…';
+  statusEl.textContent = '';
+  try {
+    const r = await fetch('/api/settings');
+    const d = await r.json();
+    pathEl.textContent = d.dataDir;
+    if (d.writable) {
+      statusEl.textContent = '✓ Writable -- data is being saved here';
+      statusEl.className = 'settings-current-status ok';
+    } else {
+      statusEl.textContent = '✕ Not writable: ' + (d.error || 'unknown error');
+      statusEl.className = 'settings-current-status bad';
+    }
+    document.getElementById('settingsBanner').style.display = d.writable ? 'none' : 'block';
+  } catch (e) {
+    pathEl.textContent = '(could not load)';
+  }
+}
+
+function closeSettingsModal() {
+  document.getElementById('settingsOverlay').classList.remove('open');
+}
+
+async function saveDataDir() {
+  const input = document.getElementById('settingsPathInput');
+  const msg = document.getElementById('settingsMsg');
+  const path = input.value.trim();
+  if (!path) {
+    msg.textContent = 'Enter a folder path first.';
+    msg.className = 'settings-msg bad';
+    return;
+  }
+  msg.textContent = 'Checking...';
+  msg.className = 'settings-msg';
+  try {
+    const r = await fetch('/api/settings/data-dir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      msg.textContent = d.detail || 'Could not use that folder.';
+      msg.className = 'settings-msg bad';
+      return;
+    }
+    msg.textContent = '✓ Saved -- now storing data here.';
+    msg.className = 'settings-msg ok';
+    input.value = '';
+    await refreshSettingsCurrent();
+    loadDevices();
+  } catch (e) {
+    msg.textContent = 'Could not reach the app.';
+    msg.className = 'settings-msg bad';
+  }
 }
 
 // ── Data viewer ──────────────────────────────────────────────────────────
@@ -1671,6 +1859,7 @@ function handleNewEvents(events) {
 }
 
 loadDevices();
+checkStorageBanner();
 setInterval(loadDevices, 15000);
 setInterval(pollEvents, 3000);
 </script>
