@@ -22,6 +22,7 @@ No installation needed when packaged with PyInstaller (see README.md) --
 just double-click the resulting .exe.
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -96,6 +97,25 @@ def _ensure_writable_dir(path: Path) -> str | None:
         return None
     except OSError as e:
         return str(e)
+
+
+def _pick_folder_dialog() -> str | None:
+    """Opens a native OS folder-picker on top of everything else. Runs on a
+    worker thread (see the /api/settings/browse route) so the blocking Tk
+    dialog doesn't stall the server while the user is choosing -- fine on
+    Windows, which (unlike macOS) doesn't require Tk to run on the main
+    thread. Returns None if the user cancels."""
+    import tkinter
+    from tkinter import filedialog
+
+    root = tkinter.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        chosen = filedialog.askdirectory(title="Choose folder to store received inspection data")
+    finally:
+        root.destroy()
+    return chosen or None
 
 
 _config = _load_config()
@@ -497,6 +517,22 @@ async def api_status(_: None = Depends(_require_local)):
 async def api_get_settings(_: None = Depends(_require_local)):
     error = _ensure_writable_dir(DATA_DIR)
     return {"dataDir": str(DATA_DIR), "writable": error is None, "error": error}
+
+
+@app.post("/api/settings/browse")
+async def api_browse_data_dir(_: None = Depends(_require_local)):
+    """Opens a native folder-picker on the PC itself (this only makes sense
+    called from a browser running on the same machine, which /api/* already
+    requires) and returns the chosen path, if any, for the dashboard to fill
+    into the folder field -- no manual typing/copy-pasting a path needed."""
+    try:
+        path = await asyncio.to_thread(_pick_folder_dialog)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not open a folder picker on this PC ({e}). Type the folder path in manually instead.",
+        )
+    return {"path": path}
 
 
 @app.post("/api/settings/data-dir")
@@ -923,7 +959,9 @@ DASHBOARD_HTML = """<!doctype html>
   .settings-current-status.ok { color: var(--green); }
   .settings-current-status.bad { color: var(--crimson); }
   .settings-field-label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
-  #settingsPathInput { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .settings-path-row { display: flex; gap: 8px; }
+  #settingsPathInput { flex: 1; min-width: 0; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  #settingsBrowseBtn { white-space: nowrap; }
   .settings-msg { font-size: 12px; margin-top: 10px; min-height: 16px; }
   .settings-msg.ok { color: var(--green); font-weight: 600; }
   .settings-msg.bad { color: var(--crimson); font-weight: 600; }
@@ -995,7 +1033,10 @@ DASHBOARD_HTML = """<!doctype html>
       <div class="settings-current-status" id="settingsCurrentStatus"></div>
     </div>
     <label class="settings-field-label" for="settingsPathInput">Change to</label>
-    <input id="settingsPathInput" type="text" placeholder="e.g. C:\PCReceiverData or S:\PCReceiverData">
+    <div class="settings-path-row">
+      <input id="settingsPathInput" type="text" placeholder="e.g. C:\PCReceiverData or S:\PCReceiverData">
+      <button class="ghost" onclick="browseForFolder()" id="settingsBrowseBtn">Browse…</button>
+    </div>
     <div class="settings-msg" id="settingsMsg"></div>
     <div class="close-btn">
       <button class="ghost" onclick="closeSettingsModal()">Close</button>
@@ -1345,6 +1386,34 @@ async function refreshSettingsCurrent() {
     document.getElementById('settingsBanner').style.display = d.writable ? 'none' : 'block';
   } catch (e) {
     pathEl.textContent = '(could not load)';
+  }
+}
+
+async function browseForFolder() {
+  const btn = document.getElementById('settingsBrowseBtn');
+  const msg = document.getElementById('settingsMsg');
+  btn.disabled = true;
+  btn.textContent = 'Waiting…';
+  msg.textContent = 'A folder picker window opened -- check behind the browser if you don\'t see it.';
+  msg.className = 'settings-msg';
+  try {
+    const r = await fetch('/api/settings/browse', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) {
+      msg.textContent = d.detail || 'Could not open the folder picker.';
+      msg.className = 'settings-msg bad';
+    } else if (d.path) {
+      document.getElementById('settingsPathInput').value = d.path;
+      msg.textContent = 'Folder selected -- click Save & Use This Folder to confirm.';
+    } else {
+      msg.textContent = '';
+    }
+  } catch (e) {
+    msg.textContent = 'Could not reach the app.';
+    msg.className = 'settings-msg bad';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Browse…';
   }
 }
 
