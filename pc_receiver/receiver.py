@@ -1394,7 +1394,7 @@ async function browseForFolder() {
   const msg = document.getElementById('settingsMsg');
   btn.disabled = true;
   btn.textContent = 'Waiting…';
-  msg.textContent = 'A folder picker window opened -- check behind the browser if you don\'t see it.';
+  msg.textContent = 'A folder picker window opened -- check behind the browser if not visible.';
   msg.className = 'settings-msg';
   try {
     const r = await fetch('/api/settings/browse', { method: 'POST' });
