@@ -14,14 +14,14 @@ if (-not (Test-Path $exePath)) {
 }
 
 $desktop = [Environment]::GetFolderPath("Desktop")
-$shortcutPath = Join-Path $desktop "Digital Eye - Storage Bank.lnk"
+$shortcutPath = Join-Path $desktop "Mahindra Digital Eye Vault.lnk"
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $exePath
 $shortcut.WorkingDirectory = $PSScriptRoot
 $shortcut.IconLocation = $exePath  # pulls the icon baked into the exe
-$shortcut.Description = "Mahindra Digital Eye - Storage Bank (PC Receiver)"
+$shortcut.Description = "Mahindra Digital Eye Vault (PC Receiver)"
 $shortcut.Save()
 
 Write-Host "Desktop shortcut created: $shortcutPath" -ForegroundColor Green

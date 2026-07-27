@@ -1,12 +1,12 @@
 """
-PC Receiver -- "Mahindra Digital Eye — Storage Bank"
+PC Receiver -- "Mahindra Digital Eye Vault"
 
 Companion app for the "Send to PC" feature in generated Flutter AI Studio
 apps. Run this on the PC. It:
 
   1. Serves a local web dashboard (opened automatically in your browser) for
      pairing new phones (QR code) and browsing received data -- the
-     "Storage Bank" -- per phone and per app.
+     "Vault" -- per phone and per app.
   2. Advertises itself on the local WiFi/hotspot via mDNS so phones can find
      it by name instead of typing an IP.
   3. Accepts uploads only from phones that completed the QR pairing
@@ -641,7 +641,7 @@ DASHBOARD_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mahindra Digital Eye — Storage Bank</title>
+<title>Mahindra Digital Eye Vault</title>
 <link rel="icon" type="image/png" href="data:image/png;base64,__FAVICON_B64__">
 <style>
   :root {
@@ -817,9 +817,9 @@ DASHBOARD_HTML = """<!doctype html>
 <body>
 
 <header>
-  <img src="data:image/png;base64,__LOGO_B64__" alt="Mahindra Digital Eye">
+  <img src="data:image/png;base64,__LOGO_B64__" alt="Mahindra Digital Eye Vault">
   <div class="titles">
-    <h1>DIGITAL EYE — STORAGE BANK</h1>
+    <h1>MAHINDRA DIGITAL EYE VAULT</h1>
     <p>Receives inspection data from paired phones on this WiFi/hotspot</p>
   </div>
   <div class="live-indicator" id="liveIndicator"><span class="dot"></span>Receiving…</div>
@@ -827,7 +827,7 @@ DASHBOARD_HTML = """<!doctype html>
 
 <nav>
   <button class="tab-btn active" data-tab="devices">Devices</button>
-  <button class="tab-btn" data-tab="storage">Storage Bank</button>
+  <button class="tab-btn" data-tab="storage">Vault</button>
 </nav>
 
 <main>
@@ -842,7 +842,7 @@ DASHBOARD_HTML = """<!doctype html>
 
   <section id="tab-storage" class="tab">
     <div class="toolbar">
-      <h2>Storage Bank</h2>
+      <h2>Vault</h2>
       <button class="ghost" onclick="loadStorage()">Refresh</button>
     </div>
     <div id="storageList"><div class="empty">Loading…</div></div>
@@ -1641,7 +1641,7 @@ def main():
 
     ip = _local_ip()
     url = f"http://127.0.0.1:{PORT}"
-    print("\nMahindra Digital Eye — Storage Bank")
+    print("\nMahindra Digital Eye Vault")
     print(f"Dashboard (this PC only): {url}")
     print(f"Phones on this WiFi/hotspot send to: {ip}:{PORT}")
     print("Leave this window open while receiving data. Press Ctrl+C to quit.\n")

@@ -1,4 +1,4 @@
-# PC Receiver — "Mahindra Digital Eye — Storage Bank"
+# PC Receiver — "Mahindra Digital Eye Vault"
 
 Companion app for the "Send to PC" feature in Flutter AI Studio-generated
 apps. Runs on the PC, opens a local web dashboard for pairing phones and
@@ -18,7 +18,7 @@ python receiver.py
 It prints something like:
 
 ```
-Mahindra Digital Eye — Storage Bank
+Mahindra Digital Eye Vault
 Dashboard (this PC only): http://127.0.0.1:8765
 Phones on this WiFi/hotspot send to: 192.168.1.42:8765
 ```
@@ -29,7 +29,7 @@ Phones on this WiFi/hotspot send to: 192.168.1.42:8765
   from the app's *Send to PC → Pair New PC* screen. Pairing is one-time per
   phone; after that the phone can just tap "Send" going forward. Each paired
   phone is listed with how much data it's sent and when it last sent.
-- **Storage Bank tab** — browse received data grouped by **phone name →
+- **Vault tab** — browse received data grouped by **phone name →
   app name → each send**, with file counts, sizes, and a **Download** button
   per batch (grabs the original zip).
 
@@ -69,7 +69,7 @@ automatically shows that logo too. Two ways to create one:
   powershell -ExecutionPolicy Bypass -File ..\create_desktop_shortcut.ps1
   ```
   (or copy `create_desktop_shortcut.ps1` next to `PCReceiver.exe` first).
-  Creates a "Digital Eye - Storage Bank" shortcut on the Desktop.
+  Creates a "Mahindra Digital Eye Vault" shortcut on the Desktop.
 - **Manual:** right-click `PCReceiver.exe` → *Send to* → *Desktop (create
   shortcut)`. The logo appears automatically since it's part of the exe.
 
