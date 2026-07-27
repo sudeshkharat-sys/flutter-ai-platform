@@ -1277,8 +1277,18 @@ function groupRowsByInspection(rows) {
 const _expandedGroups = new Set();
 
 function toggleGroup(key) {
-  if (_expandedGroups.has(key)) _expandedGroups.delete(key); else _expandedGroups.add(key);
+  const opening = !_expandedGroups.has(key);
+  if (opening) _expandedGroups.add(key); else _expandedGroups.delete(key);
   renderTable();
+  if (opening) {
+    // With the charts panel taking up space above the table, a row's
+    // expanded task list (and its "View" image buttons) can render below
+    // the currently-visible/scrolled area, making it look like the image
+    // option is missing rather than just scrolled out of sight. Bring it
+    // into view automatically instead of requiring a manual scroll.
+    const row = document.querySelector(`tr.detail-row[data-key="${CSS.escape(key)}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 function renderTable() {
@@ -1326,7 +1336,7 @@ function renderTable() {
         <td class="${vinResult === 'PASS' ? 'badge-ok' : 'badge-fail'}">${vinResult}</td>
         <td>${g.batch || ''}</td>
       </tr>
-      <tr class="detail-row ${expanded ? 'open' : ''}">
+      <tr class="detail-row ${expanded ? 'open' : ''}" data-key="${escapeAttr(g.key)}">
         <td colspan="10">
           <table class="mini-table">
             <thead><tr><th>Task</th><th>Detected</th><th>Result</th><th>Image</th></tr></thead>
