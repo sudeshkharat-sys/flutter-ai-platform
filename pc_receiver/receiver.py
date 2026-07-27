@@ -867,6 +867,7 @@ DASHBOARD_HTML = """<!doctype html>
      regardless of how few cards it holds or being pinned to the left edge. */
   .charts-flow { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: center; gap: 22px; }
   .chart-row { margin-bottom: 10px; }
+  .chart-row:not(:first-child) { border-left: 1px dashed var(--border); padding-left: 22px; }
   .chart-row-title { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; display: flex; align-items: center; gap: 6px; }
   .chart-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1; }
   .chart-close:hover { color: var(--crimson); }
@@ -1755,6 +1756,12 @@ function renderCharts(filtered) {
   const sections = [];
   sections.push({ title: 'Overall (current filters)', cards: [chartCard('All Results', overallOk, overallFail)] });
 
+  const byShift = bucketize(filtered, r => r.shift);
+  const shiftKeys = Object.keys(byShift).sort();
+  if (shiftKeys.length) {
+    sections.push({ title: 'Overall Result by Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
+  }
+
   // VIN Result (Pass/Fail): one Pass/Fail per VIN *scan* (inspection), not
   // deduplicated by VIN string -- the same VIN scanned multiple times counts
   // once per scan. A scan passes only if every one of its tasks is OK.
@@ -1768,12 +1775,6 @@ function renderCharts(filtered) {
     title: 'VIN Result (Pass/Fail)',
     cards: [chartCard('All VIN Scans', vinPass, vinFail, null, null, 'Pass', 'Fail')],
   });
-
-  const byShift = bucketize(filtered, r => r.shift);
-  const shiftKeys = Object.keys(byShift).sort();
-  if (shiftKeys.length) {
-    sections.push({ title: 'By Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
-  }
 
   // VIN Result by Shift: the same VIN Pass/Fail-per-scan count as above,
   // but broken out per shift -- how many VINs passed/failed within Shift
