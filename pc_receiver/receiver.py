@@ -55,9 +55,26 @@ from assets import FAVICON_PNG_BASE64, LOGO_PNG_BASE64
 # ── Paths (work both as a plain script and a PyInstaller --onefile exe) ────
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-DATA_DIR = APP_DIR / "received_data"
+
+# Where received inspection data (photos, zips, per-app data.xlsx) is stored.
+# Defaults to a folder next to the exe, but is overridable -- e.g. to point
+# it at a large network/SAN volume for long-term storage -- via
+# PCRECEIVER_DATA_DIR, independent of where the exe itself lives. The exe
+# should still run from a local, normally-writable folder (paired_devices.json
+# always stays next to it); only the -- much bigger -- received data needs to
+# live elsewhere.
+DATA_DIR = Path(os.environ.get("PCRECEIVER_DATA_DIR") or (APP_DIR / "received_data"))
 DEVICES_FILE = APP_DIR / "paired_devices.json"
-DATA_DIR.mkdir(exist_ok=True)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except OSError as e:
+    sys.exit(
+        f"Could not create/write the data folder {DATA_DIR}\n"
+        f"({e})\n"
+        f"If this is PCRECEIVER_DATA_DIR pointing at a network/shared drive, "
+        f"confirm this Windows account has write (Modify) permission on that "
+        f"exact folder, then try again."
+    )
 
 
 # Configurable in case another local app on this PC already uses 8765 --

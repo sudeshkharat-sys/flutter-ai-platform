@@ -82,8 +82,34 @@ Notes:
   anything to ship; a paid code-signing certificate would remove the
   warning but isn't required.
 - `paired_devices.json` and `received_data/` are created next to the exe.
-  Keep the exe in a writable folder (not `C:\Program Files`) unless you
-  redirect those paths.
+  Keep the exe in a writable folder (not `C:\Program Files`, not a
+  read-only/permission-restricted network or SAN drive) unless you redirect
+  `received_data/` per below.
+
+## Storing received data on a different drive (e.g. a large network/SAN volume)
+
+The exe itself should still run from an ordinary local, writable folder --
+that's where the small `paired_devices.json` pairing state always lives.
+But the received inspection data (photos, zips, per-app `data.xlsx`) can be
+much bigger, so its location is separately overridable via
+`PCRECEIVER_DATA_DIR`:
+
+```powershell
+set PCRECEIVER_DATA_DIR=S:\PCReceiverData
+PCReceiver.exe
+```
+
+Requirements:
+- The folder (create it first, or let the app create it) must be writable
+  by whatever Windows account runs the exe -- if it's on a shared/SAN drive,
+  that usually means asking whoever administers that drive to grant this
+  account **Modify** permission on that specific folder (not necessarily the
+  whole drive). If it isn't writable, the app prints a clear error and exits
+  on startup rather than failing later mid-pairing.
+- Don't point this at a drive/folder reserved for something else (e.g. a
+  database's own data volume) without checking with whoever manages it --
+  unrelated app data mixed in there can complicate that system's backups,
+  space accounting, or maintenance.
 
 ## Running alongside another local app on the same PC
 
