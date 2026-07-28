@@ -12,7 +12,17 @@ class Inspections extends Table {
   TextColumn get vin => text()();
   TextColumn get modelCode => text()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+  // Kept for the History screen's "synced" badge -- true once this
+  // inspection has reached at least one paired PC. Which specific PC(s)
+  // it's reached is tracked separately below, since a phone can be paired
+  // with more than one PC and each needs its own delivery tracking.
   BoolColumn get isSynced => boolean().withDefault(const Constant(false))();
+  // Comma-delimited, always starting and ending with a comma (e.g.
+  // ",pc-abc123,pc-def456,") -- the paired-PC deviceIds this inspection has
+  // already been delivered to. A single boolean here would mean sending to
+  // the first paired PC wrongly marks the inspection as "nothing left to
+  // send" for every other paired PC too.
+  TextColumn get syncedPcIds => text().withDefault(const Constant(','))();
 }
 
 class TaskResults extends Table {
@@ -33,7 +43,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration {
@@ -45,6 +55,14 @@ class AppDatabase extends _$AppDatabase {
         }
         if (from < 3) {
           await m.addColumn(taskResults, taskResults.backupImagePath);
+        }
+        if (from < 4) {
+          await m.addColumn(inspections, inspections.syncedPcIds);
+          // Rows already marked isSynced predate per-PC tracking -- we don't
+          // know which PC(s) they actually reached, so leave syncedPcIds
+          // empty for them. Worst case they get re-sent once to every
+          // paired PC, which is harmless (the PC-side upload is idempotent
+          // per inspection export).
         }
       },
       beforeOpen: (details) async {
@@ -73,19 +91,52 @@ class AppDatabase extends _$AppDatabase {
   Future<List<TaskResult>> getResultsForInspection(int inspectionId) =>
     (select(taskResults)..where((t) => t.inspectionId.equals(inspectionId))).get();
 
-  // ── PC sync status ────────────────────────────────────────────────────
+  // ── PC sync status (per paired PC) ──────────────────────────────────────
+  // isSynced (legacy, "reached at least one PC") is still kept up to date
+  // for the History screen badge, but which PC(s) an inspection has
+  // actually reached is tracked per-deviceId via syncedPcIds so multiple
+  // paired PCs each get their own copy of every inspection.
+  Future<List<Inspection>> getUnsyncedInspectionsForPc(String deviceId) async {
+    final all = await select(inspections).get();
+    final needle = ',$deviceId,';
+    return all.where((i) => !i.syncedPcIds.contains(needle)).toList();
+  }
+
+  Future<int> countUnsyncedInspectionsForPc(String deviceId) async {
+    final rows = await getUnsyncedInspectionsForPc(deviceId);
+    return rows.length;
+  }
+
+  /// Count of inspections still pending delivery to at least one of
+  /// [deviceIds] -- used for the "X unsynced" badge when the phone is
+  /// paired with more than one PC.
+  Future<int> countUnsyncedForAnyPc(List<String> deviceIds) async {
+    if (deviceIds.isEmpty) return 0;
+    final all = await select(inspections).get();
+    return all.where((i) => deviceIds.any((id) => !i.syncedPcIds.contains(',$id,'))).length;
+  }
+
+  Future<void> markInspectionsSyncedForPc(List<int> ids, String deviceId) async {
+    if (ids.isEmpty) return;
+    for (final id in ids) {
+      final row = await (select(inspections)..where((t) => t.id.equals(id))).getSingleOrNull();
+      if (row == null || row.syncedPcIds.contains(',$deviceId,')) continue;
+      await (update(inspections)..where((t) => t.id.equals(id))).write(
+        InspectionsCompanion(
+          isSynced: const Value(true),
+          syncedPcIds: Value(row.syncedPcIds + '$deviceId,'),
+        ),
+      );
+    }
+  }
+
+  // Legacy helpers kept for any remaining "synced to at least one PC" uses.
   Future<List<Inspection>> getUnsyncedInspections() =>
       (select(inspections)..where((t) => t.isSynced.equals(false))).get();
 
   Future<int> countUnsyncedInspections() async {
     final rows = await getUnsyncedInspections();
     return rows.length;
-  }
-
-  Future<void> markInspectionsSynced(List<int> ids) async {
-    if (ids.isEmpty) return;
-    await (update(inspections)..where((t) => t.id.isIn(ids)))
-        .write(const InspectionsCompanion(isSynced: Value(true)));
   }
 
   // For checking task progress in current session
