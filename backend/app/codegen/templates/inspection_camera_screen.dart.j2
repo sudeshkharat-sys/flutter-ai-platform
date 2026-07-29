@@ -112,6 +112,19 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     return mandatory.values.every((r) => r != null);
   }
 
+  /// True only when a genuine defect/wrong part was actually detected (an
+  /// explicit "not ok" class, or a fail/unchecked class). False when the
+  /// failure is just an absence of detections -- that case is "not found",
+  /// not "not ok", and the two should read differently to the inspector.
+  bool _hasDefectDetected(
+    List<DetectionResult> allDetections,
+    List<String> failClasses,
+  ) {
+    if (allDetections.any((d) => _isNotOkClass(d.className))) return true;
+    final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
+    return allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()));
+  }
+
   Future<void> _loadCurrentModel() async {
     setState(() {
       _isLoadingModel = true;
@@ -434,7 +447,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         _bestResult = found.isNotEmpty ? found.first : null;
 
         _results[_currentIndex] = {
-          'className': overallPass ? 'OK' : 'NOT OK',
+          'className': overallPass
+              ? 'OK'
+              : (_hasDefectDetected(allDetections, failClasses) ? 'NOT OK' : 'None'),
           'success': overallPass,
           'imagePath': savedImagePath,
           'backupImagePath': savedBackupPath,
@@ -517,6 +532,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     final bool badgeGreen = _mandatoryClassResults.isNotEmpty
         ? _allMandatoryPassed(_mandatoryClassResults, _allDetections, _failClasses)
         : (_bestResult != null && !_isNotOkClass(_bestResult!.className) && !_allDetections.any((d) => _isNotOkClass(d.className)));
+    final bool badgeHasDefect = _hasDefectDetected(_allDetections, _failClasses);
 
     final DetectionResult? overlayResult = _bestResult;
 
@@ -710,7 +726,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
-                            badgeGreen ? '✓ OK' : '✗ NOT OK',
+                            badgeGreen ? '✓ OK' : (badgeHasDefect ? '✗ NOT OK' : '✗ NOT FOUND'),
                             style: const TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.bold,

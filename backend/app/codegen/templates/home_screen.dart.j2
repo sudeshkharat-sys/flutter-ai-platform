@@ -27,6 +27,20 @@ class _HomeScreenState extends State<HomeScreen> {
   Map<int, dynamic> _taskResults = {}; // Index -> DetectionResult
   bool _loading = true;
 
+  /// "NOT OK" means a wrong/defect part was actually detected; "NOT FOUND"
+  /// means the camera simply didn't detect anything for this task at all.
+  /// Those are different problems for the inspector (retake angle vs. a
+  /// real defect), so don't collapse both into "NOT OK".
+  String _resultLabel(int index) {
+    final result = _taskResults[index];
+    if (result == null || result['success'] == true) return 'OK';
+    final className = (result['className'] as String?)?.trim().toLowerCase();
+    if (className == null || className.isEmpty || className == 'none') {
+      return 'NOT FOUND';
+    }
+    return 'NOT OK';
+  }
+
   void _showReferenceImage(BuildContext context, String assetPath) {
     showDialog(
       context: context,
@@ -334,7 +348,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
-                              'NOT OK',
+                              _resultLabel(i),
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.bold,
@@ -577,7 +591,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   borderRadius: BorderRadius.circular(20),
                                 ),
                                 child: Text(
-                                  _taskResults[index]?['success'] == true ? 'OK' : 'NOT OK',
+                                  _resultLabel(index),
                                   style: TextStyle(
                                     color: _taskResults[index]?['success'] == true ? Colors.green : Colors.red,
                                     fontWeight: FontWeight.bold,
