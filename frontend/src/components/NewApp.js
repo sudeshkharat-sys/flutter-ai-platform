@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { UploadCloud, Check, Box, Zap } from 'lucide-react';
-import { uploadModel, getModelStatus, getModels, createApp, extractClasses } from '../api';
+import { UploadCloud, Check, Box, Zap, ScanLine } from 'lucide-react';
+import { uploadModel, uploadOcrModel, getModelStatus, getModels, createApp, extractClasses } from '../api';
 import '../styles/NewApp.css';
 
 function DropZone({ onFile, analyzing }) {
@@ -67,6 +67,12 @@ export default function NewApp() {
   const [existingModels, setExistingModels] = useState([]);
   const [appName, setAppName] = useState('');
   const [packageName, setPackageName] = useState('');
+
+  // OCR (CRNN) model upload — a trained OCR model is already a .tflite,
+  // so this skips the .pt -> .tflite conversion flow entirely.
+  const [ocrFile, setOcrFile] = useState(null);
+  const [ocrName, setOcrName] = useState('');
+  const [ocrUploading, setOcrUploading] = useState(false);
 
   const pollRef = useRef(null);
   const logEndRef = useRef(null);
@@ -135,6 +141,28 @@ export default function NewApp() {
     }
   };
 
+  const handleOcrFile = (file) => {
+    if (!file || !file.name.endsWith('.tflite')) return;
+    setOcrFile(file);
+    setOcrName(file.name.replace(/\.tflite$/i, '').replace(/[_-]/g, ' '));
+  };
+
+  const startOcrUpload = async () => {
+    if (!ocrFile) return;
+    setOcrUploading(true);
+    try {
+      const r = await uploadOcrModel(ocrFile, ocrName || ocrFile.name);
+      setSelectedModelIds(prev => [...prev, r.data.id]);
+      setSelectedModelNames(prev => [...prev, `${ocrName || ocrFile.name} (OCR)`]);
+      setOcrFile(null);
+      setOcrName('');
+    } catch {
+      alert('OCR model upload failed');
+    } finally {
+      setOcrUploading(false);
+    }
+  };
+
   const toggleExisting = (m) => {
     if (selectedModelIds.includes(m.id)) {
       setSelectedModelIds(selectedModelIds.filter(id => id !== m.id));
@@ -180,18 +208,70 @@ export default function NewApp() {
         {step === 1 && (
           <div className="newapp-step-body">
             <div className="newapp-tabs">
-              {['upload', 'existing'].map(t => (
+              {['upload', 'existing', 'ocr'].map(t => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
                   className={`newapp-tab${tab === t ? ' active' : ''}`}
                 >
-                  {t === 'upload' ? 'Convert New Model' : 'Select from Library'}
+                  {t === 'upload' ? 'Convert New Model' : t === 'existing' ? 'Select from Library' : 'OCR Model'}
                 </button>
               ))}
             </div>
 
-            {tab === 'upload' ? (
+            {tab === 'ocr' ? (
+              <div className="newapp-upload-body">
+                {!ocrUploading && (
+                  <div
+                    className="drop-zone"
+                    onClick={() => document.getElementById('newapp-ocr-file').click()}
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={e => { e.preventDefault(); handleOcrFile(e.dataTransfer.files[0]); }}
+                  >
+                    <input
+                      id="newapp-ocr-file"
+                      type="file"
+                      accept=".tflite"
+                      style={{ display: 'none' }}
+                      onChange={e => handleOcrFile(e.target.files[0])}
+                    />
+                    <div className="drop-zone-upload-icon">
+                      <ScanLine size={28} />
+                    </div>
+                    <div className="drop-zone-title">
+                      {ocrFile ? ocrFile.name : 'Upload trained OCR .tflite'}
+                    </div>
+                    <div className="drop-zone-sub">
+                      Already-converted CRNN model — no conversion step needed
+                    </div>
+                  </div>
+                )}
+
+                {ocrFile && !ocrUploading && (
+                  <div className="model-preview">
+                    <div className="model-preview-field">
+                      <label className="section-label">Model Name</label>
+                      <input
+                        className="field-input"
+                        value={ocrName}
+                        onChange={e => setOcrName(e.target.value)}
+                        placeholder="e.g. Part Number OCR"
+                      />
+                    </div>
+                    <button className="convert-btn" onClick={startOcrUpload}>
+                      <ScanLine size={15} />
+                      Upload & Add to App
+                    </button>
+                  </div>
+                )}
+
+                {ocrUploading && (
+                  <div className="conversion-log">
+                    <pre>Uploading OCR model...</pre>
+                  </div>
+                )}
+              </div>
+            ) : tab === 'upload' ? (
               <div className="newapp-upload-body">
                 {!converting && <DropZone onFile={handleFileDrop} analyzing={analyzing} />}
 
@@ -242,14 +322,14 @@ export default function NewApp() {
                     className={`existing-model-item${selectedModelIds.includes(m.id) ? ' selected' : ''}`}
                   >
                     <div className="existing-model-head">
-                      <span className="existing-model-name">{m.vision_project_name}</span>
+                      <span className="existing-model-name">{m.vision_project_name}{m.model_type === 'ocr' ? ' (OCR)' : ''}</span>
                       {selectedModelIds.includes(m.id) && (
                         <span className="existing-model-check">
                           <Check size={14} />
                         </span>
                       )}
                     </div>
-                    <div className="existing-model-classes">{m.classes.join(', ')}</div>
+                    <div className="existing-model-classes">{m.model_type === 'ocr' ? 'CRNN text recognizer' : m.classes.join(', ')}</div>
                   </div>
                 ))}
               </div>
