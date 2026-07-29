@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
+import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, uploadOcrModel, getModelStatus, extractClasses, createApp, getMasterMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -874,7 +874,29 @@ function ModelModal({ id, appIds, onClose }) {
   const [convLog, setConvLog] = useState('');
   const pollRef = useRef(null);
 
+  // OCR (CRNN) upload state — separate from the .pt conversion flow above
+  // since a trained OCR model is already a .tflite, no conversion needed.
+  const [ocrFile, setOcrFile] = useState(null);
+  const [ocrName, setOcrName] = useState('');
+  const [ocrUploading, setOcrUploading] = useState(false);
+
   useEffect(() => { getModels().then(r => setExisting(r.data.filter(m => m.status === 'ready'))); }, []);
+
+  const handleOcrPick = (file) => {
+    setOcrFile(file);
+    setOcrName(file.name.replace(/\.tflite$/i, '').replace(/[_-]/g, ' '));
+  };
+
+  const startOcrUpload = async () => {
+    setOcrUploading(true);
+    try {
+      const r = await uploadOcrModel(ocrFile, ocrName);
+      await updateApp(id, { model_asset_ids: [...appIds, r.data.id] });
+      onClose();
+    } catch {
+      setOcrUploading(false);
+    }
+  };
 
   const handleDrop = async (file) => {
     setPtFile(file); setModelName(file.name.replace(/\.pt$/i, '').replace(/[_-]/g, ' '));
@@ -913,19 +935,19 @@ function ModelModal({ id, appIds, onClose }) {
         </div>
 
         <div style={{ display: 'flex', gap: 4, background: C.surface2, padding: 4, borderRadius: 10 }}>
-          {['library', 'new'].map(t => <button key={t} onClick={() => setTab(t)} style={{ flex: 1, padding: '8px', borderRadius: 7, border: 'none', background: tab === t ? C.accent : 'transparent', color: tab === t ? '#fff' : C.muted, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{t === 'library' ? 'From Library' : 'Convert New'}</button>)}
+          {['library', 'new', 'ocr'].map(t => <button key={t} onClick={() => setTab(t)} style={{ flex: 1, padding: '8px', borderRadius: 7, border: 'none', background: tab === t ? C.accent : 'transparent', color: tab === t ? '#fff' : C.muted, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{t === 'library' ? 'From Library' : t === 'new' ? 'Convert New' : 'OCR Model'}</button>)}
         </div>
 
         {tab === 'library' ? (
           <div style={{ maxHeight: 300, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
             {existing.map(m => (
               <div key={m.id} onClick={() => addExisting(m.id)} style={{ padding: 12, borderRadius: 10, background: appIds.includes(m.id) ? 'rgba(76,175,130,0.1)' : C.surface2, border: `1px solid ${appIds.includes(m.id) ? C.success : C.border}`, cursor: appIds.includes(m.id) ? 'default' : 'pointer', display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 13, fontWeight: 600 }}>{m.vision_project_name}</span>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{m.vision_project_name}{m.model_type === 'ocr' ? ' (OCR)' : ''}</span>
                 {appIds.includes(m.id) ? <span style={{ color: C.success, fontSize: 11, fontWeight: 700 }}>ADDED</span> : <span style={{ color: C.accent, fontSize: 11, fontWeight: 700 }}>+ ADD</span>}
               </div>
             ))}
           </div>
-        ) : (
+        ) : tab === 'new' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             {!converting && (
               <div onClick={() => !analyzing && document.getElementById('file-up').click()} style={{ border: `2px dashed ${C.border}`, borderRadius: 12, padding: 24, textAlign: 'center', cursor: 'pointer', background: C.surface2 }}>
@@ -940,6 +962,25 @@ function ModelModal({ id, appIds, onClose }) {
               </>
             )}
             {converting && <pre style={{ height: 120, background: '#1a1a1a', padding: 12, borderRadius: 10, color: '#fff', fontSize: 10, overflowY: 'auto' }}>{convLog}</pre>}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <p style={{ fontSize: 12, color: C.muted, margin: 0 }}>
+              Upload a trained CRNN OCR model (.tflite, already exported — no conversion needed).
+            </p>
+            {!ocrUploading && (
+              <div onClick={() => document.getElementById('ocr-file-up').click()} style={{ border: `2px dashed ${C.border}`, borderRadius: 12, padding: 24, textAlign: 'center', cursor: 'pointer', background: C.surface2 }}>
+                <input id="ocr-file-up" type="file" accept=".tflite" style={{ display: 'none' }} onChange={e => handleOcrPick(e.target.files[0])} />
+                {ocrFile ? ocrFile.name : 'Click to upload .tflite'}
+              </div>
+            )}
+            {ocrFile && !ocrUploading && (
+              <>
+                <input style={inputStyle} value={ocrName} onChange={e => setOcrName(e.target.value)} placeholder="OCR model name" />
+                <button onClick={startOcrUpload} style={{ width: '100%', padding: 14, borderRadius: 10, background: C.accent, color: '#fff', fontWeight: 800, border: 'none', cursor: 'pointer' }}>Upload & Add</button>
+              </>
+            )}
+            {ocrUploading && <p style={{ fontSize: 12, color: C.muted }}>Uploading...</p>}
           </div>
         )}
       </div>

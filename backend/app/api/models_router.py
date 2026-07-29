@@ -123,6 +123,48 @@ def upload_model(
     rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": asset_id})
     return rows[0]
 
+@router.post("/upload-ocr", response_model=ModelAssetResponse)
+def upload_ocr_model(
+    file: UploadFile = File(...),
+    model_name: str = Form(...),
+    db: StateDBConnector = Depends(get_db_connector),
+):
+    """Upload an already-converted CRNN OCR .tflite directly (no YOLO
+    .pt -> .tflite conversion step needed — the OCR training pipeline
+    exports .tflite directly). Marked ready immediately."""
+    if not file.filename.endswith(".tflite"):
+        raise HTTPException(status_code=422, detail="Only .tflite model files are supported.")
+
+    asset_id = str(uuid.uuid4())
+    model_dir = settings.models_dir / asset_id
+    model_dir.mkdir(parents=True, exist_ok=True)
+    tflite_path = model_dir / "ocr_crnn.tflite"
+
+    with open(tflite_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    params = {
+        "id": asset_id,
+        "vision_project_id": asset_id,
+        "vision_project_name": model_name,
+        "model_type": "ocr",
+        "classes": json.dumps([]),
+        "pt_path": None,
+        "tflite_path": str(tflite_path),
+        "labels_path": None,
+        "status": "ready",
+        "error_message": None,
+        "conversion_log": "",
+        "input_size": 256,
+        "vision_platform_url": "",
+        "vision_platform_token": ""
+    }
+
+    db.execute_insert(ModelAssetQueries.INSERT_MODEL, params)
+
+    rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": asset_id})
+    return rows[0]
+
 @router.get("/{model_asset_id}", response_model=ModelAssetResponse)
 def get_model(model_asset_id: str, db: StateDBConnector = Depends(get_db_connector)):
     rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})

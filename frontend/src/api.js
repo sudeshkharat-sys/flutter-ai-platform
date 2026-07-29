@@ -20,6 +20,21 @@ export const uploadModel = (file, modelName, classes, inputSize = 640) => {
   });
 };
 
+/**
+ * Upload an already-converted CRNN OCR .tflite directly (no .pt conversion
+ * step — the OCR training pipeline exports .tflite directly).
+ * @param {File}   file      The .tflite file object
+ * @param {string} modelName Display name for this OCR model
+ */
+export const uploadOcrModel = (file, modelName) => {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('model_name', modelName);
+  return api.post('/models/upload-ocr', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+
 export const extractClasses = (file) => {
   const form = new FormData();
   form.append('file', file);

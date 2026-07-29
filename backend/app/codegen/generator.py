@@ -25,9 +25,14 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         return getattr(obj, key, default)
 
     settings = get_attr(app_project, "app_settings") or {}
-    
-    # Handle multiple models and map them for tasks
-    models_list = all_model_assets or ([model_asset] if model_asset else [])
+
+    # Handle multiple models and map them for tasks. OCR (CRNN) models are
+    # excluded from the detection manifest below — they don't have YOLO-style
+    # classes/bboxes and are bundled separately as assets/ocr/ocr_crnn.tflite
+    # (see the OCR asset section near the end of this function).
+    all_models = all_model_assets or ([model_asset] if model_asset else [])
+    models_list = [ma for ma in all_models if get_attr(ma, "model_type") != "ocr"]
+    ocr_model = next((ma for ma in all_models if get_attr(ma, "model_type") == "ocr"), None)
     model_id_to_paths = {}
     for idx, ma in enumerate(models_list):
         ma_id = get_attr(ma, "id")
@@ -125,7 +130,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         ),
         "app_type": settings.get("app_type", "sequential"),
         "app_settings": settings,
-        "ocr_enabled": settings.get("ocr_enabled", True),
+        "ocr_enabled": settings.get("ocr_enabled", ocr_model is not None),
     }
 
     # Map of zip path → template name

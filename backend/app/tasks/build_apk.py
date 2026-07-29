@@ -240,20 +240,34 @@ def build_apk_task(self, app_id: str):
         project_dir = next(export_root.iterdir())
         
         # 3. Copy model assets
-        if all_model_assets:
-            _update_status(db, app_id, step="Embedding AI models...", log_append=f"Copying {len(all_model_assets)} models...\n")
+        detection_models = [ma for ma in all_model_assets if ma.get("model_type") != "ocr"]
+        ocr_models = [ma for ma in all_model_assets if ma.get("model_type") == "ocr"]
+
+        if detection_models:
+            _update_status(db, app_id, step="Embedding AI models...", log_append=f"Copying {len(detection_models)} models...\n")
             assets_dir = project_dir / "assets" / "models"
             assets_dir.mkdir(parents=True, exist_ok=True)
-            
-            for idx, ma in enumerate(all_model_assets):
+
+            for idx, ma in enumerate(detection_models):
                 if ma.get("tflite_path"):
                     shutil.copy(ma["tflite_path"], assets_dir / f"model_{idx}.tflite")
-                    
+
                     classes = ma.get("classes", [])
                     if isinstance(classes, str):
                         classes = json.loads(classes)
                     labels_content = "\n".join(classes or [])
                     (assets_dir / f"labels_{idx}.txt").write_text(labels_content)
+
+        # Copy the OCR (CRNN) model, if one is attached to this app. Only
+        # the first one is used — the OCR tab loads a single model from
+        # assets/ocr/ocr_crnn.tflite. This overwrites the placeholder file
+        # (if any) that generate_flutter_project() bundled from
+        # templates/assets_ocr/, so a project-specific upload always wins.
+        if ocr_models and ocr_models[0].get("tflite_path"):
+            _update_status(db, app_id, step="Embedding OCR model...", log_append="Copying OCR model...\n")
+            ocr_assets_dir = project_dir / "assets" / "ocr"
+            ocr_assets_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(ocr_models[0]["tflite_path"], ocr_assets_dir / "ocr_crnn.tflite")
         
         # 4. Run Flutter build
         flutter_path = r"C:\flutter\bin\flutter.bat"
