@@ -539,7 +539,12 @@ VIEWER_HTML = """<!doctype html>
                   padding: 4px 16px; margin-bottom: 14px; max-height: 300px; overflow-y: auto; }
   .charts-flow { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: flex-start; gap: 22px; }
   .chart-row { margin: 10px 0; }
-  .chart-row:not(:first-child) { border-left: 1px dashed var(--border); padding-left: 22px; }
+  /* Only sections marked as the start of a new group (task-level Overall
+     charts vs. VIN-level charts vs. the By VIN/Day/Month extras) get a
+     divider -- not every section, so "Overall Result" and "Overall Result
+     by Shift" sit together with no line between them, then one divider,
+     then "VIN Result (Pass/Fail)" and "VIN Result by Shift" together. */
+  .chart-row.group-start { border-left: 1px dashed var(--border); padding-left: 22px; }
   .chart-row-title { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px;
                       text-transform: uppercase; letter-spacing: 0.4px; display: flex; align-items: center; gap: 6px; }
   .chart-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; }
@@ -547,6 +552,15 @@ VIEWER_HTML = """<!doctype html>
   .chart-cards { display: flex; gap: 14px; flex-wrap: wrap; }
   .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px;
                 text-align: center; width: 112px; }
+  /* Headline totals (Overall Result, VIN Result) read bigger than their
+     per-shift breakdowns, so the "main" number is visually distinct from
+     the supporting detail underneath it. */
+  .chart-card.chart-card-lg { width: 132px; padding: 14px; }
+  .chart-card.chart-card-lg .chart-label { font-size: 13px; }
+  .chart-card.chart-card-lg .chart-meta { font-size: 11px; }
+  .chart-card.chart-card-sm { width: 84px; padding: 6px; }
+  .chart-card.chart-card-sm .chart-label { font-size: 10px; }
+  .chart-card.chart-card-sm .chart-meta { font-size: 9px; }
   .chart-card.clickable-chart { cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; }
   .chart-card.clickable-chart:hover { border-color: var(--crimson); box-shadow: 0 2px 8px rgba(220,20,60,0.15); }
   .chart-card .chart-label { font-size: 11px; font-weight: 700; margin-top: 4px; white-space: nowrap;
@@ -835,12 +849,20 @@ function pieSvg(ok, fail, size) {
     <text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="12" font-weight="700" fill="#1c1f26">${pct}%</text></svg>`;
 }
 
-function chartCard(label, ok, fail, section, value, okLabel, failLabel) {
+// sizeClass: 'lg' for the single headline totals (Overall Result, VIN
+// Result), 'sm' for their per-shift breakdowns -- same information density,
+// but visually smaller so the headline number reads as the "main" figure
+// and the per-shift ones read as supporting detail underneath it.
+const CHART_PIE_PX = { lg: 100, sm: 62, '': 82 };
+
+function chartCard(label, ok, fail, section, value, okLabel, failLabel, sizeClass) {
   okLabel = okLabel || 'OK'; failLabel = failLabel || 'NOT OK';
+  sizeClass = sizeClass || '';
+  const sizeClassAttr = sizeClass ? ` chart-card-${sizeClass}` : '';
   const attrs = section
-    ? ` data-section="${section}" data-value="${escapeAttr(value)}" class="chart-card clickable-chart" title="Click to filter to ${escapeAttr(label)}"`
-    : ' class="chart-card"';
-  return `<div${attrs}>${pieSvg(ok, fail)}
+    ? ` data-section="${section}" data-value="${escapeAttr(value)}" class="chart-card${sizeClassAttr} clickable-chart" title="Click to filter to ${escapeAttr(label)}"`
+    : ` class="chart-card${sizeClassAttr}"`;
+  return `<div${attrs}>${pieSvg(ok, fail, CHART_PIE_PX[sizeClass])}
     <div class="chart-label" title="${label}">${label}</div>
     <div class="chart-meta">${ok} ${okLabel} / ${fail} ${failLabel}</div></div>`;
 }
@@ -881,6 +903,15 @@ function hideExtraChartSections() {
 }
 function clearPinnedDay() { pinnedDay = null; renderTable(); }
 
+// Which visual group a chart section belongs to -- used to draw one
+// divider between groups (Overall | VIN Result | extras), not one before
+// every single section.
+function sectionFamily(title) {
+  if (title.startsWith('Overall')) return 'overall';
+  if (title.startsWith('VIN Result')) return 'vinresult';
+  return 'extras'; // This VIN / By VIN / By Day / By Month
+}
+
 function renderCharts(filtered) {
   const el = document.getElementById('chartsPanel');
   if (!filtered.length) { el.innerHTML = ''; return; }
@@ -888,18 +919,18 @@ function renderCharts(filtered) {
   const overallOk = filtered.filter(r => r.result === 'OK').length;
   const overallFail = filtered.length - overallOk;
   const sections = [];
-  sections.push({ title: 'Overall (current filters)', cards: [chartCard('All Results', overallOk, overallFail)] });
+  sections.push({ title: 'Overall (current filters)', cards: [chartCard('All Results', overallOk, overallFail, null, null, null, null, 'lg')] });
 
   const byShift = bucketize(filtered, r => r.shift);
   const shiftKeys = Object.keys(byShift).sort();
   if (shiftKeys.length) {
-    sections.push({ title: 'Overall Result by Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
+    sections.push({ title: 'Overall Result by Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k, null, null, 'sm')) });
   }
 
   const inspectionGroups = groupRowsByInspection(filtered);
   let vinPass = 0, vinFail = 0;
   inspectionGroups.forEach(g => { if (g.tasks.some(t => t.result !== 'OK')) vinFail++; else vinPass++; });
-  sections.push({ title: 'VIN Result (Pass/Fail)', cards: [chartCard('All VIN Scans', vinPass, vinFail, null, null, 'Pass', 'Fail')] });
+  sections.push({ title: 'VIN Result (Pass/Fail)', cards: [chartCard('All VIN Scans', vinPass, vinFail, null, null, 'Pass', 'Fail', 'lg')] });
 
   // Same VIN Pass/Fail-per-scan count as above, broken out per shift --
   // how many VINs passed/failed within Shift A vs. B vs. C.
@@ -913,7 +944,7 @@ function renderCharts(filtered) {
   if (vinShiftKeys.length) {
     sections.push({
       title: 'VIN Result by Shift',
-      cards: vinShiftKeys.map(k => chartCard('Shift ' + k, vinResultByShift[k].pass, vinResultByShift[k].fail, 'shift', k, 'Pass', 'Fail')),
+      cards: vinShiftKeys.map(k => chartCard('Shift ' + k, vinResultByShift[k].pass, vinResultByShift[k].fail, 'shift', k, 'Pass', 'Fail', 'sm')),
     });
   }
 
@@ -962,13 +993,18 @@ function renderCharts(filtered) {
   if (pinnedDay) {
     html += `<div class="chart-hidden-bar">Pinned to day: <b>${pinnedDay}</b> <button class="secondary" onclick="clearPinnedDay()">Clear</button></div>`;
   }
-  html += '<div class="charts-flow">' + visible.map(s => `
-    <div class="chart-row">
+  html += '<div class="charts-flow">' + visible.map((s, i) => {
+    const family = sectionFamily(s.title);
+    const prevFamily = i > 0 ? sectionFamily(visible[i - 1].title) : null;
+    const groupStart = i > 0 && family !== prevFamily;
+    return `
+    <div class="chart-row${groupStart ? ' group-start' : ''}">
       <div class="chart-row-title">${s.title}
         <button class="chart-close" title="Hide this chart" onclick="hideChartSection('${s.title.replace(/'/g, "\\\\'")}')">&#10005;</button>
       </div>
       ${s.note ? `<div class="chart-note">${s.note}</div>` : `<div class="chart-cards">${s.cards.join('')}</div>`}
-    </div>`).join('') + '</div>';
+    </div>`;
+  }).join('') + '</div>';
   el.innerHTML = html;
 
   el.querySelectorAll('.chart-card.clickable-chart').forEach(card => {
