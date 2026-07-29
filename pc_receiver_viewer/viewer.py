@@ -859,7 +859,7 @@ function bucketize(rows, keyFn) {
 const MAX_PIE_BUCKETS = 12;
 let pinnedDay = null;
 let hiddenChartSections = new Set(JSON.parse(localStorage.getItem('viewerHiddenChartSections') || '[]'));
-const CORE_CHART_TITLES = new Set(['Overall (current filters)', 'Overall Result by Shift', 'VIN Result (Pass/Fail)']);
+const CORE_CHART_TITLES = new Set(['Overall (current filters)', 'Overall Result by Shift', 'VIN Result (Pass/Fail)', 'VIN Result by Shift']);
 let extrasVisible = localStorage.getItem('viewerChartExtrasVisible') === '1';
 
 function hideChartSection(title) {
@@ -900,6 +900,22 @@ function renderCharts(filtered) {
   let vinPass = 0, vinFail = 0;
   inspectionGroups.forEach(g => { if (g.tasks.some(t => t.result !== 'OK')) vinFail++; else vinPass++; });
   sections.push({ title: 'VIN Result (Pass/Fail)', cards: [chartCard('All VIN Scans', vinPass, vinFail, null, null, 'Pass', 'Fail')] });
+
+  // Same VIN Pass/Fail-per-scan count as above, broken out per shift --
+  // how many VINs passed/failed within Shift A vs. B vs. C.
+  const vinResultByShift = {};
+  inspectionGroups.forEach(g => {
+    const shiftKey = g.shift || 'Unknown';
+    if (!vinResultByShift[shiftKey]) vinResultByShift[shiftKey] = { pass: 0, fail: 0 };
+    if (g.tasks.some(t => t.result !== 'OK')) vinResultByShift[shiftKey].fail++; else vinResultByShift[shiftKey].pass++;
+  });
+  const vinShiftKeys = Object.keys(vinResultByShift).sort();
+  if (vinShiftKeys.length) {
+    sections.push({
+      title: 'VIN Result by Shift',
+      cards: vinShiftKeys.map(k => chartCard('Shift ' + k, vinResultByShift[k].pass, vinResultByShift[k].fail, 'shift', k, 'Pass', 'Fail')),
+    });
+  }
 
   const byVin = bucketize(filtered, r => r.vin);
   const vinKeys = Object.keys(byVin);

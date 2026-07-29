@@ -825,10 +825,17 @@ DASHBOARD_HTML = """<!doctype html>
 
   .empty { text-align: center; padding: 48px 12px; color: var(--muted); font-size: 13px; }
 
-  /* Data viewer */
-  .viewer-page { position: fixed; inset: 0; background: var(--bg); z-index: 40; display: none; flex-direction: column; }
+  /* Data viewer -- still a fixed full-screen overlay (it sits above the
+     dashboard), but the overlay itself scrolls as one normal page now
+     instead of stacking header/filters/charts as fixed-height flex items
+     above a table-wrap squeezed into whatever height is left over
+     (flex:1; overflow:auto). That squeeze meant a bigger charts panel, or
+     simply a short window, could shrink the table down to a single
+     visible row. Scrolling the whole overlay avoids that regardless of
+     how much the charts panel above it grows. */
+  .viewer-page { position: fixed; inset: 0; background: var(--bg); z-index: 40; display: none; flex-direction: column; overflow-y: auto; }
   .viewer-page.open { display: flex; }
-  .viewer-header { background: var(--navy); color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 14px; }
+  .viewer-header { background: var(--navy); color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 3; }
   .viewer-header h2 { margin: 0; font-size: 15px; }
   .viewer-header p { margin: 2px 0 0; font-size: 11px; color: #9aa0ad; }
   .viewer-header .spacer { flex: 1; }
@@ -836,9 +843,15 @@ DASHBOARD_HTML = """<!doctype html>
   .filters input, .filters select { padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
   .filters input { width: 130px; }
   .filter-count { font-size: 11px; color: var(--muted); margin-left: auto; align-self: center; white-space: nowrap; }
-  .table-wrap { flex: 1; overflow: auto; padding: 0 24px 24px; }
+  .table-wrap { padding: 0 24px 24px; }
   table.data-table { width: 100%; border-collapse: collapse; background: var(--card); font-size: 12px; }
-  table.data-table thead th { position: sticky; top: 0; background: #fafafc; border-bottom: 2px solid var(--border); padding: 10px 10px; text-align: left; white-space: nowrap; z-index: 2; }
+  /* No longer position:sticky -- the table's scrolling ancestor is now the
+     whole .viewer-page overlay (see above), which also has the sticky
+     .viewer-header in it; a sticky thead at the same top:0 would fight the
+     header for the same spot. Losing the pinned header while scrolling is
+     an acceptable trade for never squeezing the table itself down to a
+     sliver. */
+  table.data-table thead th { background: #fafafc; border-bottom: 2px solid var(--border); padding: 10px 10px; text-align: left; white-space: nowrap; }
   table.data-table tbody td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   table.data-table tbody tr:hover { background: #fbfbfd; }
   .badge-ok { color: var(--green); font-weight: 700; }
