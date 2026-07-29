@@ -244,7 +244,11 @@ class _PrinterDiscoveryScreenState extends State<PrinterDiscoveryScreen> {
       duration: const Duration(seconds: 6),
     ));
 
-    if (ok && mounted) Navigator.of(context).pop();
+    // Return to the inspection flow either way -- a failed print (printer
+    // off/out of range) shouldn't trap the inspector here away from the next
+    // scan. The chosen printer is already saved as default, so they can
+    // retry later via the Print icon on the scan screen.
+    if (mounted) Navigator.of(context).pop();
   }
 
   @override

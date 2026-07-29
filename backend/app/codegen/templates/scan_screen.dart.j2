@@ -102,8 +102,41 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
   /// back after another screen used it) while keeping the flash on if the
   /// user had turned it on -- start() can otherwise silently drop torch.
   Future<void> _restartScanner() async {
-    await _scannerController.stop();
-    await _scannerController.start();
+    try {
+      await _scannerController.stop();
+    } catch (_) {}
+
+    // Give the OS camera HAL a moment to actually release the hardware --
+    // stop() can resolve before the native camera device is fully closed
+    // (especially right after another screen, e.g. the PC-pairing QR
+    // scanner, had its own controller on it), and starting again too soon
+    // throws or leaves a black/frozen preview that never recovers on its
+    // own, forcing a full app restart to get VIN scanning back.
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
+
+    try {
+      await _scannerController.start();
+    } catch (e) {
+      debugPrint('Scanner restart failed, retrying: $e');
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (!mounted) return;
+      try {
+        await _scannerController.start();
+      } catch (e2) {
+        debugPrint('Scanner restart retry failed: $e2');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Camera failed to restart. Tap here or reopen the app if scanning stays dead.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+        return;
+      }
+    }
     await _reapplyTorchIfWanted();
   }
 

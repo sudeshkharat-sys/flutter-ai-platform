@@ -416,13 +416,55 @@ class _QrScanScreen extends StatefulWidget {
 
 class _QrScanScreenState extends State<_QrScanScreen> {
   bool _handled = false;
+  bool _cameraReady = false;
   // Explicit controller (instead of letting MobileScanner create its own
   // default one) so we can await its camera being fully released before
   // handing control back to the VIN scan screen. Without this, the camera
   // session here can still be tearing down when ScanScreen's own controller
   // tries to restart, and the two fight over the hardware -- VIN scanning
   // then stays dead until the app is force-closed and reopened.
-  final MobileScannerController _controller = MobileScannerController();
+  //
+  // autoStart is disabled because the widget mounting and starting its own
+  // camera the instant this screen appears can race ScanScreen's controller
+  // still releasing the hardware it just had -- that race is what shows up
+  // as a black preview here (camera opened but no frames), not just as the
+  // VIN scanner dying afterward. Starting it ourselves after a short delay
+  // (with a retry) gives that release time to finish first.
+  final MobileScannerController _controller =
+      MobileScannerController(autoStart: false);
+
+  @override
+  void initState() {
+    super.initState();
+    _startCamera();
+  }
+
+  Future<void> _startCamera() async {
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
+    try {
+      await _controller.start();
+    } catch (e) {
+      debugPrint('[QrScanScreen] camera start failed, retrying: $e');
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (!mounted) return;
+      try {
+        await _controller.start();
+      } catch (e2) {
+        debugPrint('[QrScanScreen] camera start retry failed: $e2');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Camera failed to start. Go back and try again.'),
+              backgroundColor: _crimson,
+            ),
+          );
+        }
+        return;
+      }
+    }
+    if (mounted) setState(() => _cameraReady = true);
+  }
 
   void _onDetect(BarcodeCapture capture) async {
     if (_handled) return;
@@ -460,7 +502,11 @@ class _QrScanScreenState extends State<_QrScanScreen> {
         body: Stack(
           fit: StackFit.expand,
           children: [
-            MobileScanner(controller: _controller, onDetect: _onDetect),
+            if (_cameraReady) MobileScanner(controller: _controller, onDetect: _onDetect),
+            if (!_cameraReady)
+              const Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              ),
             if (_handled)
               Container(
                 color: Colors.black87,
