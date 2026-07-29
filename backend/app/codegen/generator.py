@@ -125,6 +125,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         ),
         "app_type": settings.get("app_type", "sequential"),
         "app_settings": settings,
+        "ocr_enabled": settings.get("ocr_enabled", True),
     }
 
     # Map of zip path → template name
@@ -142,6 +143,8 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "lib/database/database.dart": "database.dart.j2",
         "lib/ml/detector.dart": "detector.dart.j2",
         "lib/ml/detection_result.dart": "detection_result.dart.j2",
+        "lib/ml/crnn_reader.dart": "crnn_reader.dart.j2",
+        "lib/screens/ocr_screen.dart": "ocr_screen.dart.j2",
         "lib/widgets/camera_view.dart": "camera_view.dart.j2",
         "lib/widgets/detection_overlay.dart": "detection_overlay.dart.j2",
         "lib/widgets/result_list.dart": "result_list.dart.j2",
@@ -252,5 +255,20 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 img_path = app_settings.reference_images_dir / filename
                 if img_path.exists():
                     zf.writestr(f"{root}/assets/reference_images/{filename}", img_path.read_bytes())
+
+        # Bundle the CRNN OCR charset + model, if the OCR tab is enabled.
+        # The charset must match training exactly (see crnn_training.py:
+        # digits + A-Z, CTC blank implicit at the end). The .tflite is
+        # optional here — drop a trained ocr_crnn.tflite into
+        # templates/assets_ocr/ to bundle it into every generated app; until
+        # then the OCR tab loads charset.txt only and shows a "model not
+        # loaded" message on-device.
+        if ctx.get("ocr_enabled"):
+            ocr_charset = "\n".join(list("0123456789") + [chr(c) for c in range(ord("A"), ord("Z") + 1)])
+            zf.writestr(f"{root}/assets/ocr/charset.txt", ocr_charset + "\n")
+
+            ocr_tflite_src = TEMPLATES_DIR / "assets_ocr" / "ocr_crnn.tflite"
+            if ocr_tflite_src.exists():
+                zf.writestr(f"{root}/assets/ocr/ocr_crnn.tflite", ocr_tflite_src.read_bytes())
 
     return buf.getvalue()

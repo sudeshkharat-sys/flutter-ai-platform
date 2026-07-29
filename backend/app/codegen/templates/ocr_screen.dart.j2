@@ -1,0 +1,253 @@
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
+import '../ml/crnn_reader.dart';
+import '../widgets/capture_button.dart';
+
+/// Standalone OCR tab: opens the camera, captures a frame, runs it through
+/// the trained CRNN+CTC model (same grayscale/32x256/CTC pipeline used at
+/// training time), and shows the recognized text. A "Save for Training"
+/// button lets the operator keep the image (plus a hand-corrected label,
+/// when the read is wrong) as a new sample for the next retraining round.
+class OcrScreen extends StatefulWidget {
+  const OcrScreen({super.key});
+
+  @override
+  State<OcrScreen> createState() => _OcrScreenState();
+}
+
+class _OcrScreenState extends State<OcrScreen> with WidgetsBindingObserver {
+  CameraController? _cameraController;
+  bool _isCameraInitialized = false;
+  String? _cameraError;
+
+  final CrnnReader _reader = CrnnReader();
+  bool _isModelLoading = true;
+
+  bool _isProcessing = false;
+  Uint8List? _capturedBytes;
+  double _confidence = 0.0;
+  final TextEditingController _textController = TextEditingController();
+  int _savedCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initializeCamera();
+    _loadModel();
+  }
+
+  Future<void> _loadModel() async {
+    await _reader.load();
+    if (mounted) setState(() => _isModelLoading = false);
+  }
+
+  Future<void> _initializeCamera() async {
+    try {
+      final cams = await availableCameras();
+      if (cams.isEmpty) {
+        if (mounted) setState(() => _cameraError = 'No cameras found');
+        return;
+      }
+      final backCamera = cams.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cams.first,
+      );
+      final controller = CameraController(backCamera, ResolutionPreset.high, enableAudio: false);
+      _cameraController = controller;
+      await controller.initialize();
+      if (mounted) setState(() => _isCameraInitialized = true);
+    } catch (e) {
+      if (mounted) setState(() => _cameraError = 'Camera error: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _cameraController?.dispose();
+    _reader.dispose();
+    _textController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (state == AppLifecycleState.inactive) {
+      controller.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initializeCamera();
+    }
+  }
+
+  Future<void> _capture() async {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized || _isProcessing) return;
+    if (!_reader.isLoaded) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('OCR model not loaded — add ocr_crnn.tflite to assets/ocr/')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+      _capturedBytes = null;
+    });
+
+    try {
+      final file = await controller.takePicture();
+      final bytes = await file.readAsBytes();
+      var decoded = img.decodeImage(bytes);
+      if (decoded == null) throw Exception('Could not decode image');
+      // Android's takePicture() often returns a landscape JPEG with an EXIF
+      // rotation tag; bake it in so the reader sees the frame right-side up.
+      decoded = img.bakeOrientation(decoded);
+
+      final result = await _reader.readLine(decoded);
+      final jpegBytes = Uint8List.fromList(img.encodeJpg(decoded, quality: 90));
+
+      if (!mounted) return;
+      setState(() {
+        _capturedBytes = jpegBytes;
+        _confidence = result.confidence;
+        _textController.text = result.text;
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Scan failed: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  void _retake() {
+    setState(() {
+      _capturedBytes = null;
+      _textController.clear();
+    });
+  }
+
+  /// Saves the captured frame plus the (possibly hand-corrected) recognized
+  /// text as one retraining sample. Images go to
+  /// `<app documents>/ocr_training_data/images/`, and a manifest CSV row is
+  /// appended alongside so the image+label pair can be pulled off-device
+  /// later and fed back into the next CRNN training run.
+  Future<void> _saveForTraining() async {
+    final bytes = _capturedBytes;
+    if (bytes == null) return;
+
+    final label = _textController.text.trim();
+    final dir = await getApplicationDocumentsDirectory();
+    final imagesDir = Directory('${dir.path}/ocr_training_data/images');
+    await imagesDir.create(recursive: true);
+
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final filename = '$timestamp.jpg';
+    final imageFile = File('${imagesDir.path}/$filename');
+    await imageFile.writeAsBytes(bytes);
+
+    final manifest = File('${dir.path}/ocr_training_data/labels.csv');
+    final escapedLabel = label.replaceAll('"', '""');
+    final line = 'images/$filename,"$escapedLabel",${_confidence.toStringAsFixed(3)}\n';
+    await manifest.writeAsString(line, mode: FileMode.append, flush: true);
+
+    if (mounted) {
+      setState(() => _savedCount++);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved sample #$_savedCount for retraining')),
+      );
+      _retake();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('OCR Scan')),
+      body: _capturedBytes == null ? _buildCameraView() : _buildResultView(),
+    );
+  }
+
+  Widget _buildCameraView() {
+    if (_cameraError != null) {
+      return Center(child: Text(_cameraError!, style: const TextStyle(color: Colors.red)));
+    }
+    if (!_isCameraInitialized || _cameraController == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return Column(
+      children: [
+        Expanded(child: CameraPreview(_cameraController!)),
+        if (_isModelLoading)
+          const Padding(
+            padding: EdgeInsets.all(8),
+            child: Text('Loading OCR model…', style: TextStyle(color: Colors.grey)),
+          ),
+        CaptureButton(
+          label: _isProcessing ? 'Scanning…' : 'Scan',
+          onPressed: _isProcessing ? null : _capture,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildResultView() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.memory(_capturedBytes!, fit: BoxFit.contain),
+          ),
+          const SizedBox(height: 16),
+          Text('Recognized text', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text(
+            'Confidence: ${(_confidence * 100).toStringAsFixed(1)}%',
+            style: const TextStyle(color: Colors.grey),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _textController,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              hintText: 'Recognized text (edit if wrong before saving)',
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _retake,
+                  child: const Text('Scan Again'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: _saveForTraining,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFDC143C),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Save for Training'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}

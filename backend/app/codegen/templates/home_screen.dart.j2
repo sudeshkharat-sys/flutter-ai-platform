@@ -6,7 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart' as drift;
 import 'inspection_camera_screen.dart';
 import 'history_screen.dart';
-import '../services/print_service.dart';
+{% if ocr_enabled %}import 'ocr_screen.dart';
+{% endif %}import '../services/print_service.dart';
 import '../database/database.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -565,6 +566,10 @@ class _HomeScreenState extends State<HomeScreen> {
           _navItem(Icons.history, "History", false, onTap: () {
             Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()));
           }),
+          {% if ocr_enabled %}_navItem(Icons.document_scanner, "OCR", false, onTap: () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const OcrScreen()));
+          }),
+          {% endif %}
         ],
       ),
     );
