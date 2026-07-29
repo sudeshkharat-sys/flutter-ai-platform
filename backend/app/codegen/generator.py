@@ -232,8 +232,14 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         # Add master data for generic decoding
         zf.writestr(f"{root}/assets/master_data.json", json.dumps(master_data_manifest, indent=2))
 
-        # Bundle Android launcher icons for each mipmap density
+        # Bundle Android launcher icons for each mipmap density. OCR-enabled
+        # apps get the "Digital Eye OCR" icon; everything else keeps the
+        # platform's default icon.
         icon_src = TEMPLATES_DIR / "icons" / "ic_launcher.png"
+        if ctx.get("ocr_enabled"):
+            ocr_icon_src = TEMPLATES_DIR / "icons" / "ocr_launcher.png"
+            if ocr_icon_src.exists():
+                icon_src = ocr_icon_src
         if icon_src.exists():
             try:
                 from PIL import Image
