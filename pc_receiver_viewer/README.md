@@ -49,12 +49,30 @@ run, which skips the auto-generated one).
 
 ## Pointing at your data
 
-This app doesn't ingest anything itself — it just reads a data folder. Set
-`VIEWER_DATA_DIR` to wherever the receiver's `received_data/` folder
-actually lives:
+This app doesn't ingest anything itself — it just reads a data folder, and
+where that folder is is an **admin-only, one-time setting** — there is no
+route in the web UI to view or change it, so nobody who opens the shared
+link can ever see or touch this setting, no matter what they click.
+
+Set it once with:
+
+```bash
+python viewer.py --set-data-dir "S:\PCReceiverData"
+```
+
+This saves the path permanently in `viewer_config.json` next to the
+script/exe. From then on, just run `viewer.py` (or the `.exe`) normally —
+no environment variable needed on every launch. Use the exact path shown in
+the receiver's own **⚙ Settings** screen, since that's the folder it's
+actually writing to.
+
+(`VIEWER_DATA_DIR` as an environment variable still works too, e.g. for a
+scripted first-run — it's only used if nothing has been saved via
+`--set-data-dir` yet, same priority order the receiver itself uses for its
+own data-folder setting.)
 
 - **Running on the same PC as receiver.py** (simplest): point it straight
-  at that folder, e.g. `set VIEWER_DATA_DIR=C:\PCReceiver\received_data`.
+  at the receiver's own data folder — same path, no copying.
 - **Running on a different machine**: point it at a synced/shared copy
   (e.g. a mapped network drive, a scheduled `robocopy`/rsync job, or a
   network share the receiver's `received_data/` is redirected to via its

@@ -683,9 +683,37 @@ def _cli_set_password():
     print("Viewer password updated.")
 
 
+def _cli_set_data_dir(path_str: str):
+    """Admin-only, one-time: permanently points this viewer at the
+    receiver's data folder. Saved in viewer_config.json, so once set it's
+    used on every future launch -- no env var needed, and nothing about
+    this path is ever reachable through the web UI/shared link, since no
+    route exists there to read or change it."""
+    path = Path(path_str)
+    if not path.exists():
+        print(f"'{path}' does not exist. Double-check the path (it should match "
+              f"the data folder shown in the receiver's Settings screen).")
+        sys.exit(1)
+    if not path.is_dir():
+        print(f"'{path}' is not a folder.")
+        sys.exit(1)
+    _config["dataDir"] = str(path.resolve())
+    _save_config(_config)
+    print(f"Viewer data folder set to: {path.resolve()}")
+    print("This is saved permanently -- restart the viewer normally (no env var needed) to use it.")
+
+
 if __name__ == "__main__":
     if "--set-password" in sys.argv:
         _cli_set_password()
+        sys.exit(0)
+
+    if "--set-data-dir" in sys.argv:
+        idx = sys.argv.index("--set-data-dir")
+        if idx + 1 >= len(sys.argv):
+            print("Usage: viewer.py --set-data-dir <path>")
+            sys.exit(1)
+        _cli_set_data_dir(sys.argv[idx + 1])
         sys.exit(0)
 
     local_ip = "0.0.0.0"
