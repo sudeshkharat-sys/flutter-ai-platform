@@ -190,40 +190,16 @@ class SyncService {
   String _fallbackDeviceLabel() =>
       'phone-${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
 
-  /// Count of inspections still pending delivery to at least one paired PC
-  /// (0 if no PC is paired yet).
-  Future<int> getUnsyncedCount() async {
-    final devices = await getPairedPcs();
-    if (devices.isEmpty) return 0;
-    return db.countUnsyncedForAnyPc(devices.map((d) => d.deviceId).toList());
-  }
+  Future<int> getUnsyncedCount() => db.countUnsyncedInspections();
 
-  /// Sends any not-yet-uploaded inspections to every paired PC (a phone can
-  /// be paired with more than one), not just the first -- each PC gets its
-  /// own delivery tracking, so pairing with PC B doesn't skip inspections
-  /// already sent to PC A. Intended to be called automatically right after
-  /// a submission (mirrors auto-print) -- returns null (no-op, no error to
+  /// Sends any not-yet-uploaded inspections to the first paired PC, if any
+  /// is paired. Intended to be called automatically right after a
+  /// submission (mirrors auto-print) -- returns null (no-op, no error to
   /// surface) if no PC has ever been paired yet.
   Future<SyncResult?> autoSendIfPaired() async {
     final devices = await getPairedPcs();
     if (devices.isEmpty) return null;
-    if (devices.length == 1) return sendToPc(devices.first);
-
-    final results = <SyncResult>[];
-    for (final pc in devices) {
-      results.add(await sendToPc(pc));
-    }
-    final failed = results.where((r) => !r.success).toList();
-    final totalSent = results.fold<int>(0, (sum, r) => sum + r.sentCount);
-    if (failed.isEmpty) {
-      return SyncResult(true, 'Sent to all ${devices.length} paired PCs.', sentCount: totalSent);
-    }
-    return SyncResult(
-      false,
-      '${devices.length - failed.length}/${devices.length} PCs received it. Failed: '
-          '${failed.map((r) => r.message).join('; ')}',
-      sentCount: totalSent,
-    );
+    return sendToPc(devices.first);
   }
 
   /// Exports every inspection not yet confirmed received by [pc] (database
@@ -234,7 +210,7 @@ class SyncService {
   /// unsynced until the next successful attempt.
   Future<SyncResult> sendToPc(PairedPc pc) async {
     try {
-      final bundle = await _buildExportBundle(pc.deviceId);
+      final bundle = await _buildExportBundle();
       if (bundle.inspectionIds.isEmpty) {
         return const SyncResult(true, 'Already up to date -- nothing to send.');
       }
@@ -272,7 +248,7 @@ class SyncService {
       final resp = await http.Response.fromStream(streamed);
 
       if (resp.statusCode == 200) {
-        await db.markInspectionsSyncedForPc(bundle.inspectionIds, pc.deviceId);
+        await db.markInspectionsSynced(bundle.inspectionIds);
         return SyncResult(true, 'Sent ${bundle.inspectionIds.length} inspection(s) to PC.',
             sentCount: bundle.inspectionIds.length);
       }
@@ -338,9 +314,9 @@ class SyncService {
     }
   }
 
-  Future<_ExportBundle> _buildExportBundle(String deviceId) async {
+  Future<_ExportBundle> _buildExportBundle() async {
     final archive = Archive();
-    final unsynced = await db.getUnsyncedInspectionsForPc(deviceId);
+    final unsynced = await db.getUnsyncedInspections();
     final manifest = <Map<String, dynamic>>[];
     final seenImagePaths = <String>{};
     final modelNames = await _loadModelNameMap();

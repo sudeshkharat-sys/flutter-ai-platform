@@ -64,9 +64,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       return;
     }
     setState(() => _resending = true);
-    // paired is non-empty (checked above), so autoSendIfPaired always
-    // attempts a send here and never returns null.
-    final result = (await SyncService.instance.autoSendIfPaired())!;
+    final result = await SyncService.instance.sendToPc(paired.first);
     if (!mounted) return;
     setState(() => _resending = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
