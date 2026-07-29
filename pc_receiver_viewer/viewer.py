@@ -295,6 +295,7 @@ def _flatten_rows(device: str, app_name: str) -> list[dict]:
                     "device": device,
                     "appName": app_name,
                     "batch": batch_dir.name,
+                    "inspectionId": insp.get("inspectionId"),
                     "vin": insp.get("vin"),
                     "modelCode": insp.get("modelCode"),
                     "modelName": insp.get("modelName"),
@@ -308,21 +309,6 @@ def _flatten_rows(device: str, app_name: str) -> list[dict]:
                     "imageUrl": _image_url(task.get("imagePath")),
                 })
     rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
-    return rows
-
-
-def _apply_filters(rows: list[dict], q: str, result: str, date_from: str, date_to: str) -> list[dict]:
-    if q:
-        q_lower = q.lower()
-        rows = [r for r in rows if q_lower in (r.get("vin") or "").lower()
-                or q_lower in (r.get("modelCode") or "").lower()
-                or q_lower in (r.get("modelName") or "").lower()]
-    if result in ("OK", "NOT OK"):
-        rows = [r for r in rows if r.get("result") == result]
-    if date_from:
-        rows = [r for r in rows if (r.get("date") or "") >= date_from]
-    if date_to:
-        rows = [r for r in rows if (r.get("date") or "") <= date_to]
     return rows
 
 
@@ -397,17 +383,12 @@ async def api_groups(_: None = Depends(_require_session)):
 
 
 @app.get("/api/data")
-async def api_data(
-    device: str,
-    appName: str,
-    q: str = "",
-    result: str = "",
-    dateFrom: str = "",
-    dateTo: str = "",
-    _: None = Depends(_require_session),
-):
+async def api_data(device: str, appName: str, _: None = Depends(_require_session)):
+    """Returns every row for this device/app, unfiltered -- same pattern
+    receiver.py's own dashboard uses (fetch once per device, then filter,
+    chart, and group entirely client-side), so filtering/charting/expand-
+    collapse all react instantly without a round trip per keystroke."""
     rows = _flatten_rows(device, appName)
-    rows = _apply_filters(rows, q, result, dateFrom, dateTo)
     truncated = len(rows) > MAX_ROWS_RETURNED
     return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
 
@@ -432,20 +413,19 @@ async def download_master_excel(device: str, appName: str, _: None = Depends(_re
     return FileResponse(xlsx_path, filename=f"{_safe_name(device)}_{_safe_name(appName)}.xlsx")
 
 
-@app.get("/download/excel-filtered")
-async def download_filtered_excel(
-    device: str,
-    appName: str,
-    q: str = "",
-    result: str = "",
-    dateFrom: str = "",
-    dateTo: str = "",
-    _: None = Depends(_require_session),
-):
-    rows = _flatten_rows(device, appName)
-    rows = _apply_filters(rows, q, result, dateFrom, dateTo)
+@app.post("/download/excel-filtered")
+async def download_filtered_excel(request: Request, _: None = Depends(_require_session)):
+    """Takes the exact rows the browser currently has filtered/displayed
+    (sent in the request body) and turns them straight into a workbook --
+    guarantees the download always matches what's on screen, instead of
+    re-deriving a filter server-side that could drift out of sync with
+    whatever filter combination the client-side table actually applied."""
+    body = await request.json()
+    rows = body.get("rows") or []
+    device = _safe_name(body.get("device", "data"))
+    app_name = _safe_name(body.get("appName", "app"))
     buf = _build_workbook(rows)
-    filename = f"{_safe_name(device)}_{_safe_name(appName)}_filtered.xlsx"
+    filename = f"{device}_{app_name}_filtered.xlsx"
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -516,7 +496,17 @@ VIEWER_HTML = """<!doctype html>
     --bg: #f7f7fa; --card: #ffffff; --border: #e6e6ec; --text: #1c1f26; --muted: #6b7280; --green: #1f9d55;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
+  /* Deliberately NOT a fixed-height/flex "app shell" layout -- this page
+     flows top-to-bottom normally and lets the browser's own document
+     scrollbar handle everything. A fixed-viewport layout with the table in
+     a flex:1 internal-scroll box (which is what receiver.py's own
+     dashboard does) squeezes the table into a sliver whenever the charts
+     panel above it grows or the window is short -- on a small screen it
+     can end up showing a single row. Scrolling the whole page avoids that
+     failure mode entirely, at the cost of the table header no longer
+     staying stuck to the top while you scroll (an acceptable trade). */
+  html, body { margin: 0; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
   header { background: var(--navy); color: #fff; padding: 10px 24px; display: flex; align-items: center; gap: 14px;
            box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
   header img { height: 48px; }
@@ -526,30 +516,76 @@ VIEWER_HTML = """<!doctype html>
   header a { color: #cfd3db; font-size: 12px; text-decoration: none; }
   header a:hover { color: #fff; }
 
-  main { padding: 20px 24px 40px; max-width: 1200px; margin: 0 auto; }
-  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
+  main { padding: 20px 24px 60px; max-width: 1300px; margin: 0 auto; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
   select, input[type=text], input[type=date] {
-    padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px;
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
   }
+  .filters input, .filters select { width: 130px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--card);
+             border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+  .filter-count { font-size: 11px; color: var(--muted); margin-left: auto; white-space: nowrap; }
   button.primary { background: var(--crimson); color: #fff; border: none; padding: 9px 14px; border-radius: 8px;
                    font-size: 13px; font-weight: 600; cursor: pointer; }
   button.primary:hover { background: var(--crimson-dark); }
-  button.secondary { background: #fff; border: 1px solid var(--border); padding: 9px 14px; border-radius: 8px;
-                      font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text); }
+  button.secondary { background: #fff; border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px;
+                      font-size: 12px; font-weight: 600; cursor: pointer; color: var(--text); }
   button.secondary:hover { background: #fafafc; }
+
+  /* Charts panel -- kept as its own small scrollable widget (a fixed max-
+     height here is fine, it's a compact area of its own, not the thing
+     that starves the table below it of space). */
+  .charts-panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+                  padding: 4px 16px; margin-bottom: 14px; max-height: 300px; overflow-y: auto; }
+  .charts-flow { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: flex-start; gap: 22px; }
+  .chart-row { margin: 10px 0; }
+  .chart-row:not(:first-child) { border-left: 1px dashed var(--border); padding-left: 22px; }
+  .chart-row-title { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px;
+                      text-transform: uppercase; letter-spacing: 0.4px; display: flex; align-items: center; gap: 6px; }
+  .chart-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; }
+  .chart-close:hover { color: var(--crimson); }
+  .chart-cards { display: flex; gap: 14px; flex-wrap: wrap; }
+  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px;
+                text-align: center; width: 112px; }
+  .chart-card.clickable-chart { cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; }
+  .chart-card.clickable-chart:hover { border-color: var(--crimson); box-shadow: 0 2px 8px rgba(220,20,60,0.15); }
+  .chart-card .chart-label { font-size: 11px; font-weight: 700; margin-top: 4px; white-space: nowrap;
+                              overflow: hidden; text-overflow: ellipsis; }
+  .chart-card .chart-meta { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .chart-note { font-size: 12px; color: var(--muted); font-style: italic; max-width: 280px; }
+  .chart-hidden-bar { font-size: 11px; color: var(--muted); margin: 8px 0; display: flex; align-items: center; gap: 10px; }
+  .chart-hidden-bar b { color: var(--text); }
 
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
   table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  table.data-table thead th { position: sticky; top: 0; background: #fafafc; border-bottom: 2px solid var(--border);
+  table.data-table thead th { background: #fafafc; border-bottom: 2px solid var(--border);
                                padding: 10px; text-align: left; white-space: nowrap; }
   table.data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  table.data-table tbody tr:hover { background: #fbfbfd; }
-  .pill { padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; display: inline-block; }
-  .pill.ok { background: #e7f7ee; color: var(--green); }
-  .pill.notok { background: #fdeaea; color: var(--crimson-dark); }
+  tr.group-row { cursor: pointer; }
+  tr.group-row:hover { background: #fbfbfd; }
+  tr.group-row .chevron { display: inline-block; transition: transform 0.15s; color: var(--muted); }
+  tr.group-row.expanded .chevron { transform: rotate(90deg); }
+  tr.detail-row { display: none; background: #fafafc; }
+  tr.detail-row.open { display: table-row; }
+  tr.detail-row td { padding: 10px 10px 14px 34px !important; }
+  table.mini-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  table.mini-table th { text-align: left; padding: 4px 8px; color: var(--muted); font-weight: 600;
+                         border-bottom: 1px solid var(--border); }
+  table.mini-table td { padding: 5px 8px; border-bottom: 1px solid #f0f0f3; }
+  .task-count-ok, .badge-ok { color: var(--green); font-weight: 700; }
+  .task-count-fail, .badge-fail { color: var(--crimson-dark); font-weight: 700; }
+  .img-link { color: var(--crimson); cursor: pointer; text-decoration: underline; font-size: 11px;
+              background: none; border: none; padding: 0; }
+  .img-link:disabled { color: var(--muted); text-decoration: none; cursor: default; }
   .muted { color: var(--muted); font-size: 12px; }
   .empty { padding: 40px; text-align: center; color: var(--muted); }
-  a.thumb-link { color: var(--crimson); text-decoration: none; font-size: 12px; font-weight: 600; }
+
+  .lightbox { position: fixed; inset: 0; background: rgba(10,12,18,0.85); display: none;
+              align-items: center; justify-content: center; z-index: 70; }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 90vw; max-height: 85vh; border-radius: 8px; }
+  .lightbox .lb-close { position: absolute; top: 20px; right: 28px; color: #fff; font-size: 28px;
+                          cursor: pointer; background: none; border: none; }
 </style>
 </head>
 <body>
@@ -565,28 +601,64 @@ VIEWER_HTML = """<!doctype html>
 <main>
   <div class="toolbar">
     <select id="groupSelect"></select>
-    <input type="text" id="q" placeholder="Search VIN / model...">
-    <select id="resultFilter">
-      <option value="">All results</option>
-      <option value="OK">OK only</option>
-      <option value="NOT OK">NOT OK only</option>
-    </select>
-    <input type="date" id="dateFrom">
-    <span class="muted">to</span>
-    <input type="date" id="dateTo">
-    <button class="secondary" id="applyBtn">Apply</button>
     <span style="flex:1"></span>
     <button class="secondary" id="downloadFullBtn">Download Full Excel</button>
     <button class="primary" id="downloadFilteredBtn">Download Filtered Excel</button>
   </div>
-  <div class="card">
-    <div id="tableWrap"></div>
+
+  <div class="filters">
+    <input id="fVin" placeholder="Filter VIN..." oninput="renderTable()">
+    <input id="fModel" placeholder="Filter Model Code..." oninput="renderTable()">
+    <input id="fModelName" placeholder="Filter Model Name..." oninput="renderTable()">
+    <input id="fDate" type="date" title="Filter Date" onchange="renderTable()">
+    <select id="fYear" onchange="renderTable()"><option value="">All Years</option></select>
+    <select id="fMonth" onchange="renderTable()">
+      <option value="">All Months</option>
+      <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
+      <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
+      <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
+      <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+    </select>
+    <select id="fShift" onchange="renderTable()">
+      <option value="">All Shifts</option>
+      <option value="A">Shift A</option><option value="B">Shift B</option><option value="C">Shift C</option>
+    </select>
+    <input id="fTask" placeholder="Filter Task..." oninput="renderTable()">
+    <input id="fClass" placeholder="Filter Detected..." oninput="renderTable()">
+    <select id="fResult" onchange="renderTable()">
+      <option value="">All Results</option>
+      <option value="OK">OK</option>
+      <option value="NOT OK">NOT OK</option>
+    </select>
+    <input id="fBatch" placeholder="Filter Send/Batch..." oninput="renderTable()">
+    <button class="secondary" onclick="clearFilters()">Clear Filters</button>
+    <div class="filter-count" id="filterCount"></div>
   </div>
-  <p class="muted" id="statusLine" style="margin-top:10px;"></p>
+
+  <div class="charts-panel" id="chartsPanel"></div>
+
+  <div class="card">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th></th><th>VIN</th><th>Model Code</th><th>Model Name</th><th>Date</th><th>Time</th>
+          <th>Shift</th><th>Tasks</th><th>Result</th><th>Batch</th>
+        </tr>
+      </thead>
+      <tbody id="viewerRows"></tbody>
+    </table>
+  </div>
 </main>
+
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <button class="lb-close" onclick="closeLightbox()">&#10005;</button>
+  <img id="lightboxImg" src="" alt="Inspection image">
+</div>
 
 <script>
 let groups = [];
+let viewerRows = [];
+let currentDevice = '', currentAppName = '';
 
 async function loadGroups() {
   const res = await fetch('/api/groups');
@@ -597,69 +669,332 @@ async function loadGroups() {
     `<option value="${g.device}|${g.appName}">${g.device} / ${g.appName} (${g.batchCount} sends)</option>`
   ).join('');
   if (groups.length === 0) {
-    document.getElementById('tableWrap').innerHTML = '<div class="empty">No data received yet.</div>';
+    document.getElementById('viewerRows').innerHTML =
+      '<tr><td colspan="10" class="empty">No data received yet.</td></tr>';
     return;
   }
   await loadData();
 }
 
-function currentGroup() {
-  const [device, appName] = document.getElementById('groupSelect').value.split('|');
-  return { device, appName };
-}
-
-function filterParams() {
-  const { device, appName } = currentGroup();
-  const q = document.getElementById('q').value;
-  const result = document.getElementById('resultFilter').value;
-  const dateFrom = document.getElementById('dateFrom').value;
-  const dateTo = document.getElementById('dateTo').value;
-  return new URLSearchParams({ device, appName, q, result, dateFrom, dateTo });
-}
-
 async function loadData() {
-  const params = filterParams();
-  const res = await fetch('/api/data?' + params.toString());
+  const [device, appName] = document.getElementById('groupSelect').value.split('|');
+  currentDevice = device; currentAppName = appName;
+  const res = await fetch('/api/data?' + new URLSearchParams({ device, appName }));
   if (res.status === 401) { window.location = '/login'; return; }
   const data = await res.json();
-  renderTable(data.rows);
-  document.getElementById('statusLine').textContent =
-    `${data.totalCount} row(s)` + (data.truncated ? ` -- showing first ${data.rows.length}, narrow your filters to see more` : '');
+  viewerRows = data.rows;
+  populateYearOptions();
+  renderTable();
 }
 
-function renderTable(rows) {
-  const wrap = document.getElementById('tableWrap');
-  if (rows.length === 0) {
-    wrap.innerHTML = '<div class="empty">No rows match this filter.</div>';
+function populateYearOptions() {
+  const years = [...new Set(viewerRows.map(r => (r.date || '').slice(0, 4)).filter(Boolean))].sort().reverse();
+  const sel = document.getElementById('fYear');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All Years</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
+  sel.value = current;
+}
+
+function clearFilters() {
+  ['fVin','fModel','fModelName','fTask','fClass','fBatch'].forEach(id => document.getElementById(id).value = '');
+  ['fDate','fYear','fMonth','fShift','fResult'].forEach(id => document.getElementById(id).value = '');
+  pinnedDay = null;
+  renderTable();
+}
+
+// ── Filtering (client-side, mirrors receiver.py's own dashboard so every
+//    filter reacts instantly against the rows already fetched) ──────────
+function getFilteredRows() {
+  const vin = document.getElementById('fVin').value.toLowerCase();
+  const model = document.getElementById('fModel').value.toLowerCase();
+  const modelName = document.getElementById('fModelName').value.toLowerCase();
+  const date = document.getElementById('fDate').value;
+  const year = document.getElementById('fYear').value;
+  const month = document.getElementById('fMonth').value;
+  const shift = document.getElementById('fShift').value;
+  const task = document.getElementById('fTask').value.toLowerCase();
+  const cls = document.getElementById('fClass').value.toLowerCase();
+  const result = document.getElementById('fResult').value;
+  const batch = document.getElementById('fBatch').value.toLowerCase();
+
+  return viewerRows.filter(row => {
+    const rowYear = (row.date || '').slice(0, 4);
+    const rowMonth = (row.date || '').slice(5, 7);
+    return (!vin || (row.vin || '').toLowerCase().includes(vin)) &&
+      (!model || (row.modelCode || '').toLowerCase().includes(model)) &&
+      (!modelName || (row.modelName || '').toLowerCase().includes(modelName)) &&
+      (!date || row.date === date) &&
+      (!year || rowYear === year) &&
+      (!month || rowMonth === month) &&
+      (!pinnedDay || (row.shiftDate || row.date) === pinnedDay) &&
+      (!shift || row.shift === shift) &&
+      (!task || (row.taskName || '').toLowerCase().includes(task)) &&
+      (!cls || (row.className || '').toLowerCase().includes(cls)) &&
+      (!result || row.result === result) &&
+      (!batch || (row.batch || '').toLowerCase().includes(batch));
+  });
+}
+
+// One row per VIN scan (inspection), tasks nested underneath -- matches
+// receiver.py's grouping so a multi-task VIN shows as one expandable row.
+function groupRowsByInspection(rows) {
+  const groups = {}; const order = [];
+  rows.forEach(r => {
+    const key = `${r.batch}|${r.inspectionId ?? ''}|${r.vin}|${r.date}|${r.time}`;
+    if (!groups[key]) {
+      groups[key] = { key, vin: r.vin, modelCode: r.modelCode, modelName: r.modelName,
+                      date: r.date, time: r.time, shift: r.shift, shiftDate: r.shiftDate, batch: r.batch, tasks: [] };
+      order.push(key);
+    }
+    groups[key].tasks.push(r);
+  });
+  return order.map(k => groups[k]);
+}
+
+const _expandedGroups = new Set();
+function toggleGroup(key) {
+  if (_expandedGroups.has(key)) _expandedGroups.delete(key); else _expandedGroups.add(key);
+  renderTable();
+}
+
+function escapeAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
+
+function renderTable() {
+  const filtered = getFilteredRows();
+  document.getElementById('filterCount').textContent = `${filtered.length} of ${viewerRows.length} row(s)`;
+  renderCharts(filtered);
+
+  const tbody = document.getElementById('viewerRows');
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No rows match these filters.</td></tr>';
     return;
   }
-  const head = `<tr>
-    <th>VIN</th><th>Model Code</th><th>Model Name</th><th>Date</th><th>Time</th>
-    <th>Shift</th><th>Task</th><th>Detected</th><th>Result</th><th>Image</th>
-  </tr>`;
-  const body = rows.map(r => `<tr>
-    <td>${r.vin || ''}</td>
-    <td>${r.modelCode || ''}</td>
-    <td>${r.modelName || ''}</td>
-    <td>${r.date || ''}</td>
-    <td>${r.time || ''}</td>
-    <td>${r.shift || ''}</td>
-    <td>${r.taskName || ''}</td>
-    <td>${r.className || ''}</td>
-    <td><span class="pill ${r.result === 'OK' ? 'ok' : 'notok'}">${r.result}</span></td>
-    <td>${r.imageUrl ? `<a class="thumb-link" href="${r.imageUrl}" target="_blank">View</a>` : ''}</td>
-  </tr>`).join('');
-  wrap.innerHTML = `<table class="data-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+
+  const groups = groupRowsByInspection(filtered);
+  tbody.innerHTML = groups.map(g => {
+    const okCount = g.tasks.filter(t => t.result === 'OK').length;
+    const failCount = g.tasks.length - okCount;
+    const expanded = _expandedGroups.has(g.key);
+    const taskSummary = g.tasks.length === 1
+      ? `<span class="${okCount ? 'task-count-ok' : 'task-count-fail'}">${g.tasks[0].result}</span>`
+      : `<span class="task-count-ok">${okCount} OK</span>${failCount ? ` / <span class="task-count-fail">${failCount} NOT OK</span>` : ''} (${g.tasks.length} tasks)`;
+    const vinResult = failCount === 0 ? 'PASS' : 'FAIL';
+
+    const detailRows = g.tasks.map(t => `
+      <tr>
+        <td>${t.taskName || ''}</td>
+        <td>${t.className || ''}</td>
+        <td class="${t.result === 'OK' ? 'badge-ok' : 'badge-fail'}">${t.result || ''}</td>
+        <td>${t.imageUrl ? `<button class="img-link" onclick="openLightbox('${t.imageUrl}')">View</button>` : '<button class="img-link" disabled>-</button>'}</td>
+      </tr>`).join('');
+
+    return `
+      <tr class="group-row ${expanded ? 'expanded' : ''}" onclick="toggleGroup('${g.key.replace(/'/g, "\\\\'")}')">
+        <td><span class="chevron">&#9656;</span></td>
+        <td>${g.vin || ''}</td><td>${g.modelCode || ''}</td><td>${g.modelName || ''}</td>
+        <td>${g.date || ''}</td><td>${g.time || ''}</td><td>${g.shift || ''}</td>
+        <td>${taskSummary}</td>
+        <td class="${vinResult === 'PASS' ? 'badge-ok' : 'badge-fail'}">${vinResult}</td>
+        <td>${g.batch || ''}</td>
+      </tr>
+      <tr class="detail-row ${expanded ? 'open' : ''}" data-key="${escapeAttr(g.key)}">
+        <td colspan="10">
+          <table class="mini-table">
+            <thead><tr><th>Task</th><th>Detected</th><th>Result</th><th>Image</th></tr></thead>
+            <tbody>${detailRows}</tbody>
+          </table>
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+// ── Pie charts (hand-drawn SVG, ported from receiver.py's dashboard) ────
+function pieSvg(ok, fail, size) {
+  size = size || 82;
+  const total = ok + fail;
+  const r = size / 2 - 4, cx = size / 2, cy = size / 2;
+  if (total === 0) return `<svg width="${size}" height="${size}"><circle cx="${cx}" cy="${cy}" r="${r}" fill="#eee"/></svg>`;
+  const p = ok / total;
+  let slices;
+  if (p >= 0.999) {
+    slices = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#1f9d55"/>`;
+  } else if (p <= 0.001) {
+    slices = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#DC143C"/>`;
+  } else {
+    const toXY = (deg) => { const rad = (deg - 90) * Math.PI / 180; return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)]; };
+    const angle = p * 360;
+    const [sx, sy] = toXY(0); const [ex, ey] = toXY(angle);
+    const greenPath = `M${cx},${cy} L${sx},${sy} A${r},${r} 0 ${angle > 180 ? 1 : 0} 1 ${ex},${ey} Z`;
+    const [sx2, sy2] = toXY(angle); const [ex2, ey2] = toXY(360);
+    const redPath = `M${cx},${cy} L${sx2},${sy2} A${r},${r} 0 ${(360 - angle) > 180 ? 1 : 0} 1 ${ex2},${ey2} Z`;
+    slices = `<path d="${greenPath}" fill="#1f9d55"/><path d="${redPath}" fill="#DC143C"/>`;
+  }
+  const pct = Math.round(p * 100);
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${slices}
+    <circle cx="${cx}" cy="${cy}" r="${r * 0.55}" fill="white"/>
+    <text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="12" font-weight="700" fill="#1c1f26">${pct}%</text></svg>`;
+}
+
+function chartCard(label, ok, fail, section, value, okLabel, failLabel) {
+  okLabel = okLabel || 'OK'; failLabel = failLabel || 'NOT OK';
+  const attrs = section
+    ? ` data-section="${section}" data-value="${escapeAttr(value)}" class="chart-card clickable-chart" title="Click to filter to ${escapeAttr(label)}"`
+    : ' class="chart-card"';
+  return `<div${attrs}>${pieSvg(ok, fail)}
+    <div class="chart-label" title="${label}">${label}</div>
+    <div class="chart-meta">${ok} ${okLabel} / ${fail} ${failLabel}</div></div>`;
+}
+
+function bucketize(rows, keyFn) {
+  const buckets = {};
+  for (const r of rows) {
+    const k = keyFn(r);
+    if (k === null || k === undefined || k === '') continue;
+    if (!buckets[k]) buckets[k] = { ok: 0, fail: 0 };
+    if (r.result === 'OK') buckets[k].ok++; else buckets[k].fail++;
+  }
+  return buckets;
+}
+
+const MAX_PIE_BUCKETS = 12;
+let pinnedDay = null;
+let hiddenChartSections = new Set(JSON.parse(localStorage.getItem('viewerHiddenChartSections') || '[]'));
+const CORE_CHART_TITLES = new Set(['Overall (current filters)', 'Overall Result by Shift', 'VIN Result (Pass/Fail)']);
+let extrasVisible = localStorage.getItem('viewerChartExtrasVisible') === '1';
+
+function hideChartSection(title) {
+  hiddenChartSections.add(title);
+  localStorage.setItem('viewerHiddenChartSections', JSON.stringify([...hiddenChartSections]));
+  renderTable();
+}
+function showAllChartSections() {
+  hiddenChartSections.clear();
+  localStorage.setItem('viewerHiddenChartSections', '[]');
+  extrasVisible = true;
+  localStorage.setItem('viewerChartExtrasVisible', '1');
+  renderTable();
+}
+function hideExtraChartSections() {
+  extrasVisible = false;
+  localStorage.setItem('viewerChartExtrasVisible', '0');
+  renderTable();
+}
+function clearPinnedDay() { pinnedDay = null; renderTable(); }
+
+function renderCharts(filtered) {
+  const el = document.getElementById('chartsPanel');
+  if (!filtered.length) { el.innerHTML = ''; return; }
+
+  const overallOk = filtered.filter(r => r.result === 'OK').length;
+  const overallFail = filtered.length - overallOk;
+  const sections = [];
+  sections.push({ title: 'Overall (current filters)', cards: [chartCard('All Results', overallOk, overallFail)] });
+
+  const byShift = bucketize(filtered, r => r.shift);
+  const shiftKeys = Object.keys(byShift).sort();
+  if (shiftKeys.length) {
+    sections.push({ title: 'Overall Result by Shift', cards: shiftKeys.map(k => chartCard('Shift ' + k, byShift[k].ok, byShift[k].fail, 'shift', k)) });
+  }
+
+  const inspectionGroups = groupRowsByInspection(filtered);
+  let vinPass = 0, vinFail = 0;
+  inspectionGroups.forEach(g => { if (g.tasks.some(t => t.result !== 'OK')) vinFail++; else vinPass++; });
+  sections.push({ title: 'VIN Result (Pass/Fail)', cards: [chartCard('All VIN Scans', vinPass, vinFail, null, null, 'Pass', 'Fail')] });
+
+  const byVin = bucketize(filtered, r => r.vin);
+  const vinKeys = Object.keys(byVin);
+  if (vinKeys.length === 1) {
+    sections.push({ title: 'This VIN', cards: [chartCard(vinKeys[0], byVin[vinKeys[0]].ok, byVin[vinKeys[0]].fail)] });
+  } else if (vinKeys.length > 1 && vinKeys.length <= MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By VIN', cards: vinKeys.map(k => chartCard(k, byVin[k].ok, byVin[k].fail, 'vin', k)) });
+  } else if (vinKeys.length > MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By VIN', note: `${vinKeys.length} VINs in view -- filter down to ${MAX_PIE_BUCKETS} or fewer to see per-VIN pies.` });
+  }
+
+  const byDay = bucketize(filtered, r => r.shiftDate || r.date);
+  const dayKeys = Object.keys(byDay).sort();
+  if (dayKeys.length && dayKeys.length <= MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By Day (shift-day)', cards: dayKeys.map(k => chartCard(k, byDay[k].ok, byDay[k].fail, 'day', k)) });
+  } else if (dayKeys.length > MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By Day (shift-day)', note: `${dayKeys.length} days in view -- pick a Month filter to see day-wise pies.` });
+  }
+
+  const byMonth = bucketize(filtered, r => (r.date || '').slice(0, 7));
+  const monthKeys = Object.keys(byMonth).sort();
+  if (monthKeys.length && monthKeys.length <= MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By Month', cards: monthKeys.map(k => chartCard(k, byMonth[k].ok, byMonth[k].fail, 'month', k)) });
+  } else if (monthKeys.length > MAX_PIE_BUCKETS) {
+    sections.push({ title: 'By Month', note: `${monthKeys.length} months in view -- pick a Year filter to see month-wise pies.` });
+  }
+
+  const inPlay = extrasVisible ? sections : sections.filter(s => CORE_CHART_TITLES.has(s.title));
+  const foldedCount = extrasVisible ? 0 : sections.length - inPlay.length;
+  const visible = inPlay.filter(s => !hiddenChartSections.has(s.title));
+  const hidden = inPlay.filter(s => hiddenChartSections.has(s.title));
+
+  let html = '';
+  if (hidden.length) {
+    html += `<div class="chart-hidden-bar">Hidden: ${hidden.map(s => s.title).join(', ')}
+      <button class="secondary" onclick="showAllChartSections()">Show All</button></div>`;
+  }
+  if (!extrasVisible && foldedCount > 0) {
+    html += `<div class="chart-hidden-bar">${foldedCount} more chart${foldedCount === 1 ? '' : 's'} available (By VIN, By Day, By Month...)
+      <button class="secondary" onclick="showAllChartSections()">Show All Charts</button></div>`;
+  } else if (extrasVisible) {
+    html += `<div class="chart-hidden-bar"><button class="secondary" onclick="hideExtraChartSections()">Show Fewer</button></div>`;
+  }
+  if (pinnedDay) {
+    html += `<div class="chart-hidden-bar">Pinned to day: <b>${pinnedDay}</b> <button class="secondary" onclick="clearPinnedDay()">Clear</button></div>`;
+  }
+  html += '<div class="charts-flow">' + visible.map(s => `
+    <div class="chart-row">
+      <div class="chart-row-title">${s.title}
+        <button class="chart-close" title="Hide this chart" onclick="hideChartSection('${s.title.replace(/'/g, "\\\\'")}')">&#10005;</button>
+      </div>
+      ${s.note ? `<div class="chart-note">${s.note}</div>` : `<div class="chart-cards">${s.cards.join('')}</div>`}
+    </div>`).join('') + '</div>';
+  el.innerHTML = html;
+
+  el.querySelectorAll('.chart-card.clickable-chart').forEach(card => {
+    card.addEventListener('click', () => {
+      const section = card.dataset.section, value = card.dataset.value;
+      if (section === 'shift') document.getElementById('fShift').value = value;
+      else if (section === 'vin') document.getElementById('fVin').value = value;
+      else if (section === 'month') { const [y, m] = value.split('-'); document.getElementById('fYear').value = y; document.getElementById('fMonth').value = m; }
+      else if (section === 'day') pinnedDay = value;
+      renderTable();
+    });
+  });
+}
+
+function openLightbox(url) {
+  document.getElementById('lightboxImg').src = url;
+  document.getElementById('lightbox').classList.add('open');
+}
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lightboxImg').src = '';
+}
+
+async function downloadBlob(url, body, filename) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (res.status === 401) { window.location = '/login'; return; }
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 document.getElementById('groupSelect').addEventListener('change', loadData);
-document.getElementById('applyBtn').addEventListener('click', loadData);
 document.getElementById('downloadFullBtn').addEventListener('click', () => {
-  const { device, appName } = currentGroup();
-  window.location = '/download/excel?' + new URLSearchParams({ device, appName }).toString();
+  window.location = '/download/excel?' + new URLSearchParams({ device: currentDevice, appName: currentAppName });
 });
 document.getElementById('downloadFilteredBtn').addEventListener('click', () => {
-  window.location = '/download/excel-filtered?' + filterParams().toString();
+  const rows = getFilteredRows();
+  downloadBlob('/download/excel-filtered', { rows, device: currentDevice, appName: currentAppName },
+    `${currentDevice}_${currentAppName}_filtered.xlsx`);
 });
 
 loadGroups();
