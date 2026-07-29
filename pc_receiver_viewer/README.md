@@ -47,24 +47,41 @@ python viewer.py --set-password
 (or set the `VIEWER_PASSWORD` environment variable before the very first
 run, which skips the auto-generated one).
 
+**Changing the password later:** run the same command again any time —
+`python viewer.py --set-password` — it always overwrites whatever password
+was set before, there's no limit to how many times you can rotate it.
+**One thing to remember:** the running viewer process only reads the
+password when it starts up, so if the viewer is currently running, stop it
+first, run `--set-password`, then start it again — otherwise it keeps
+accepting the old password until it's restarted.
+
 ## Pointing at your data
 
 This app doesn't ingest anything itself — it just reads a data folder, and
-where that folder is is an **admin-only, one-time setting** — there is no
-route in the web UI to view or change it, so nobody who opens the shared
-link can ever see or touch this setting, no matter what they click.
+where that folder is is an **admin-only setting** — there is no route in
+the web UI to view or change it, so nobody who opens the shared link can
+ever see or touch this setting, no matter what they click.
 
-Set it once with:
+Set (or change) it with:
 
 ```bash
-python viewer.py --set-data-dir "S:\PCReceiverData"
+python viewer.py --set-data-dir
 ```
 
+Run with no path, and it opens a native folder-browse window — click your
+way to the receiver's data folder instead of typing a path that could have
+a typo. (Needs a graphical session to show that window — if you're running
+this from a non-graphical/remote console, pass the path directly instead:
+`python viewer.py --set-data-dir "S:\PCReceiverData"`.) Either way, use the
+exact folder shown in the receiver's own **⚙ Settings** screen, since
+that's what it's actually writing to.
+
 This saves the path permanently in `viewer_config.json` next to the
-script/exe. From then on, just run `viewer.py` (or the `.exe`) normally —
-no environment variable needed on every launch. Use the exact path shown in
-the receiver's own **⚙ Settings** screen, since that's the folder it's
-actually writing to.
+script/exe — re-run the same command any time to point it at a different
+folder instead, it always overwrites the previous value. From then on, just
+run `viewer.py` (or the `.exe`) normally, no environment variable needed.
+Same restart note as the password: if the viewer is already running, stop
+it, change the folder, then start it again.
 
 (`VIEWER_DATA_DIR` as an environment variable still works too, e.g. for a
 scripted first-run — it's only used if nothing has been saved via

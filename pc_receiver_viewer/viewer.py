@@ -683,12 +683,39 @@ def _cli_set_password():
     print("Viewer password updated.")
 
 
-def _cli_set_data_dir(path_str: str):
+def _pick_folder_dialog() -> str | None:
+    """Opens a native OS folder-browser window on top of everything else --
+    same approach receiver.py already uses for its own data-folder Settings.
+    Typing a path by hand risks a typo that silently points the viewer at
+    the wrong (or a nonexistent) folder; browsing to it removes that risk.
+    Returns None if the user cancels."""
+    import tkinter
+    from tkinter import filedialog
+
+    root = tkinter.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        chosen = filedialog.askdirectory(title="Choose the receiver's data folder (e.g. its 'received_data' or S:\\... folder)")
+    finally:
+        root.destroy()
+    return chosen or None
+
+
+def _cli_set_data_dir(path_str: str | None):
     """Admin-only, one-time: permanently points this viewer at the
     receiver's data folder. Saved in viewer_config.json, so once set it's
     used on every future launch -- no env var needed, and nothing about
     this path is ever reachable through the web UI/shared link, since no
-    route exists there to read or change it."""
+    route exists there to read or change it.
+
+    Can be re-run any time to point at a different folder -- it always
+    overwrites the previous value."""
+    if path_str is None:
+        path_str = _pick_folder_dialog()
+        if not path_str:
+            print("Cancelled -- data folder not changed.")
+            sys.exit(0)
     path = Path(path_str)
     if not path.exists():
         print(f"'{path}' does not exist. Double-check the path (it should match "
@@ -710,10 +737,11 @@ if __name__ == "__main__":
 
     if "--set-data-dir" in sys.argv:
         idx = sys.argv.index("--set-data-dir")
-        if idx + 1 >= len(sys.argv):
-            print("Usage: viewer.py --set-data-dir <path>")
-            sys.exit(1)
-        _cli_set_data_dir(sys.argv[idx + 1])
+        # With a path argument: use it directly (scripted setups).
+        # Without one: open a native folder-browse window instead, so
+        # there's no path to mistype.
+        has_path_arg = idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("--")
+        _cli_set_data_dir(sys.argv[idx + 1] if has_path_arg else None)
         sys.exit(0)
 
     local_ip = "0.0.0.0"
