@@ -1361,6 +1361,8 @@ function OcrModelsPanel({ app, onUpdate }) {
 
   const detectorId = app.app_settings?.detector_model_id || '';
   const recognizerId = app.app_settings?.recognizer_model_id || '';
+  const targetClass = app.app_settings?.detector_target_class || '';
+  const detectorClasses = models.find(m => m.id === detectorId)?.classes || [];
 
   const handleAssign = async (field, value) => {
     setSaving(true);
@@ -1378,9 +1380,40 @@ function OcrModelsPanel({ app, onUpdate }) {
     }
   };
 
+  const handleDetectorPicked = async (modelId) => {
+    // Picking a different detector invalidates any previously chosen target
+    // class (it belonged to the old model's label set), so re-guess one
+    // from the new model's classes rather than leaving a stale value.
+    const model = models.find(m => m.id === modelId);
+    const modelClasses = model?.classes || [];
+    const guess = modelClasses.find(c => c.toLowerCase().includes('plate'));
+    setSaving(true);
+    try {
+      const nextSettings = {
+        ...(app.app_settings || {}),
+        app_type: 'free_ocr',
+        detector_model_id: modelId,
+        detector_target_class: guess || modelClasses[0] || '',
+      };
+      const nextIds = Array.from(new Set([
+        ...(app.model_asset_ids || []),
+        nextSettings.detector_model_id,
+        nextSettings.recognizer_model_id,
+      ].filter(Boolean)));
+      await updateApp(app.id, { app_settings: nextSettings, model_asset_ids: nextIds });
+      await onUpdate();
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleUploaded = (field, asset) => {
     setModels(prev => [...prev, asset]);
-    handleAssign(field, asset.id);
+    if (field === 'detector_model_id') {
+      handleDetectorPicked(asset.id);
+    } else {
+      handleAssign(field, asset.id);
+    }
   };
 
   return (
@@ -1388,15 +1421,33 @@ function OcrModelsPanel({ app, onUpdate }) {
       <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: 'uppercase', marginBottom: 16 }}>OCR Reader Models</div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <OcrModelSlot
-          label="Plate/Region Detector (YOLO)"
-          accept=".pt"
-          uploadKind="pt"
-          models={models}
-          valueId={detectorId}
-          onPick={v => handleAssign('detector_model_id', v)}
-          onUploaded={asset => handleUploaded('detector_model_id', asset)}
-        />
+        <div>
+          <OcrModelSlot
+            label="Plate/Region Detector (YOLO)"
+            accept=".pt"
+            uploadKind="pt"
+            models={models}
+            valueId={detectorId}
+            onPick={handleDetectorPicked}
+            onUploaded={asset => handleUploaded('detector_model_id', asset)}
+          />
+          {detectorId && detectorClasses.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <label style={labelStyle}>Which class is the plate/region to read?</label>
+              <select
+                style={{ ...inputStyle, cursor: 'pointer' }}
+                value={targetClass}
+                disabled={saving}
+                onChange={e => handleAssign('detector_target_class', e.target.value)}
+              >
+                <option value="">Select a class...</option>
+                {detectorClasses.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
         <OcrModelSlot
           label="Character Reader (CRNN)"
           accept=".tflite"
