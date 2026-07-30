@@ -27,6 +27,11 @@ class _OcrCameraScreenState extends State<OcrCameraScreen> {
   final _reader = CrnnReader();
   final _textController = TextEditingController();
 
+  // Which detector class marks the region to OCR (e.g. "plate"). Empty
+  // means unconfigured — fall back to the highest-confidence detection of
+  // any class rather than reading nothing.
+  static const String _targetClass = '{{ detector_target_class }}';
+
   bool _modelsReady = false;
   bool _busy = false;
   img.Image? _capturedImage;
@@ -82,12 +87,18 @@ class _OcrCameraScreenState extends State<OcrCameraScreen> {
     }
     decoded = img.bakeOrientation(decoded);
 
-    final detections = await _detector.predictImage(decoded);
+    final allDetections = await _detector.predictImage(decoded);
+    final detections = _targetClass.isEmpty
+        ? allDetections
+        : allDetections.where((d) => d.className == _targetClass).toList();
+
     if (detections.isEmpty) {
       setState(() {
         _busy = false;
         _capturedImage = decoded;
-        _statusMessage = 'No plate/region detected. Adjust framing and retry.';
+        _statusMessage = _targetClass.isEmpty
+            ? 'No plate/region detected. Adjust framing and retry.'
+            : "No '$_targetClass' detected. Adjust framing and retry.";
       });
       return;
     }
