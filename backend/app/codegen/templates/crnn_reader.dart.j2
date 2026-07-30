@@ -1,0 +1,133 @@
+import 'dart:typed_data';
+import 'dart:ui';
+import 'package:flutter/foundation.dart';
+import 'package:image/image.dart' as img;
+import 'package:tflite_flutter/tflite_flutter.dart';
+
+/// Reads a cropped alphanumeric region (plate/engraving crop from the YOLO
+/// detector) with the CRNN+CTC line-recognition model exported by
+/// ai-vision-platform's crnn_training.py. Charset and geometry below must
+/// match that training script exactly (IMG_H/IMG_W/CHARSET/blank index) —
+/// they are not configurable per-app because the model architecture is fixed.
+class CrnnReader {
+  static const int imgH = 32;
+  static const int imgW = 256;
+  static const String _charset = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  static const int _blankIndex = 36; // CTC blank is the LAST class (37 total)
+
+  Interpreter? _interpreter;
+  bool get isLoaded => _interpreter != null;
+
+  Future<void> loadModel(String modelPath) async {
+    _interpreter?.close();
+    try {
+      _interpreter = await Interpreter.fromAsset(modelPath);
+    } catch (e) {
+      debugPrint('[CrnnReader] Error loading model: $e');
+      _interpreter = null;
+    }
+  }
+
+  void dispose() {
+    _interpreter?.close();
+    _interpreter = null;
+  }
+
+  /// Grayscale + polarity-normalize + aspect-preserving resize + letterbox
+  /// into a fixed imgH x imgW canvas (dark text on light background), the
+  /// same normalization crnn_training.py applies before encoding a line.
+  static img.Image _normalizeLine(img.Image src) {
+    img.Image gray = img.grayscale(src);
+
+    // Full Otsu thresholding isn't worth replicating on-device; mean
+    // luminance is a good enough proxy for "is this crop mostly dark
+    // background" to decide whether to invert polarity.
+    int sum = 0;
+    for (int y = 0; y < gray.height; y++) {
+      for (int x = 0; x < gray.width; x++) {
+        sum += gray.getPixel(x, y).r.toInt();
+      }
+    }
+    final double mean = sum / (gray.width * gray.height);
+    if (mean < 128) {
+      gray = img.invert(gray);
+    }
+
+    final double scale = imgH / gray.height;
+    final int newW = (gray.width * scale).round().clamp(1, imgW);
+    final resized = img.copyResize(
+      gray,
+      width: newW,
+      height: imgH,
+      interpolation: img.Interpolation.average,
+    );
+
+    final canvas = img.Image(width: imgW, height: imgH);
+    img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
+    img.compositeImage(canvas, resized, dstX: 0, dstY: 0);
+    return canvas;
+  }
+
+  static Float32List _toFloat32(img.Image normalized) {
+    final buffer = Float32List(imgH * imgW);
+    int idx = 0;
+    for (int y = 0; y < imgH; y++) {
+      for (int x = 0; x < imgW; x++) {
+        buffer[idx++] = normalized.getPixel(x, y).r.toDouble() / 255.0;
+      }
+    }
+    return buffer;
+  }
+
+  /// Greedy CTC decode: argmax per timestep, collapse consecutive repeats,
+  /// drop blanks.
+  static String _greedyDecode(List<List<double>> probs) {
+    final buf = StringBuffer();
+    int prev = -1;
+    for (final timestep in probs) {
+      int best = 0;
+      double bestScore = timestep[0];
+      for (int c = 1; c < timestep.length; c++) {
+        if (timestep[c] > bestScore) {
+          bestScore = timestep[c];
+          best = c;
+        }
+      }
+      if (best != prev && best != _blankIndex) {
+        buf.write(_charset[best]);
+      }
+      prev = best;
+    }
+    return buf.toString();
+  }
+
+  /// Crops [source] to the normalized [bbox] (left/top/width/height in 0..1
+  /// coordinates, as produced by ModelManager's YOLO detector) and reads the
+  /// alphanumeric string inside it.
+  Future<String> readBbox(img.Image source, Rect bbox) async {
+    if (_interpreter == null) return '';
+
+    final int x = (bbox.left * source.width).round().clamp(0, source.width - 1);
+    final int y = (bbox.top * source.height).round().clamp(0, source.height - 1);
+    final int w = (bbox.width * source.width).round().clamp(1, source.width - x);
+    final int h = (bbox.height * source.height).round().clamp(1, source.height - y);
+    final cropped = img.copyCrop(source, x: x, y: y, width: w, height: h);
+
+    final normalized = _normalizeLine(cropped);
+    final input = _toFloat32(normalized).reshape([1, imgH, imgW, 1]);
+
+    final outputShape = _interpreter!.getOutputTensor(0).shape; // [1, T, 37]
+    final output = List.generate(
+      outputShape[0],
+      (_) => List.generate(
+        outputShape[1],
+        (_) => List.filled(outputShape[2], 0.0),
+      ),
+    );
+
+    _interpreter!.run(input, output);
+    return _greedyDecode(List<List<double>>.from(
+      output[0].map((row) => List<double>.from(row)),
+    ));
+  }
+}
