@@ -537,7 +537,10 @@ VIEWER_HTML = """<!doctype html>
      that starves the table below it of space). */
   .charts-panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
                   padding: 4px 16px; margin-bottom: 14px; max-height: 300px; overflow-y: auto; }
-  .charts-flow { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: flex-start; gap: 22px; }
+  /* Centered as a group -- only wraps to the next line when the sections
+     actually run out of horizontal room, instead of hugging the left
+     edge or each section claiming a full-width row regardless of size. */
+  .charts-flow { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: center; gap: 22px; }
   .chart-row { margin: 10px 0; }
   /* Only sections marked as the start of a new group (task-level Overall
      charts vs. VIN-level charts vs. the By VIN/Day/Month extras) get a
