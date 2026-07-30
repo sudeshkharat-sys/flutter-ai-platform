@@ -60,8 +60,8 @@ def _dart_slug(name: str) -> str:
 def generate_flutter_project(app_project, model_asset=None, all_model_assets=None) -> bytes:
     """Render all Jinja2 templates and return a ZIP file as bytes."""
     env = _get_jinja_env()
-    
-    # Handle dict vs object dynamically for backward compatibility if needed, 
+
+    # Handle dict vs object dynamically for backward compatibility if needed,
     # but primarily expect dicts from the new StateDBConnector
     def get_attr(obj, key, default=None):
         if isinstance(obj, dict):
@@ -69,7 +69,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         return getattr(obj, key, default)
 
     settings = get_attr(app_project, "app_settings") or {}
-    
+
     # Handle multiple models and map them for tasks
     models_list = all_model_assets or ([model_asset] if model_asset else [])
     model_id_to_paths = {}
@@ -82,7 +82,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
 
     models_manifest = []
     inspection_tasks = get_attr(app_project, "inspection_tasks")
-    
+
     if isinstance(inspection_tasks, str):
         import json
         try:
@@ -167,7 +167,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
     app_name = get_attr(app_project, "name", "My App")
     package_name = get_attr(app_project, "package_name", "com.example.app")
     canvas_state = get_attr(app_project, "canvas_state") or []
-    
+
     if isinstance(canvas_state, str):
         import json
         try:
@@ -205,10 +205,17 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "detection_method": settings.get("detection_method", "default"),
     }
 
+    is_free_ocr = ctx["app_type"] == "free_ocr"
+
     # OCR codegen is only enabled in multi-class mode AND when at least one
     # mandatory class has OCR verification configured with target text.
+    # free_ocr apps never use this ML Kit target-match path — they run the
+    # CRNN reader instead (see crnn_reader.dart.j2), so keep it off here to
+    # avoid pulling in google_mlkit_text_recognition for a build that doesn't
+    # use it.
     ctx["ocr_enabled"] = (
-        ctx["detection_method"] == "multiclass"
+        not is_free_ocr
+        and ctx["detection_method"] == "multiclass"
         and any(
             bool((entry.get("classOcrConfig") or {}).get(cls, {}).get("ocrEnabled"))
             and bool((entry.get("classOcrConfig") or {}).get(cls, {}).get("ocrTargetText"))
@@ -217,47 +224,91 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         )
     )
 
+    if is_free_ocr:
+        # Two dedicated model slots configured on the app: the YOLO
+        # plate/region detector and the CRNN character reader. Configured via
+        # app_settings.detector_model_id / recognizer_model_id (set by the
+        # React builder when app_type == 'free_ocr'), independent of the
+        # inspection_tasks/mandatoryClasses config the VIN-scan flow uses.
+        detector_paths = model_id_to_paths.get(settings.get("detector_model_id"), {})
+        recognizer_paths = model_id_to_paths.get(settings.get("recognizer_model_id"), {})
+        ctx["detector_tflite_path"] = detector_paths.get("tflite", "model_0.tflite").rsplit("/", 1)[-1]
+        ctx["detector_labels_path"] = detector_paths.get("labels", "labels_0.txt").rsplit("/", 1)[-1]
+        ctx["recognizer_tflite_path"] = recognizer_paths.get("tflite", "model_1.tflite").rsplit("/", 1)[-1]
+
     # Map of zip path -> template name
-    files = {
-        "pubspec.yaml": "pubspec.yaml.j2",
-        "lib/main.dart": "main.dart.j2",
-        "lib/screens/home_screen.dart": "home_screen.dart.j2",
-        "lib/screens/scan_screen.dart": "scan_screen.dart.j2",
-        "lib/screens/confirmation_screen.dart": "confirmation_screen.dart.j2",
-        "lib/screens/component_config_screen.dart": "component_config_screen.dart.j2",
-        "lib/screens/inspection_camera_screen.dart": "inspection_camera_screen.dart.j2",
-        "lib/screens/history_screen.dart": "history_screen.dart.j2",
-        "lib/screens/printer_discovery_screen.dart": "printer_discovery_screen.dart.j2",
-        "lib/screens/sync_screen.dart": "sync_screen.dart.j2",
-        "lib/services/print_service.dart": "print_service.dart.j2",
-        "lib/services/sync_service.dart": "sync_service.dart.j2",
-        "lib/database/database.dart": "database.dart.j2",
-        "lib/ml/detector.dart": "detector.dart.j2",
-        "lib/ml/detection_result.dart": "detection_result.dart.j2",
-        "lib/widgets/camera_view.dart": "camera_view.dart.j2",
-        "lib/widgets/detection_overlay.dart": "detection_overlay.dart.j2",
-        "lib/widgets/result_list.dart": "result_list.dart.j2",
-        "lib/widgets/info_card.dart": "info_card.dart.j2",
-        "lib/widgets/action_grid.dart": "action_grid.dart.j2",
-        "lib/widgets/capture_button.dart": "capture_button.dart.j2",
-        "lib/widgets/stats_view.dart": "stats_view.dart.j2",
-        "android/app/src/main/AndroidManifest.xml": "AndroidManifest.xml.j2",
-        "android/build.gradle": "build.gradle.j2",
-        "android/app/build.gradle": "app_build.gradle.j2",
-        "android/app/proguard-rules.pro": "proguard-rules.pro.j2",
-        "android/settings.gradle": "settings.gradle.j2",
-        "android/local.properties": "local.properties.j2",
-        "android/gradle.properties": "gradle.properties.j2",
-        "android/gradle/wrapper/gradle-wrapper.properties": "gradle-wrapper.properties.j2",
-        "android/gradle/wrapper/gradle-wrapper.jar": "gradle-wrapper.jar.raw",
-        "android/gradlew": "gradlew.j2",
-        "android/gradlew.bat": "gradlew.bat.j2",
-        "android/buildSrc/build.gradle": "buildSrc_build.gradle.j2",
-        "android/buildSrc/src/main/groovy/FlutterLocalExtension.groovy": "FlutterLocalExtension.groovy.j2",
-        f"android/app/src/main/kotlin/{ctx['package_name'].replace('.', '/')}/MainActivity.kt": "MainActivity.kt.j2",
-        "android/app/src/main/res/values/styles.xml": "styles.xml.j2",
-        "android/app/src/main/res/drawable/launch_background.xml": "launch_background.xml.j2",
-    }
+    if is_free_ocr:
+        # Standalone OCR-reader app: camera -> YOLO crop -> CRNN read -> save.
+        # No VIN decoding, no barcode scanning, no history/sync/printer
+        # screens, no drift database — keeps this build fully isolated from
+        # the VIN-scan template set below.
+        files = {
+            "pubspec.yaml": "pubspec.yaml.j2",
+            "lib/main.dart": "main_ocr.dart.j2",
+            "lib/screens/ocr_camera_screen.dart": "ocr_camera_screen.dart.j2",
+            "lib/ml/detector.dart": "detector.dart.j2",
+            "lib/ml/detection_result.dart": "detection_result.dart.j2",
+            "lib/ml/crnn_reader.dart": "crnn_reader.dart.j2",
+            "lib/widgets/camera_view.dart": "camera_view.dart.j2",
+            "lib/widgets/capture_button.dart": "capture_button.dart.j2",
+            "android/app/src/main/AndroidManifest.xml": "AndroidManifest.xml.j2",
+            "android/build.gradle": "build.gradle.j2",
+            "android/app/build.gradle": "app_build.gradle.j2",
+            "android/app/proguard-rules.pro": "proguard-rules.pro.j2",
+            "android/settings.gradle": "settings.gradle.j2",
+            "android/local.properties": "local.properties.j2",
+            "android/gradle.properties": "gradle.properties.j2",
+            "android/gradle/wrapper/gradle-wrapper.properties": "gradle-wrapper.properties.j2",
+            "android/gradle/wrapper/gradle-wrapper.jar": "gradle-wrapper.jar.raw",
+            "android/gradlew": "gradlew.j2",
+            "android/gradlew.bat": "gradlew.bat.j2",
+            "android/buildSrc/build.gradle": "buildSrc_build.gradle.j2",
+            "android/buildSrc/src/main/groovy/FlutterLocalExtension.groovy": "FlutterLocalExtension.groovy.j2",
+            f"android/app/src/main/kotlin/{ctx['package_name'].replace('.', '/')}/MainActivity.kt": "MainActivity.kt.j2",
+            "android/app/src/main/res/values/styles.xml": "styles.xml.j2",
+            "android/app/src/main/res/drawable/launch_background.xml": "launch_background.xml.j2",
+        }
+    else:
+        files = {
+            "pubspec.yaml": "pubspec.yaml.j2",
+            "lib/main.dart": "main.dart.j2",
+            "lib/screens/home_screen.dart": "home_screen.dart.j2",
+            "lib/screens/scan_screen.dart": "scan_screen.dart.j2",
+            "lib/screens/confirmation_screen.dart": "confirmation_screen.dart.j2",
+            "lib/screens/component_config_screen.dart": "component_config_screen.dart.j2",
+            "lib/screens/inspection_camera_screen.dart": "inspection_camera_screen.dart.j2",
+            "lib/screens/history_screen.dart": "history_screen.dart.j2",
+            "lib/screens/printer_discovery_screen.dart": "printer_discovery_screen.dart.j2",
+            "lib/screens/sync_screen.dart": "sync_screen.dart.j2",
+            "lib/services/print_service.dart": "print_service.dart.j2",
+            "lib/services/sync_service.dart": "sync_service.dart.j2",
+            "lib/database/database.dart": "database.dart.j2",
+            "lib/ml/detector.dart": "detector.dart.j2",
+            "lib/ml/detection_result.dart": "detection_result.dart.j2",
+            "lib/widgets/camera_view.dart": "camera_view.dart.j2",
+            "lib/widgets/detection_overlay.dart": "detection_overlay.dart.j2",
+            "lib/widgets/result_list.dart": "result_list.dart.j2",
+            "lib/widgets/info_card.dart": "info_card.dart.j2",
+            "lib/widgets/action_grid.dart": "action_grid.dart.j2",
+            "lib/widgets/capture_button.dart": "capture_button.dart.j2",
+            "lib/widgets/stats_view.dart": "stats_view.dart.j2",
+            "android/app/src/main/AndroidManifest.xml": "AndroidManifest.xml.j2",
+            "android/build.gradle": "build.gradle.j2",
+            "android/app/build.gradle": "app_build.gradle.j2",
+            "android/app/proguard-rules.pro": "proguard-rules.pro.j2",
+            "android/settings.gradle": "settings.gradle.j2",
+            "android/local.properties": "local.properties.j2",
+            "android/gradle.properties": "gradle.properties.j2",
+            "android/gradle/wrapper/gradle-wrapper.properties": "gradle-wrapper.properties.j2",
+            "android/gradle/wrapper/gradle-wrapper.jar": "gradle-wrapper.jar.raw",
+            "android/gradlew": "gradlew.j2",
+            "android/gradlew.bat": "gradlew.bat.j2",
+            "android/buildSrc/build.gradle": "buildSrc_build.gradle.j2",
+            "android/buildSrc/src/main/groovy/FlutterLocalExtension.groovy": "FlutterLocalExtension.groovy.j2",
+            f"android/app/src/main/kotlin/{ctx['package_name'].replace('.', '/')}/MainActivity.kt": "MainActivity.kt.j2",
+            "android/app/src/main/res/values/styles.xml": "styles.xml.j2",
+            "android/app/src/main/res/drawable/launch_background.xml": "launch_background.xml.j2",
+        }
 
     # Android mipmap icon sizes: density -> (width, height)
     MIPMAP_SIZES = {
@@ -268,37 +319,39 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "mipmap-xxxhdpi": (192, 192),
     }
 
-    # Fetch all master mappings for generic VIN decoding
-    from app.queries import MasterDataQueries
-    from app.connectors.state_db import StateDBConnector
-    
     master_data_manifest = []
-    try:
-        db = StateDBConnector()
-        master_mappings = db.execute_query(MasterDataQueries.GET_ALL_MAPPINGS)
-        for m in master_mappings:
-            master_data_manifest.append({
-                "platform_name": str(m["platform_name"]),
-                "model_code": str(m["model_code"]),
-                "description": str(m.get("description", "")) if m.get("description") else ""
-            })
-    except Exception as e:
-        print(f"Warning: Could not fetch master mappings: {e}")
-
-    from app.queries import EngineDataQueries
     engine_data_manifest = []
-    try:
-        db = StateDBConnector()
-        engine_mappings = db.execute_query(EngineDataQueries.GET_ALL_MAPPINGS)
-        for m in engine_mappings:
-            engine_data_manifest.append({
-                "sheet_name": str(m["sheet_name"]),
-                "part_no": str(m["part_no"]),
-                "model_name": str(m.get("model_name", "")) if m.get("model_name") else "",
-                "description": str(m.get("description", "")) if m.get("description") else ""
-            })
-    except Exception as e:
-        print(f"Warning: Could not fetch engine mappings: {e}")
+    if not is_free_ocr:
+        # Fetch all master mappings for generic VIN decoding — irrelevant for
+        # a standalone character reader, so skip the DB round-trips entirely.
+        from app.queries import MasterDataQueries
+        from app.connectors.state_db import StateDBConnector
+
+        try:
+            db = StateDBConnector()
+            master_mappings = db.execute_query(MasterDataQueries.GET_ALL_MAPPINGS)
+            for m in master_mappings:
+                master_data_manifest.append({
+                    "platform_name": str(m["platform_name"]),
+                    "model_code": str(m["model_code"]),
+                    "description": str(m.get("description", "")) if m.get("description") else ""
+                })
+        except Exception as e:
+            print(f"Warning: Could not fetch master mappings: {e}")
+
+        from app.queries import EngineDataQueries
+        try:
+            db = StateDBConnector()
+            engine_mappings = db.execute_query(EngineDataQueries.GET_ALL_MAPPINGS)
+            for m in engine_mappings:
+                engine_data_manifest.append({
+                    "sheet_name": str(m["sheet_name"]),
+                    "part_no": str(m["part_no"]),
+                    "model_name": str(m.get("model_name", "")) if m.get("model_name") else "",
+                    "description": str(m.get("description", "")) if m.get("description") else ""
+                })
+        except Exception as e:
+            print(f"Warning: Could not fetch engine mappings: {e}")
 
     buf = io.BytesIO()
     root = ctx["app_name_slug"]
@@ -316,11 +369,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 tmpl = env.get_template(template_name)
                 content = tmpl.render(**ctx)
                 zf.writestr(full_path, content)
-        
+
         import json
         zf.writestr(f"{root}/assets/models_manifest.json", json.dumps(models_manifest, indent=2))
-        zf.writestr(f"{root}/assets/master_data.json", json.dumps(master_data_manifest, indent=2))
-        zf.writestr(f"{root}/assets/engine_data.json", json.dumps(engine_data_manifest, indent=2))
+        if not is_free_ocr:
+            zf.writestr(f"{root}/assets/master_data.json", json.dumps(master_data_manifest, indent=2))
+            zf.writestr(f"{root}/assets/engine_data.json", json.dumps(engine_data_manifest, indent=2))
 
         icon_src = TEMPLATES_DIR / "icons" / "ic_launcher.png"
         if icon_src.exists():
