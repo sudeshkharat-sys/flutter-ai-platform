@@ -770,7 +770,19 @@ def start_mdns():
         port=PORT,
         properties={"name": PC_NAME},
     )
-    zeroconf.register_service(info)
+    try:
+        zeroconf.register_service(info)
+    except Exception as e:
+        # A name collision (e.g. a previous run of this app that didn't
+        # shut down cleanly and left a stale registration on the network,
+        # or another device already advertising the same name) used to
+        # crash the whole app before the dashboard even opened. mDNS is
+        # only used for the "PCs visible on this network" convenience
+        # discovery feature -- pairing and uploads work fine without it,
+        # since the pairing QR code embeds this PC's IP directly -- so a
+        # failure here should never stop the app from starting.
+        print(f"[warn] mDNS advertising failed ({e}) -- the app will still work, "
+              f"but this PC won't show up in phone-side network discovery.")
     return zeroconf
 
 
