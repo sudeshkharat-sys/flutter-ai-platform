@@ -80,8 +80,9 @@ def upload_model(
     input_size: int = Form(640),
     db: StateDBConnector = Depends(get_db_connector),
 ):
-    if not file.filename.endswith(".pt"):
-        raise HTTPException(status_code=422, detail="Only .pt model files are supported.")
+    is_tflite = file.filename.endswith(".tflite")
+    if not file.filename.endswith(".pt") and not is_tflite:
+        raise HTTPException(status_code=422, detail="Only .pt or .tflite model files are supported.")
 
     class_list = []
     if classes:
@@ -93,6 +94,38 @@ def upload_model(
     asset_id = str(uuid.uuid4())
     model_dir = settings.models_dir / asset_id
     model_dir.mkdir(parents=True, exist_ok=True)
+
+    if is_tflite:
+        # Already-converted model (e.g. a CRNN reader trained and exported
+        # straight to TFLite outside the YOLO/Ultralytics pipeline) — there's
+        # no .pt->.tflite conversion step to run, so mark it ready immediately.
+        tflite_path = model_dir / "model.tflite"
+        with open(tflite_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        labels_path = model_dir / "labels.txt"
+        labels_path.write_text("\n".join(class_list))
+
+        params = {
+            "id": asset_id,
+            "vision_project_id": asset_id,
+            "vision_project_name": model_name,
+            "model_type": "tflite_direct",
+            "classes": json.dumps(class_list),
+            "pt_path": None,
+            "tflite_path": str(tflite_path),
+            "labels_path": str(labels_path),
+            "status": "ready",
+            "error_message": None,
+            "conversion_log": "Uploaded pre-converted .tflite - no conversion needed.\n",
+            "input_size": input_size,
+            "vision_platform_url": "",
+            "vision_platform_token": ""
+        }
+        db.execute_insert(ModelAssetQueries.INSERT_MODEL, params)
+        rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": asset_id})
+        return rows[0]
+
     pt_path = model_dir / "model.pt"
 
     with open(pt_path, "wb") as f:
