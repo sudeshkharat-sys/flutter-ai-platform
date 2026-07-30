@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -307,10 +308,17 @@ class PrintService {
         dpi: await getPrinterDpi(),
       );
 
+      // A printer that's off, out of range, or stuck in a bad Bluetooth
+      // state can leave this connect-and-print call hanging far longer
+      // than any real print job takes -- with no timeout, that silently
+      // stalls the whole submit flow forever (the inspector sees "Printing
+      // to X..." and never gets back to the next scan, even though the
+      // app itself isn't frozen -- this call just never resolves). Bound
+      // it so a bad printer always fails cleanly instead of hanging.
       final result = await _zsdk.printZplDataOverBluetooth(
         data: zpl,
         macAddress: printer.address,
-      );
+      ).timeout(const Duration(seconds: 20));
 
       final response = PrinterResponse.fromMap(result);
       if (response.errorCode == ErrorCode.SUCCESS) {
@@ -319,6 +327,10 @@ class PrintService {
       lastPrintError = response.statusInfo?.cause?.toString() ??
           'Printer rejected the job (code ${response.errorCode})';
       debugPrint('[PrintService] ZPL BT print failed: $lastPrintError');
+      return false;
+    } on TimeoutException {
+      lastPrintError = 'Printer connection timed out -- check it is on and in range';
+      debugPrint('[PrintService] ZPL BT print timed out');
       return false;
     } catch (e) {
       lastPrintError = e.toString();
