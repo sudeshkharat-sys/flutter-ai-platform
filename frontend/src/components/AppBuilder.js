@@ -1203,7 +1203,144 @@ const miniSelectStyle = { background: C.surface, border: `1px solid ${C.border}`
 // ── OCR Reader (free_ocr) model slots ───────────────────────────────────────
 // Standalone YOLO-detect + CRNN-read apps only need two model assignments —
 // no inspection_tasks/mandatoryClasses/classOcrConfig, no VIN/master-data
-// config, no canvas builder. Picking a model here writes
+// config, no canvas builder. Each slot supports picking an already-converted
+// model OR uploading a new one directly here (YOLO via the .pt->tflite
+// conversion pipeline, CRNN via a direct .tflite upload since it's already
+// exported outside that pipeline).
+function OcrModelSlot({ label, accept, models, valueId, onPick, onUploaded, uploadKind }) {
+  const [mode, setMode] = useState('existing');
+  const [file, setFile] = useState(null);
+  const [name, setName] = useState('');
+  const [classes, setClasses] = useState([]);
+  const [classesText, setClassesText] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [converting, setConverting] = useState(false);
+  const [convLog, setConvLog] = useState('');
+  const pollRef = useRef(null);
+
+  const handleFile = async (f) => {
+    setFile(f);
+    setName(f.name.replace(/\.(pt|tflite)$/i, '').replace(/[_-]/g, ' '));
+    if (uploadKind === 'pt') {
+      setAnalyzing(true);
+      try {
+        const r = await extractClasses(f);
+        setClasses(r.data.classes || []);
+      } catch {} finally {
+        setAnalyzing(false);
+      }
+    }
+  };
+
+  const doUploadPt = async () => {
+    if (!file) return;
+    setConverting(true);
+    setConvLog('Initializing conversion...\n');
+    try {
+      const r = await uploadModel(file, name || file.name, classes);
+      const assetId = r.data.id;
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await getModelStatus(assetId);
+          setConvLog(s.data.conversion_log || 'Processing...');
+          if (s.data.status === 'ready') {
+            clearInterval(pollRef.current);
+            setConverting(false);
+            onUploaded({ id: assetId, vision_project_name: name || file.name });
+            setFile(null); setName(''); setClasses([]); setConvLog('');
+            setMode('existing');
+          }
+          if (s.data.status === 'error') {
+            clearInterval(pollRef.current);
+            setConverting(false);
+            alert('Error: ' + s.data.error_message);
+          }
+        } catch {}
+      }, 1500);
+    } catch {
+      setConverting(false);
+      alert('Upload failed');
+    }
+  };
+
+  const doUploadTflite = async () => {
+    if (!file) return;
+    setConverting(true);
+    try {
+      const parsedClasses = classesText.split(',').map(c => c.trim()).filter(Boolean);
+      const r = await uploadModel(file, name || file.name, parsedClasses);
+      onUploaded(r.data);
+      setFile(null); setName(''); setClassesText('');
+      setMode('existing');
+    } catch {
+      alert('Upload failed');
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  return (
+    <div>
+      <label style={labelStyle}>{label}</label>
+      <div style={{ display: 'flex', gap: 4, background: C.surface, padding: 4, borderRadius: 8, marginBottom: 8 }}>
+        {['existing', 'upload'].map(m => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            style={{ flex: 1, padding: '6px', borderRadius: 6, border: 'none', background: mode === m ? C.accent : 'transparent', color: mode === m ? '#fff' : C.muted, fontWeight: 700, fontSize: 11, cursor: 'pointer' }}
+          >
+            {m === 'existing' ? 'Select from Library' : `Upload ${accept}`}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'existing' ? (
+        <select
+          style={{ ...inputStyle, cursor: 'pointer' }}
+          value={valueId}
+          onChange={e => onPick(e.target.value)}
+        >
+          <option value="">Select a model...</option>
+          {models.map(m => (
+            <option key={m.id} value={m.id}>{m.vision_project_name}</option>
+          ))}
+        </select>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {!converting && !file && (
+            <div onClick={() => !analyzing && document.getElementById(`ocr-file-${label}`).click()} style={{ border: `2px dashed ${C.border}`, borderRadius: 12, padding: 20, textAlign: 'center', cursor: 'pointer', background: C.surface }}>
+              <input id={`ocr-file-${label}`} type="file" accept={accept} style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
+              {analyzing ? 'Analyzing...' : `Click to upload ${accept}`}
+            </div>
+          )}
+          {file && !converting && (
+            <>
+              <input style={inputStyle} value={name} onChange={e => setName(e.target.value)} placeholder="Model name" />
+              {uploadKind === 'pt' ? (
+                <>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {classes.map(c => (
+                      <span key={c} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: C.surface, border: `1px solid ${C.border}` }}>{c}</span>
+                    ))}
+                  </div>
+                  <button onClick={doUploadPt} style={{ padding: 12, borderRadius: 10, background: C.accent, color: '#fff', fontWeight: 800, border: 'none', cursor: 'pointer' }}>Convert & Use</button>
+                </>
+              ) : (
+                <>
+                  <input style={inputStyle} value={classesText} onChange={e => setClassesText(e.target.value)} placeholder="Classes (optional, comma-separated)" />
+                  <button onClick={doUploadTflite} style={{ padding: 12, borderRadius: 10, background: C.accent, color: '#fff', fontWeight: 800, border: 'none', cursor: 'pointer' }}>Upload & Use</button>
+                </>
+              )}
+            </>
+          )}
+          {converting && <pre style={{ height: 100, background: '#1a1a1a', padding: 12, borderRadius: 10, color: '#fff', fontSize: 10, overflowY: 'auto' }}>{convLog || 'Uploading...'}</pre>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Picking or uploading a model in a slot writes
 // app_settings.detector_model_id / recognizer_model_id (read by
 // generator.py's is_free_ocr branch) and keeps model_asset_ids in sync so
 // both tflite files get bundled into the APK.
@@ -1241,39 +1378,34 @@ function OcrModelsPanel({ app, onUpdate }) {
     }
   };
 
+  const handleUploaded = (field, asset) => {
+    setModels(prev => [...prev, asset]);
+    handleAssign(field, asset.id);
+  };
+
   return (
     <div style={{ background: C.surface2, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` }}>
       <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: 'uppercase', marginBottom: 16 }}>OCR Reader Models</div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div>
-          <label style={labelStyle}>Plate/Region Detector (YOLO)</label>
-          <select
-            style={{ ...inputStyle, cursor: 'pointer' }}
-            value={detectorId}
-            disabled={loading || saving}
-            onChange={e => handleAssign('detector_model_id', e.target.value)}
-          >
-            <option value="">Select a model...</option>
-            {models.map(m => (
-              <option key={m.id} value={m.id}>{m.vision_project_name}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label style={labelStyle}>Character Reader (CRNN)</label>
-          <select
-            style={{ ...inputStyle, cursor: 'pointer' }}
-            value={recognizerId}
-            disabled={loading || saving}
-            onChange={e => handleAssign('recognizer_model_id', e.target.value)}
-          >
-            <option value="">Select a model...</option>
-            {models.map(m => (
-              <option key={m.id} value={m.id}>{m.vision_project_name}</option>
-            ))}
-          </select>
-        </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <OcrModelSlot
+          label="Plate/Region Detector (YOLO)"
+          accept=".pt"
+          uploadKind="pt"
+          models={models}
+          valueId={detectorId}
+          onPick={v => handleAssign('detector_model_id', v)}
+          onUploaded={asset => handleUploaded('detector_model_id', asset)}
+        />
+        <OcrModelSlot
+          label="Character Reader (CRNN)"
+          accept=".tflite"
+          uploadKind="tflite"
+          models={models}
+          valueId={recognizerId}
+          onPick={v => handleAssign('recognizer_model_id', v)}
+          onUploaded={asset => handleUploaded('recognizer_model_id', asset)}
+        />
         <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>
           The detector finds the plate/character region; the reader decodes the alphanumeric string inside it. No inspection tasks or VIN decoding apply to this app type.
         </p>
