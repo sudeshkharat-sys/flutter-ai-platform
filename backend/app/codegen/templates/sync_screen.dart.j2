@@ -162,6 +162,46 @@ class _SyncScreenState extends State<SyncScreen> {
     _loadUnsyncedCount();
   }
 
+  /// Resends this phone's entire local history, not just what's currently
+  /// flagged unsynced -- for when the sync state can't be trusted (e.g.
+  /// re-pairing after an app reinstall) or inspections seem to be missing
+  /// on the PC. Confirmed first since it's a heavier, deliberate action,
+  /// not the everyday "Send" button.
+  Future<void> _resyncAll(PairedPc pc) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Resync all data?'),
+        content: Text(
+          'This resends every inspection this phone has ever recorded to "${pc.name}", '
+          'not just what\'s new. Use this if some data seems to be missing on the PC '
+          '(e.g. after re-pairing this phone). Already-received inspections won\'t be '
+          'duplicated -- the PC skips anything it already has.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: _crimson, foregroundColor: Colors.white),
+            child: const Text('Resync All'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    setState(() => _busyDeviceId = pc.deviceId);
+    final result = await SyncService.instance.resyncAll(pc);
+    if (!mounted) return;
+    setState(() => _busyDeviceId = null);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(result.message),
+      backgroundColor: result.success ? Colors.green[700] : _crimson,
+      duration: const Duration(seconds: 5),
+    ));
+    _loadUnsyncedCount();
+  }
+
   Future<void> _remove(PairedPc pc) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -319,6 +359,12 @@ class _SyncScreenState extends State<SyncScreen> {
                                       shape: RoundedRectangleBorder(
                                           borderRadius: BorderRadius.circular(8)),
                                     ),
+                                  ),
+                                if (_busyDeviceId != pc.deviceId)
+                                  IconButton(
+                                    icon: const Icon(Icons.sync_problem, size: 18, color: Colors.grey),
+                                    tooltip: 'Resync all data (use if some data seems missing on the PC)',
+                                    onPressed: () => _resyncAll(pc),
                                   ),
                                 IconButton(
                                   icon: const Icon(Icons.close, size: 18, color: Colors.grey),

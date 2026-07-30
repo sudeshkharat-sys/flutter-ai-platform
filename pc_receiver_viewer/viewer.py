@@ -264,9 +264,18 @@ def _list_groups() -> list[dict]:
     return groups
 
 
+def _dedup_key(row: dict) -> tuple:
+    """A physical scan event's natural identity -- stable across re-sends
+    of the same data, unlike the phone-local inspection id (which resets
+    to 1 after an app reinstall, so it can collide with an unrelated
+    inspection from a different install)."""
+    return (row.get("vin"), row.get("date"), row.get("time"), row.get("taskName"))
+
+
 def _flatten_rows(device: str, app_name: str) -> list[dict]:
     device_dir = DATA_DIR / _safe_name(device) / _safe_name(app_name)
     rows = []
+    seen_keys = set()
     if not device_dir.exists():
         return rows
     for batch_dir in sorted(device_dir.iterdir()):
@@ -291,7 +300,7 @@ def _flatten_rows(device: str, app_name: str) -> list[dict]:
         for insp in inspections:
             tasks = insp.get("tasks") or [{}]
             for task in tasks:
-                rows.append({
+                row = {
                     "device": device,
                     "appName": app_name,
                     "batch": batch_dir.name,
@@ -307,7 +316,17 @@ def _flatten_rows(device: str, app_name: str) -> list[dict]:
                     "className": task.get("className"),
                     "result": "OK" if task.get("success") else "NOT OK",
                     "imageUrl": _image_url(task.get("imagePath")),
-                })
+                }
+                # A phone can legitimately re-send data it already sent
+                # before (a forced "Resync All", a retried upload,
+                # re-pairing after a reinstall) -- each send lands in its
+                # own batch folder, so without this the same inspection
+                # would show up once per batch it was sent in.
+                key = _dedup_key(row)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                rows.append(row)
     rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
     return rows
 

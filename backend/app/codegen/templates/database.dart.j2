@@ -88,6 +88,18 @@ class AppDatabase extends _$AppDatabase {
         .write(const InspectionsCompanion(isSynced: Value(true)));
   }
 
+  /// Marks every inspection unsynced again, so the next sync resends the
+  /// phone's entire local history rather than just what's currently
+  /// flagged new. Used as a manual "Resync All" safety net -- e.g. after
+  /// re-pairing with a PC, or if the sync state is ever in doubt -- to
+  /// force everything back up rather than trust the isSynced flag alone.
+  /// Safe to run repeatedly: the receiver deduplicates by VIN/date/time/
+  /// task, so re-sending something it already has doesn't create a
+  /// duplicate row there.
+  Future<void> resetAllSyncStatus() async {
+    await update(inspections).write(const InspectionsCompanion(isSynced: Value(false)));
+  }
+
   // For checking task progress in current session
   Future<List<TaskResult>> getLatestResultsForVin(String vin) async {
     final latest = await (select(inspections)

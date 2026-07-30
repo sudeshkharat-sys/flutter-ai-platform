@@ -192,6 +192,20 @@ class SyncService {
 
   Future<int> getUnsyncedCount() => db.countUnsyncedInspections();
 
+  /// Marks this phone's entire local history unsynced, then sends it all to
+  /// [pc]. Use this when the sync state can't be trusted -- e.g. after
+  /// re-pairing following an app reinstall (which wipes the local "already
+  /// synced" flags along with everything else), or if inspections seem to
+  /// be missing on the PC -- instead of the normal send, which only pushes
+  /// what's currently flagged new. Safe to run even if some of this data
+  /// already reached the PC before: the receiver deduplicates incoming
+  /// rows by VIN/date/time/task, so already-received ones are dropped
+  /// there rather than duplicated.
+  Future<SyncResult> resyncAll(PairedPc pc) async {
+    await db.resetAllSyncStatus();
+    return sendToPc(pc);
+  }
+
   /// Sends any not-yet-uploaded inspections to the first paired PC, if any
   /// is paired. Intended to be called automatically right after a
   /// submission (mirrors auto-print) -- returns null (no-op, no error to
