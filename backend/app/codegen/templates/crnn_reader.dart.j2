@@ -6,9 +6,11 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 
 /// Reads a cropped alphanumeric region (plate/engraving crop from the YOLO
 /// detector) with the CRNN+CTC line-recognition model exported by
-/// ai-vision-platform's crnn_training.py. Charset and geometry below must
-/// match that training script exactly (IMG_H/IMG_W/CHARSET/blank index) —
-/// they are not configurable per-app because the model architecture is fixed.
+/// ai-vision-platform's crnn_training.py. Charset, geometry and the
+/// CLAHE+Otsu preprocessing below must match that training script's
+/// `_normalize_line` exactly — the tflite graph only contains the CNN, so
+/// this preprocessing has to be reproduced identically on-device or the
+/// model sees a different input distribution than it was trained on.
 class CrnnReader {
   static const int imgH = 32;
   static const int imgW = 256;
@@ -33,30 +35,192 @@ class CrnnReader {
     _interpreter = null;
   }
 
-  /// Grayscale + polarity-normalize + aspect-preserving resize + letterbox
-  /// into a fixed imgH x imgW canvas (dark text on light background), the
-  /// same normalization crnn_training.py applies before encoding a line.
-  static img.Image _normalizeLine(img.Image src) {
-    img.Image gray = img.grayscale(src);
+  /// CLAHE (contrast-limited adaptive histogram equalization), matching
+  /// cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8)).apply(gray) — builds
+  /// a per-tile histogram-equalization mapping, clips it, and bilinearly
+  /// blends between the 4 nearest tile mappings per pixel.
+  static List<int> _clahe(List<int> gray, int w, int h,
+      {int tilesX = 8, int tilesY = 8, double clipLimit = 3.0}) {
+    final tileW = (w / tilesX).ceil();
+    final tileH = (h / tilesY).ceil();
 
-    // Full Otsu thresholding isn't worth replicating on-device; mean
-    // luminance is a good enough proxy for "is this crop mostly dark
-    // background" to decide whether to invert polarity.
-    int sum = 0;
-    for (int y = 0; y < gray.height; y++) {
-      for (int x = 0; x < gray.width; x++) {
-        sum += gray.getPixel(x, y).r.toInt();
+    // Per-tile 256-entry mapping (equalization curve).
+    final mappings = List.generate(
+      tilesY,
+      (_) => List.generate(tilesX, (_) => List<int>.filled(256, 0)),
+    );
+
+    for (int ty = 0; ty < tilesY; ty++) {
+      for (int tx = 0; tx < tilesX; tx++) {
+        final x0 = tx * tileW;
+        final y0 = ty * tileH;
+        final x1 = (x0 + tileW).clamp(0, w);
+        final y1 = (y0 + tileH).clamp(0, h);
+        final area = (x1 - x0) * (y1 - y0);
+        if (area <= 0) continue;
+
+        final hist = List<int>.filled(256, 0);
+        for (int y = y0; y < y1; y++) {
+          for (int x = x0; x < x1; x++) {
+            hist[gray[y * w + x]]++;
+          }
+        }
+
+        final clip = (clipLimit * area / 256).round().clamp(1, area);
+        int excess = 0;
+        for (int i = 0; i < 256; i++) {
+          if (hist[i] > clip) {
+            excess += hist[i] - clip;
+            hist[i] = clip;
+          }
+        }
+        final redistribute = excess ~/ 256;
+        for (int i = 0; i < 256; i++) {
+          hist[i] += redistribute;
+        }
+
+        int cum = 0;
+        final mapping = mappings[ty][tx];
+        for (int i = 0; i < 256; i++) {
+          cum += hist[i];
+          mapping[i] = ((cum / area) * 255).round().clamp(0, 255);
+        }
       }
     }
-    final double mean = sum / (gray.width * gray.height);
-    if (mean < 128) {
-      gray = img.invert(gray);
+
+    final out = List<int>.filled(w * h, 0);
+    for (int y = 0; y < h; y++) {
+      // Fractional tile-space y-position, clamped so edge pixels don't
+      // extrapolate past the outermost tile centers.
+      final fy = ((y - tileH / 2) / tileH).clamp(0.0, (tilesY - 1).toDouble());
+      final ty0 = fy.floor().clamp(0, tilesY - 1);
+      final ty1 = (ty0 + 1).clamp(0, tilesY - 1);
+      final wy = fy - ty0;
+
+      for (int x = 0; x < w; x++) {
+        final fx = ((x - tileW / 2) / tileW).clamp(0.0, (tilesX - 1).toDouble());
+        final tx0 = fx.floor().clamp(0, tilesX - 1);
+        final tx1 = (tx0 + 1).clamp(0, tilesX - 1);
+        final wx = fx - tx0;
+
+        final v = gray[y * w + x];
+        final m00 = mappings[ty0][tx0][v];
+        final m01 = mappings[ty0][tx1][v];
+        final m10 = mappings[ty1][tx0][v];
+        final m11 = mappings[ty1][tx1][v];
+        final top = m00 * (1 - wx) + m01 * wx;
+        final bottom = m10 * (1 - wx) + m11 * wx;
+        out[y * w + x] = (top * (1 - wy) + bottom * wy).round().clamp(0, 255);
+      }
+    }
+    return out;
+  }
+
+  /// Otsu's method: the threshold that maximizes between-class variance of
+  /// the 256-bin histogram. Matches cv2.threshold(..., cv2.THRESH_OTSU).
+  static int _otsuThreshold(List<int> gray) {
+    final hist = List<int>.filled(256, 0);
+    for (final v in gray) {
+      hist[v]++;
+    }
+    final total = gray.length;
+    double sum = 0;
+    for (int i = 0; i < 256; i++) {
+      sum += i * hist[i];
     }
 
-    final double scale = imgH / gray.height;
-    final int newW = (gray.width * scale).round().clamp(1, imgW);
+    double sumB = 0;
+    int wB = 0;
+    double maxVar = -1;
+    int threshold = 127;
+    for (int t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (wB == 0) continue;
+      final wF = total - wB;
+      if (wF == 0) break;
+      sumB += t * hist[t];
+      final mB = sumB / wB;
+      final mF = (sum - sumB) / wF;
+      final between = wB * wF * (mB - mF) * (mB - mF);
+      if (between > maxVar) {
+        maxVar = between;
+        threshold = t;
+      }
+    }
+    return threshold;
+  }
+
+  /// Grayscale + CLAHE + Otsu-polarity-normalize + tighten-to-content +
+  /// aspect-preserving resize + letterbox into a fixed imgH x imgW canvas
+  /// (dark text on light background) — the same pipeline
+  /// crnn_training.py's `_normalize_line` builds training data with.
+  ///
+  /// The tighten-to-content step has no Python equivalent: training lines
+  /// are cropped from the tight union of labeled character boxes (zero
+  /// margin), but a production YOLO "plate" detection is a much looser box
+  /// with background/metal margin around the text. Without trimming to the
+  /// actual dark-pixel content first, the resize-to-height-32 step shrinks
+  /// the characters far more than the model ever saw in training.
+  static img.Image _normalizeLine(img.Image src) {
+    final grayImg = img.grayscale(src);
+    final w = grayImg.width, h = grayImg.height;
+    var gray = List<int>.generate(w * h, (i) => grayImg.getPixel(i % w, i ~/ w).r.toInt());
+
+    gray = _clahe(gray, w, h, tilesX: 8, tilesY: 8, clipLimit: 3.0);
+
+    // Otsu-based polarity: if the majority of pixels are above threshold
+    // (bright), strokes are already the dark minority -> leave as-is;
+    // otherwise invert so strokes end up dark-on-light.
+    final thr = _otsuThreshold(gray);
+    int brightCount = 0;
+    for (final v in gray) {
+      if (v > thr) brightCount++;
+    }
+    if (brightCount <= gray.length ~/ 2) {
+      gray = gray.map((v) => 255 - v).toList();
+    }
+
+    // Tighten to the bounding box of foreground (dark) pixels using a fresh
+    // Otsu threshold on the now-normalized polarity, with a couple pixels
+    // of slack so stroke edges aren't clipped.
+    final thr2 = _otsuThreshold(gray);
+    int minX = w, minY = h, maxX = -1, maxY = -1;
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        if (gray[y * w + x] < thr2) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    int cropX0 = 0, cropY0 = 0, cropW = w, cropH = h;
+    if (maxX >= minX && maxY >= minY) {
+      const pad = 2;
+      cropX0 = (minX - pad).clamp(0, w - 1);
+      cropY0 = (minY - pad).clamp(0, h - 1);
+      final cropX1 = (maxX + pad).clamp(0, w - 1);
+      final cropY1 = (maxY + pad).clamp(0, h - 1);
+      cropW = cropX1 - cropX0 + 1;
+      cropH = cropY1 - cropY0 + 1;
+    }
+
+    final normalizedImg = img.Image(width: w, height: h);
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        final v = gray[y * w + x];
+        normalizedImg.setPixelRgb(x, y, v, v, v);
+      }
+    }
+    final tightened = (cropW > 0 && cropH > 0 && (cropW != w || cropH != h))
+        ? img.copyCrop(normalizedImg, x: cropX0, y: cropY0, width: cropW, height: cropH)
+        : normalizedImg;
+
+    final double scale = imgH / tightened.height;
+    final int newW = (tightened.width * scale).round().clamp(1, imgW);
     final resized = img.copyResize(
-      gray,
+      tightened,
       width: newW,
       height: imgH,
       interpolation: img.Interpolation.average,
