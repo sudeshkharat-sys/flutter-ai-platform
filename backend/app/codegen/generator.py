@@ -235,6 +235,14 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         ctx["detector_tflite_path"] = detector_paths.get("tflite", "model_0.tflite").rsplit("/", 1)[-1]
         ctx["detector_labels_path"] = detector_paths.get("labels", "labels_0.txt").rsplit("/", 1)[-1]
         ctx["recognizer_tflite_path"] = recognizer_paths.get("tflite", "model_1.tflite").rsplit("/", 1)[-1]
+        # Which of the detector's trained classes marks the region to read.
+        # A detector trained for other tasks may have many labels (plate,
+        # logo, vin-sticker, ...) - without this the app would just OCR
+        # whichever detection happens to score highest, regardless of class.
+        # Empty means "not configured yet" and the app falls back to
+        # highest-confidence-of-any-class (old behaviour) rather than reading
+        # nothing.
+        ctx["detector_target_class"] = settings.get("detector_target_class", "")
 
     # Map of zip path -> template name
     if is_free_ocr:
