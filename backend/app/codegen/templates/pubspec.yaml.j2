@@ -13,18 +13,20 @@ dependencies:
   tflite_flutter: '>=0.10.4 <2.0.0'
   image: ^4.2.0
   permission_handler: ^11.3.1
-  mobile_scanner: ^3.5.2
   path_provider: ^2.1.2
+  archive: ^3.6.1
+  http: ^1.2.2
+  crypto: ^3.0.5
+{% if app_type != 'free_ocr' %}
+  mobile_scanner: ^3.5.2
   shared_preferences: ^2.2.2
   drift: ^2.16.0
   sqlite3_flutter_libs: ^0.5.20
   path: ^1.9.0
   zsdk: 5.0.0
   multicast_dns: ^0.3.2+7
-  archive: ^3.6.1
   flutter_secure_storage: ^9.2.2
-  http: ^1.2.2
-  crypto: ^3.0.5
+{% endif %}
 {% if ocr_enabled %}
   google_mlkit_text_recognition: ^0.13.0
 {% endif %}
@@ -33,14 +35,19 @@ dependency_overrides:
   # path_provider_android 2.3.x requires AGP 8.5+; our build uses AGP 8.7.0.
   # Force the last compatible version here and in settings.gradle.
   path_provider_android: 2.2.22
+{% if app_type != 'free_ocr' %}
   # sqlparser 0.44.6 removed DartPlaceholder.when(), which drift_dev 2.34.0's
   # query analyzer still calls, breaking build_runner code generation.
   sqlparser: 0.44.5
+{% endif %}
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  # build_apk.py always runs `dart run build_runner build` as a pipeline
+  # step regardless of app_type, so these stay even for free_ocr (which has
+  # no drift schema to generate against -- build_runner just runs as a no-op).
   drift_dev: ^2.16.0
   build_runner: ^2.4.8
 
@@ -49,6 +56,8 @@ flutter:
   assets:
     - assets/models/
     - assets/models_manifest.json
+{% if app_type != 'free_ocr' %}
     - assets/master_data.json
     - assets/engine_data.json
     - assets/reference_images/
+{% endif %}

@@ -54,6 +54,13 @@ export default function NewApp() {
   const [step, setStep] = useState(1);
   const [tab, setTab] = useState('upload');
 
+  // App type: 'sequential' (existing inspection/VIN-scan builder, unchanged)
+  // or 'free_ocr' (standalone YOLO-detect + CRNN-read character reader —
+  // skips canvas/inspection-task config entirely, just needs two models).
+  const [appType, setAppType] = useState('sequential');
+  const [detectorModelId, setDetectorModelId] = useState('');
+  const [recognizerModelId, setRecognizerModelId] = useState('');
+
   const [selectedModelIds, setSelectedModelIds] = useState([]);
   const [selectedModelNames, setSelectedModelNames] = useState([]);
 
@@ -150,17 +157,36 @@ export default function NewApp() {
 
   const handleCreate = async () => {
     try {
-      const r = await createApp({
-        name: appName || 'Inspection App',
-        package_name: packageName,
-        model_asset_ids: selectedModelIds,
-        app_settings: { app_type: 'sequential', confidence_threshold: 0.5 },
-      });
+      const payload = isFreeOcr
+        ? {
+            name: appName || 'OCR Reader App',
+            package_name: packageName,
+            model_asset_ids: Array.from(new Set([detectorModelId, recognizerModelId].filter(Boolean))),
+            app_settings: {
+              app_type: 'free_ocr',
+              detector_model_id: detectorModelId,
+              recognizer_model_id: recognizerModelId,
+            },
+          }
+        : {
+            name: appName || 'Inspection App',
+            package_name: packageName,
+            model_asset_ids: selectedModelIds,
+            app_settings: { app_type: 'sequential', confidence_threshold: 0.5 },
+          };
+      const r = await createApp(payload);
       navigate(`/apps/${r.data.id}`);
     } catch {
       alert('Failed to create app');
     }
   };
+
+  // free_ocr apps only need two model slots (detector + recognizer) — no
+  // canvas/widget builder, no inspection_tasks/mandatoryClasses/classOcrConfig,
+  // no VIN/master-data config, so step 1 shows two dropdowns instead of the
+  // upload/existing-model picker used by the sequential inspection flow.
+  const isFreeOcr = appType === 'free_ocr';
+  const freeOcrReady = !!detectorModelId && !!recognizerModelId;
 
   return (
     <div className="newapp-layout">
@@ -183,18 +209,67 @@ export default function NewApp() {
         {step === 1 && (
           <div className="newapp-step-body">
             <div className="newapp-tabs">
-              {['upload', 'existing'].map(t => (
+              {['sequential', 'free_ocr'].map(t => (
                 <button
                   key={t}
-                  onClick={() => setTab(t)}
-                  className={`newapp-tab${tab === t ? ' active' : ''}`}
+                  onClick={() => setAppType(t)}
+                  className={`newapp-tab${appType === t ? ' active' : ''}`}
                 >
-                  {t === 'upload' ? 'Convert New Model' : 'Select from Library'}
+                  {t === 'sequential' ? 'Inspection App' : 'OCR Reader'}
                 </button>
               ))}
             </div>
 
-            {tab === 'upload' ? (
+            {isFreeOcr ? (
+              <div className="newapp-upload-body">
+                <div className="model-preview-field">
+                  <label className="section-label">Plate/Region Detector (YOLO)</label>
+                  <select
+                    className="field-input"
+                    value={detectorModelId}
+                    onChange={e => setDetectorModelId(e.target.value)}
+                  >
+                    <option value="">Select a model...</option>
+                    {existingModels.map(m => (
+                      <option key={m.id} value={m.id}>{m.vision_project_name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="model-preview-field">
+                  <label className="section-label">Character Reader (CRNN)</label>
+                  <select
+                    className="field-input"
+                    value={recognizerModelId}
+                    onChange={e => setRecognizerModelId(e.target.value)}
+                  >
+                    <option value="">Select a model...</option>
+                    {existingModels.map(m => (
+                      <option key={m.id} value={m.id}>{m.vision_project_name}</option>
+                    ))}
+                  </select>
+                </div>
+                {existingModels.length === 0 && (
+                  <div className="newapp-sidebar-empty" style={{ marginTop: 8 }}>
+                    No converted models in library yet. Convert a YOLO detector and a
+                    CRNN reader model first from the "Inspection App" tab.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="newapp-tabs">
+                  {['upload', 'existing'].map(t => (
+                    <button
+                      key={t}
+                      onClick={() => setTab(t)}
+                      className={`newapp-tab${tab === t ? ' active' : ''}`}
+                    >
+                      {t === 'upload' ? 'Convert New Model' : 'Select from Library'}
+                    </button>
+                  ))}
+                </div>
+
+                {tab === 'upload' ? (
               <div className="newapp-upload-body">
                 {!converting && <DropZone onFile={handleFileDrop} analyzing={analyzing} />}
 
@@ -256,12 +331,14 @@ export default function NewApp() {
                   </div>
                 ))}
               </div>
+                )}
+              </>
             )}
 
             <button
-              className={`newapp-next-btn${selectedModelIds.length > 0 ? ' enabled' : ' disabled'}`}
+              className={`newapp-next-btn${(isFreeOcr ? freeOcrReady : selectedModelIds.length > 0) ? ' enabled' : ' disabled'}`}
               onClick={() => setStep(2)}
-              disabled={selectedModelIds.length === 0}
+              disabled={isFreeOcr ? !freeOcrReady : selectedModelIds.length === 0}
             >
               Next: Configure App Details →
             </button>
@@ -301,10 +378,34 @@ export default function NewApp() {
       <div className="newapp-sidebar">
         <div className="newapp-sidebar-title">Selected Models</div>
         <div className="newapp-sidebar-count">
-          {selectedModelNames.length} model{selectedModelNames.length !== 1 ? 's' : ''} added
+          {isFreeOcr
+            ? `${[detectorModelId, recognizerModelId].filter(Boolean).length} of 2 model slots set`
+            : `${selectedModelNames.length} model${selectedModelNames.length !== 1 ? 's' : ''} added`}
         </div>
 
-        {selectedModelNames.length === 0 ? (
+        {isFreeOcr ? (
+          freeOcrReady ? (
+            <div className="newapp-models-stack">
+              {[
+                { label: 'Detector', id: detectorModelId },
+                { label: 'Recognizer', id: recognizerModelId },
+              ].map(({ label, id }) => (
+                <div key={label} className="newapp-model-chip">
+                  <div className="newapp-model-chip-icon">
+                    <Box size={13} />
+                  </div>
+                  <span className="newapp-model-label">
+                    {label}: {existingModels.find(m => m.id === id)?.vision_project_name || id}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="newapp-sidebar-empty">
+              Pick a detector and a recognizer model from the left panel.
+            </div>
+          )
+        ) : selectedModelNames.length === 0 ? (
           <div className="newapp-sidebar-empty">
             No models selected yet.<br />Add models from the left panel.
           </div>

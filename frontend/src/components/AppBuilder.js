@@ -137,6 +137,10 @@ export default function AppBuilder() {
 
   const isBuilding = app.build_status === 'building';
   const isReady = app.build_status === 'ready';
+  // free_ocr apps (standalone YOLO-detect + CRNN-read character reader) skip
+  // the VIN-scan inspection-task builder entirely — they only need two model
+  // slots (detector + recognizer), so the sidebar swaps in OcrModelsPanel.
+  const isFreeOcr = app.app_settings?.app_type === 'free_ocr';
 
   const groupedTasks = (app.inspection_tasks || []).reduce((acc, task) => {
     const code = task.vehicleCode || 'Default';
@@ -212,7 +216,8 @@ export default function AppBuilder() {
         {/* RIGHT SIDEBAR */}
         <div style={{ display: 'flex', flexDirection: 'column', background: C.surface, padding: '24px 20px', gap: 24, overflowY: 'auto' }}>
           
-          {/* 1. Grouped Review Table (Top) */}
+          {/* 1. Grouped Review Table (Top) — VIN-scan inspection apps only */}
+          {!isFreeOcr && (
           <div style={{ background: C.surface2, borderRadius: 16, border: `1px solid ${C.border}`, overflow: 'hidden' }}>
             <div style={{ padding: '16px 20px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.02)' }}>
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: 'uppercase' }}>Inspection Configuration</div>
@@ -220,7 +225,7 @@ export default function AppBuilder() {
                 <Edit3 size={14} /> Edit All
               </button>
             </div>
-            
+
             <div style={{ maxHeight: 400, overflowY: 'auto' }}>
               {Object.keys(groupedTasks).length > 0 ? (
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -264,11 +269,19 @@ export default function AppBuilder() {
               )}
             </div>
           </div>
+          )}
 
-          {/* 2. Add Component Button */}
+          {/* 2. Add Component Button — VIN-scan inspection apps only */}
+          {!isFreeOcr && (
           <button onClick={() => openProfileModal(false)} style={{ width: '100%', padding: '16px', borderRadius: 12, border: `1px dashed ${C.accent}`, background: 'rgba(220, 20, 60, 0.05)', color: C.accent, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
             <Plus size={18} /> Add Component Task
           </button>
+          )}
+
+          {/* OCR Reader apps: just the two model slots, no inspection tasks */}
+          {isFreeOcr && (
+            <OcrModelsPanel app={app} onUpdate={loadData} />
+          )}
 
           {/* 3. Available AI Assets */}
           <div style={{ background: C.surface2, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` }}>
@@ -1186,6 +1199,88 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 const thStyle = { padding: '12px 16px', color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase' };
 const tdStyle = { padding: '16px', verticalAlign: 'top' };
 const miniSelectStyle = { background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '4px 8px', fontSize: 12, outline: 'none' };
+
+// ── OCR Reader (free_ocr) model slots ───────────────────────────────────────
+// Standalone YOLO-detect + CRNN-read apps only need two model assignments —
+// no inspection_tasks/mandatoryClasses/classOcrConfig, no VIN/master-data
+// config, no canvas builder. Picking a model here writes
+// app_settings.detector_model_id / recognizer_model_id (read by
+// generator.py's is_free_ocr branch) and keeps model_asset_ids in sync so
+// both tflite files get bundled into the APK.
+function OcrModelsPanel({ app, onUpdate }) {
+  const [models, setModels] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    getModels().then(r => {
+      if (!mounted) return;
+      setModels(r.data.filter(m => m.status === 'ready'));
+      setLoading(false);
+    }).catch(() => setLoading(false));
+    return () => { mounted = false; };
+  }, []);
+
+  const detectorId = app.app_settings?.detector_model_id || '';
+  const recognizerId = app.app_settings?.recognizer_model_id || '';
+
+  const handleAssign = async (field, value) => {
+    setSaving(true);
+    try {
+      const nextSettings = { ...(app.app_settings || {}), app_type: 'free_ocr', [field]: value };
+      const nextIds = Array.from(new Set([
+        ...(app.model_asset_ids || []),
+        nextSettings.detector_model_id,
+        nextSettings.recognizer_model_id,
+      ].filter(Boolean)));
+      await updateApp(app.id, { app_settings: nextSettings, model_asset_ids: nextIds });
+      await onUpdate();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ background: C.surface2, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` }}>
+      <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: 'uppercase', marginBottom: 16 }}>OCR Reader Models</div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div>
+          <label style={labelStyle}>Plate/Region Detector (YOLO)</label>
+          <select
+            style={{ ...inputStyle, cursor: 'pointer' }}
+            value={detectorId}
+            disabled={loading || saving}
+            onChange={e => handleAssign('detector_model_id', e.target.value)}
+          >
+            <option value="">Select a model...</option>
+            {models.map(m => (
+              <option key={m.id} value={m.id}>{m.vision_project_name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>Character Reader (CRNN)</label>
+          <select
+            style={{ ...inputStyle, cursor: 'pointer' }}
+            value={recognizerId}
+            disabled={loading || saving}
+            onChange={e => handleAssign('recognizer_model_id', e.target.value)}
+          >
+            <option value="">Select a model...</option>
+            {models.map(m => (
+              <option key={m.id} value={m.id}>{m.vision_project_name}</option>
+            ))}
+          </select>
+        </div>
+        <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>
+          The detector finds the plate/character region; the reader decodes the alphanumeric string inside it. No inspection tasks or VIN decoding apply to this app type.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 
 
