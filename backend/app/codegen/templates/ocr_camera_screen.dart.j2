@@ -37,6 +37,16 @@ class _OcrCameraScreenState extends State<OcrCameraScreen> {
   img.Image? _capturedImage;
   String? _statusMessage;
 
+  // Debug info from the last capture: what the detector found and exactly
+  // what pixels the CRNN model saw, so a wrong reading can be diagnosed as
+  // "bad detector box" vs "bad preprocessing" vs "model doesn't generalize"
+  // instead of guessed at blind.
+  String? _debugClassName;
+  double? _debugConfidence;
+  img.Image? _debugCrop;
+  img.Image? _debugNormalized;
+  bool _showDebug = false;
+
   @override
   void initState() {
     super.initState();
@@ -66,6 +76,10 @@ class _OcrCameraScreenState extends State<OcrCameraScreen> {
       _busy = true;
       _statusMessage = null;
       _capturedImage = null;
+      _debugClassName = null;
+      _debugConfidence = null;
+      _debugCrop = null;
+      _debugNormalized = null;
     });
 
     final bytes = await _cameraKey.currentState?.takePicture();
@@ -105,13 +119,17 @@ class _OcrCameraScreenState extends State<OcrCameraScreen> {
 
     detections.sort((a, b) => b.confidence.compareTo(a.confidence));
     final best = detections.first;
-    final text = await _reader.readBbox(decoded, best.bbox);
+    final result = await _reader.readBboxDebug(decoded, best.bbox);
 
     setState(() {
       _busy = false;
       _capturedImage = decoded;
-      _textController.text = text;
-      _statusMessage = text.isEmpty ? 'No characters read. Edit or save for review.' : null;
+      _textController.text = result.text;
+      _debugClassName = best.className;
+      _debugConfidence = best.confidence;
+      _debugCrop = result.cropped;
+      _debugNormalized = result.normalized;
+      _statusMessage = result.text.isEmpty ? 'No characters read. Edit or save for review.' : null;
     });
   }
 
@@ -120,6 +138,10 @@ class _OcrCameraScreenState extends State<OcrCameraScreen> {
       _capturedImage = null;
       _statusMessage = null;
       _textController.clear();
+      _debugClassName = null;
+      _debugConfidence = null;
+      _debugCrop = null;
+      _debugNormalized = null;
     });
   }
 
@@ -149,7 +171,17 @@ class _OcrCameraScreenState extends State<OcrCameraScreen> {
     final hasResult = _capturedImage != null;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('{{ app_name }}')),
+      appBar: AppBar(
+        title: const Text('{{ app_name }}'),
+        actions: [
+          if (hasResult && _debugCrop != null)
+            IconButton(
+              icon: Icon(_showDebug ? Icons.bug_report : Icons.bug_report_outlined),
+              tooltip: 'Show what the model saw',
+              onPressed: () => setState(() => _showDebug = !_showDebug),
+            ),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(
@@ -157,6 +189,37 @@ class _OcrCameraScreenState extends State<OcrCameraScreen> {
                 ? Image.memory(img.encodeJpg(_capturedImage!), fit: BoxFit.contain)
                 : CameraView(cameras: widget.cameras, key: _cameraKey),
           ),
+          if (hasResult && _showDebug && _debugCrop != null)
+            Container(
+              width: double.infinity,
+              color: Colors.black87,
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Detected: ${_debugClassName ?? "?"}  (${((_debugConfidence ?? 0) * 100).toStringAsFixed(0)}%)',
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Cropped region sent to CRNN:', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                  const SizedBox(height: 4),
+                  Container(
+                    height: 80,
+                    color: Colors.white,
+                    child: Image.memory(img.encodePng(_debugCrop!), fit: BoxFit.contain),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Exact 32x256 image fed to the model:', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                  const SizedBox(height: 4),
+                  Container(
+                    height: 64,
+                    color: Colors.white,
+                    child: Image.memory(img.encodePng(_debugNormalized!), fit: BoxFit.contain),
+                  ),
+                ],
+              ),
+            ),
           if (_statusMessage != null)
             Padding(
               padding: const EdgeInsets.all(12),
