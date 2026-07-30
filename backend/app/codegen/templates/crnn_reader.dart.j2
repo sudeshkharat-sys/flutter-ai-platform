@@ -269,7 +269,19 @@ class CrnnReader {
   /// coordinates, as produced by ModelManager's YOLO detector) and reads the
   /// alphanumeric string inside it.
   Future<String> readBbox(img.Image source, Rect bbox) async {
-    if (_interpreter == null) return '';
+    final result = await readBboxDebug(source, bbox);
+    return result.text;
+  }
+
+  /// Same as [readBbox] but also returns the intermediate images (the raw
+  /// crop handed to preprocessing, and the final 32x256 tensor image handed
+  /// to the model) so a debug UI can show exactly what the model saw —
+  /// essential for telling apart "bad crop/orientation" from "bad
+  /// preprocessing" from "model just doesn't generalize to this photo".
+  Future<CrnnReadResult> readBboxDebug(img.Image source, Rect bbox) async {
+    if (_interpreter == null) {
+      return CrnnReadResult(text: '', cropped: source, normalized: source);
+    }
 
     final int x = (bbox.left * source.width).round().clamp(0, source.width - 1);
     final int y = (bbox.top * source.height).round().clamp(0, source.height - 1);
@@ -290,8 +302,22 @@ class CrnnReader {
     );
 
     _interpreter!.run(input, output);
-    return _greedyDecode(List<List<double>>.from(
+    final text = _greedyDecode(List<List<double>>.from(
       output[0].map((row) => List<double>.from(row)),
     ));
+    return CrnnReadResult(text: text, cropped: cropped, normalized: normalized);
   }
+}
+
+/// Bundles the recognized text with the intermediate images for debugging.
+class CrnnReadResult {
+  final String text;
+  final img.Image cropped;
+  final img.Image normalized;
+
+  const CrnnReadResult({
+    required this.text,
+    required this.cropped,
+    required this.normalized,
+  });
 }
