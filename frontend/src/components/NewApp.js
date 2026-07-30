@@ -137,6 +137,7 @@ export default function NewApp() {
   const [appType, setAppType] = useState('sequential');
   const [detectorModelId, setDetectorModelId] = useState('');
   const [recognizerModelId, setRecognizerModelId] = useState('');
+  const [detectorTargetClass, setDetectorTargetClass] = useState('');
   const [detectorSubTab, setDetectorSubTab] = useState('existing');
   const [recognizerSubTab, setRecognizerSubTab] = useState('existing');
 
@@ -207,6 +208,8 @@ export default function NewApp() {
             setExistingModels(prev => [...prev, { id: assetId, vision_project_name: modelName || ptFile.name, status: 'ready', classes }]);
             if (isFreeOcr) {
               setDetectorModelId(assetId);
+              const guess = classes.find(c => c.toLowerCase().includes('plate'));
+              setDetectorTargetClass(guess || classes[0] || '');
               setDetectorSubTab('existing');
             } else {
               setSelectedModelIds(prev => [...prev, assetId]);
@@ -230,6 +233,17 @@ export default function NewApp() {
     }
   };
 
+  // Selecting a detector auto-picks a sensible target class (one literally
+  // named/containing "plate" if present) so the common case needs no extra
+  // click, but the user can always override via the class dropdown below.
+  const pickDetectorModel = (id) => {
+    setDetectorModelId(id);
+    const model = existingModels.find(m => m.id === id);
+    const modelClasses = model?.classes || [];
+    const guess = modelClasses.find(c => c.toLowerCase().includes('plate'));
+    setDetectorTargetClass(guess || modelClasses[0] || '');
+  };
+
   const toggleExisting = (m) => {
     if (selectedModelIds.includes(m.id)) {
       setSelectedModelIds(selectedModelIds.filter(id => id !== m.id));
@@ -251,6 +265,7 @@ export default function NewApp() {
               app_type: 'free_ocr',
               detector_model_id: detectorModelId,
               recognizer_model_id: recognizerModelId,
+              detector_target_class: detectorTargetClass,
             },
           }
         : {
@@ -271,7 +286,8 @@ export default function NewApp() {
   // no VIN/master-data config, so step 1 shows two model-slot pickers instead
   // of the upload/existing-model picker used by the sequential inspection flow.
   const isFreeOcr = appType === 'free_ocr';
-  const freeOcrReady = !!detectorModelId && !!recognizerModelId;
+  const detectorClasses = existingModels.find(m => m.id === detectorModelId)?.classes || [];
+  const freeOcrReady = !!detectorModelId && !!recognizerModelId && (detectorClasses.length === 0 || !!detectorTargetClass);
 
   return (
     <div className="newapp-layout">
@@ -325,7 +341,7 @@ export default function NewApp() {
                     <select
                       className="field-input"
                       value={detectorModelId}
-                      onChange={e => setDetectorModelId(e.target.value)}
+                      onChange={e => pickDetectorModel(e.target.value)}
                     >
                       <option value="">Select a model...</option>
                       {existingModels.map(m => (
@@ -366,6 +382,21 @@ export default function NewApp() {
                           <div ref={logEndRef} />
                         </div>
                       )}
+                    </div>
+                  )}
+                  {detectorModelId && (existingModels.find(m => m.id === detectorModelId)?.classes || []).length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <label className="section-label">Which class is the plate/region to read?</label>
+                      <select
+                        className="field-input"
+                        value={detectorTargetClass}
+                        onChange={e => setDetectorTargetClass(e.target.value)}
+                      >
+                        <option value="">Select a class...</option>
+                        {(existingModels.find(m => m.id === detectorModelId)?.classes || []).map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
                     </div>
                   )}
                 </div>
@@ -554,6 +585,7 @@ export default function NewApp() {
                   </div>
                   <span className="newapp-model-label">
                     {label}: {existingModels.find(m => m.id === id)?.vision_project_name || id}
+                    {label === 'Detector' && detectorTargetClass ? ` (class: ${detectorTargetClass})` : ''}
                   </span>
                 </div>
               ))}
