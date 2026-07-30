@@ -1146,4 +1146,15 @@ if __name__ == "__main__":
     if TLS_CERT and TLS_KEY:
         ssl_kwargs = {"ssl_certfile": TLS_CERT, "ssl_keyfile": TLS_KEY}
 
-    uvicorn.run(app, host="0.0.0.0", port=PORT, **ssl_kwargs)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=PORT, **ssl_kwargs)
+    except OSError as e:
+        # Most commonly a second copy of this exe already running and
+        # holding the port -- without this, that crashed with a raw
+        # traceback and (launched by double-click) the window closed
+        # before anyone could read it, looking like the app just silently
+        # refused to start at all.
+        print(f"[error] Could not start on port {PORT}: {e}")
+        print("        Check Task Manager for another DigitalEyeViewer.exe already running,")
+        print(f"        or set VIEWER_PORT to a different port if something else on this PC uses {PORT}.")
+        sys.exit(1)
