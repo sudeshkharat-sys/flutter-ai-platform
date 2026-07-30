@@ -4,13 +4,17 @@ import { UploadCloud, Check, Box, Zap } from 'lucide-react';
 import { uploadModel, getModelStatus, getModels, createApp, extractClasses } from '../api';
 import '../styles/NewApp.css';
 
-function DropZone({ onFile, analyzing }) {
+function DropZone({ onFile, analyzing, accept = '.pt', title = 'Upload YOLO .pt model', sub = 'Drag & drop or click to browse — classes auto-detected' }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef();
 
   const handle = useCallback(
-    (f) => { if (f && f.name.endsWith('.pt')) onFile(f); },
-    [onFile]
+    (f) => {
+      if (!f) return;
+      const exts = accept.split(',').map(e => e.trim());
+      if (exts.some(ext => f.name.toLowerCase().endsWith(ext))) onFile(f);
+    },
+    [onFile, accept]
   );
 
   return (
@@ -25,7 +29,7 @@ function DropZone({ onFile, analyzing }) {
       <input
         ref={inputRef}
         type="file"
-        accept=".pt"
+        accept={accept}
         style={{ display: 'none' }}
         onChange={e => handle(e.target.files[0])}
         disabled={analyzing}
@@ -41,9 +45,82 @@ function DropZone({ onFile, analyzing }) {
           <div className="drop-zone-upload-icon">
             <UploadCloud size={28} />
           </div>
-          <div className="drop-zone-title">Upload YOLO .pt model</div>
-          <div className="drop-zone-sub">Drag & drop or click to browse — classes auto-detected</div>
+          <div className="drop-zone-title">{title}</div>
+          <div className="drop-zone-sub">{sub}</div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ── Direct .tflite uploader ──────────────────────────────────────────────────
+// For models that are already exported to TFLite outside the YOLO/.pt
+// pipeline (e.g. a CRNN character reader) — no class auto-detection, no
+// conversion step, the file is usable as soon as the upload finishes.
+function TfliteUploader({ onUploaded }) {
+  const [file, setFile] = useState(null);
+  const [name, setName] = useState('');
+  const [classesText, setClassesText] = useState('');
+  const [uploading, setUploading] = useState(false);
+
+  const handleFile = (f) => {
+    setFile(f);
+    setName(f.name.replace(/\.tflite$/i, '').replace(/[_-]/g, ' '));
+  };
+
+  const doUpload = async () => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const classes = classesText.split(',').map(c => c.trim()).filter(Boolean);
+      const r = await uploadModel(file, name || file.name, classes);
+      onUploaded(r.data);
+      setFile(null);
+      setName('');
+      setClassesText('');
+    } catch {
+      alert('Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="newapp-upload-body">
+      {!file && (
+        <DropZone
+          onFile={handleFile}
+          analyzing={false}
+          accept=".tflite"
+          title="Upload .tflite model"
+          sub="Already-converted model — no conversion needed"
+        />
+      )}
+      {file && (
+        <div className="model-preview">
+          <div className="model-preview-field">
+            <label className="section-label">Model Name</label>
+            <input
+              className="field-input"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="e.g. Char Reader CRNN"
+            />
+          </div>
+          <div className="model-preview-field">
+            <label className="section-label">Classes (optional, comma-separated)</label>
+            <input
+              className="field-input"
+              value={classesText}
+              onChange={e => setClassesText(e.target.value)}
+              placeholder="e.g. 0,1,2,...,A,B,C (leave blank if not needed)"
+            />
+          </div>
+          <button className="convert-btn" onClick={doUpload} disabled={uploading}>
+            <Zap size={15} />
+            {uploading ? 'Uploading...' : 'Upload & Use'}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -60,6 +137,8 @@ export default function NewApp() {
   const [appType, setAppType] = useState('sequential');
   const [detectorModelId, setDetectorModelId] = useState('');
   const [recognizerModelId, setRecognizerModelId] = useState('');
+  const [detectorSubTab, setDetectorSubTab] = useState('existing');
+  const [recognizerSubTab, setRecognizerSubTab] = useState('existing');
 
   const [selectedModelIds, setSelectedModelIds] = useState([]);
   const [selectedModelNames, setSelectedModelNames] = useState([]);
@@ -125,8 +204,14 @@ export default function NewApp() {
           if (s.data.status === 'ready') {
             clearInterval(pollRef.current);
             setConverting(false);
-            setSelectedModelIds(prev => [...prev, assetId]);
-            setSelectedModelNames(prev => [...prev, modelName || ptFile.name]);
+            setExistingModels(prev => [...prev, { id: assetId, vision_project_name: modelName || ptFile.name, status: 'ready', classes }]);
+            if (isFreeOcr) {
+              setDetectorModelId(assetId);
+              setDetectorSubTab('existing');
+            } else {
+              setSelectedModelIds(prev => [...prev, assetId]);
+              setSelectedModelNames(prev => [...prev, modelName || ptFile.name]);
+            }
             setPtFile(null);
             setModelName('');
             setClasses([]);
@@ -183,8 +268,8 @@ export default function NewApp() {
 
   // free_ocr apps only need two model slots (detector + recognizer) — no
   // canvas/widget builder, no inspection_tasks/mandatoryClasses/classOcrConfig,
-  // no VIN/master-data config, so step 1 shows two dropdowns instead of the
-  // upload/existing-model picker used by the sequential inspection flow.
+  // no VIN/master-data config, so step 1 shows two model-slot pickers instead
+  // of the upload/existing-model picker used by the sequential inspection flow.
   const isFreeOcr = appType === 'free_ocr';
   const freeOcrReady = !!detectorModelId && !!recognizerModelId;
 
@@ -222,36 +307,109 @@ export default function NewApp() {
 
             {isFreeOcr ? (
               <div className="newapp-upload-body">
+                {/* ── Detector slot: pick existing YOLO model or upload/convert a new .pt ── */}
                 <div className="model-preview-field">
                   <label className="section-label">Plate/Region Detector (YOLO)</label>
-                  <select
-                    className="field-input"
-                    value={detectorModelId}
-                    onChange={e => setDetectorModelId(e.target.value)}
-                  >
-                    <option value="">Select a model...</option>
-                    {existingModels.map(m => (
-                      <option key={m.id} value={m.id}>{m.vision_project_name}</option>
+                  <div className="newapp-tabs" style={{ marginBottom: 8 }}>
+                    {['existing', 'upload'].map(t => (
+                      <button
+                        key={t}
+                        onClick={() => setDetectorSubTab(t)}
+                        className={`newapp-tab${detectorSubTab === t ? ' active' : ''}`}
+                      >
+                        {t === 'existing' ? 'Select from Library' : 'Upload .pt'}
+                      </button>
                     ))}
-                  </select>
+                  </div>
+                  {detectorSubTab === 'existing' ? (
+                    <select
+                      className="field-input"
+                      value={detectorModelId}
+                      onChange={e => setDetectorModelId(e.target.value)}
+                    >
+                      <option value="">Select a model...</option>
+                      {existingModels.map(m => (
+                        <option key={m.id} value={m.id}>{m.vision_project_name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div>
+                      {!converting && <DropZone onFile={handleFileDrop} analyzing={analyzing} accept=".pt" />}
+                      {ptFile && !converting && (
+                        <div className="model-preview">
+                          <div className="model-preview-field">
+                            <label className="section-label">Model Name</label>
+                            <input
+                              className="field-input"
+                              value={modelName}
+                              onChange={e => setModelName(e.target.value)}
+                              placeholder="e.g. Plate Detector"
+                            />
+                          </div>
+                          <div className="model-preview-field">
+                            <label className="section-label">Detected Classes</label>
+                            <div className="model-classes-wrap">
+                              {classes.map(c => (
+                                <span key={c} className="class-chip">{c}</span>
+                              ))}
+                            </div>
+                          </div>
+                          <button className="convert-btn" onClick={startConvert}>
+                            <Zap size={15} />
+                            Convert & Use
+                          </button>
+                        </div>
+                      )}
+                      {converting && (
+                        <div className="conversion-log">
+                          <pre>{conversionLog}</pre>
+                          <div ref={logEndRef} />
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
+
+                {/* ── Recognizer slot: pick existing CRNN model or upload a ready .tflite ── */}
                 <div className="model-preview-field">
                   <label className="section-label">Character Reader (CRNN)</label>
-                  <select
-                    className="field-input"
-                    value={recognizerModelId}
-                    onChange={e => setRecognizerModelId(e.target.value)}
-                  >
-                    <option value="">Select a model...</option>
-                    {existingModels.map(m => (
-                      <option key={m.id} value={m.id}>{m.vision_project_name}</option>
+                  <div className="newapp-tabs" style={{ marginBottom: 8 }}>
+                    {['existing', 'upload'].map(t => (
+                      <button
+                        key={t}
+                        onClick={() => setRecognizerSubTab(t)}
+                        className={`newapp-tab${recognizerSubTab === t ? ' active' : ''}`}
+                      >
+                        {t === 'existing' ? 'Select from Library' : 'Upload .tflite'}
+                      </button>
                     ))}
-                  </select>
+                  </div>
+                  {recognizerSubTab === 'existing' ? (
+                    <select
+                      className="field-input"
+                      value={recognizerModelId}
+                      onChange={e => setRecognizerModelId(e.target.value)}
+                    >
+                      <option value="">Select a model...</option>
+                      {existingModels.map(m => (
+                        <option key={m.id} value={m.id}>{m.vision_project_name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <TfliteUploader
+                      onUploaded={(asset) => {
+                        setExistingModels(prev => [...prev, asset]);
+                        setRecognizerModelId(asset.id);
+                        setRecognizerSubTab('existing');
+                      }}
+                    />
+                  )}
                 </div>
+
                 {existingModels.length === 0 && (
                   <div className="newapp-sidebar-empty" style={{ marginTop: 8 }}>
-                    No converted models in library yet. Convert a YOLO detector and a
-                    CRNN reader model first from the "Inspection App" tab.
+                    No converted models in library yet. Upload a YOLO detector (.pt) and a
+                    CRNN reader (.tflite) above.
                   </div>
                 )}
               </div>
@@ -402,7 +560,7 @@ export default function NewApp() {
             </div>
           ) : (
             <div className="newapp-sidebar-empty">
-              Pick a detector and a recognizer model from the left panel.
+              Pick or upload a detector and a recognizer model from the left panel.
             </div>
           )
         ) : selectedModelNames.length === 0 ? (
