@@ -150,17 +150,16 @@ class CrnnReader {
     return threshold;
   }
 
-  /// Grayscale + CLAHE + Otsu-polarity-normalize + tighten-to-content +
-  /// aspect-preserving resize + letterbox into a fixed imgH x imgW canvas
-  /// (dark text on light background) — the same pipeline
-  /// crnn_training.py's `_normalize_line` builds training data with.
-  ///
-  /// The tighten-to-content step has no Python equivalent: training lines
-  /// are cropped from the tight union of labeled character boxes (zero
-  /// margin), but a production YOLO "plate" detection is a much looser box
-  /// with background/metal margin around the text. Without trimming to the
-  /// actual dark-pixel content first, the resize-to-height-32 step shrinks
-  /// the characters far more than the model ever saw in training.
+  /// Grayscale + CLAHE + Otsu-polarity-normalize + aspect-preserving resize
+  /// + letterbox into a fixed imgH x imgW canvas (dark text on light
+  /// background) — exactly the steps ai-vision-platform's
+  /// crnn_training.py `_normalize_line` uses to build training data AND
+  /// the exact steps its own reference inference endpoint
+  /// (backend/app/api/ocr.py `_predict_with_crnn`) applies to a raw YOLO
+  /// detection box before feeding the CRNN — crop the box as detected,
+  /// normalize, done. No extra cropping/tightening step: that was tried
+  /// here previously and removed because it has no equivalent in either
+  /// of those places and only risks clipping strokes on its own guesswork.
   static img.Image _normalizeLine(img.Image src) {
     final grayImg = img.grayscale(src);
     final w = grayImg.width, h = grayImg.height;
@@ -180,32 +179,6 @@ class CrnnReader {
       gray = gray.map((v) => 255 - v).toList();
     }
 
-    // Tighten to the bounding box of foreground (dark) pixels using a fresh
-    // Otsu threshold on the now-normalized polarity, with a couple pixels
-    // of slack so stroke edges aren't clipped.
-    final thr2 = _otsuThreshold(gray);
-    int minX = w, minY = h, maxX = -1, maxY = -1;
-    for (int y = 0; y < h; y++) {
-      for (int x = 0; x < w; x++) {
-        if (gray[y * w + x] < thr2) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
-      }
-    }
-    int cropX0 = 0, cropY0 = 0, cropW = w, cropH = h;
-    if (maxX >= minX && maxY >= minY) {
-      const pad = 2;
-      cropX0 = (minX - pad).clamp(0, w - 1);
-      cropY0 = (minY - pad).clamp(0, h - 1);
-      final cropX1 = (maxX + pad).clamp(0, w - 1);
-      final cropY1 = (maxY + pad).clamp(0, h - 1);
-      cropW = cropX1 - cropX0 + 1;
-      cropH = cropY1 - cropY0 + 1;
-    }
-
     final normalizedImg = img.Image(width: w, height: h);
     for (int y = 0; y < h; y++) {
       for (int x = 0; x < w; x++) {
@@ -213,14 +186,11 @@ class CrnnReader {
         normalizedImg.setPixelRgb(x, y, v, v, v);
       }
     }
-    final tightened = (cropW > 0 && cropH > 0 && (cropW != w || cropH != h))
-        ? img.copyCrop(normalizedImg, x: cropX0, y: cropY0, width: cropW, height: cropH)
-        : normalizedImg;
 
-    final double scale = imgH / tightened.height;
-    final int newW = (tightened.width * scale).round().clamp(1, imgW);
+    final double scale = imgH / normalizedImg.height;
+    final int newW = (normalizedImg.width * scale).round().clamp(1, imgW);
     final resized = img.copyResize(
-      tightened,
+      normalizedImg,
       width: newW,
       height: imgH,
       interpolation: img.Interpolation.average,
