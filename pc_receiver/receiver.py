@@ -2132,6 +2132,22 @@ setInterval(pollEvents, 3000);
 """.replace("__LOGO_B64__", LOGO_PNG_BASE64.replace("\n", "")).replace("__FAVICON_B64__", FAVICON_PNG_BASE64.replace("\n", ""))
 
 
+def _port_available(port: int) -> bool:
+    """Quick check so we don't open a browser tab pointing at a dashboard
+    that's about to fail to start -- without this, a crash-restart loop
+    (e.g. a stray already-running copy holding the port) opens a fresh
+    browser tab on every single failed restart attempt, since the browser
+    was previously opened unconditionally before ever trying to bind."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("0.0.0.0", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def main():
     _load_devices()
     zeroconf = start_mdns()
@@ -2143,10 +2159,15 @@ def main():
     print(f"Phones on this WiFi/hotspot send to: {ip}:{PORT}")
     print("Leave this window open while receiving data. Press Ctrl+C to quit.\n")
 
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+    if _port_available(PORT):
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    else:
+        print(f"[warn] Port {PORT} is already in use -- another copy of this app is likely "
+              f"already running. Not opening a new browser tab; check Task Manager for a "
+              f"second PCReceiver.exe if this keeps happening.")
 
     try:
         uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
