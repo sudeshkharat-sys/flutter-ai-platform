@@ -189,6 +189,27 @@ def _load_devices():
             _paired_devices = {}
 
 
+def _merge_devices_from_disk():
+    """Pulls in any device on disk that this process doesn't have in
+    memory, before saving. Without this, if more than one copy of this
+    exe has been running (a crash-restart loop, a stray leftover instance
+    from before an update, etc.) each one only knows about whatever was
+    in paired_devices.json at the moment *it* started -- an older,
+    stale-but-still-alive copy handling a later pairing would otherwise
+    save its outdated snapshot straight over the file, silently erasing
+    any device paired since that copy started, even one with a
+    completely different name that never matched or collided with
+    anything. Call this right before every _save_devices()."""
+    if not DEVICES_FILE.exists():
+        return
+    try:
+        on_disk = json.loads(DEVICES_FILE.read_text())
+    except Exception:
+        return
+    for did, d in on_disk.items():
+        _paired_devices.setdefault(did, d)
+
+
 def _save_devices():
     try:
         DEVICES_FILE.write_text(json.dumps(_paired_devices, indent=2))
@@ -418,6 +439,11 @@ async def pair(request: Request):
 
         # One-shot: consume the token so a screenshot can't be reused.
         _pending_token = None
+
+        # Catch up with anything another process instance may have
+        # written to disk since this one started, before reading or
+        # changing anything -- see _merge_devices_from_disk()'s docstring.
+        _merge_devices_from_disk()
 
         # Match by the phone's persistent install id, never by the typed
         # device name alone -- two different phones can easily end up
@@ -674,6 +700,7 @@ async def api_devices(_: None = Depends(_require_local)):
 @app.delete("/api/devices/{device_id}")
 async def api_remove_device(device_id: str, _: None = Depends(_require_local)):
     with _lock:
+        _merge_devices_from_disk()
         if device_id in _paired_devices:
             del _paired_devices[device_id]
             try:
