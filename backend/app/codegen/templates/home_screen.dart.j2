@@ -1,5 +1,6 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -194,20 +195,20 @@ class _HomeScreenState extends State<HomeScreen> {
       const SnackBar(content: Text("Inspection Persisted to Local Database!"), backgroundColor: Colors.green),
     );
 
-    // Auto-send to the paired PC, mirroring auto-print -- silent on success,
-    // but flagged clearly if it fails so the inspector knows the data is
-    // still only on the phone. A null result means no PC has been paired
-    // yet, which isn't an error worth interrupting the flow for.
-    final syncResult = await SyncService.instance.autoSendIfPaired();
-    if (mounted && syncResult != null && !syncResult.success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("⚠ Not uploaded to PC yet: ${syncResult.message}"),
-          backgroundColor: Colors.orange[800],
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    }
+    // Auto-send to the paired PC in the background -- deliberately NOT
+    // awaited. This inspection is already saved to the local database and
+    // flagged unsynced, so a slow or failed upload cannot lose it: the
+    // scan screen's unsynced badge shows how many are still pending, and
+    // they go up on the next send (automatic or via the Send button).
+    //
+    // Awaiting it used to hold this screen open for as long as the whole
+    // upload took before the inspector could get back to scanning -- and
+    // that is not a quick step: it zips every unsynced inspection *and
+    // its photos*, waits on mDNS discovery, then uploads with a 60s
+    // timeout. On a weak WiFi link that is easily tens of seconds of
+    // staring at the submit screen, per vehicle, which is exactly the
+    // "submit doesn't go to the next scan" delay.
+    unawaited(SyncService.instance.autoSendIfPaired());
 
     // Build task list for printing
     final printTasks = List.generate(_tasks.length, (i) {
