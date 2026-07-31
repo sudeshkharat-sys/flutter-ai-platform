@@ -576,6 +576,16 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
                         // instances fighting over the same camera hardware at
                         // once is what breaks VIN scanning until app restart.
                         await _scannerController.stop();
+                        // stop() can resolve before the OS camera HAL has
+                        // actually released the hardware. If the user is
+                        // quick to tap through to "Pair New PC (Scan QR)"
+                        // right after this, its own camera can open while
+                        // this one is still tearing down, showing up as a
+                        // black preview that needs a manual back-and-retry
+                        // to clear. Giving the release a head start here
+                        // (on top of the QR scanner's own start delay)
+                        // makes that race much less likely to be hit at all.
+                        await Future.delayed(const Duration(milliseconds: 300));
                         await Navigator.push(context, MaterialPageRoute(builder: (_) => const SyncScreen()));
                         if (mounted) {
                           await _restartScanner();

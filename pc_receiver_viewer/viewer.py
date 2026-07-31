@@ -53,6 +53,28 @@ from openpyxl.utils import get_column_letter
 
 from assets import FAVICON_PNG_BASE64, LOGO_PNG_BASE64
 
+
+def _pause_on_crash(exc_type, exc, tb):
+    """Installed as sys.excepthook below. Double-clicking the packaged .exe
+    opens a console window that Windows closes the instant this process
+    exits -- whether that's a clean exit or an unhandled exception. Without
+    this, any startup failure (unwritable folder, bad config, an unexpected
+    error anywhere in this module, even before main() runs) flashes a
+    traceback for a fraction of a second and vanishes, which looks exactly
+    like the app "crashing" for no visible reason. Printing the traceback
+    and pausing for a keypress keeps the window open long enough to
+    actually read what happened."""
+    import traceback
+    print("\n[fatal] Digital Eye Vault Viewer stopped unexpectedly:\n")
+    traceback.print_exception(exc_type, exc, tb)
+    try:
+        input("\nPress Enter to close this window...")
+    except Exception:
+        pass
+
+
+sys.excepthook = _pause_on_crash
+
 # ── Paths (works both as a plain script and a PyInstaller --onefile exe) ───
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -72,6 +94,37 @@ def _save_config(cfg: dict):
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
 
 
+def _ensure_app_dir_writable():
+    """Proves APP_DIR (where viewer_config.json / FIRST_RUN_PASSWORD.txt
+    live) is actually writable before anything tries to write to it --
+    without this, dropping the exe in Program Files or a read-only network
+    location made the very first config write throw an unguarded
+    PermissionError/OSError at import time, before the app ever got a
+    chance to explain what was wrong."""
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        probe = APP_DIR / ".pcviewer_write_test"
+        probe.write_text("ok")
+        probe.unlink()
+    except OSError as e:
+        # Plain sys.exit(message) would flash and vanish on a double-clicked
+        # .exe (Windows closes the console the instant the process exits),
+        # so print + pause directly instead of relying on sys.excepthook,
+        # which SystemExit deliberately bypasses.
+        print(
+            f"Could not write to {APP_DIR} ({e})\n"
+            f"This app needs to run from a folder this Windows account can write "
+            f"to (e.g. Desktop, Documents, or a plain local folder) -- not "
+            f"Program Files or a read-only network location."
+        )
+        try:
+            input("\nPress Enter to close this window...")
+        except Exception:
+            pass
+        sys.exit(1)
+
+
+_ensure_app_dir_writable()
 _config = _load_config()
 
 # ── Where the (read-only) inspection data lives ─────────────────────────────
@@ -1176,4 +1229,8 @@ if __name__ == "__main__":
         print(f"[error] Could not start on port {PORT}: {e}")
         print("        Check Task Manager for another DigitalEyeViewer.exe already running,")
         print(f"        or set VIEWER_PORT to a different port if something else on this PC uses {PORT}.")
+        try:
+            input("\nPress Enter to close this window...")
+        except Exception:
+            pass
         sys.exit(1)

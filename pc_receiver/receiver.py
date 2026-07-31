@@ -135,12 +135,23 @@ if _data_dir_error:
 
 _app_dir_error = _ensure_writable_dir(APP_DIR)
 if _app_dir_error:
-    sys.exit(
+    # Plain sys.exit(message) would print and quit here, but this runs
+    # before main()'s own crash-pause wrapper ever gets a chance to catch
+    # anything -- on a double-clicked .exe, Windows closes the console the
+    # instant the process exits, so the message would flash and vanish
+    # just like an unhandled traceback does. Pausing here directly is the
+    # only way this particular message stays readable.
+    print(
         f"Could not write to {APP_DIR} ({_app_dir_error})\n"
         f"This app needs to run from a folder this Windows account can write "
         f"to (e.g. Desktop, Documents, or a plain local folder) -- not "
         f"Program Files or a read-only network location."
     )
+    try:
+        input("\nPress Enter to close this window...")
+    except Exception:
+        pass
+    sys.exit(1)
 
 
 # Configurable in case another local app on this PC already uses 8765 --
@@ -2113,9 +2124,38 @@ def main():
 
     try:
         uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
+    except OSError as e:
+        # Most commonly a second copy of this exe already running and
+        # holding the port -- without this, that crashed with a raw
+        # traceback and (launched by double-click) the window closed
+        # before anyone could read it, looking like the app just silently
+        # refused to start at all.
+        print(f"\n[error] Could not start on port {PORT}: {e}")
+        print("        Check Task Manager for another PCReceiver.exe already running,")
+        print(f"        or set PCRECEIVER_PORT to a different port if something else on this PC uses {PORT}.")
+        raise
     finally:
         zeroconf.close()
 
 
 if __name__ == "__main__":
-    main()
+    # Double-clicking the packaged .exe opens a console window that Windows
+    # closes the instant this process exits -- whether that's a clean exit
+    # or an unhandled exception. Without this, any startup failure (bad
+    # storage folder, port already taken, an unexpected error) flashes a
+    # traceback for a fraction of a second and vanishes, which looks
+    # exactly like the app "crashing" for no visible reason. Catching
+    # everything here and pausing for a keypress keeps the window open
+    # long enough to actually read what happened.
+    try:
+        main()
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except BaseException:
+        import traceback
+        print("\n[fatal] Mahindra Digital Eye Vault stopped unexpectedly:\n")
+        traceback.print_exc()
+        try:
+            input("\nPress Enter to close this window...")
+        except Exception:
+            pass

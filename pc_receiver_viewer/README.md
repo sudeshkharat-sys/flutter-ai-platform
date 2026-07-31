@@ -146,3 +146,33 @@ pyinstaller --onefile --console --name DigitalEyeViewer --icon ..\pc_receiver\ic
 
 The output is `dist\DigitalEyeViewer.exe` — no Python install required on
 the target machine.
+
+## Keeping it running (auto-restart on crash, auto-start after reboot)
+
+Since this is the process other people's browsers actually connect to,
+a crash or an accidental window close (or a server reboot) means everyone
+loses access until someone notices and restarts it by hand.
+`viewer_run_forever.bat` and `viewer_install_autostart.ps1` in this folder
+fix that the same way as the receiver's. They're named with a `viewer_`
+prefix specifically so they don't collide with the receiver's
+identically-purposed files if both apps' files end up copied into the same
+folder.
+
+1. Copy `viewer_run_forever.bat` next to `DigitalEyeViewer.exe` (i.e. into
+   `dist\`).
+2. Run it once by hand to confirm it starts the viewer normally -- it opens
+   a window that launches `DigitalEyeViewer.exe` and automatically
+   relaunches it if it ever exits, for any reason.
+3. To have it also start automatically the next time this Windows account
+   logs in (so a reboot doesn't need someone to remember to open it), copy
+   `viewer_install_autostart.ps1` next to `viewer_run_forever.bat` and run:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File viewer_install_autostart.ps1
+   ```
+   This registers a Scheduled Task that launches `viewer_run_forever.bat`
+   at logon. Run `viewer_uninstall_autostart.ps1` the same way to remove
+   it.
+
+The watchdog window it opens **is** what's keeping the viewer alive --
+minimize it, don't close it. Its restart log is written to
+`viewer_watchdog.log` next to the exe.
