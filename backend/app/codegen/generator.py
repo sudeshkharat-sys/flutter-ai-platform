@@ -245,19 +245,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "android/build.gradle": "build.gradle.j2",
         "android/app/build.gradle": "app_build.gradle.j2",
         "android/app/proguard-rules.pro": "proguard-rules.pro.j2",
-        # A fixed keystore shared by every generated app, instead of each
-        # release build falling back to signingConfigs.debug -- that debug
-        # key is auto-generated per build machine/container the first time
-        # it's needed, so two builds done on different (or ephemeral) build
-        # agents end up signed with different certificates. Android refuses
-        # to install a differently-signed APK "update" over an existing
-        # install, forcing an uninstall first -- which wipes the app's local
-        # storage (paired PC list, device name, unsynced inspections) even
-        # though nothing about the app itself actually changed. Signing with
-        # this same committed keystore on every build keeps the certificate
-        # identical across builds/machines, so installing a new APK over an
-        # old one is treated as a normal update and local data survives.
-        "android/app/keystore/release.keystore": "keystore/release.keystore.raw",
         "android/settings.gradle": "settings.gradle.j2",
         "android/local.properties": "local.properties.j2",
         "android/gradle.properties": "gradle.properties.j2",
