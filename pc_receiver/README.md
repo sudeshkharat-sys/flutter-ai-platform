@@ -86,6 +86,35 @@ Notes:
   read-only/permission-restricted network or SAN drive) unless you redirect
   `received_data/` per below.
 
+## Keeping it running (auto-restart on crash, auto-start after reboot)
+
+Double-clicking `PCReceiver.exe` directly means it stops the moment that
+console window is closed (accidentally or otherwise), and doesn't come back
+after a crash or a PC reboot -- if it's down, phones just queue their data
+locally and it re-sends automatically next time the receiver is back up (no
+data is lost), but nobody's inspections get uploaded in the meantime.
+
+`run_forever.bat` and `install_autostart.ps1` (both next to `create_desktop_shortcut.ps1`
+in this folder) set that up properly:
+
+1. Copy `run_forever.bat` next to `PCReceiver.exe` (i.e. into `dist\`, or
+   wherever you keep the exe).
+2. Run it once by hand (double-click it) to confirm it starts the receiver
+   normally -- it opens a window that launches `PCReceiver.exe` and
+   automatically relaunches it if it ever exits, for any reason.
+3. To also have it start automatically the next time this Windows account
+   logs in (so a reboot doesn't require someone to remember to open it),
+   copy `install_autostart.ps1` next to `run_forever.bat` and run:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File install_autostart.ps1
+   ```
+   This registers a Scheduled Task that launches `run_forever.bat` at
+   logon. Run `uninstall_autostart.ps1` the same way to remove it.
+
+The watchdog window it opens **is** what's keeping the receiver alive --
+minimize it, don't close it. Its restart log is written to
+`receiver_watchdog.log` next to the exe.
+
 ## Storing received data on a different drive (e.g. a large network/SAN volume)
 
 The exe itself should still run from an ordinary local, writable folder --
