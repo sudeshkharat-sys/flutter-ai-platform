@@ -1,7 +1,7 @@
-# Registers a Scheduled Task that launches run_forever.bat automatically
+# Registers a Scheduled Task that launches receiver_run_forever.bat automatically
 # every time this Windows account logs in -- so the receiver comes back up
 # on its own after a reboot or logoff/logon, instead of relying on someone
-# remembering to double-click the exe again. run_forever.bat itself already
+# remembering to double-click the exe again. receiver_run_forever.bat itself already
 # restarts PCReceiver.exe if it crashes; this task's own restart settings
 # are a backstop in case the watchdog window itself gets killed.
 #
@@ -11,17 +11,17 @@
 # be logged into this PC.
 #
 # Usage: run this from an elevated PowerShell in this folder
-#   powershell -ExecutionPolicy Bypass -File install_autostart.ps1
-# Safe to re-run any time to update the task. See uninstall_autostart.ps1
+#   powershell -ExecutionPolicy Bypass -File receiver_install_autostart.ps1
+# Safe to re-run any time to update the task. See receiver_uninstall_autostart.ps1
 # to remove it.
 
 $ErrorActionPreference = "Stop"
 
 $taskName = "Mahindra Digital Eye Vault - Receiver"
-$batPath = Join-Path $PSScriptRoot "run_forever.bat"
+$batPath = Join-Path $PSScriptRoot "receiver_run_forever.bat"
 
 if (-not (Test-Path $batPath)) {
-    Write-Host "run_forever.bat not found in this folder ($PSScriptRoot). Keep this script next to it." -ForegroundColor Red
+    Write-Host "receiver_run_forever.bat not found in this folder ($PSScriptRoot). Keep this script next to it." -ForegroundColor Red
     exit 1
 }
 

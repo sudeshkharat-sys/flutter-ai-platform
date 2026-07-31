@@ -4,7 +4,7 @@ title Mahindra Digital Eye Vault - Viewer (auto-restart watchdog)
 
 rem Restarts DigitalEyeViewer.exe automatically whenever it exits, for
 rem any reason -- a crash, someone accidentally closing the window, the
-rem PC waking from sleep, etc. Pairs with install_autostart.ps1, which
+rem PC waking from sleep, etc. Pairs with viewer_install_autostart.ps1, which
 rem makes this .bat itself launch automatically at login so the viewer
 rem comes back up on its own after a reboot too -- important since this
 rem is the process other users' browsers actually connect to.

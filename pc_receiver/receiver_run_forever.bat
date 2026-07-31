@@ -4,7 +4,7 @@ title Mahindra Digital Eye Vault - Receiver (auto-restart watchdog)
 
 rem Restarts PCReceiver.exe automatically whenever it exits, for any
 rem reason -- a crash, someone accidentally closing the window, the PC
-rem waking from sleep, etc. Pairs with install_autostart.ps1, which makes
+rem waking from sleep, etc. Pairs with receiver_install_autostart.ps1, which makes
 rem this .bat itself launch automatically at login so the receiver comes
 rem back up on its own after a reboot too.
 rem

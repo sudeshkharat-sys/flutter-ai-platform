@@ -1,7 +1,7 @@
-# Registers a Scheduled Task that launches run_forever.bat automatically
+# Registers a Scheduled Task that launches viewer_run_forever.bat automatically
 # every time this Windows account logs in -- so the viewer (the server
 # other users' browsers connect to) comes back up on its own after a
-# reboot or logoff/logon. run_forever.bat itself already restarts
+# reboot or logoff/logon. viewer_run_forever.bat itself already restarts
 # DigitalEyeViewer.exe if it crashes; this task's own restart settings are
 # a backstop in case the watchdog window itself gets killed.
 #
@@ -10,17 +10,17 @@
 # logged into this PC.
 #
 # Usage: run this from an elevated PowerShell in this folder
-#   powershell -ExecutionPolicy Bypass -File install_autostart.ps1
-# Safe to re-run any time to update the task. See uninstall_autostart.ps1
+#   powershell -ExecutionPolicy Bypass -File viewer_install_autostart.ps1
+# Safe to re-run any time to update the task. See viewer_uninstall_autostart.ps1
 # to remove it.
 
 $ErrorActionPreference = "Stop"
 
 $taskName = "Mahindra Digital Eye Vault - Viewer"
-$batPath = Join-Path $PSScriptRoot "run_forever.bat"
+$batPath = Join-Path $PSScriptRoot "viewer_run_forever.bat"
 
 if (-not (Test-Path $batPath)) {
-    Write-Host "run_forever.bat not found in this folder ($PSScriptRoot). Keep this script next to it." -ForegroundColor Red
+    Write-Host "viewer_run_forever.bat not found in this folder ($PSScriptRoot). Keep this script next to it." -ForegroundColor Red
     exit 1
 }
 
