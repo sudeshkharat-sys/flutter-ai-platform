@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
@@ -78,6 +79,26 @@ class SyncService {
   static const _storage = FlutterSecureStorage();
   static const _kPairedDevicesKey = 'synced_pc_devices';
   static const _kDeviceLabelKey = 'sync_device_label';
+  static const _kInstallIdKey = 'sync_install_id';
+
+  /// A random id generated once for this app install and persisted in
+  /// secure storage (same store as pairing secrets). Unlike the human-
+  /// typed device label -- which two different phones can easily end up
+  /// sharing -- this can't collide, so the receiver uses it (not the
+  /// label) to tell "is this really the same phone pairing again" apart
+  /// from "a different phone that happens to have the same name". Wiped
+  /// by an app reinstall along with everything else in secure storage,
+  /// same as the paired-PC list.
+  Future<String> _getOrCreateInstallId() async {
+    final existing = await _storage.read(key: _kInstallIdKey);
+    if (existing != null && existing.isNotEmpty) return existing;
+    final rand = Random.secure();
+    final id = List<int>.generate(16, (_) => rand.nextInt(256))
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
+    await _storage.write(key: _kInstallIdKey, value: id);
+    return id;
+  }
 
   // ── This phone's display name (e.g. "Sudesh") ───────────────────────────
   // Shown on the PC's paired-device list and used as the top-level folder
@@ -155,6 +176,7 @@ class SyncService {
     final token = data['token'] as String;
 
     final deviceLabel = await getDeviceLabel() ?? _fallbackDeviceLabel();
+    final installId = await _getOrCreateInstallId();
 
     final resp = await http
         .post(
@@ -164,6 +186,7 @@ class SyncService {
             'token': token,
             'deviceName': deviceLabel,
             'appName': kAppFolderName,
+            'installId': installId,
           }),
         )
         .timeout(const Duration(seconds: 10));

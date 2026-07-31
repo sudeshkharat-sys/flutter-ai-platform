@@ -406,6 +406,7 @@ async def pair(request: Request):
     token = body.get("token")
     device_name = body.get("deviceName", "unknown-device")
     app_name = body.get("appName", "app")
+    install_id = body.get("installId")  # absent on older app builds that predate this field
 
     with _lock:
         pending = _pending_token
@@ -418,28 +419,53 @@ async def pair(request: Request):
         # One-shot: consume the token so a screenshot can't be reused.
         _pending_token = None
 
-        # Re-pairing the same phone+app (reinstall, cleared storage, a
-        # second manual pairing) previously minted a brand new deviceId
-        # every time, splitting one phone's history across duplicate
-        # entries. Reuse the existing entry and just rotate its secret.
-        existing_id = next(
-            (did for did, d in _paired_devices.items()
-             if d["deviceName"] == device_name and d.get("appName") == app_name),
-            None,
-        )
+        # Match by the phone's persistent install id, never by the typed
+        # device name alone -- two different phones can easily end up
+        # with the same typed name (nothing stops it), and matching by
+        # name used to silently reuse the first phone's entry in that
+        # case, rotating its secret out from under it and breaking its
+        # ability to send anything further. An install id can't collide
+        # between two different phones, so it's the only safe way to
+        # recognize "this is the same phone pairing again".
+        existing_id = None
+        if install_id:
+            existing_id = next(
+                (did for did, d in _paired_devices.items() if d.get("installId") == install_id),
+                None,
+            )
+
         secret = secrets.token_hex(32)
         if existing_id:
             device_id = existing_id
             _paired_devices[device_id]["secret"] = secret
             _paired_devices[device_id]["pairedAt"] = datetime.now().isoformat()
         else:
+            # No install-id match -- either a genuinely new phone, or the
+            # same phone re-pairing after a reinstall (which wipes its
+            # locally stored install id along with everything else). If
+            # the typed name is already taken by another device, don't
+            # merge into it (that's the exact collision this is meant to
+            # avoid) -- disambiguate instead so both keep working.
+            final_name = device_name
+            existing_names = {
+                d["deviceName"] for d in _paired_devices.values() if d.get("appName") == app_name
+            }
+            suffix = 2
+            while final_name in existing_names:
+                final_name = f"{device_name} ({suffix})"
+                suffix += 1
+            if final_name != device_name:
+                print(f"[warn] Device name '{device_name}' is already paired -- this new pairing is "
+                      f"stored as '{final_name}' instead so neither one stops working.")
             device_id = str(uuid.uuid4())
             _paired_devices[device_id] = {
                 "secret": secret,
-                "deviceName": device_name,
+                "deviceName": final_name,
                 "appName": app_name,
+                "installId": install_id,
                 "pairedAt": datetime.now().isoformat(),
             }
+            device_name = final_name
         try:
             _save_devices()
         except RuntimeError as e:
