@@ -49,3 +49,6 @@ Thumbs.db
 *.wmv
 
 data/
+
+# Watchdog single-instance lock files (created next to the exe at runtime)
+*.lock
