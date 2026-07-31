@@ -315,10 +315,14 @@ class PrintService {
       // to X..." and never gets back to the next scan, even though the
       // app itself isn't frozen -- this call just never resolves). Bound
       // it so a bad printer always fails cleanly instead of hanging.
+      // 8s -- a real connect+print over Bluetooth normally finishes in a
+      // couple of seconds when the printer is actually on and in range, so
+      // this still leaves comfortable margin without making the inspector
+      // wait needlessly long on a printer that just isn't there.
       final result = await _zsdk.printZplDataOverBluetooth(
         data: zpl,
         macAddress: printer.address,
-      ).timeout(const Duration(seconds: 20));
+      ).timeout(const Duration(seconds: 8));
 
       final response = PrinterResponse.fromMap(result);
       if (response.errorCode == ErrorCode.SUCCESS) {
