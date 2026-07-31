@@ -46,6 +46,7 @@ import mimetypes
 import qrcode
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from starlette.requests import ClientDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
@@ -477,11 +478,21 @@ async def upload(
         _record_failure(client_ip)
         raise HTTPException(status_code=401, detail="Request expired")
 
-    form = await request.form()
-    upload_file = form.get("data")
-    if upload_file is None:
-        raise HTTPException(status_code=400, detail="Missing file field 'data'")
-    body_bytes = await upload_file.read()
+    try:
+        form = await request.form()
+        upload_file = form.get("data")
+        if upload_file is None:
+            raise HTTPException(status_code=400, detail="Missing file field 'data'")
+        body_bytes = await upload_file.read()
+    except ClientDisconnect:
+        # The phone gave up mid-upload -- usually a weak/unstable WiFi
+        # connection dropping partway through sending a larger batch
+        # (photos make the payload much bigger than just the data rows).
+        # Nothing was saved; the phone's own unsynced flag is untouched,
+        # so tapping Send again will retry the same data, not skip it.
+        print(f"[warn] Upload from '{client_ip}' disconnected before completing -- "
+              f"nothing saved, phone will retry on next send.")
+        raise HTTPException(status_code=499, detail="Client disconnected before upload completed")
 
     body_hash = hashlib.sha256(body_bytes).hexdigest()
     expected_payload = f"{x_device_id}:{x_timestamp}:{body_hash}"
