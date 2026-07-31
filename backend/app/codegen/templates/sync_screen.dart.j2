@@ -486,30 +486,37 @@ class _QrScanScreenState extends State<_QrScanScreen> {
   }
 
   Future<void> _startCamera() async {
-    await Future.delayed(const Duration(milliseconds: 300));
-    if (!mounted) return;
-    try {
-      await _controller.start();
-    } catch (e) {
-      debugPrint('[QrScanScreen] camera start failed, retrying: $e');
-      await Future.delayed(const Duration(milliseconds: 600));
+    // start() throwing is the easy case to catch and retry -- but the more
+    // common way this races the VIN scanner's camera release is start()
+    // resolving successfully while the OS camera HAL hasn't actually handed
+    // over the hardware yet, which shows up as a black preview with no
+    // error at all. Escalating delays across a few attempts (instead of a
+    // single short one) gives that release more time to land before we give
+    // up and ask the user to back out and retry manually.
+    const delays = [
+      Duration(milliseconds: 400),
+      Duration(milliseconds: 800),
+      Duration(milliseconds: 1400),
+    ];
+    for (int attempt = 0; attempt < delays.length; attempt++) {
+      await Future.delayed(delays[attempt]);
       if (!mounted) return;
       try {
         await _controller.start();
-      } catch (e2) {
-        debugPrint('[QrScanScreen] camera start retry failed: $e2');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Camera failed to start. Go back and try again.'),
-              backgroundColor: _crimson,
-            ),
-          );
-        }
+        if (mounted) setState(() => _cameraReady = true);
         return;
+      } catch (e) {
+        debugPrint('[QrScanScreen] camera start attempt ${attempt + 1} failed: $e');
       }
     }
-    if (mounted) setState(() => _cameraReady = true);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Camera failed to start. Go back and try again.'),
+          backgroundColor: _crimson,
+        ),
+      );
+    }
   }
 
   void _onDetect(BarcodeCapture capture) async {
