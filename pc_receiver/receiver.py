@@ -54,6 +54,33 @@ from zeroconf import ServiceInfo, Zeroconf
 
 from assets import FAVICON_PNG_BASE64, LOGO_PNG_BASE64
 
+
+def _pause_briefly(seconds: int = 15):
+    """Waits for a keypress or `seconds`, whichever comes first, before
+    returning -- so someone who double-clicked the exe directly still has
+    time to read whatever was just printed, but the process still exits
+    on its own if nothing responds. A plain blocking input() would
+    otherwise leave the watchdog's auto-restart loop (receiver_run_forever.bat)
+    stuck waiting forever for a keypress no unattended process can ever
+    provide -- the exe would look "stuck"/"not restarting", when it's
+    actually just paused on this exact prompt."""
+    print(f"(Closing automatically in {seconds}s -- press Enter to close sooner.)")
+    try:
+        import msvcrt
+        end = time.time() + seconds
+        while time.time() < end:
+            if msvcrt.kbhit():
+                msvcrt.getch()
+                return
+            time.sleep(0.1)
+    except ImportError:
+        # Not Windows (e.g. running from source during development) --
+        # msvcrt doesn't exist, just wait out the same duration.
+        time.sleep(seconds)
+    except Exception:
+        pass
+
+
 # ── Paths (work both as a plain script and a PyInstaller --onefile exe) ────
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -147,10 +174,7 @@ if _app_dir_error:
         f"to (e.g. Desktop, Documents, or a plain local folder) -- not "
         f"Program Files or a read-only network location."
     )
-    try:
-        input("\nPress Enter to close this window...")
-    except Exception:
-        pass
+    _pause_briefly()
     sys.exit(1)
 
 
@@ -2229,7 +2253,4 @@ if __name__ == "__main__":
         import traceback
         print("\n[fatal] Mahindra Digital Eye Vault stopped unexpectedly:\n")
         traceback.print_exc()
-        try:
-            input("\nPress Enter to close this window...")
-        except Exception:
-            pass
+        _pause_briefly()
