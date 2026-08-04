@@ -232,28 +232,62 @@ class SyncService {
   /// Sends any not-yet-uploaded inspections to the first paired PC, if any
   /// is paired. Intended to be called automatically right after a
   /// submission (mirrors auto-print) -- returns null (no-op, no error to
-  /// surface) if no PC has ever been paired yet.
+  /// surface) if no PC has ever been paired yet. With a large backlog
+  /// [sendToPc] can now take a while (it walks the whole backlog in
+  /// batches) -- a fast run of submissions would otherwise each fire their
+  /// own overlapping call here, so callers should go through the
+  /// [sendToPc] in-flight guard rather than assume this always starts a
+  /// fresh send.
   Future<SyncResult?> autoSendIfPaired() async {
     final devices = await getPairedPcs();
     if (devices.isEmpty) return null;
     return sendToPc(devices.first);
   }
 
-  /// Exports every inspection not yet confirmed received by [pc] (database
-  /// rows + their images) into a zip, uploads it with an HMAC-signed
-  /// request, and marks those inspections synced only once the PC confirms
-  /// receipt. Already-synced inspections are never re-sent. Local data is
-  /// never deleted or modified by a failed send -- it simply stays flagged
-  /// unsynced until the next successful attempt.
-  Future<SyncResult> sendToPc(PairedPc pc) async {
-    try {
-      final bundle = await _buildExportBundle();
-      if (bundle.inspectionIds.isEmpty) {
-        return const SyncResult(true, 'Already up to date -- nothing to send.');
-      }
+  // Guards against two sends racing each other for the same PC -- e.g. the
+  // auto-send fired after a submission still working through a large
+  // backlog when the next vehicle is submitted and fires another one, or
+  // the user tapping "Send" while an auto-send is already running. Without
+  // this, concurrent sendToPc calls each build their own batch from
+  // whatever is still flagged unsynced at that instant and upload it
+  // independently -- not corrupting anything (the PC dedupes), but wasting
+  // bandwidth and racing each other to mark the same rows synced. A caller
+  // that arrives while one is already running just waits on that same
+  // send's result instead of starting a second one.
+  final Map<String, Future<SyncResult>> _inFlightSends = {};
 
-      // Refresh the PC's current LAN IP in case DHCP changed it since
-      // pairing; fall back to the last known IP if discovery finds nothing.
+  // How many inspections (rows + all their photos) go into one export/
+  // upload. A phone can accumulate thousands of unsynced inspections (e.g.
+  // after being unable to reach the PC for a while) -- exporting and
+  // uploading *all* of them as a single zip in one request gets big enough,
+  // big/slow enough that it either blows past the PC's 60s upload timeout
+  // or exhausts the phone's memory building the zip, so tapping Send simply
+  // fails every time and the backlog never moves. Sending in small bounded
+  // batches, each marked synced as soon as the PC confirms it, makes a huge
+  // backlog progress steadily instead of needing to succeed all at once.
+  static const int _kSyncBatchSize = 20;
+
+  /// Exports inspections not yet confirmed received by [pc] (database rows
+  /// + their images) in bounded batches (see [_kSyncBatchSize]), uploading
+  /// each with an HMAC-signed request and marking only that batch synced
+  /// once the PC confirms receipt, then moving on to the next batch until
+  /// nothing unsynced is left. Already-synced inspections are never
+  /// re-sent. Local data is never deleted or modified by a failed batch --
+  /// it simply stays flagged unsynced, and everything sent in earlier
+  /// batches this run stays sent, so a mid-run failure loses no progress.
+  Future<SyncResult> sendToPc(PairedPc pc) {
+    final existing = _inFlightSends[pc.deviceId];
+    if (existing != null) return existing;
+    final future = _sendToPcImpl(pc).whenComplete(() => _inFlightSends.remove(pc.deviceId));
+    _inFlightSends[pc.deviceId] = future;
+    return future;
+  }
+
+  Future<SyncResult> _sendToPcImpl(PairedPc pc) async {
+    // Refresh the PC's current LAN IP once up front (in case DHCP changed
+    // it since pairing) rather than before every batch -- with hundreds of
+    // batches that mDNS lookup alone would add minutes to the send.
+    try {
       final discovered = await discoverPcs(timeout: const Duration(seconds: 2));
       final match = discovered.where((d) => d.name == pc.name);
       if (match.isNotEmpty) {
@@ -266,46 +300,75 @@ class SyncService {
           await _savePairedPcs(devices);
         }
       }
+    } catch (_) {
+      // Discovery is best-effort -- fall back to the last known IP.
+    }
 
-      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final bodyHash = sha256.convert(bundle.zipBytes).toString();
-      final signaturePayload = '${pc.deviceId}:$timestamp:$bodyHash';
-      final signature =
-          Hmac(sha256, utf8.encode(pc.secret)).convert(utf8.encode(signaturePayload)).toString();
-
-      final uri = Uri.parse('http://${pc.ip}:${pc.port}/upload');
-      final request = http.MultipartRequest('POST', uri)
-        ..headers['X-Device-Id'] = pc.deviceId
-        ..headers['X-Timestamp'] = timestamp
-        ..headers['X-Signature'] = signature
-        ..files.add(http.MultipartFile.fromBytes('data', bundle.zipBytes,
-            filename: 'inspection_export.zip'));
-
-      final streamed = await request.send().timeout(const Duration(seconds: 60));
-      final resp = await http.Response.fromStream(streamed);
-
-      if (resp.statusCode == 200) {
-        await db.markInspectionsSynced(bundle.inspectionIds);
-        return SyncResult(true, 'Sent ${bundle.inspectionIds.length} inspection(s) to PC.',
-            sentCount: bundle.inspectionIds.length);
+    int totalSent = 0;
+    while (true) {
+      final bundle = await _buildExportBundle(limit: _kSyncBatchSize);
+      if (bundle.inspectionIds.isEmpty) {
+        if (totalSent == 0) {
+          return const SyncResult(true, 'Already up to date -- nothing to send.');
+        }
+        return SyncResult(true, 'Sent $totalSent inspection(s) to PC.', sentCount: totalSent);
       }
-      if (resp.statusCode == 401) {
-        // The PC returns 401 for three different reasons (unknown device,
-        // expired/clock-skewed signature, bad signature) -- show its actual
-        // detail instead of one generic phrase, since "not paired" and
-        // "your clock is wrong" need completely different fixes.
-        String reason = 'not paired with that PC';
-        try {
-          final body = jsonDecode(resp.body) as Map<String, dynamic>;
-          if (body['detail'] != null) reason = body['detail'].toString();
-        } catch (_) {}
-        return SyncResult(false, 'Rejected by PC: $reason');
+
+      try {
+        final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+        final bodyHash = sha256.convert(bundle.zipBytes).toString();
+        final signaturePayload = '${pc.deviceId}:$timestamp:$bodyHash';
+        final signature =
+            Hmac(sha256, utf8.encode(pc.secret)).convert(utf8.encode(signaturePayload)).toString();
+
+        final uri = Uri.parse('http://${pc.ip}:${pc.port}/upload');
+        final request = http.MultipartRequest('POST', uri)
+          ..headers['X-Device-Id'] = pc.deviceId
+          ..headers['X-Timestamp'] = timestamp
+          ..headers['X-Signature'] = signature
+          ..files.add(http.MultipartFile.fromBytes('data', bundle.zipBytes,
+              filename: 'inspection_export.zip'));
+
+        final streamed = await request.send().timeout(const Duration(seconds: 60));
+        final resp = await http.Response.fromStream(streamed);
+
+        if (resp.statusCode == 200) {
+          await db.markInspectionsSynced(bundle.inspectionIds);
+          totalSent += bundle.inspectionIds.length;
+          continue; // more may be left -- go around for the next batch
+        }
+        if (resp.statusCode == 401) {
+          // The PC returns 401 for three different reasons (unknown device,
+          // expired/clock-skewed signature, bad signature) -- show its actual
+          // detail instead of one generic phrase, since "not paired" and
+          // "your clock is wrong" need completely different fixes.
+          String reason = 'not paired with that PC';
+          try {
+            final body = jsonDecode(resp.body) as Map<String, dynamic>;
+            if (body['detail'] != null) reason = body['detail'].toString();
+          } catch (_) {}
+          return SyncResult(false,
+              totalSent > 0 ? 'Sent $totalSent, then rejected by PC: $reason' : 'Rejected by PC: $reason',
+              sentCount: totalSent);
+        }
+        return SyncResult(false,
+            totalSent > 0
+                ? 'Sent $totalSent, then the PC rejected the upload (${resp.statusCode}).'
+                : 'PC rejected the upload (${resp.statusCode}).',
+            sentCount: totalSent);
+      } on TimeoutException {
+        return SyncResult(
+            false,
+            totalSent > 0
+                ? 'Sent $totalSent, then timed out -- tap Send again to continue.'
+                : "Timed out -- is the PC on this WiFi/hotspot and the receiver running?",
+            sentCount: totalSent);
+      } catch (e) {
+        return SyncResult(
+            false,
+            totalSent > 0 ? 'Sent $totalSent, then failed: $e' : 'Send failed: $e',
+            sentCount: totalSent);
       }
-      return SyncResult(false, 'PC rejected the upload (${resp.statusCode}).');
-    } on TimeoutException {
-      return const SyncResult(false, "Timed out -- is the PC on this WiFi/hotspot and the receiver running?");
-    } catch (e) {
-      return SyncResult(false, 'Send failed: $e');
     }
   }
 
@@ -351,9 +414,9 @@ class SyncService {
     }
   }
 
-  Future<_ExportBundle> _buildExportBundle() async {
+  Future<_ExportBundle> _buildExportBundle({int? limit}) async {
     final archive = Archive();
-    final unsynced = await db.getUnsyncedInspections();
+    final unsynced = await db.getUnsyncedInspections(limit: limit);
     final manifest = <Map<String, dynamic>>[];
     final seenImagePaths = <String>{};
     final modelNames = await _loadModelNameMap();

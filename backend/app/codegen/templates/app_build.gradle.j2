@@ -38,9 +38,24 @@ android {
         main.java.srcDirs += 'src/main/kotlin'
     }
 
+    // Every generated app is signed with the same fixed keystore (checked
+    // into the codegen templates, not the ad-hoc per-machine debug key) so
+    // its certificate never changes between builds -- otherwise installing
+    // a freshly-built APK over an older install looks like a different app
+    // to Android, forcing an uninstall (which wipes paired-PC/device data)
+    // before the "update" can go through.
+    signingConfigs {
+        release {
+            storeFile file("keystore/release.keystore")
+            storePassword "flutterAiStudioRelease2026"
+            keyAlias "flutteraistudio"
+            keyPassword "flutterAiStudioRelease2026"
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
         }
     }
 }

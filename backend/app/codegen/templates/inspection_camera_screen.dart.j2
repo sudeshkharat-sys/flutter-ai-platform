@@ -12,6 +12,60 @@ import '../ml/detector.dart';
 import '../ml/detection_result.dart';
 import '../database/database.dart';
 import '../widgets/detection_overlay.dart';
+import 'package:flutter/foundation.dart' show compute;
+
+/// Result of [_decodeAndCheckBlur] -- only primitives/typed data cross the
+/// isolate boundary, so the oriented image comes back as a lossless PNG
+/// rather than as an img.Image object.
+class _BlurCheckResult {
+  final double? variance;
+  final Uint8List? orientedPngBytes;
+  const _BlurCheckResult({this.variance, this.orientedPngBytes});
+}
+
+/// Runs on a background isolate via compute(). Decoding a full-resolution
+/// JPEG, baking in its EXIF orientation, and walking a 150x150 grayscale
+/// copy pixel-by-pixel to score blur is real CPU work -- a few hundred ms
+/// on a mid-range phone. Doing all of that inline on the UI isolate (as
+/// this used to) blocked every frame for that long on *every* capture,
+/// which is what showed up as the app "lagging while capturing" through an
+/// inspection with many task photos.
+_BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
+  try {
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) return const _BlurCheckResult();
+    final oriented = img.bakeOrientation(decoded);
+
+    final small = img.copyResize(oriented, width: 150, height: 150);
+    final gray = img.grayscale(small);
+    double sumLap = 0, sumLapSq = 0;
+    int count = 0;
+    for (int y = 1; y < gray.height - 1; y++) {
+      for (int x = 1; x < gray.width - 1; x++) {
+        final c = gray.getPixel(x, y).r.toDouble();
+        final t = gray.getPixel(x, y - 1).r.toDouble();
+        final b = gray.getPixel(x, y + 1).r.toDouble();
+        final l = gray.getPixel(x - 1, y).r.toDouble();
+        final rv = gray.getPixel(x + 1, y).r.toDouble();
+        final lap = t + b + l + rv - 4 * c;
+        sumLap += lap;
+        sumLapSq += lap * lap;
+        count++;
+      }
+    }
+    double? variance;
+    if (count > 0) {
+      final mean = sumLap / count;
+      variance = (sumLapSq / count) - (mean * mean);
+    }
+    return _BlurCheckResult(
+      variance: variance,
+      orientedPngBytes: Uint8List.fromList(img.encodePng(oriented)),
+    );
+  } catch (_) {
+    return const _BlurCheckResult();
+  }
+}
 
 class InspectionCameraScreen extends StatefulWidget {
   final String vin;
@@ -209,74 +263,61 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
       Size? imageSize;
       img.Image? orientedImage;
-      try {
-        final decoded = img.decodeImage(bytes);
-        if (decoded != null) {
-          final oriented = img.bakeOrientation(decoded);
-          orientedImage = oriented;
-          imageSize =
-              Size(oriented.width.toDouble(), oriented.height.toDouble());
-
-          final small = img.copyResize(oriented, width: 150, height: 150);
-          final gray = img.grayscale(small);
-          double sumLap = 0, sumLapSq = 0;
-          int count = 0;
-          for (int y = 1; y < gray.height - 1; y++) {
-            for (int x = 1; x < gray.width - 1; x++) {
-              final c = gray.getPixel(x, y).r.toDouble();
-              final t = gray.getPixel(x, y - 1).r.toDouble();
-              final b = gray.getPixel(x, y + 1).r.toDouble();
-              final l = gray.getPixel(x - 1, y).r.toDouble();
-              final rv = gray.getPixel(x + 1, y).r.toDouble();
-              final lap = t + b + l + rv - 4 * c;
-              sumLap += lap;
-              sumLapSq += lap * lap;
-              count++;
-            }
+      // Decode + orient + blur-score off the UI isolate -- see
+      // _decodeAndCheckBlur's doc comment for why this used to be the main
+      // source of capture lag. Only the small, lossless PNG round-trip
+      // happens back here, so ModelManager()/box-drawing below still see
+      // pixel-identical data to before.
+      final blurCheck = await compute(_decodeAndCheckBlur, bytes);
+      if (blurCheck.orientedPngBytes != null) {
+        try {
+          final oriented = img.decodePng(blurCheck.orientedPngBytes!);
+          if (oriented != null) {
+            orientedImage = oriented;
+            imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble());
           }
-          if (count > 0) {
-            final mean = sumLap / count;
-            final blurVariance = (sumLapSq / count) - (mean * mean);
-            _addLog("Blur variance: ${blurVariance.toStringAsFixed(1)}");
-            if (blurVariance < 150.0 && mounted) {
-              await showDialog(
-                context: context,
-                barrierDismissible: false,
-                builder: (_) => AlertDialog(
-                  backgroundColor: const Color(0xFF1A1A24),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16)),
-                  title: const Row(children: [
-                    Icon(Icons.blur_on, color: Color(0xFFDC143C)),
-                    SizedBox(width: 8),
-                    Text('Image Not Clear',
-                        style: TextStyle(color: Colors.white, fontSize: 18)),
-                  ]),
-                  content: const Text(
-                    'The photo appears blurry or out of focus.\nPlease hold the device steady and retake.',
-                    style: TextStyle(color: Colors.white70, height: 1.5),
+        } catch (_) {}
+      }
+      if (blurCheck.variance != null) {
+        final blurVariance = blurCheck.variance!;
+        _addLog("Blur variance: ${blurVariance.toStringAsFixed(1)}");
+        if (blurVariance < 150.0 && mounted) {
+          await showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => AlertDialog(
+              backgroundColor: const Color(0xFF1A1A24),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: const Row(children: [
+                Icon(Icons.blur_on, color: Color(0xFFDC143C)),
+                SizedBox(width: 8),
+                Text('Image Not Clear',
+                    style: TextStyle(color: Colors.white, fontSize: 18)),
+              ]),
+              content: const Text(
+                'The photo appears blurry or out of focus.\nPlease hold the device steady and retake.',
+                style: TextStyle(color: Colors.white70, height: 1.5),
+              ),
+              actions: [
+                ElevatedButton.icon(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.camera_alt,
+                      color: Colors.white, size: 18),
+                  label: const Text('Retake',
+                      style: TextStyle(color: Colors.white)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFDC143C),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                   ),
-                  actions: [
-                    ElevatedButton.icon(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.camera_alt,
-                          color: Colors.white, size: 18),
-                      label: const Text('Retake',
-                          style: TextStyle(color: Colors.white)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFDC143C),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8)),
-                      ),
-                    ),
-                  ],
                 ),
-              );
-              return;
-            }
-          }
+              ],
+            ),
+          );
+          return;
         }
-      } catch (_) {}
+      }
 
       setState(() {
         _isAnalyzing = true;
@@ -1029,6 +1070,60 @@ import '../ml/detector.dart';
 import '../ml/detection_result.dart';
 import '../database/database.dart';
 import '../widgets/detection_overlay.dart';
+import 'package:flutter/foundation.dart' show compute;
+
+/// Result of [_decodeAndCheckBlur] -- only primitives/typed data cross the
+/// isolate boundary, so the oriented image comes back as a lossless PNG
+/// rather than as an img.Image object.
+class _BlurCheckResult {
+  final double? variance;
+  final Uint8List? orientedPngBytes;
+  const _BlurCheckResult({this.variance, this.orientedPngBytes});
+}
+
+/// Runs on a background isolate via compute(). Decoding a full-resolution
+/// JPEG, baking in its EXIF orientation, and walking a 150x150 grayscale
+/// copy pixel-by-pixel to score blur is real CPU work -- a few hundred ms
+/// on a mid-range phone. Doing all of that inline on the UI isolate (as
+/// this used to) blocked every frame for that long on *every* capture,
+/// which is what showed up as the app "lagging while capturing" through an
+/// inspection with many task photos.
+_BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
+  try {
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) return const _BlurCheckResult();
+    final oriented = img.bakeOrientation(decoded);
+
+    final small = img.copyResize(oriented, width: 150, height: 150);
+    final gray = img.grayscale(small);
+    double sumLap = 0, sumLapSq = 0;
+    int count = 0;
+    for (int y = 1; y < gray.height - 1; y++) {
+      for (int x = 1; x < gray.width - 1; x++) {
+        final c = gray.getPixel(x, y).r.toDouble();
+        final t = gray.getPixel(x, y - 1).r.toDouble();
+        final b = gray.getPixel(x, y + 1).r.toDouble();
+        final l = gray.getPixel(x - 1, y).r.toDouble();
+        final rv = gray.getPixel(x + 1, y).r.toDouble();
+        final lap = t + b + l + rv - 4 * c;
+        sumLap += lap;
+        sumLapSq += lap * lap;
+        count++;
+      }
+    }
+    double? variance;
+    if (count > 0) {
+      final mean = sumLap / count;
+      variance = (sumLapSq / count) - (mean * mean);
+    }
+    return _BlurCheckResult(
+      variance: variance,
+      orientedPngBytes: Uint8List.fromList(img.encodePng(oriented)),
+    );
+  } catch (_) {
+    return const _BlurCheckResult();
+  }
+}
 
 class InspectionCameraScreen extends StatefulWidget {
   final String vin;
@@ -1190,74 +1285,61 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
       Size? imageSize;
       img.Image? orientedImage;
-      try {
-        final decoded = img.decodeImage(bytes);
-        if (decoded != null) {
-          final oriented = img.bakeOrientation(decoded);
-          orientedImage = oriented;
-          imageSize =
-              Size(oriented.width.toDouble(), oriented.height.toDouble());
-
-          final small = img.copyResize(oriented, width: 150, height: 150);
-          final gray = img.grayscale(small);
-          double sumLap = 0, sumLapSq = 0;
-          int count = 0;
-          for (int y = 1; y < gray.height - 1; y++) {
-            for (int x = 1; x < gray.width - 1; x++) {
-              final c = gray.getPixel(x, y).r.toDouble();
-              final t = gray.getPixel(x, y - 1).r.toDouble();
-              final b = gray.getPixel(x, y + 1).r.toDouble();
-              final l = gray.getPixel(x - 1, y).r.toDouble();
-              final rv = gray.getPixel(x + 1, y).r.toDouble();
-              final lap = t + b + l + rv - 4 * c;
-              sumLap += lap;
-              sumLapSq += lap * lap;
-              count++;
-            }
+      // Decode + orient + blur-score off the UI isolate -- see
+      // _decodeAndCheckBlur's doc comment for why this used to be the main
+      // source of capture lag. Only the small, lossless PNG round-trip
+      // happens back here, so ModelManager()/box-drawing below still see
+      // pixel-identical data to before.
+      final blurCheck = await compute(_decodeAndCheckBlur, bytes);
+      if (blurCheck.orientedPngBytes != null) {
+        try {
+          final oriented = img.decodePng(blurCheck.orientedPngBytes!);
+          if (oriented != null) {
+            orientedImage = oriented;
+            imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble());
           }
-          if (count > 0) {
-            final mean = sumLap / count;
-            final blurVariance = (sumLapSq / count) - (mean * mean);
-            _addLog("Blur variance: ${blurVariance.toStringAsFixed(1)}");
-            if (blurVariance < 150.0 && mounted) {
-              await showDialog(
-                context: context,
-                barrierDismissible: false,
-                builder: (_) => AlertDialog(
-                  backgroundColor: const Color(0xFF1A1A24),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16)),
-                  title: const Row(children: [
-                    Icon(Icons.blur_on, color: Color(0xFFDC143C)),
-                    SizedBox(width: 8),
-                    Text('Image Not Clear',
-                        style: TextStyle(color: Colors.white, fontSize: 18)),
-                  ]),
-                  content: const Text(
-                    'The photo appears blurry or out of focus.\nPlease hold the device steady and retake.',
-                    style: TextStyle(color: Colors.white70, height: 1.5),
+        } catch (_) {}
+      }
+      if (blurCheck.variance != null) {
+        final blurVariance = blurCheck.variance!;
+        _addLog("Blur variance: ${blurVariance.toStringAsFixed(1)}");
+        if (blurVariance < 150.0 && mounted) {
+          await showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => AlertDialog(
+              backgroundColor: const Color(0xFF1A1A24),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: const Row(children: [
+                Icon(Icons.blur_on, color: Color(0xFFDC143C)),
+                SizedBox(width: 8),
+                Text('Image Not Clear',
+                    style: TextStyle(color: Colors.white, fontSize: 18)),
+              ]),
+              content: const Text(
+                'The photo appears blurry or out of focus.\nPlease hold the device steady and retake.',
+                style: TextStyle(color: Colors.white70, height: 1.5),
+              ),
+              actions: [
+                ElevatedButton.icon(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.camera_alt,
+                      color: Colors.white, size: 18),
+                  label: const Text('Retake',
+                      style: TextStyle(color: Colors.white)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFDC143C),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                   ),
-                  actions: [
-                    ElevatedButton.icon(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.camera_alt,
-                          color: Colors.white, size: 18),
-                      label: const Text('Retake',
-                          style: TextStyle(color: Colors.white)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFDC143C),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8)),
-                      ),
-                    ),
-                  ],
                 ),
-              );
-              return;
-            }
-          }
+              ],
+            ),
+          );
+          return;
         }
-      } catch (_) {}
+      }
 
       setState(() {
         _isAnalyzing = true;

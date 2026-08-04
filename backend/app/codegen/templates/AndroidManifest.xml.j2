@@ -20,11 +20,20 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
+    <!-- Android's auto-backup can silently snapshot and later "restore"
+         this app's storage (e.g. after a reinstall), but the encrypted
+         pairing secret in flutter_secure_storage is tied to an Android
+         Keystore key that a restore does NOT bring back, so the restored
+         ciphertext then fails to decrypt, which looks exactly like "paired
+         PC vanished" even without an explicit uninstall. Disabling backup
+         keeps the paired-PC list and unsynced-inspection database only
+         ever in their real, consistent on-device state. -->
     <application
         android:label="{{ app_name | e }}"
         android:icon="@mipmap/ic_launcher"
         android:name="${applicationName}"
-        android:requestLegacyExternalStorage="true">
+        android:requestLegacyExternalStorage="true"
+        android:allowBackup="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"

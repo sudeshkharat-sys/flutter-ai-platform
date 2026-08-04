@@ -74,12 +74,24 @@ class AppDatabase extends _$AppDatabase {
     (select(taskResults)..where((t) => t.inspectionId.equals(inspectionId))).get();
 
   // ── PC sync status ────────────────────────────────────────────────────
-  Future<List<Inspection>> getUnsyncedInspections() =>
-      (select(inspections)..where((t) => t.isSynced.equals(false))).get();
+  // [limit] caps how many unsynced rows come back at once -- with a large
+  // backlog (thousands of inspections, each with photos), building one
+  // export bundle for *all* of them at once produces a zip upload that's
+  // too big to fit the PC's 60s upload timeout (or the phone's memory), so
+  // the send silently fails every time and the backlog never shrinks.
+  // Sending expects to be called repeatedly in bounded batches instead.
+  Future<List<Inspection>> getUnsyncedInspections({int? limit}) {
+    final q = select(inspections)..where((t) => t.isSynced.equals(false));
+    q.orderBy([(t) => OrderingTerm.asc(t.createdAt)]);
+    if (limit != null) q.limit(limit);
+    return q.get();
+  }
 
   Future<int> countUnsyncedInspections() async {
-    final rows = await getUnsyncedInspections();
-    return rows.length;
+    final count = countAll(filter: inspections.isSynced.equals(false));
+    final query = selectOnly(inspections)..addColumns([count]);
+    final row = await query.getSingle();
+    return row.read(count) ?? 0;
   }
 
   Future<void> markInspectionsSynced(List<int> ids) async {

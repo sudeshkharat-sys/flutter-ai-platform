@@ -28,6 +28,13 @@ class _HomeScreenState extends State<HomeScreen> {
   Map<int, dynamic> _taskResults = {}; // Index -> DetectionResult
   bool _loading = true;
 
+  // True from the moment Submit is tapped (and past the incomplete/confirm
+  // dialogs) until this screen pops. Grays out the Submit button and shows
+  // a spinner in it instead of leaving it tappable while the DB write and
+  // printer handoff run, so a slow printer connection reads as "working",
+  // not "frozen" -- and a second tap can't fire a duplicate submission.
+  bool _submitting = false;
+
   /// "NOT OK" means a wrong/defect part was actually detected; "NOT FOUND"
   /// means the camera simply didn't detect anything for this task at all.
   /// Those are different problems for the inspector (retake angle vs. a
@@ -142,6 +149,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _submitInspection() async {
+    if (_submitting) return;
     if (_taskResults.length < _tasks.length) {
       showDialog(
         context: context,
@@ -166,6 +174,8 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       if (confirmed != true) return;
     }
+
+    setState(() => _submitting = true);
 
     // Persist to local DB
     final inspectionId = await db.saveInspection(InspectionsCompanion.insert(
@@ -264,27 +274,53 @@ class _HomeScreenState extends State<HomeScreen> {
           duration: const Duration(seconds: 2),
         ),
       );
-      final printSuccess = await PrintService.instance.printInspectionReport(
+      // NOT awaited -- same reasoning as the PC auto-send above. The
+      // Bluetooth connect is bounded at 8s, but that is still a full 8+
+      // second stall on this screen per vehicle if the printer is off/out
+      // of range, which is exactly the "stuck on submit" complaint. The
+      // inspection is already saved locally, and a failed/skipped print can
+      // always be redone from History's reprint button, so nothing is lost
+      // by moving on to the next scan immediately instead of waiting here.
+      unawaited(_printInBackground(
         printer: defaultPrinter,
         vin: widget.vin ?? 'UNKNOWN',
         modelCode: widget.modelCode ?? 'UNKNOWN',
         timestamp: timestampNow,
         overallSuccess: overallOk,
         tasks: printTasks,
-      );
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(printSuccess
-              ? "Report printed to ${defaultPrinter.name}"
-              : "Print failed: ${PrintService.instance.lastPrintError ?? 'check printer is on, in range, and in ZPL mode'}"),
-          backgroundColor: printSuccess ? Colors.green : Colors.red,
-          duration: const Duration(seconds: 6),
-        ),
-      );
+      ));
     }
 
     if (mounted) Navigator.pop(context);
+  }
+
+  /// Runs the actual print after [_submitInspection] has already moved on
+  /// (see the call site) -- this screen may be disposed before it finishes,
+  /// so it must not touch [context]/ScaffoldMessenger, only the singleton
+  /// PrintService and its own captured, non-widget arguments.
+  Future<void> _printInBackground({
+    required DiscoveredPrinter printer,
+    required String vin,
+    required String modelCode,
+    required String timestamp,
+    required bool overallSuccess,
+    required List<Map<String, dynamic>> tasks,
+  }) async {
+    try {
+      final printSuccess = await PrintService.instance.printInspectionReport(
+        printer: printer,
+        vin: vin,
+        modelCode: modelCode,
+        timestamp: timestamp,
+        overallSuccess: overallSuccess,
+        tasks: tasks,
+      );
+      if (!printSuccess) {
+        debugPrint('Background print for $vin failed: ${PrintService.instance.lastPrintError}');
+      }
+    } catch (e) {
+      debugPrint('Background print for $vin threw: $e');
+    }
   }
 
   Widget _buildSubmitConfirmDialog() {
@@ -624,15 +660,23 @@ class _HomeScreenState extends State<HomeScreen> {
               child: SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: _submitInspection,
+                  onPressed: _submitting ? null : _submitInspection,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFDC143C),
                     foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey.shade400,
+                    disabledForegroundColor: Colors.white70,
                     padding: const EdgeInsets.symmetric(vertical: 18),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     elevation: 4,
                   ),
-                  child: const Text('SUBMIT INSPECTION', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                  child: _submitting
+                      ? const SizedBox(
+                          height: 22,
+                          width: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white),
+                        )
+                      : const Text('SUBMIT INSPECTION', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                 ),
               ),
             ),
