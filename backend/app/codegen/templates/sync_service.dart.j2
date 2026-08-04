@@ -6,7 +6,6 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:multicast_dns/multicast_dns.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -76,27 +75,40 @@ class SyncService {
   static final SyncService instance = SyncService._();
   SyncService._();
 
-  static const _storage = FlutterSecureStorage();
   static const _kPairedDevicesKey = 'synced_pc_devices';
   static const _kDeviceLabelKey = 'sync_device_label';
   static const _kInstallIdKey = 'sync_install_id';
 
-  /// A random id generated once for this app install and persisted in
-  /// secure storage (same store as pairing secrets). Unlike the human-
-  /// typed device label -- which two different phones can easily end up
-  /// sharing -- this can't collide, so the receiver uses it (not the
-  /// label) to tell "is this really the same phone pairing again" apart
-  /// from "a different phone that happens to have the same name". Wiped
-  /// by an app reinstall along with everything else in secure storage,
-  /// same as the paired-PC list.
+  // The paired-PC list (including each PC's per-phone secret) and the
+  // install id below deliberately live in plain SharedPreferences, not
+  // flutter_secure_storage / the Android Keystore-backed encrypted store
+  // this used to use. That store has a well-known failure mode on Android
+  // (worse on some OEMs, e.g. Samsung): its encryption key can become
+  // invalidated by the OS independently of anything the app does -- no
+  // reinstall, no uninstall, nothing the user did wrong -- and the stored
+  // values then silently come back empty, which looks exactly like
+  // "paired PC vanished" days after it was last working fine. A reinstall
+  // still wipes SharedPreferences too, same as before, but that's an
+  // explicit, expected action -- not a background OS quirk. The PC-issued
+  // secret is a locally-scoped bearer token for this one phone/PC pair,
+  // not a password or anything else that justifies trading reliability for
+  // OS-level encryption at rest.
+
+  /// A random id generated once for this app install and persisted
+  /// alongside the paired-PC list. Unlike the human-typed device label --
+  /// which two different phones can easily end up sharing -- this can't
+  /// collide, so the receiver uses it (not the label) to tell "is this
+  /// really the same phone pairing again" apart from "a different phone
+  /// that happens to have the same name".
   Future<String> _getOrCreateInstallId() async {
-    final existing = await _storage.read(key: _kInstallIdKey);
+    final prefs = await SharedPreferences.getInstance();
+    final existing = prefs.getString(_kInstallIdKey);
     if (existing != null && existing.isNotEmpty) return existing;
     final rand = Random.secure();
     final id = List<int>.generate(16, (_) => rand.nextInt(256))
         .map((b) => b.toRadixString(16).padLeft(2, '0'))
         .join();
-    await _storage.write(key: _kInstallIdKey, value: id);
+    await prefs.setString(_kInstallIdKey, id);
     return id;
   }
 
@@ -146,15 +158,16 @@ class SyncService {
   }
 
   Future<List<PairedPc>> getPairedPcs() async {
-    final raw = await _storage.read(key: _kPairedDevicesKey);
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kPairedDevicesKey);
     if (raw == null || raw.isEmpty) return [];
     final list = jsonDecode(raw) as List;
     return list.map((e) => PairedPc.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<void> _savePairedPcs(List<PairedPc> devices) async {
-    await _storage.write(
-        key: _kPairedDevicesKey, value: jsonEncode(devices.map((d) => d.toJson()).toList()));
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kPairedDevicesKey, jsonEncode(devices.map((d) => d.toJson()).toList()));
   }
 
   Future<void> removePairedPc(String deviceId) async {

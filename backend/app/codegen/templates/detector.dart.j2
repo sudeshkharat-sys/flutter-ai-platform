@@ -270,14 +270,24 @@ class ModelManager {
     return buffer;
   }
 
-  /// Fast path: caller already decoded + EXIF-corrected the image (e.g. during
-  /// blur detection), so we skip the redundant decode + bakeOrientation step.
-  Future<List<DetectionResult>> predictImage(img.Image orientedImage) async {
+  /// Fast path: caller already decoded + EXIF-corrected the image (e.g.
+  /// during blur detection), so we skip the redundant decode +
+  /// bakeOrientation step. The resize-to-model-input-size + per-pixel
+  /// float32 conversion is real CPU work on top of that (e.g. 640x640 is
+  /// 400k+ pixel conversions) -- it used to run inline here on the UI
+  /// isolate before handing off to compute() for just the TFLite call,
+  /// which is what made every single detection during an inspection feel
+  /// laggy. It now happens inside the same background isolate as the
+  /// inference; since an img.Image can't cross the isolate boundary, pass
+  /// [orientedPngBytes] when the caller already has it (e.g. from the
+  /// blur check) to avoid a redundant re-encode -- otherwise it's encoded
+  /// here.
+  Future<List<DetectionResult>> predictImage(img.Image orientedImage, {Uint8List? orientedPngBytes}) async {
     if (!_isLoaded || _interpreter == null) return [];
 
-    final inputData = _imageToFloat32(orientedImage, {{ input_size }});
-    final detections = await compute(_runInference, {
-      'inputData': inputData,
+    final pngBytes = orientedPngBytes ?? Uint8List.fromList(img.encodePng(orientedImage));
+    final detections = await compute(_runInferencePng, {
+      'pngBytes': pngBytes,
       'interpreter_address': _interpreter!.address,
       'labels': _labels,
       'inputSize': {{ input_size }},
@@ -320,15 +330,22 @@ class ModelManager {
 {% endif %}
   }
 
-  /// Inference isolate entry-point for the fast path (pre-processed Float32List).
-  static List<DetectionResult> _runInference(Map<String, dynamic> args) {
-    final Float32List inputData = args['inputData'] as Float32List;
+  /// Inference isolate entry-point for the fast path: decodes the
+  /// (lossless, orientation-already-baked) PNG and does the resize +
+  /// float32 conversion here, on the background isolate, instead of the
+  /// caller doing it on the UI isolate before compute() is even reached.
+  static List<DetectionResult> _runInferencePng(Map<String, dynamic> args) {
+    final Uint8List pngBytes = args['pngBytes'] as Uint8List;
     final int interpreterAddress = args['interpreter_address'] as int;
     final List<String> labels = List<String>.from(args['labels'] as List);
     final int inputSize = args['inputSize'] as int;
     final double threshold = args['threshold'] as double;
 
     final interpreter = Interpreter.fromAddress(interpreterAddress);
+
+    final decoded = img.decodePng(pngBytes);
+    if (decoded == null) return [];
+    final inputData = _imageToFloat32(decoded, inputSize);
 
     // Reshape flat buffer to [1, inputSize, inputSize, 3]
     final input = inputData.reshape([1, inputSize, inputSize, 3]);

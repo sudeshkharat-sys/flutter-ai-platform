@@ -348,7 +348,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       _addLog("Pass: ${targetClasses.join(', ')}  Fail: ${failClasses.join(', ')}");
 
       final allDetections = orientedImage != null
-          ? await ModelManager().predictImage(orientedImage)
+          ? await ModelManager().predictImage(orientedImage, orientedPngBytes: blurCheck.orientedPngBytes)
           : await ModelManager().predictBytes(bytes);
       setState(() => _allDetections = allDetections);
 
@@ -1354,7 +1354,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       _addLog("Target: ${targetClasses.join(', ')}");
 
       final allDetections = orientedImage != null
-          ? await ModelManager().predictImage(orientedImage)
+          ? await ModelManager().predictImage(orientedImage, orientedPngBytes: blurCheck.orientedPngBytes)
           : await ModelManager().predictBytes(bytes);
       setState(() => _allDetections = allDetections);
 
