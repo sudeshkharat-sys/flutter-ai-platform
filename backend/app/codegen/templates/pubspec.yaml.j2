@@ -35,6 +35,19 @@ dependency_overrides:
   # sqlparser 0.44.6 removed DartPlaceholder.when(), which drift_dev 2.34.0's
   # query analyzer still calls, breaking build_runner code generation.
   sqlparser: 0.44.5
+  # sqlite3 3.0.0 switched to Dart's native-assets "build hooks" system,
+  # which downloads a precompiled binary straight from a GitHub release URL
+  # during every build instead of bundling it the traditional way. On a
+  # network that can't reach that specific URL (a corporate proxy/firewall
+  # blocking GitHub's release CDN is a common case on Windows build
+  # machines) that download fails with a TLS handshake error and the build
+  # never completes -- no flutter/gradle setting fixes it, since it's
+  # sqlite3's own hook doing the fetching. Pinning back to the last
+  # pre-hooks release avoids the download step entirely; sqlite3_flutter_libs
+  # (pinned above) is exactly the version designed to bundle this release
+  # the traditional way, and drift's own sqlite3 constraint already allows
+  # anything >=2.4.0 <3.0.0, so this isn't fighting either of them.
+  sqlite3: 2.9.4
 
 dev_dependencies:
   flutter_test:
