@@ -311,22 +311,37 @@ def _resolve_under_data_dir(rel_path: str) -> Path:
     return target
 
 
+def _app_master_dir(app_name: str) -> Path:
+    """Where an app's aggregated master workbook lives -- must match
+    receiver.py's _app_master_dir exactly, since this viewer reads the
+    same DATA_DIR receiver.py writes to (see this module's docstring).
+    Kept under a folder prefix that can't collide with a real phone name."""
+    return DATA_DIR / "_master" / _safe_name(app_name)
+
+
 def _list_groups() -> list[dict]:
     """Every device/app folder pair under DATA_DIR, with basic stats.
     Derived purely from the folder layout -- unlike receiver.py's device
     list, this doesn't depend on paired_devices.json, so it still shows
-    historical data for a device that has since been un-paired."""
+    historical data for a device that has since been un-paired.
+
+    "hasExcel" reflects the app-wide master workbook (shared across every
+    device paired under that app -- see receiver.py's _app_master_dir),
+    not a per-device file: receiver.py stopped writing a separate
+    data.xlsx per device once every phone under the same app started
+    sharing one continuous workbook, so checking the old per-device path
+    here would report "no data" for anything received after that change."""
     groups = []
     if not DATA_DIR.exists():
         return groups
     for device_dir in sorted(DATA_DIR.iterdir()):
-        if not device_dir.is_dir():
+        if not device_dir.is_dir() or device_dir.name == "_master":
             continue
         for app_dir in sorted(device_dir.iterdir()):
             if not app_dir.is_dir():
                 continue
             batch_dirs = sorted([p for p in app_dir.iterdir() if p.is_dir()])
-            xlsx_path = app_dir / "data.xlsx"
+            xlsx_path = _app_master_dir(app_dir.name) / "data.xlsx"
             groups.append({
                 "device": device_dir.name,
                 "appName": app_dir.name,
@@ -498,12 +513,17 @@ async def api_image(device: str, appName: str, batch: str, rel: str, _: None = D
 
 @app.get("/download/excel")
 async def download_master_excel(device: str, appName: str, _: None = Depends(_require_session)):
-    """The receiver's own running data.xlsx for this device/app -- always
-    current as of the last successful upload, downloaded as-is."""
-    xlsx_path = DATA_DIR / _safe_name(device) / _safe_name(appName) / "data.xlsx"
+    """The receiver's own running data.xlsx for this app -- always current
+    as of the last successful upload from any device paired under it,
+    downloaded as-is. [device] is accepted (unused for the file lookup) so
+    the existing per-device "Download Excel" links/buttons keep working
+    without needing their own change -- see receiver.py's equivalent
+    /api/export/master-excel route for why this is now app-wide rather
+    than per-device."""
+    xlsx_path = _app_master_dir(appName) / "data.xlsx"
     if not xlsx_path.exists():
         raise HTTPException(status_code=404, detail="No data received yet")
-    return FileResponse(xlsx_path, filename=f"{_safe_name(device)}_{_safe_name(appName)}.xlsx")
+    return FileResponse(xlsx_path, filename=f"{_safe_name(appName)}.xlsx")
 
 
 @app.post("/download/excel-filtered")
