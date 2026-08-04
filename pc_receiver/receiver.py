@@ -251,6 +251,9 @@ def _save_devices():
 
 # Columns for both the persistent per-app master workbook and the
 # browser's ad-hoc filtered export -- kept in one place so they stay in sync.
+# "Device" records which phone sent each row, since the master workbook is
+# now shared by every phone paired under the same app (see
+# _append_to_master_excel) rather than split one-per-phone.
 EXCEL_COLUMNS = [
     ("VIN", "vin"),
     ("Model Code", "modelCode"),
@@ -259,6 +262,7 @@ EXCEL_COLUMNS = [
     ("Time", "time"),
     ("Shift", "shift"),
     ("Shift Date", "shiftDate"),
+    ("Device", "deviceName"),
     ("Task", "taskName"),
     ("Detected", "className"),
     ("Result", "result"),
@@ -266,15 +270,18 @@ EXCEL_COLUMNS = [
 ]
 
 
-def _flatten_manifest_rows(inspections: list, batch_name: str) -> list[dict]:
+def _flatten_manifest_rows(inspections: list, batch_name: str, device_name: str = "") -> list[dict]:
     """One row per inspection task -- shared by the live data-viewer table
-    and the persistent master-Excel append on each upload."""
+    and the persistent master-Excel append on each upload. [device_name] is
+    stamped onto every row since the master workbook now aggregates every
+    phone paired under the same app (see _append_to_master_excel)."""
     rows = []
     for insp in inspections:
         tasks = insp.get("tasks") or [{}]
         for task in tasks:
             rows.append({
                 "batch": batch_name,
+                "deviceName": device_name,
                 "inspectionId": insp.get("inspectionId"),
                 "vin": insp.get("vin"),
                 "modelCode": insp.get("modelCode"),
@@ -348,12 +355,82 @@ def _dedup_key(row: dict) -> tuple:
     return (row.get("vin"), row.get("date"), row.get("time"), row.get("taskName"))
 
 
+def _app_master_dir(app_name: str) -> Path:
+    """Where an app's aggregated master workbook lives -- keyed by app name
+    alone, under a folder prefix that can't collide with a real (user-typed)
+    phone name, so every phone paired under the same generated app lands in
+    the same continuous data.xlsx instead of getting split up one file per
+    phone. That split used to also mean a phone that dropped its pairing and
+    got re-paired as e.g. "Samsung (2)" would start a brand new, empty
+    workbook -- fragmenting one continuous production run across multiple
+    files for no reason a phone-side identity hiccup should ever cause."""
+    return DATA_DIR / "_master" / _safe_name(app_name)
+
+
+def _seed_master_from_legacy_device_excels(app_name_safe: str, xlsx_path: Path):
+    """One-time migration: the master workbook used to be split one per
+    device (<device>/<app>/data.xlsx) before it became one shared file per
+    app (_master/<app>/data.xlsx -- see _app_master_dir). The first time
+    the new shared file is about to be created, pull in every row from any
+    old per-device file for this same app first, so switching over doesn't
+    look like production history got reset to zero -- each device's old
+    history just continues in the new shared file. Old per-device files
+    are left on disk untouched (not deleted), so nothing is destructive
+    here even if something above looks wrong later. Must be called with
+    _lock already held."""
+    if xlsx_path.exists() or not DATA_DIR.exists():
+        return
+    legacy_rows = []
+    for device_dir in DATA_DIR.iterdir():
+        if not device_dir.is_dir() or device_dir.name == "_master":
+            continue
+        legacy_xlsx = device_dir / app_name_safe / "data.xlsx"
+        if not legacy_xlsx.exists():
+            continue
+        try:
+            legacy_wb = load_workbook(legacy_xlsx)
+            legacy_ws = legacy_wb.active
+            header = [cell.value for cell in next(legacy_ws.iter_rows(min_row=1, max_row=1))]
+            label_to_key = {label: key for label, key in EXCEL_COLUMNS}
+            for values in legacy_ws.iter_rows(min_row=2, values_only=True):
+                by_label = dict(zip(header, values))
+                mapped = {label_to_key[label]: by_label.get(label, "")
+                          for label in header if label in label_to_key}
+                # Old per-device files predate the Device column -- the
+                # folder name is exactly which phone this history belongs to.
+                if not mapped.get("deviceName"):
+                    mapped["deviceName"] = device_dir.name
+                legacy_rows.append(mapped)
+        except Exception as e:
+            print(f"[warn] could not read legacy workbook {legacy_xlsx} during migration: {e}")
+    if not legacy_rows:
+        return
+    xlsx_path.parent.mkdir(parents=True, exist_ok=True)
+    wb, ws = _open_or_migrate_master_workbook(xlsx_path)
+    seen = set()
+    migrated = 0
+    for row in legacy_rows:
+        key = _dedup_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        ws.append([row.get(key2, "") for _label, key2 in EXCEL_COLUMNS])
+        migrated += 1
+    if migrated:
+        _style_worksheet(ws)
+        wb.save(xlsx_path)
+        print(f"[info] migrated {migrated} row(s) from legacy per-device workbook(s) into {xlsx_path}")
+
+
 def _append_to_master_excel(app_dir: Path, rows: list[dict]):
-    """Every app gets ONE running Excel file (data.xlsx) that new rows are
-    appended to on each successful upload, instead of a separate export
-    having to be regenerated by hand each time -- it's always current, and
-    a send that previously failed just shows up in it whenever it finally
-    lands, no manual re-export needed.
+    """Every app gets ONE running Excel file (data.xlsx), shared across
+    every phone paired under that app, that new rows are appended to on
+    each successful upload -- instead of a separate export having to be
+    regenerated by hand each time, and instead of each phone fragmenting
+    the same production data into its own file. It's always current, and a
+    send that previously failed just shows up in it whenever it finally
+    lands, no manual re-export needed. Each row's "Device" column records
+    which phone it came from.
 
     Rows matching a (VIN, date, time, task) already present are skipped --
     a phone can legitimately re-send data it already sent before (a forced
@@ -363,6 +440,7 @@ def _append_to_master_excel(app_dir: Path, rows: list[dict]):
         return
     xlsx_path = app_dir / "data.xlsx"
     with _lock:
+        _seed_master_from_legacy_device_excels(app_dir.name, xlsx_path)
         wb, ws = _open_or_migrate_master_workbook(xlsx_path)
         key_idx = {key: i for i, (_label, key) in enumerate(EXCEL_COLUMNS)}
         existing_keys = set()
@@ -615,8 +693,8 @@ async def upload(
     if manifest_path.exists():
         try:
             inspections = json.loads(manifest_path.read_text())
-            rows = _flatten_manifest_rows(inspections, stamp)
-            _append_to_master_excel(device_dir, rows)
+            rows = _flatten_manifest_rows(inspections, stamp, device_name=device["deviceName"])
+            _append_to_master_excel(_app_master_dir(app_name), rows)
         except Exception as e:
             print(f"[warn] could not update master Excel for '{device_name}/{app_name}': {e}")
 
@@ -742,6 +820,12 @@ async def api_storage(_: None = Depends(_require_local)):
     for device_dir in sorted(DATA_DIR.iterdir()):
         if not device_dir.is_dir():
             continue
+        if device_dir.name == "_master":
+            # The app-wide aggregated workbooks (see _app_master_dir), not
+            # a phone's raw per-batch uploads -- has no batch subfolders of
+            # its own, so it wouldn't show up here anyway, but skip it
+            # explicitly rather than relying on that.
+            continue
         apps = {}
         for app_dir in sorted(device_dir.iterdir()):
             if not app_dir.is_dir():
@@ -827,7 +911,7 @@ async def api_device_data(deviceId: str, _: None = Depends(_require_local)):
             # reinstall) -- each send lands in its own batch folder, so
             # without this the same inspection would show up once per
             # batch it was sent in.
-            for row in _flatten_manifest_rows(inspections, batch_dir.name):
+            for row in _flatten_manifest_rows(inspections, batch_dir.name, device_name=device["deviceName"]):
                 key = _dedup_key(row)
                 if key in seen_keys:
                     continue
@@ -845,17 +929,22 @@ async def api_export_master_excel(deviceId: str, _: None = Depends(_require_loca
     """Downloads the single running Excel file for this app -- kept
     up to date automatically on every upload, so there's nothing to
     (re)generate: it's always current, including sends that arrived late
-    after an earlier failed attempt."""
+    after an earlier failed attempt. Still keyed by the dashboard's
+    deviceId (so the existing per-device "Download Excel" buttons need no
+    change), but resolved to the app-wide workbook shared by every phone
+    paired under that same app -- see _app_master_dir -- rather than a
+    file scoped to just this one device, so it's one continuous dataset
+    per app regardless of how many phones (or re-pairings) contributed to
+    it."""
     with _lock:
         device = _paired_devices.get(deviceId)
     if not device:
         raise HTTPException(status_code=404, detail="Unknown device")
-    device_name = _safe_name(device["deviceName"])
     app_name = _safe_name(device.get("appName", "app"))
-    xlsx_path = DATA_DIR / device_name / app_name / "data.xlsx"
+    xlsx_path = _app_master_dir(app_name) / "data.xlsx"
     if not xlsx_path.exists():
         raise HTTPException(status_code=404, detail="No data received yet")
-    return FileResponse(xlsx_path, filename=f"{device_name}_{app_name}.xlsx")
+    return FileResponse(xlsx_path, filename=f"{app_name}.xlsx")
 
 
 @app.get("/api/storage/image")
