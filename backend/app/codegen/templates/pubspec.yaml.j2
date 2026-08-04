@@ -16,7 +16,8 @@ dependencies:
   mobile_scanner: ^3.5.2
   path_provider: ^2.1.2
   shared_preferences: ^2.2.2
-  drift: ^2.16.0
+  # Capped below 2.32.0 -- see the sqlite3 override below for why.
+  drift: 2.31.0
   sqlite3_flutter_libs: ^0.5.20
   path: ^1.9.0
   zsdk: 5.0.0
@@ -32,9 +33,6 @@ dependency_overrides:
   # path_provider_android 2.3.x requires AGP 8.5+; our build uses AGP 8.7.0.
   # Force the last compatible version here and in settings.gradle.
   path_provider_android: 2.2.22
-  # sqlparser 0.44.6 removed DartPlaceholder.when(), which drift_dev 2.34.0's
-  # query analyzer still calls, breaking build_runner code generation.
-  sqlparser: 0.44.5
   # sqlite3 3.0.0 switched to Dart's native-assets "build hooks" system,
   # which downloads a precompiled binary straight from a GitHub release URL
   # during every build instead of bundling it the traditional way. On a
@@ -43,17 +41,29 @@ dependency_overrides:
   # machines) that download fails with a TLS handshake error and the build
   # never completes -- no flutter/gradle setting fixes it, since it's
   # sqlite3's own hook doing the fetching. Pinning back to the last
-  # pre-hooks release avoids the download step entirely; sqlite3_flutter_libs
-  # (pinned above) is exactly the version designed to bundle this release
-  # the traditional way, and drift's own sqlite3 constraint already allows
-  # anything >=2.4.0 <3.0.0, so this isn't fighting either of them.
+  # pre-hooks release avoids the download step entirely, and
+  # sqlite3_flutter_libs (pinned above) is exactly the version designed to
+  # bundle this release the traditional way.
+  #
+  # This only works if drift itself is ALSO capped below 2.32.0 (see
+  # `drift:` above) -- drift 2.32.0 migrated to require sqlite3 ^3.x, so
+  # leaving drift on an uncapped `^2.16.0` let pub resolve the newest 2.x
+  # drift release (2.34.x) transitively, which then demanded sqlite3 3.x
+  # again regardless of this override, and failed to compile against 2.9.4
+  # (drift 2.34.x calls sqlite3 3.x-only APIs). drift 2.31.0 -- the last
+  # release before that migration -- declares sqlite3 ^2.6.0, so 2.9.4
+  # here is exactly what it expects.
   sqlite3: 2.9.4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
-  drift_dev: ^2.16.0
+  # Matches the `drift:` pin above -- keep drift/drift_dev on the same
+  # release. drift_dev 2.31.0 wants sqlparser ^0.43.1, which needs no
+  # override of its own (unlike newer drift_dev releases, which need
+  # sqlparser capped below 0.44.6 -- not a concern on this older pin).
+  drift_dev: 2.31.0
   build_runner: ^2.4.8
 
 flutter:
