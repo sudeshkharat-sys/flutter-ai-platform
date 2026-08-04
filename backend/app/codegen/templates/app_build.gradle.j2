@@ -55,7 +55,29 @@ android {
 
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            // TEMPORARY, staged-rollout state: intentionally still
+            // signingConfigs.debug, NOT signingConfigs.release above, even
+            // though the fixed keystore is fully wired up and ready.
+            //
+            // Phones already have a build installed whose signing
+            // certificate cannot be reproduced (it was an auto-generated
+            // debug key from a build machine, never saved anywhere) --
+            // switching to the fixed release keystore right now would
+            // force an uninstall on every phone before any of today's
+            // other fixes (the batched sync, in particular) get a chance
+            // to run and drain each phone's pending-inspection backlog.
+            //
+            // This build keeps debug signing on purpose so it has a
+            // chance of installing as a normal in-place update over
+            // what's already out there (works if the build environment
+            // happens to reuse the same debug key; if not, the install is
+            // simply refused and nothing on the phone is touched either
+            // way -- safe to try). Once every phone's backlog is
+            // confirmed synced, flip this back to
+            // `signingConfig signingConfigs.release` for the final
+            // rollout -- from that point on, every future build stays on
+            // the fixed keystore and this problem doesn't come back.
+            signingConfig signingConfigs.debug
         }
     }
 }
