@@ -968,14 +968,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                             style={classRuleButtonStyle(isMandatory, isNotOk ? '#e74c3c' : 'var(--accent)')}>
                                             {isNotOk ? 'NOT OK if detected' : 'Mandatory'}
                                           </button>
-                                          {!isNotOk && (
-                                            <button type="button" onClick={() => handleToggleIgnoredClass(idx, c)}
-                                              style={classRuleButtonStyle(isIgnored, '#888')}>
-                                              Ignore
-                                            </button>
-                                          )}
+                                          <button type="button" onClick={() => handleToggleIgnoredClass(idx, c)}
+                                            style={classRuleButtonStyle(isIgnored, '#888')}>
+                                            Ignore
+                                          </button>
                                         </div>
-                                        {!isMandatory && !isIgnored && !isNotOk && (
+                                        {!isMandatory && !isIgnored && (
                                           <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
                                         )}
                                         {isIgnored && (
@@ -1104,14 +1102,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                               style={classRuleButtonStyle(isMandatory, isNotOk ? '#e74c3c' : 'var(--accent)')}>
                                               {isNotOk ? 'NOT OK if detected' : 'Mandatory'}
                                             </button>
-                                            {!isNotOk && (
-                                              <button type="button" onClick={() => handleToggleRowIgnoredClass(rowIndex, aiIdx, c)}
-                                                style={classRuleButtonStyle(isIgnored, '#888')}>
-                                                Ignore
-                                              </button>
-                                            )}
+                                            <button type="button" onClick={() => handleToggleRowIgnoredClass(rowIndex, aiIdx, c)}
+                                              style={classRuleButtonStyle(isIgnored, '#888')}>
+                                              Ignore
+                                            </button>
                                           </div>
-                                          {!isMandatory && !isIgnored && !isNotOk && (
+                                          {!isMandatory && !isIgnored && (
                                             <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
                                           )}
                                           {isIgnored && <span style={{ fontSize: 10, color: '#aaa' }}>ignored</span>}

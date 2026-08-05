@@ -147,18 +147,30 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     return targetClasses.any((tc) => tc.toLowerCase().trim() == cn);
   }
 
+  // A class the user explicitly marked "Ignore" has no effect on the result
+  // at all -- not even the "not ok" name-substring heuristic below, since an
+  // explicit user choice should always win over that fragile guess (e.g. a
+  // class literally named "notebook" would otherwise false-positive as a
+  // defect class with no way to opt back out).
+  bool _isIgnored(String? className, List<String> ignoredClasses) {
+    if (className == null) return false;
+    final cn = className.toLowerCase().trim();
+    return ignoredClasses.any((ig) => ig.toLowerCase().trim() == cn);
+  }
+
   // Returns true only if:
   //  1. ALL pass (checked) classes are detected
-  //  2. NO "not ok" class detected (hard block — always fails)
+  //  2. NO "not ok" class detected (hard block — always fails), unless ignored
   //  3. NO fail (unchecked) class detected — unchecked classes are fail conditions
   bool _allMandatoryPassed(
     Map<String, DetectionResult?> mandatory,
     List<DetectionResult> allDetections,
     List<String> failClasses,
+    List<String> ignoredClasses,
   ) {
     if (mandatory.isEmpty) return false;
-    // Hard block: any "not ok" detection → always fail
-    if (allDetections.any((d) => _isNotOkClass(d.className))) return false;
+    // Hard block: any non-ignored "not ok" detection → always fail
+    if (allDetections.any((d) => _isNotOkClass(d.className) && !_isIgnored(d.className, ignoredClasses))) return false;
     // Any unchecked (fail) class detected → fail
     final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
     if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return false;
@@ -173,8 +185,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   bool _hasDefectDetected(
     List<DetectionResult> allDetections,
     List<String> failClasses,
+    List<String> ignoredClasses,
   ) {
-    if (allDetections.any((d) => _isNotOkClass(d.className))) return true;
+    if (allDetections.any((d) => _isNotOkClass(d.className) && !_isIgnored(d.className, ignoredClasses))) return true;
     final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
     return allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()));
   }
@@ -383,7 +396,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             : null;
       }
 
-      final bool overallPass = _allMandatoryPassed(mandatoryResults, allDetections, failClasses);
+      final bool overallPass = _allMandatoryPassed(mandatoryResults, allDetections, failClasses, ignoredClasses);
 
       String? savedImagePath;
       String? savedBackupPath;
@@ -495,7 +508,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         _results[_currentIndex] = {
           'className': overallPass
               ? 'OK'
-              : (_hasDefectDetected(allDetections, failClasses) ? 'NOT OK' : 'None'),
+              : (_hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'NOT OK' : 'None'),
           'success': overallPass,
           'imagePath': savedImagePath,
           'backupImagePath': savedBackupPath,
@@ -578,9 +591,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         List<String>.from(currentTask['ignoredClasses'] ?? []);
 
     final bool badgeGreen = _mandatoryClassResults.isNotEmpty
-        ? _allMandatoryPassed(_mandatoryClassResults, _allDetections, _failClasses)
-        : (_bestResult != null && !_isNotOkClass(_bestResult!.className) && !_allDetections.any((d) => _isNotOkClass(d.className)));
-    final bool badgeHasDefect = _hasDefectDetected(_allDetections, _failClasses);
+        ? _allMandatoryPassed(_mandatoryClassResults, _allDetections, _failClasses, ignoredClasses)
+        : (_bestResult != null && !_isNotOkClass(_bestResult!.className) && !_allDetections.any((d) => _isNotOkClass(d.className) && !_isIgnored(d.className, ignoredClasses)));
+    final bool badgeHasDefect = _hasDefectDetected(_allDetections, _failClasses, ignoredClasses);
 
     final DetectionResult? overlayResult = _bestResult;
 
@@ -808,7 +821,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                 () {
                                   if (badgeGreen) return 'All parts detected';
                                   if (_allDetections.isEmpty) return 'Nothing detected — retake image';
-                                  if (_allDetections.any((d) => _isNotOkClass(d.className))) return 'Defect detected';
+                                  if (_allDetections.any((d) => _isNotOkClass(d.className) && !_isIgnored(d.className, ignoredClasses))) return 'Defect detected';
                                   // Fail class (unchecked) was detected
                                   final failNamesLower = _failClasses.map((c) => c.toLowerCase().trim()).toSet();
                                   final detectedFail = _allDetections.where((d) => failNamesLower.contains(d.className.toLowerCase().trim())).map((d) => d.className).toSet();
