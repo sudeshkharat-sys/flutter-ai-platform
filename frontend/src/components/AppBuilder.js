@@ -1040,7 +1040,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                     <th style={{ ...thStyle, width: '140px' }}>Platform</th>
                     <th style={{ ...thStyle, width: '100px' }}>Code</th>
                     <th style={{ ...thStyle, width: '180px' }}>AI Model</th>
-                    <th style={{ ...thStyle, width: '140px' }}>Class</th>
+                    <th style={{ ...thStyle, width: '320px' }}>Class</th>
                     <th style={thStyle}>Instruction / Description</th>
                     <th style={{ ...thStyle, width: '80px' }}>Ref. Image</th>
                     <th style={{ ...thStyle, textAlign: 'right', width: '90px' }}>Reorder</th>
@@ -1060,7 +1060,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                       <td colSpan={6} style={{ padding: 0 }}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
                           {row.selectedAIModels.map((ai, aiIdx) => (
-                            <div key={aiIdx} style={{ display: 'grid', gridTemplateColumns: '180px 140px 1fr 80px 90px 50px', borderBottom: aiIdx === row.selectedAIModels.length - 1 ? 'none' : `1px solid ${C.border}` }}>
+                            <div key={aiIdx} style={{ display: 'grid', gridTemplateColumns: '180px 320px 1fr 80px 90px 50px', borderBottom: aiIdx === row.selectedAIModels.length - 1 ? 'none' : `1px solid ${C.border}` }}>
                               <div style={{ padding: '12px 16px' }}>
                                 <select 
                                   style={{ ...miniSelectStyle, width: '100%' }} 
@@ -1095,9 +1095,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                       const isNotOk = cn.includes('not') && cn.includes('ok');
                                       const ocrCfg = (ai.classOcrConfig || {})[c] || {};
                                       return <div key={c} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                          <span style={{ fontSize: 12, fontWeight: 600, color: isMandatory ? (isNotOk ? '#e74c3c' : 'var(--accent)') : (isIgnored ? '#aaa' : '#e74c3c'), minWidth: 90 }}>{c}</span>
-                                          <div style={{ display: 'flex', gap: 4 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                          <span style={{ fontSize: 12, fontWeight: 600, color: isMandatory ? (isNotOk ? '#e74c3c' : 'var(--accent)') : (isIgnored ? '#aaa' : '#e74c3c'), minWidth: 70 }}>{c}</span>
+                                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                                             <button type="button" onClick={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
                                               style={classRuleButtonStyle(isMandatory, isNotOk ? '#e74c3c' : 'var(--accent)')}>
                                               {isNotOk ? 'NOT OK if detected' : 'Mandatory'}
@@ -1113,7 +1113,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                           {isIgnored && <span style={{ fontSize: 10, color: '#aaa' }}>ignored</span>}
                                         </div>
                                         {isMandatory && !isNotOk && (
-                                          <div style={{ marginLeft: 90, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                          <div style={{ marginLeft: 70, display: 'flex', alignItems: 'center', gap: 6 }}>
                                             <input
                                               type="checkbox"
                                               checked={!!ocrCfg.ocrEnabled}
