@@ -333,14 +333,19 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           List<String>.from(currentTask['classes'] ?? []);
       final List<String> mandatoryClasses =
           List<String>.from(currentTask['mandatoryClasses'] ?? []);
-      // Pass classes = checked by user. Fail classes = everything else in the model.
+      final List<String> ignoredClasses =
+          List<String>.from(currentTask['ignoredClasses'] ?? []);
+      // Pass classes = checked by user. Fail classes = everything else in the model,
+      // except classes explicitly marked ignored (neither required nor forbidden --
+      // their presence or absence has no effect on the result).
       // If mandatoryClasses is empty (nothing checked), treat all classes as mandatory.
       final List<String> targetClasses = mandatoryClasses.isNotEmpty
           ? mandatoryClasses
           : allModelClasses;
       final List<String> failClasses = mandatoryClasses.isNotEmpty
-          ? allModelClasses.where((c) => !mandatoryClasses.any(
-              (m) => m.toLowerCase().trim() == c.toLowerCase().trim())).toList()
+          ? allModelClasses.where((c) =>
+              !mandatoryClasses.any((m) => m.toLowerCase().trim() == c.toLowerCase().trim()) &&
+              !ignoredClasses.any((ig) => ig.toLowerCase().trim() == c.toLowerCase().trim())).toList()
           : [];
       // Safety check: if targetClasses somehow still contains everything, it means
       // mandatory was not configured — log it for debugging.
@@ -569,6 +574,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     final currentTask = widget.tasks[_currentIndex];
     final List<String> mandatoryClasses =
         List<String>.from(currentTask['mandatoryClasses'] ?? currentTask['classes'] ?? []);
+    final List<String> ignoredClasses =
+        List<String>.from(currentTask['ignoredClasses'] ?? []);
 
     final bool badgeGreen = _mandatoryClassResults.isNotEmpty
         ? _allMandatoryPassed(_mandatoryClassResults, _allDetections, _failClasses)
@@ -689,6 +696,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                           results: _allDetections,
                                           previewSize: _capturedImageSize!,
                                           mandatoryClasses: mandatoryClasses,
+                                          ignoredClasses: ignoredClasses,
                                         ),
                                     ],
                                   ),

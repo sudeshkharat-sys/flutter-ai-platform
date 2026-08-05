@@ -123,6 +123,10 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
 
             # Multi-class detection config (only meaningful when detection_method == 'multiclass').
             # mandatoryClasses = the "pass" classes that must be detected for an OK badge.
+            # ignoredClasses   = classes that are neither required nor forbidden -- if
+            #                    detected or not, they have no effect on the OK/NOT OK result.
+            #                    Any model class that is in neither list is still treated as
+            #                    a fail class (detecting it forces NOT OK), same as before.
             # classOcrConfig   = per-class OCR verification { className: {ocrEnabled, ocrTargetText} }.
             mandatory_classes = task.get("mandatoryClasses", [])
             if isinstance(mandatory_classes, str):
@@ -130,6 +134,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                     mandatory_classes = json.loads(mandatory_classes)
                 except Exception:
                     mandatory_classes = []
+            ignored_classes = task.get("ignoredClasses", [])
+            if isinstance(ignored_classes, str):
+                try:
+                    ignored_classes = json.loads(ignored_classes)
+                except Exception:
+                    ignored_classes = []
             if model_for_task and mandatory_classes:
                 _raw = get_attr(model_for_task, "classes", []) or []
                 model_classes = json.loads(_raw) if isinstance(_raw, str) else _raw
@@ -140,12 +150,14 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                         mandatory_classes = filtered
                     # else: names didn't match — keep original selection to avoid an
                     # empty mandatory list (which would fall back to all-classes).
+                    ignored_classes = [c for c in ignored_classes if c.lower().strip() in model_classes_lower]
 
             ref_img = task.get("referenceImage")
             models_manifest.append({
                 "name": task.get("taskName") or task.get("modelName"),
                 "classes": task_classes,
                 "mandatoryClasses": mandatory_classes,
+                "ignoredClasses": ignored_classes,
                 "classOcrConfig": task.get("classOcrConfig", {}) or {},
                 "tflite_path": paths.get("tflite", "assets/models/model_0.tflite"),
                 "labels_path": paths.get("labels", "assets/models/labels_0.txt"),

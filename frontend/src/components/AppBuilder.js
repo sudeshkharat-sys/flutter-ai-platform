@@ -12,6 +12,17 @@ const C = {
 
 const inputStyle = { width: '100%', padding: '10px 14px', borderRadius: 8, border: `1px solid ${C.border}`, background: "black", color: C.text, fontSize: 14 };
 const labelStyle = { display: 'block', color: C.muted, fontSize: 11, fontWeight: 700, marginBottom: 6, textTransform: 'uppercase' };
+// Small toggle button used for the per-class Mandatory/Ignore rule pickers.
+const classRuleButtonStyle = (active, activeColor) => ({
+  padding: '3px 9px',
+  borderRadius: 6,
+  fontSize: 10,
+  fontWeight: 700,
+  cursor: 'pointer',
+  border: `1px solid ${active ? activeColor : C.border}`,
+  background: active ? activeColor : 'transparent',
+  color: active ? '#fff' : C.muted,
+});
 
 export default function AppBuilder() {
   const { id } = useParams();
@@ -343,7 +354,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [engineSearchTerm, setEngineSearchTerm] = useState('');
 
-  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', mandatoryClasses: [], classOcrConfig: {}, instruction: '' }]);
+  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', mandatoryClasses: [], ignoredClasses: [], classOcrConfig: {}, instruction: '' }]);
 
   const [isReviewing, setIsReviewing] = useState(startAtReview);
   const [reviewData, setReviewData] = useState([]); 
@@ -386,6 +397,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             ...c,
             class: c.class || '',
             mandatoryClasses: c.mandatoryClasses || [],
+            ignoredClasses: c.ignoredClasses || [],
             classOcrConfig: c.classOcrConfig || {},
           }));
           setDefaultAIConfigs(restored);
@@ -399,6 +411,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               modelId: t.modelId,
               class: t.classes?.[0] || '',
               mandatoryClasses: t.mandatoryClasses || [],
+              ignoredClasses: t.ignoredClasses || [],
               classOcrConfig: t.classOcrConfig || {},
               instruction: t.instruction || t.taskName || '',
               referenceImage: t.referenceImage || null,
@@ -443,7 +456,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleAddDefaultAI = () => {
-    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', class: '', mandatoryClasses: [], classOcrConfig: {}, instruction: '' }]);
+    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', class: '', mandatoryClasses: [], ignoredClasses: [], classOcrConfig: {}, instruction: '' }]);
   };
 
   const handleRemoveDefaultAI = (index) => {
@@ -457,18 +470,34 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       const m = models.find(mod => mod.id === value);
       newConfigs[index].class = m?.classes[0] || '';
       newConfigs[index].mandatoryClasses = [];
+      newConfigs[index].ignoredClasses = [];
       newConfigs[index].classOcrConfig = {};
     }
     setDefaultAIConfigs(newConfigs);
   };
 
   // ── Multi-class config handlers (default AI configs) ──────────────────────
+  // Each class cycles through three states: mandatory (pass) -> ignored (neutral)
+  // -> neither (fail if detected) -> back to mandatory.
   const handleToggleMandatoryClass = (index, cls) => {
     const newConfigs = [...defaultAIConfigs];
     const current = newConfigs[index].mandatoryClasses || [];
     newConfigs[index].mandatoryClasses = current.includes(cls)
       ? current.filter(c => c !== cls)
       : [...current, cls];
+    // A class can't be both mandatory and ignored.
+    newConfigs[index].ignoredClasses = (newConfigs[index].ignoredClasses || []).filter(c => c !== cls);
+    setDefaultAIConfigs(newConfigs);
+  };
+
+  const handleToggleIgnoredClass = (index, cls) => {
+    const newConfigs = [...defaultAIConfigs];
+    const current = newConfigs[index].ignoredClasses || [];
+    newConfigs[index].ignoredClasses = current.includes(cls)
+      ? current.filter(c => c !== cls)
+      : [...current, cls];
+    // A class can't be both mandatory and ignored.
+    newConfigs[index].mandatoryClasses = (newConfigs[index].mandatoryClasses || []).filter(c => c !== cls);
     setDefaultAIConfigs(newConfigs);
   };
 
@@ -538,6 +567,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       const m = models.find(mod => mod.id === value);
       newData[rowIndex].selectedAIModels[aiIdx].class = m?.classes[0] || '';
       newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = [];
+      newData[rowIndex].selectedAIModels[aiIdx].ignoredClasses = [];
       newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = {};
     }
     setReviewData(newData);
@@ -546,10 +576,23 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   // ── Multi-class config handlers (review rows) ─────────────────────────────
   const handleToggleRowMandatoryClass = (rowIndex, aiIdx, cls) => {
     const newData = [...reviewData];
-    const current = newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses || [];
-    newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = current.includes(cls)
+    const ai = newData[rowIndex].selectedAIModels[aiIdx];
+    const current = ai.mandatoryClasses || [];
+    ai.mandatoryClasses = current.includes(cls)
       ? current.filter(c => c !== cls)
       : [...current, cls];
+    ai.ignoredClasses = (ai.ignoredClasses || []).filter(c => c !== cls);
+    setReviewData(newData);
+  };
+
+  const handleToggleRowIgnoredClass = (rowIndex, aiIdx, cls) => {
+    const newData = [...reviewData];
+    const ai = newData[rowIndex].selectedAIModels[aiIdx];
+    const current = ai.ignoredClasses || [];
+    ai.ignoredClasses = current.includes(cls)
+      ? current.filter(c => c !== cls)
+      : [...current, cls];
+    ai.mandatoryClasses = (ai.mandatoryClasses || []).filter(c => c !== cls);
     setReviewData(newData);
   };
 
@@ -589,7 +632,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   const handleAddRowAI = (rowIndex) => {
     const newData = [...reviewData];
-    newData[rowIndex].selectedAIModels.push({ modelId: '', class: '', mandatoryClasses: [], classOcrConfig: {}, instruction: '', referenceImage: null });
+    newData[rowIndex].selectedAIModels.push({ modelId: '', class: '', mandatoryClasses: [], ignoredClasses: [], classOcrConfig: {}, instruction: '', referenceImage: null });
     setReviewData(newData);
   };
 
@@ -618,6 +661,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             // default detects the single chosen target class.
             classes: isMulti ? (model.classes || []) : [ai.class],
             mandatoryClasses: isMulti ? (ai.mandatoryClasses || []) : [],
+            ignoredClasses: isMulti ? (ai.ignoredClasses || []) : [],
             classOcrConfig: isMulti ? (ai.classOcrConfig || {}) : {},
             tflitePath: model.tflite_path,
             labelsPath: model.labels_path,
@@ -907,32 +951,39 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                               return <><label style={labelStyle}>Mandatory Classes</label><span style={{ fontSize: 12, color: C.muted }}>Select a model first</span></>;
                             }
                             return <>
-                              <label style={labelStyle}>Pass Classes — check which must be detected for OK badge</label>
+                              <label style={labelStyle}>Class Rules — set each class to Mandatory, Ignore, or leave as Fail-if-detected</label>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: '8px 0' }}>
                                 {modelClasses.map(c => {
-                                  const selected = (config.mandatoryClasses || []).includes(c);
+                                  const isMandatory = (config.mandatoryClasses || []).includes(c);
+                                  const isIgnored = (config.ignoredClasses || []).includes(c);
                                   const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
                                   const isNotOk = cn.includes('not') && cn.includes('ok');
                                   const ocrCfg = (config.classOcrConfig || {})[c] || {};
                                   return (
                                     <div key={c} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
-                                        <input
-                                          type="checkbox"
-                                          checked={selected}
-                                          onChange={() => handleToggleMandatoryClass(idx, c)}
-                                          style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
-                                        />
-                                        <span style={{ fontSize: 12, fontWeight: 600, color: selected ? (isNotOk ? '#e74c3c' : 'var(--accent)') : C.muted }}>{c}</span>
-                                        {selected
-                                          ? (isNotOk
-                                              ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
-                                              : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
-                                          : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
-                                        }
-                                      </label>
-                                      {selected && !isNotOk && (
-                                        <div style={{ marginLeft: 23, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                        <span style={{ fontSize: 12, fontWeight: 600, color: isMandatory ? (isNotOk ? '#e74c3c' : 'var(--accent)') : (isIgnored ? C.muted : '#e74c3c'), minWidth: 100 }}>{c}</span>
+                                        <div style={{ display: 'flex', gap: 4 }}>
+                                          <button type="button" onClick={() => handleToggleMandatoryClass(idx, c)}
+                                            style={classRuleButtonStyle(isMandatory, isNotOk ? '#e74c3c' : 'var(--accent)')}>
+                                            {isNotOk ? 'NOT OK if detected' : 'Mandatory'}
+                                          </button>
+                                          {!isNotOk && (
+                                            <button type="button" onClick={() => handleToggleIgnoredClass(idx, c)}
+                                              style={classRuleButtonStyle(isIgnored, '#888')}>
+                                              Ignore
+                                            </button>
+                                          )}
+                                        </div>
+                                        {!isMandatory && !isIgnored && !isNotOk && (
+                                          <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                        )}
+                                        {isIgnored && (
+                                          <span style={{ fontSize: 10, color: C.muted }}>ignored — no effect on result</span>
+                                        )}
+                                      </div>
+                                      {isMandatory && !isNotOk && (
+                                        <div style={{ marginLeft: 100, display: 'flex', alignItems: 'center', gap: 8 }}>
                                           <input
                                             type="checkbox"
                                             checked={!!ocrCfg.ocrEnabled}
@@ -1038,30 +1089,35 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                   if (!ai.modelId) return <span style={{ fontSize: 11, color: '#aaa' }}>Select model</span>;
                                   const mc = models.find(m => m.id === ai.modelId)?.classes || [];
                                   return <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                                    <span style={{ fontSize: 10, color: '#aaa', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>✓ Check = Pass class (must be detected for OK)</span>
+                                    <span style={{ fontSize: 10, color: '#aaa', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 }}>Mandatory = must detect · Ignore = no effect · neither = fail if detected</span>
                                     {mc.map(c => {
-                                      const sel = (ai.mandatoryClasses || []).includes(c);
+                                      const isMandatory = (ai.mandatoryClasses || []).includes(c);
+                                      const isIgnored = (ai.ignoredClasses || []).includes(c);
                                       const cn = c.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ');
                                       const isNotOk = cn.includes('not') && cn.includes('ok');
                                       const ocrCfg = (ai.classOcrConfig || {})[c] || {};
                                       return <div key={c} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
-                                          <input
-                                            type="checkbox"
-                                            checked={sel}
-                                            onChange={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
-                                            style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
-                                          />
-                                          <span style={{ fontSize: 12, fontWeight: 600, color: sel ? (isNotOk ? '#e74c3c' : 'var(--accent)') : '#aaa' }}>{c}</span>
-                                          {sel
-                                            ? (isNotOk
-                                                ? <span style={{ fontSize: 10, color: '#e74c3c', fontWeight: 700 }}>NOT OK if detected</span>
-                                                : <span style={{ fontSize: 10, color: 'var(--accent)' }}>PASS</span>)
-                                            : <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
-                                          }
-                                        </label>
-                                        {sel && !isNotOk && (
-                                          <div style={{ marginLeft: 23, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                          <span style={{ fontSize: 12, fontWeight: 600, color: isMandatory ? (isNotOk ? '#e74c3c' : 'var(--accent)') : (isIgnored ? '#aaa' : '#e74c3c'), minWidth: 90 }}>{c}</span>
+                                          <div style={{ display: 'flex', gap: 4 }}>
+                                            <button type="button" onClick={() => handleToggleRowMandatoryClass(rowIndex, aiIdx, c)}
+                                              style={classRuleButtonStyle(isMandatory, isNotOk ? '#e74c3c' : 'var(--accent)')}>
+                                              {isNotOk ? 'NOT OK if detected' : 'Mandatory'}
+                                            </button>
+                                            {!isNotOk && (
+                                              <button type="button" onClick={() => handleToggleRowIgnoredClass(rowIndex, aiIdx, c)}
+                                                style={classRuleButtonStyle(isIgnored, '#888')}>
+                                                Ignore
+                                              </button>
+                                            )}
+                                          </div>
+                                          {!isMandatory && !isIgnored && !isNotOk && (
+                                            <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>
+                                          )}
+                                          {isIgnored && <span style={{ fontSize: 10, color: '#aaa' }}>ignored</span>}
+                                        </div>
+                                        {isMandatory && !isNotOk && (
+                                          <div style={{ marginLeft: 90, display: 'flex', alignItems: 'center', gap: 6 }}>
                                             <input
                                               type="checkbox"
                                               checked={!!ocrCfg.ocrEnabled}

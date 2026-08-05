@@ -7,6 +7,7 @@ class DetectionOverlay extends StatelessWidget {
   final Size previewSize;
   final Color? overrideColor;
   final List<String> mandatoryClasses;
+  final List<String> ignoredClasses;
 
   const DetectionOverlay({
     super.key,
@@ -14,6 +15,7 @@ class DetectionOverlay extends StatelessWidget {
     required this.previewSize,
     this.overrideColor,
     this.mandatoryClasses = const [],
+    this.ignoredClasses = const [],
   });
 
   @override
@@ -24,6 +26,7 @@ class DetectionOverlay extends StatelessWidget {
         previewSize: previewSize,
         overrideColor: overrideColor,
         mandatoryClasses: mandatoryClasses,
+        ignoredClasses: ignoredClasses,
         {% if show_labels %}showLabels: true,{% else %}showLabels: false,{% endif %}
         {% if show_confidence %}showConfidence: true,{% else %}showConfidence: false,{% endif %}
       ),
@@ -48,6 +51,7 @@ class _BoundingBoxPainter extends CustomPainter {
   ];
 
   final List<String> mandatoryClasses;
+  final List<String> ignoredClasses;
 
   static bool _isNotOk(String className) {
     final cn = className.toLowerCase().replaceAll('_', ' ').replaceAll('-', ' ');
@@ -59,6 +63,9 @@ class _BoundingBoxPainter extends CustomPainter {
     if (mandatoryClasses.any((m) => m.toLowerCase().trim() == className.toLowerCase().trim())) {
       return const Color(0xFF43A047); // green — mandatory
     }
+    if (ignoredClasses.any((ig) => ig.toLowerCase().trim() == className.toLowerCase().trim())) {
+      return const Color(0xFF9E9E9E); // grey — ignored, no effect on result
+    }
     return const Color(0xFFE53935); // red — unchecked/fail class detected
   }
 
@@ -67,6 +74,7 @@ class _BoundingBoxPainter extends CustomPainter {
     required this.previewSize,
     this.overrideColor,
     this.mandatoryClasses = const [],
+    this.ignoredClasses = const [],
     this.showLabels = true,
     this.showConfidence = true,
   });
