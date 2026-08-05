@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, Trash2, ClipboardList } from 'lucide-react';
-import { getApps, deleteApp, exportApp } from '../api';
+import { Plus, Trash2, ClipboardList, Copy } from 'lucide-react';
+import { getApps, deleteApp, exportApp, duplicateApp } from '../api';
 import ConfirmModal from './ConfirmModal';
 import '../styles/Dashboard.css';
 
@@ -32,6 +32,19 @@ export default function Dashboard() {
         setApps(prev => prev.filter(a => a.id !== id));
       },
     });
+  };
+
+  const handleDuplicate = async (id, name) => {
+    const defaultName = `${name} (Copy)`;
+    const newName = window.prompt('Name for the duplicated app:', defaultName);
+    if (newName === null) return; // cancelled
+    try {
+      const r = await duplicateApp(id, { name: newName.trim() || defaultName });
+      setApps(prev => [r.data, ...prev]);
+      navigate(`/apps/${r.data.id}`);
+    } catch {
+      alert('Duplicate failed. Make sure the backend is running.');
+    }
   };
 
   const handleExport = async (id, name) => {
@@ -131,6 +144,13 @@ export default function Dashboard() {
                   onClick={() => navigate(`/apps/${app.id}`)}
                 >
                   Open Build Console
+                </button>
+                <button
+                  className="app-card-delete-btn"
+                  onClick={() => handleDuplicate(app.id, app.name)}
+                  title="Duplicate app"
+                >
+                  <Copy size={16} />
                 </button>
                 <button
                   className="app-card-delete-btn"

@@ -53,6 +53,11 @@ class AppProjectCreate(BaseModel):
     app_settings: Optional[dict] = None
 
 
+class AppProjectDuplicate(BaseModel):
+    name: Optional[str] = None
+    package_name: Optional[str] = None
+
+
 class AppProjectUpdate(BaseModel):
     name: Optional[str] = None
     package_name: Optional[str] = None

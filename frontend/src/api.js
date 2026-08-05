@@ -47,6 +47,7 @@ export const updateApp = (id, data) => {
   return api.patch(`/apps/${id}`, data);
 };
 export const deleteApp  = (id)       => api.delete(`/apps/${id}`);
+export const duplicateApp = (id, data) => api.post(`/apps/${id}/duplicate`, data || {});
 
 export const exportApp = (id) =>
   api.post(`/apps/${id}/export`, {}, { responseType: 'blob' });

@@ -2,10 +2,11 @@ import re
 import uuid
 import json
 from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from app.connectors.state_db import StateDBConnector
 from app.queries import ProjectQueries
-from app.schemas.base import AppProjectCreate, AppProjectUpdate, AppProjectResponse
+from app.schemas.base import AppProjectCreate, AppProjectUpdate, AppProjectResponse, AppProjectDuplicate
 
 router = APIRouter(prefix="/apps", tags=["apps"])
 
@@ -92,6 +93,56 @@ def get_app(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
         raise HTTPException(status_code=404, detail="App project not found")
     
     app = dict(rows[0])
+    app["model_asset_ids"] = parse_json_field(app.get("model_asset_ids"), [])
+    app["inspection_tasks"] = parse_json_field(app.get("inspection_tasks"), [])
+    app["canvas_state"] = parse_json_field(app.get("canvas_state"), [])
+    app["app_settings"] = parse_json_field(app.get("app_settings"), {})
+    return app
+
+@router.post("/{app_id}/duplicate", response_model=AppProjectResponse)
+def duplicate_app(app_id: str, data: Optional[AppProjectDuplicate] = None, db: StateDBConnector = Depends(get_db_connector)):
+    rows = db.execute_query(ProjectQueries.GET_PROJECT_BY_ID, {"id": app_id})
+    if not rows:
+        raise HTTPException(status_code=404, detail="App project not found")
+
+    source = dict(rows[0])
+    data = data or AppProjectDuplicate()
+
+    new_name = data.name or f"{source['name']} (Copy)"
+    package_name = data.package_name
+    if not package_name:
+        slug = re.sub(r"[^a-z0-9]", "_", new_name.lower()) or "app"
+        if slug[0].isdigit():
+            slug = f"app_{slug}"
+        package_name = f"com.studio.{slug}"
+
+    project_id = str(uuid.uuid4())
+    params = {
+        "id": project_id,
+        "name": new_name,
+        "package_name": package_name,
+        "model_asset_id": source.get("model_asset_id"),
+        # Copy the source project's full config so the duplicate starts
+        # identical (models, mandatory/ignored classes, OCR config, canvas
+        # layout, settings) and only diverges from there -- that's the
+        # whole point, versus redoing every setup step from scratch.
+        "model_asset_ids": json.dumps(parse_json_field(source.get("model_asset_ids"), [])),
+        "inspection_tasks": json.dumps(parse_json_field(source.get("inspection_tasks"), [])),
+        "canvas_state": json.dumps(parse_json_field(source.get("canvas_state"), [])),
+        "app_settings": json.dumps(parse_json_field(source.get("app_settings"), {})),
+        "build_status": "idle",
+        "build_log": "",
+        "build_step": "",
+        "apk_path": ""
+    }
+
+    db.execute_insert(ProjectQueries.INSERT_PROJECT, params)
+
+    new_rows = db.execute_query(ProjectQueries.GET_PROJECT_BY_ID, {"id": project_id})
+    if not new_rows:
+        raise HTTPException(status_code=500, detail="Failed to duplicate project")
+
+    app = dict(new_rows[0])
     app["model_asset_ids"] = parse_json_field(app.get("model_asset_ids"), [])
     app["inspection_tasks"] = parse_json_field(app.get("inspection_tasks"), [])
     app["canvas_state"] = parse_json_field(app.get("canvas_state"), [])
