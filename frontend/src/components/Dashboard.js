@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, Trash2, ClipboardList, Copy } from 'lucide-react';
-import { getApps, deleteApp, exportApp, duplicateApp } from '../api';
+import { Plus, Trash2, ClipboardList, Copy, Pencil } from 'lucide-react';
+import { getApps, deleteApp, exportApp, duplicateApp, updateApp } from '../api';
 import ConfirmModal from './ConfirmModal';
 import '../styles/Dashboard.css';
 
@@ -44,6 +44,19 @@ export default function Dashboard() {
       navigate(`/apps/${r.data.id}`);
     } catch {
       alert('Duplicate failed. Make sure the backend is running.');
+    }
+  };
+
+  const handleRename = async (id, name) => {
+    const newName = window.prompt('New name for this app:', name);
+    if (newName === null) return; // cancelled
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === name) return;
+    try {
+      const r = await updateApp(id, { name: trimmed });
+      setApps(prev => prev.map(a => (a.id === id ? r.data : a)));
+    } catch {
+      alert('Rename failed. Make sure the backend is running.');
     }
   };
 
@@ -144,6 +157,13 @@ export default function Dashboard() {
                   onClick={() => navigate(`/apps/${app.id}`)}
                 >
                   Open Build Console
+                </button>
+                <button
+                  className="app-card-delete-btn"
+                  onClick={() => handleRename(app.id, app.name)}
+                  title="Rename app"
+                >
+                  <Pencil size={16} />
                 </button>
                 <button
                   className="app-card-delete-btn"
