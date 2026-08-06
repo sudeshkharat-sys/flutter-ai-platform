@@ -1012,9 +1012,14 @@ function chartCard(label, ok, fail, section, value, okLabel, failLabel, sizeClas
   const attrs = section
     ? ` data-section="${section}" data-value="${escapeAttr(value)}" class="chart-card${sizeClassAttr} clickable-chart" title="Click to filter to ${escapeAttr(label)}"`
     : ` class="chart-card${sizeClassAttr}"`;
+  // Exact percentage (one decimal), shown as text alongside the raw counts
+  // -- the donut itself always shows a whole number clamped away from a
+  // misleading 100%/0%, so this is where the real, unrounded figure lives.
+  const total = ok + fail;
+  const exactPct = total > 0 ? (ok / total * 100).toFixed(1) : '0.0';
   return `<div${attrs}>${pieSvg(ok, fail, CHART_PIE_PX[sizeClass])}
     <div class="chart-label" title="${label}">${label}</div>
-    <div class="chart-meta">${ok} ${okLabel} / ${fail} ${failLabel}</div></div>`;
+    <div class="chart-meta">${ok} ${okLabel} / ${fail} ${failLabel} (${exactPct}%)</div></div>`;
 }
 
 function bucketize(rows, keyFn) {
