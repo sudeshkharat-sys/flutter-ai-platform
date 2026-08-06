@@ -33,7 +33,26 @@ async def lifespan(app: FastAPI):
         engine.dispose()
     except Exception as e:
         print(f"Schema repair skip/error: {e}")
-    
+
+    # Check for missing OCR model_asset columns (schema auto-repair)
+    try:
+        from sqlalchemy import text
+        engine = db_manager._get_engine(settings.POSTGRES_DB)
+        with engine.connect() as conn:
+            for col, ddl in [
+                ("model_kind", "ALTER TABLE model_assets ADD COLUMN model_kind VARCHAR NOT NULL DEFAULT 'detector'"),
+                ("charset_path", "ALTER TABLE model_assets ADD COLUMN charset_path VARCHAR"),
+                ("meta_path", "ALTER TABLE model_assets ADD COLUMN meta_path VARCHAR"),
+            ]:
+                check_sql = f"SELECT column_name FROM information_schema.columns WHERE table_name='model_assets' AND column_name='{col}'"
+                res = conn.execute(text(check_sql)).fetchone()
+                if not res:
+                    print(f"Repairing schema: Adding missing {col} column to model_assets")
+                    conn.execute(text(ddl))
+        engine.dispose()
+    except Exception as e:
+        print(f"Schema repair skip/error: {e}")
+
     yield
 
 app = FastAPI(title="Flutter AI Studio", version="1.0.0", lifespan=lifespan)

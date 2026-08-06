@@ -125,6 +125,74 @@ def upload_model(
     rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": asset_id})
     return rows[0]
 
+@router.post("/upload-ocr", response_model=ModelAssetResponse)
+def upload_ocr_model(
+    tflite_file: UploadFile = File(...),
+    charset_file: UploadFile = File(...),
+    model_name: str = Form(...),
+    model_kind: str = Form(...),
+    meta_file: UploadFile = File(None),
+    db: StateDBConnector = Depends(get_db_connector),
+):
+    """
+    Register an already-built OCR model bundle (a `.tflite` exported from
+    ai-vision-platform's OCR trainer, plus its charset/labels sidecar and
+    optional meta.json). Unlike /upload, this is NOT a YOLO .pt -- it's
+    already tflite, so it's registered directly with status="ready" and
+    never queued for conversion.
+    """
+    if model_kind not in ("detector", "ocr_cnn", "ocr_crnn"):
+        raise HTTPException(status_code=422, detail="model_kind must be one of: detector, ocr_cnn, ocr_crnn")
+    if not tflite_file.filename.endswith(".tflite"):
+        raise HTTPException(status_code=422, detail="tflite_file must be a .tflite file.")
+
+    asset_id = str(uuid.uuid4())
+    model_dir = settings.models_dir / asset_id
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    tflite_path = model_dir / "model.tflite"
+    with open(tflite_path, "wb") as f:
+        shutil.copyfileobj(tflite_file.file, f)
+
+    charset_path = model_dir / "charset.txt"
+    with open(charset_path, "wb") as f:
+        shutil.copyfileobj(charset_file.file, f)
+    class_list = [
+        line.strip() for line in charset_path.read_text().splitlines() if line.strip()
+    ]
+
+    meta_path = None
+    if meta_file is not None and meta_file.filename:
+        meta_path = model_dir / "meta.json"
+        with open(meta_path, "wb") as f:
+            shutil.copyfileobj(meta_file.file, f)
+
+    params = {
+        "id": asset_id,
+        "vision_project_id": asset_id,
+        "vision_project_name": model_name,
+        "model_type": "uploaded",
+        "model_kind": model_kind,
+        "classes": json.dumps(class_list),
+        "pt_path": None,
+        "tflite_path": str(tflite_path),
+        "labels_path": str(charset_path),
+        "charset_path": str(charset_path),
+        "meta_path": str(meta_path) if meta_path else None,
+        "status": "ready",
+        "error_message": None,
+        "conversion_log": "Registered pre-built OCR tflite bundle -- no conversion needed.\n",
+        "input_size": 0,
+        "vision_platform_url": "",
+        "vision_platform_token": "",
+    }
+
+    db.execute_insert(ModelAssetQueries.INSERT_OCR_MODEL, params)
+
+    rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": asset_id})
+    return rows[0]
+
+
 @router.get("/{model_asset_id}", response_model=ModelAssetResponse)
 def get_model(model_asset_id: str, db: StateDBConnector = Depends(get_db_connector)):
     rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})

@@ -51,6 +51,12 @@ create_dynamic_table(
         Column("pt_path", String, nullable=True),
         Column("tflite_path", String, nullable=True),
         Column("labels_path", String, nullable=True),
+        # What the model DOES, orthogonal to model_type (how it got here):
+        # "detector" (default, YOLO) / "ocr_cnn" (per-char classifier) /
+        # "ocr_crnn" (CTC line-reader). Drives which codegen path bundles it.
+        Column("model_kind", String, nullable=False, server_default="detector"),
+        Column("charset_path", String, nullable=True),
+        Column("meta_path", String, nullable=True),
         Column("status", String, default="pending"),
         Column("error_message", String, nullable=True),
         Column("conversion_log", String, nullable=True),

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'screens/home_screen.dart';
 import 'screens/scan_screen.dart';
+{% if is_ocr_app %}import 'screens/ocr_scan_screen.dart';
+{% endif %}
 
 List<CameraDescription> cameras = [];
 
@@ -32,7 +34,7 @@ class MyApp extends StatelessWidget {
           elevation: 0,
         ),
       ),
-      home: {% if app_type == 'sequential' %}const ScanScreen(modelCode: '{{ app_settings.model_code }}'){% else %}HomeScreen(cameras: cameras){% endif %},
+      home: {% if is_ocr_app %}OcrScanScreen(cameras: cameras){% elif app_type == 'sequential' %}const ScanScreen(modelCode: '{{ app_settings.model_code }}'){% else %}HomeScreen(cameras: cameras){% endif %},
     );
   }
 }

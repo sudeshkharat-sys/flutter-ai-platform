@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UploadCloud, Check, Box, Zap } from 'lucide-react';
-import { uploadModel, getModelStatus, getModels, createApp, extractClasses } from '../api';
+import { uploadModel, getModelStatus, getModels, createApp, extractClasses, uploadOcrModel } from '../api';
 import '../styles/NewApp.css';
 
 function DropZone({ onFile, analyzing }) {
@@ -67,6 +67,15 @@ export default function NewApp() {
   const [existingModels, setExistingModels] = useState([]);
   const [appName, setAppName] = useState('');
   const [packageName, setPackageName] = useState('');
+
+  // ── OCR bundle (pre-built recognizer .tflite, not a .pt to convert) ────
+  const [isOcrApp, setIsOcrApp] = useState(false);
+  const [ocrEngine, setOcrEngine] = useState('crnn');
+  const [ocrTfliteFile, setOcrTfliteFile] = useState(null);
+  const [ocrCharsetFile, setOcrCharsetFile] = useState(null);
+  const [ocrMetaFile, setOcrMetaFile] = useState(null);
+  const [ocrModelName, setOcrModelName] = useState('');
+  const [ocrUploading, setOcrUploading] = useState(false);
 
   const pollRef = useRef(null);
   const logEndRef = useRef(null);
@@ -148,13 +157,41 @@ export default function NewApp() {
     }
   };
 
+  const submitOcrRecognizer = async () => {
+    if (!ocrTfliteFile || !ocrCharsetFile) {
+      alert('Both the recognizer .tflite and its charset/labels file are required.');
+      return;
+    }
+    setOcrUploading(true);
+    try {
+      const name = ocrModelName || ocrTfliteFile.name.replace(/\.tflite$/i, '');
+      const r = await uploadOcrModel(
+        ocrTfliteFile, ocrCharsetFile, name, `ocr_${ocrEngine}`, ocrMetaFile
+      );
+      setSelectedModelIds(prev => [...prev, r.data.id]);
+      setSelectedModelNames(prev => [...prev, name]);
+      setIsOcrApp(true);
+      setOcrTfliteFile(null);
+      setOcrCharsetFile(null);
+      setOcrMetaFile(null);
+      setOcrModelName('');
+    } catch {
+      alert('OCR bundle upload failed');
+    } finally {
+      setOcrUploading(false);
+    }
+  };
+
   const handleCreate = async () => {
     try {
+      const app_settings = isOcrApp
+        ? { app_type: 'ocr', ocr_engine: ocrEngine, confidence_threshold: 0.5 }
+        : { app_type: 'sequential', confidence_threshold: 0.5 };
       const r = await createApp({
         name: appName || 'Inspection App',
         package_name: packageName,
         model_asset_ids: selectedModelIds,
-        app_settings: { app_type: 'sequential', confidence_threshold: 0.5 },
+        app_settings,
       });
       navigate(`/apps/${r.data.id}`);
     } catch {
@@ -183,13 +220,13 @@ export default function NewApp() {
         {step === 1 && (
           <div className="newapp-step-body">
             <div className="newapp-tabs">
-              {['upload', 'existing'].map(t => (
+              {['upload', 'existing', 'ocr'].map(t => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
                   className={`newapp-tab${tab === t ? ' active' : ''}`}
                 >
-                  {t === 'upload' ? 'Convert New Model' : 'Select from Library'}
+                  {t === 'upload' ? 'Convert New Model' : t === 'existing' ? 'Select from Library' : 'OCR Bundle'}
                 </button>
               ))}
             </div>
@@ -255,6 +292,83 @@ export default function NewApp() {
                     <div className="existing-model-classes">{m.classes.join(', ')}</div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {tab === 'ocr' && (
+              <div className="newapp-upload-body">
+                <p className="newapp-sidebar-hint" style={{ marginBottom: 12 }}>
+                  Add the plate/character <strong>detector</strong> from the other two tabs
+                  first (it's a normal YOLO .pt model). Then upload the OCR{' '}
+                  <strong>recognizer</strong> here — the .tflite exported from
+                  ai-vision-platform's OCR trainer, plus its charset.txt/labels.txt.
+                </p>
+
+                <div className="model-preview-field">
+                  <label className="section-label">Recognizer engine</label>
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <label>
+                      <input
+                        type="radio"
+                        checked={ocrEngine === 'crnn'}
+                        onChange={() => setOcrEngine('crnn')}
+                      /> CRNN + CTC (line reader)
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        checked={ocrEngine === 'cnn'}
+                        onChange={() => setOcrEngine('cnn')}
+                      /> Per-character CNN
+                    </label>
+                  </div>
+                </div>
+
+                <div className="model-preview-field">
+                  <label className="section-label">Recognizer Name</label>
+                  <input
+                    className="field-input"
+                    value={ocrModelName}
+                    onChange={e => setOcrModelName(e.target.value)}
+                    placeholder="e.g. Engine Plate CRNN"
+                  />
+                </div>
+
+                <div className="model-preview-field">
+                  <label className="section-label">Recognizer .tflite</label>
+                  <input
+                    type="file"
+                    accept=".tflite"
+                    onChange={e => setOcrTfliteFile(e.target.files[0])}
+                  />
+                </div>
+
+                <div className="model-preview-field">
+                  <label className="section-label">charset.txt / labels.txt</label>
+                  <input
+                    type="file"
+                    accept=".txt"
+                    onChange={e => setOcrCharsetFile(e.target.files[0])}
+                  />
+                </div>
+
+                <div className="model-preview-field">
+                  <label className="section-label">meta.json (optional)</label>
+                  <input
+                    type="file"
+                    accept=".json"
+                    onChange={e => setOcrMetaFile(e.target.files[0])}
+                  />
+                </div>
+
+                <button
+                  className="convert-btn"
+                  onClick={submitOcrRecognizer}
+                  disabled={ocrUploading || !ocrTfliteFile || !ocrCharsetFile}
+                >
+                  <Zap size={15} />
+                  {ocrUploading ? 'Uploading...' : 'Add Recognizer to App'}
+                </button>
               </div>
             )}
 

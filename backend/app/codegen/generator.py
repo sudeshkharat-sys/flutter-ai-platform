@@ -77,7 +77,9 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         ma_id = get_attr(ma, "id")
         model_id_to_paths[ma_id] = {
             "tflite": f"assets/models/model_{idx}.tflite",
-            "labels": f"assets/models/labels_{idx}.txt"
+            "labels": f"assets/models/labels_{idx}.txt",
+            "charset": f"assets/models/charset_{idx}.txt",
+            "meta": f"assets/models/meta_{idx}.json",
         }
 
     models_manifest = []
@@ -176,6 +178,41 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 "labels_path": paths.get("labels")
             })
 
+    # ── OCR app type: resolve the detector + recognizer model bundle ──────
+    # An OCR app carries exactly two model_assets: one model_kind="detector"
+    # (YOLO plate/char boxes) and one model_kind in ("ocr_cnn", "ocr_crnn")
+    # (the recognizer). Both are uploaded pre-built via /models/upload-ocr,
+    # so unlike the generic detection app type this resolves by model_kind
+    # rather than by inspection_tasks.
+    app_type = settings.get("app_type", "sequential")
+    is_ocr_app = app_type == "ocr"
+    ocr_ctx = {}
+    if is_ocr_app:
+        ocr_detector = next(
+            (ma for ma in models_list if get_attr(ma, "model_kind", "detector") == "detector"), None
+        )
+        ocr_recognizer = next(
+            (ma for ma in models_list if get_attr(ma, "model_kind", "detector") in ("ocr_cnn", "ocr_crnn")), None
+        )
+        ocr_engine = "crnn"
+        if ocr_recognizer is not None:
+            ocr_engine = "cnn" if get_attr(ocr_recognizer, "model_kind") == "ocr_cnn" else "crnn"
+        else:
+            ocr_engine = settings.get("ocr_engine", "crnn")
+
+        det_paths = model_id_to_paths.get(get_attr(ocr_detector, "id"), {}) if ocr_detector else {}
+        rec_paths = model_id_to_paths.get(get_attr(ocr_recognizer, "id"), {}) if ocr_recognizer else {}
+
+        ocr_ctx = {
+            "ocr_engine": ocr_engine,
+            "ocr_detector_tflite": det_paths.get("tflite"),
+            "ocr_detector_labels": det_paths.get("labels"),
+            "ocr_detector_input_size": get_attr(ocr_detector, "input_size", 640) if ocr_detector else 640,
+            "ocr_recognizer_tflite": rec_paths.get("tflite"),
+            "ocr_recognizer_charset": rec_paths.get("charset"),
+            "ocr_recognizer_meta": rec_paths.get("meta"),
+        }
+
     app_name = get_attr(app_project, "name", "My App")
     package_name = get_attr(app_project, "package_name", "com.example.app")
     canvas_state = get_attr(app_project, "canvas_state") or []
@@ -209,12 +246,14 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "has_stats_view": any(
             w.get("type") == "StatsView" for w in canvas_state
         ),
-        "app_type": settings.get("app_type", "sequential"),
+        "app_type": app_type,
+        "is_ocr_app": is_ocr_app,
         "scan_type": settings.get("scan_type", "model"),
         "app_settings": settings,
         # Detection engine selector: 'default' (single-target flow) or
         # 'multiclass' (mandatory-class checklist + per-class OCR verification).
         "detection_method": settings.get("detection_method", "default"),
+        **ocr_ctx,
     }
 
     # OCR codegen is only enabled in multi-class mode AND when at least one
@@ -283,6 +322,14 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "android/app/src/main/res/values/styles.xml": "styles.xml.j2",
         "android/app/src/main/res/drawable/launch_background.xml": "launch_background.xml.j2",
     }
+
+    if is_ocr_app:
+        files.update({
+            "lib/screens/ocr_scan_screen.dart": "ocr_scan_screen.dart.j2",
+            "lib/ml/line_normalizer.dart": "line_normalizer.dart.j2",
+            "lib/ml/ctc_decoder.dart": "ctc_decoder.dart.j2",
+            "lib/ml/ocr_recognizer.dart": "ocr_recognizer.dart.j2",
+        })
 
     # Android mipmap icon sizes: density -> (width, height)
     MIPMAP_SIZES = {

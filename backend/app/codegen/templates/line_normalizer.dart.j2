@@ -1,0 +1,154 @@
+import 'dart:typed_data';
+import 'package:image/image.dart' as img;
+
+/// Ports `_normalize_line` from ai-vision-platform's
+/// `backend/app/tasks/crnn_training.py`, so the CRNN model sees exactly the
+/// preprocessing it was trained on: contrast-enhance, correct stroke
+/// polarity so text is always dark-on-light, then letterbox onto a fixed
+/// canvas preserving aspect ratio.
+///
+/// NOTE: the `image` package has no CLAHE (tiled/local contrast
+/// equalization). This uses global histogram equalization as an
+/// approximation -- close on evenly-lit crops, weaker than the training-time
+/// CLAHE on crops with strong local glare or shadow across the plate.
+class LineNormalizer {
+  final int imgH;
+  final int imgW;
+
+  const LineNormalizer({this.imgH = {{ ocr_line_img_h | default(32) }}, this.imgW = {{ ocr_line_img_w | default(256) }}});
+
+  /// [source] is the raw color (or already-gray) crop of one text line.
+  /// Returns a Float32List of length imgH*imgW, normalized to [0, 1], row-major
+  /// (y then x) -- ready to reshape to [1, imgH, imgW, 1] for the interpreter.
+  Float32List normalize(img.Image source) {
+    final gray = img.grayscale(source);
+    final enhanced = _equalizeHistogram(gray);
+    final polarityFixed = _fixPolarity(enhanced);
+    final letterboxed = _resizeAndLetterbox(polarityFixed);
+    return _toFloat32(letterboxed);
+  }
+
+  /// Public wrapper so the per-character CNN path (ocr_recognizer.dart) can
+  /// reuse the same contrast-enhancement approximation instead of
+  /// duplicating it.
+  static img.Image equalizeHistogram(img.Image src) => _equalizeHistogram(src);
+
+  static img.Image _equalizeHistogram(img.Image src) {
+    final hist = List<int>.filled(256, 0);
+    for (final p in src) {
+      hist[p.r.toInt().clamp(0, 255)]++;
+    }
+    final total = src.width * src.height;
+    final cdf = List<int>.filled(256, 0);
+    var cum = 0;
+    for (var i = 0; i < 256; i++) {
+      cum += hist[i];
+      cdf[i] = cum;
+    }
+    var cdfMin = 0;
+    for (final v in cdf) {
+      if (v > 0) {
+        cdfMin = v;
+        break;
+      }
+    }
+    final denom = total - cdfMin;
+    final lut = List<int>.filled(256, 0);
+    for (var i = 0; i < 256; i++) {
+      lut[i] = denom <= 0 ? i : (((cdf[i] - cdfMin) / denom) * 255).round().clamp(0, 255);
+    }
+    final out = img.Image.from(src);
+    for (final p in out) {
+      final v = lut[p.r.toInt().clamp(0, 255)];
+      p
+        ..r = v
+        ..g = v
+        ..b = v;
+    }
+    return out;
+  }
+
+  /// Otsu's method: the threshold that minimizes intra-class variance
+  /// between the two pixel populations it splits.
+  static int _otsuThreshold(img.Image src) {
+    final hist = List<int>.filled(256, 0);
+    for (final p in src) {
+      hist[p.r.toInt().clamp(0, 255)]++;
+    }
+    final total = src.width * src.height;
+    var sum = 0.0;
+    for (var i = 0; i < 256; i++) {
+      sum += i * hist[i];
+    }
+    var sumB = 0.0;
+    var wB = 0;
+    var maxVar = -1.0;
+    var threshold = 127;
+    for (var t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (wB == 0) continue;
+      final wF = total - wB;
+      if (wF == 0) break;
+      sumB += t * hist[t];
+      final mB = sumB / wB;
+      final mF = (sum - sumB) / wF;
+      final varBetween = wB * wF * (mB - mF) * (mB - mF);
+      if (varBetween > maxVar) {
+        maxVar = varBetween;
+        threshold = t;
+      }
+    }
+    return threshold;
+  }
+
+  /// Engraved strokes can read lighter or darker than the surrounding metal
+  /// depending on lighting -- flip polarity so strokes are always the dark
+  /// minority, exactly like `_normalize_line`'s Otsu-majority check.
+  static img.Image _fixPolarity(img.Image src) {
+    final t = _otsuThreshold(src);
+    final total = src.width * src.height;
+    var brightCount = 0;
+    for (final p in src) {
+      if (p.r.toInt() > t) brightCount++;
+    }
+    if (brightCount > total ~/ 2) {
+      // Majority bright -> strokes are already the dark minority -> keep as-is.
+      return src;
+    }
+    final out = img.Image.from(src);
+    for (final p in out) {
+      final v = 255 - p.r.toInt().clamp(0, 255);
+      p
+        ..r = v
+        ..g = v
+        ..b = v;
+    }
+    return out;
+  }
+
+  img.Image _resizeAndLetterbox(img.Image src) {
+    final scale = imgH / src.height;
+    final nw = (src.width * scale).round().clamp(1, imgW);
+    final resized = img.copyResize(
+      src,
+      width: nw,
+      height: imgH,
+      interpolation: img.Interpolation.average,
+    );
+    final canvas = img.Image(width: imgW, height: imgH);
+    img.fill(canvas, color: img.ColorRgb8(255, 255, 255));
+    img.compositeImage(canvas, resized, dstX: 0, dstY: 0);
+    return canvas;
+  }
+
+  Float32List _toFloat32(img.Image src) {
+    final out = Float32List(imgH * imgW);
+    var idx = 0;
+    for (var y = 0; y < imgH; y++) {
+      for (var x = 0; x < imgW; x++) {
+        out[idx++] = src.getPixel(x, y).r.toDouble() / 255.0;
+      }
+    }
+    return out;
+  }
+}

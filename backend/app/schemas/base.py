@@ -20,10 +20,15 @@ class ModelAssetResponse(BaseModel):
     vision_project_id: str
     vision_project_name: str
     model_type: str
+    # What the model does: "detector" (default, YOLO) / "ocr_cnn" (per-char
+    # classifier) / "ocr_crnn" (CTC line-reader). Orthogonal to model_type.
+    model_kind: Optional[str] = "detector"
     classes: List[str]
     pt_path: Optional[str]
     tflite_path: Optional[str]
     labels_path: Optional[str]
+    charset_path: Optional[str] = None
+    meta_path: Optional[str] = None
     status: str
     error_message: Optional[str]
     conversion_log: Optional[str] = ""

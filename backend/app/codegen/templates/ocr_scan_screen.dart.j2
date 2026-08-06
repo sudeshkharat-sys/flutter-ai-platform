@@ -1,0 +1,234 @@
+import 'dart:async';
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'package:drift/drift.dart' as drift;
+import '../database/database.dart';
+import '../ml/ocr_recognizer.dart';
+
+/// Capture -> detect plate/chars -> read the string ('{{ ocr_engine }}'
+/// engine, baked in at generation time) -> show + save. This is the OCR
+/// counterpart to scan_screen.dart / home_screen.dart's inspection flow,
+/// kept intentionally self-contained rather than reusing the multi-task
+/// inspection screens, since a plate read is a single result, not a task
+/// checklist.
+class OcrScanScreen extends StatefulWidget {
+  final List<CameraDescription> cameras;
+  const OcrScanScreen({super.key, required this.cameras});
+
+  @override
+  State<OcrScanScreen> createState() => _OcrScanScreenState();
+}
+
+class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserver {
+  CameraController? _controller;
+  bool _cameraReady = false;
+  bool _modelReady = false;
+  bool _processing = false;
+  OcrResult? _lastResult;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initCamera();
+    _loadModels();
+  }
+
+  Future<void> _initCamera() async {
+    if (widget.cameras.isEmpty) return;
+    final backCamera = widget.cameras.firstWhere(
+      (c) => c.lensDirection == CameraLensDirection.back,
+      orElse: () => widget.cameras.first,
+    );
+    _controller = CameraController(backCamera, ResolutionPreset.high, enableAudio: false);
+    try {
+      await _controller!.initialize();
+      if (mounted) setState(() => _cameraReady = true);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Camera error: $e');
+    }
+  }
+
+  Future<void> _loadModels() async {
+    try {
+      await OcrRecognizer().load(
+        detectorModelPath: '{{ ocr_detector_tflite | default("", true) }}',
+        detectorLabelsPath: '{{ ocr_detector_labels | default("", true) }}',
+        recognizerModelPath: '{{ ocr_recognizer_tflite | default("", true) }}',
+        charsetPath: '{{ ocr_recognizer_charset | default("", true) }}',
+        metaPath: {% if ocr_recognizer_meta %}'{{ ocr_recognizer_meta }}'{% else %}null{% endif %},
+      );
+      if (mounted) setState(() => _modelReady = true);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Could not load OCR models: $e');
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    if (state == AppLifecycleState.inactive) {
+      _controller?.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initCamera();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _captureAndRead() async {
+    if (_controller == null || !_controller!.value.isInitialized || !_modelReady || _processing) return;
+    setState(() {
+      _processing = true;
+      _error = null;
+    });
+    try {
+      final file = await _controller!.takePicture();
+      final bytes = await file.readAsBytes();
+      final result = await OcrRecognizer().recognize(bytes);
+      if (!mounted) return;
+      setState(() {
+        _lastResult = result;
+        _processing = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Read failed: $e';
+        _processing = false;
+      });
+    }
+  }
+
+  Future<void> _saveResult() async {
+    final result = _lastResult;
+    if (result == null || result.text.isEmpty) return;
+
+    final inspectionId = await db.saveInspection(InspectionsCompanion.insert(
+      vin: result.text,
+      modelCode: 'OCR',
+    ));
+    await db.saveTaskResult(TaskResultsCompanion.insert(
+      inspectionId: inspectionId,
+      taskName: 'ocr_read',
+      className: result.text,
+      confidence: result.confidence ?? 0.0,
+      success: true,
+    ));
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Saved'), backgroundColor: Colors.green),
+    );
+    setState(() => _lastResult = null);
+  }
+
+  void _scanAgain() => setState(() => _lastResult = null);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('{{ app_name }}')),
+      body: Column(
+        children: [
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (_cameraReady && _controller != null)
+                  CameraPreview(_controller!)
+                else
+                  const Center(child: CircularProgressIndicator()),
+                if (!_modelReady && _error == null)
+                  const Positioned(
+                    top: 16,
+                    left: 16,
+                    right: 16,
+                    child: Text(
+                      'Loading OCR models...',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white, backgroundColor: Colors.black54),
+                    ),
+                  ),
+                if (_processing)
+                  Container(
+                    color: Colors.black.withOpacity(0.4),
+                    child: const Center(child: CircularProgressIndicator()),
+                  ),
+              ],
+            ),
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(_error!, style: const TextStyle(color: Colors.red)),
+            ),
+          if (_lastResult != null) _buildResultPanel(_lastResult!),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: _lastResult == null
+                ? ElevatedButton.icon(
+                    onPressed: _modelReady && !_processing ? _captureAndRead : null,
+                    icon: const Icon(Icons.camera_alt),
+                    label: const Text('Capture & Read'),
+                    style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
+                  )
+                : Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _scanAgain,
+                          child: const Text('Scan Again'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: _saveResult,
+                          child: const Text('Save'),
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResultPanel(OcrResult result) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      color: Colors.black87,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            result.text.isEmpty ? '(no text detected)' : result.text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 2,
+            ),
+          ),
+          if (result.confidence != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Confidence: ${(result.confidence! * 100).toStringAsFixed(1)}%',
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}

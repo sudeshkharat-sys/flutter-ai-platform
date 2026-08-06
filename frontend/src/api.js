@@ -20,6 +20,29 @@ export const uploadModel = (file, modelName, classes, inputSize = 640) => {
   });
 };
 
+/**
+ * Register an already-built OCR model bundle (a .tflite exported from
+ * ai-vision-platform's OCR trainer, plus its charset/labels sidecar and
+ * optional meta.json). Unlike uploadModel, this is NOT a .pt -- it's
+ * registered directly, no conversion queued.
+ * @param {File}   tfliteFile  The .tflite file
+ * @param {File}   charsetFile charset.txt / labels.txt sidecar
+ * @param {string} modelName   Display name for this model
+ * @param {string} modelKind   'detector' | 'ocr_cnn' | 'ocr_crnn'
+ * @param {File}   [metaFile]  optional meta.json sidecar
+ */
+export const uploadOcrModel = (tfliteFile, charsetFile, modelName, modelKind, metaFile) => {
+  const form = new FormData();
+  form.append('tflite_file', tfliteFile);
+  form.append('charset_file', charsetFile);
+  form.append('model_name', modelName);
+  form.append('model_kind', modelKind);
+  if (metaFile) form.append('meta_file', metaFile);
+  return api.post('/models/upload-ocr', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+
 export const extractClasses = (file) => {
   const form = new FormData();
   form.append('file', file);

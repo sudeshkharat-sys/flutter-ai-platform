@@ -1,0 +1,456 @@
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'line_normalizer.dart';
+import 'ctc_decoder.dart';
+
+/// One YOLO detection box, in pixel coordinates of the source image.
+class _LabeledBox {
+  final int x, y, w, h;
+  final double confidence;
+  final String className;
+  const _LabeledBox(this.x, this.y, this.w, this.h, this.confidence, this.className);
+}
+
+class OcrResult {
+  final String text;
+  final double? confidence;
+  final String engine;
+  const OcrResult({required this.text, required this.confidence, required this.engine});
+}
+
+/// Two-stage OCR pipeline: a YOLO plate/character detector locates the
+/// text, then either a CRNN+CTC line-reader or a per-character CNN
+/// classifier reads it -- the engine is fixed per generated app
+/// ('{{ ocr_engine }}' baked in at generation time). This mirrors the exact
+/// pipeline ai-vision-platform's Python test window runs
+/// (`backend/app/api/ocr.py`: `_predict_with_crnn` for the CRNN engine, the
+/// default `cnn` path for the per-character engine) -- region priority,
+/// row-grouping, left-to-right ordering, and NMS all match so results here
+/// match what the training tool's test window showed.
+class OcrRecognizer {
+  static final OcrRecognizer instance = OcrRecognizer._internal();
+  factory OcrRecognizer() => instance;
+  OcrRecognizer._internal();
+
+  static const String engine = '{{ ocr_engine }}';
+  static const int detectorInputSize = {{ ocr_detector_input_size | default(640) }};
+  static const String plateClassName = 'PLATE';
+
+  Interpreter? _detector;
+  Interpreter? _recognizer;
+  List<String> _detectorLabels = [];
+  List<String> _charset = [];
+  int _blankIndex = -1;
+  bool _ready = false;
+
+  bool get isReady => _ready;
+
+  Future<void> load({
+    required String detectorModelPath,
+    required String detectorLabelsPath,
+    required String recognizerModelPath,
+    required String charsetPath,
+    String? metaPath,
+  }) async {
+    _detector = await Interpreter.fromAsset(detectorModelPath);
+    _recognizer = await Interpreter.fromAsset(recognizerModelPath);
+
+    final labelsData = await rootBundle.loadString(detectorLabelsPath);
+    _detectorLabels =
+        labelsData.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+
+    final charsetData = await rootBundle.loadString(charsetPath);
+    _charset =
+        charsetData.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+    // Training convention: the CTC blank class is always the last one.
+    _blankIndex = _charset.length;
+
+    if (metaPath != null) {
+      try {
+        final metaData = await rootBundle.loadString(metaPath);
+        final meta = json.decode(metaData) as Map<String, dynamic>;
+        if (meta['charset'] is List) {
+          _charset = (meta['charset'] as List).map((e) => e.toString()).toList();
+        }
+        if (meta['blank_index'] is int) {
+          _blankIndex = meta['blank_index'] as int;
+        }
+      } catch (e) {
+        debugPrint('[OCR] Could not parse meta.json, using charset.txt defaults: $e');
+      }
+    }
+
+    _ready = true;
+  }
+
+  void dispose() {
+    _detector?.close();
+    _recognizer?.close();
+    _ready = false;
+  }
+
+  Future<OcrResult> recognize(Uint8List jpegBytes, {double detectorThreshold = 0.25}) async {
+    if (!_ready) return const OcrResult(text: '', confidence: null, engine: 'none');
+    return compute(_runRecognize, {
+      'bytes': jpegBytes,
+      'detector_address': _detector!.address,
+      'recognizer_address': _recognizer!.address,
+      'detectorLabels': _detectorLabels,
+      'charset': _charset,
+      'blankIndex': _blankIndex,
+      'engine': engine,
+      'detectorInputSize': detectorInputSize,
+      'detectorThreshold': detectorThreshold,
+    });
+  }
+
+  // ── Isolate entry point ────────────────────────────────────────────────
+
+  static OcrResult _runRecognize(Map<String, dynamic> args) {
+    final bytes = args['bytes'] as Uint8List;
+    final detector = Interpreter.fromAddress(args['detector_address'] as int);
+    final recognizer = Interpreter.fromAddress(args['recognizer_address'] as int);
+    final labels = List<String>.from(args['detectorLabels'] as List);
+    final charset = List<String>.from(args['charset'] as List);
+    final blankIndex = args['blankIndex'] as int;
+    final engine = args['engine'] as String;
+    final inputSize = args['detectorInputSize'] as int;
+    final threshold = args['detectorThreshold'] as double;
+
+    img.Image? decoded = img.decodeImage(bytes);
+    if (decoded == null) return const OcrResult(text: '', confidence: null, engine: 'none');
+    // EXIF orientation must be baked in before detection -- otherwise the
+    // model runs on a landscape frame while boxes get drawn as if portrait.
+    decoded = img.bakeOrientation(decoded);
+
+    final boxes = _detectBoxes(decoded, detector, labels, inputSize, threshold);
+
+    if (engine == 'cnn') {
+      return _recognizeWithCnn(decoded, boxes, recognizer, charset);
+    }
+    return _recognizeWithCrnn(decoded, boxes, recognizer, charset, blankIndex);
+  }
+
+  // ── Stage 1: YOLO detector (plate + character boxes) ───────────────────
+  // Same generic decode + per-class NMS as the shared detector.dart -- kept
+  // as a compact standalone copy here (rather than reusing ModelManager)
+  // because ModelManager is a single-active-model singleton and this
+  // pipeline needs the detector and the recognizer loaded simultaneously.
+
+  static List<_LabeledBox> _detectBoxes(
+    img.Image source,
+    Interpreter interpreter,
+    List<String> labels,
+    int inputSize,
+    double threshold,
+  ) {
+    final resized = img.copyResize(source, width: inputSize, height: inputSize, interpolation: img.Interpolation.linear);
+    final inputData = Float32List(inputSize * inputSize * 3);
+    var idx = 0;
+    for (var y = 0; y < inputSize; y++) {
+      for (var x = 0; x < inputSize; x++) {
+        final p = resized.getPixel(x, y);
+        inputData[idx++] = p.r.toDouble() / 255.0;
+        inputData[idx++] = p.g.toDouble() / 255.0;
+        inputData[idx++] = p.b.toDouble() / 255.0;
+      }
+    }
+    final input = inputData.reshape([1, inputSize, inputSize, 3]);
+
+    final shape = interpreter.getOutputTensor(0).shape;
+    if (shape.length != 3) return [];
+    final output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+    interpreter.run(input, output);
+    final raw = output[0];
+
+    final isTransposed = shape[1] < shape[2];
+    final numElements = isTransposed ? shape[1] : shape[2];
+    final numBoxes = isTransposed ? shape[2] : shape[1];
+
+    double maxSampled = 0.0;
+    final sampleCount = numBoxes < 200 ? numBoxes : 200;
+    for (var i = 0; i < sampleCount; i++) {
+      final cx = (isTransposed ? raw[0][i] : raw[i][0]) as double;
+      final cy = (isTransposed ? raw[1][i] : raw[i][1]) as double;
+      if (cx > maxSampled) maxSampled = cx;
+      if (cy > maxSampled) maxSampled = cy;
+    }
+    final coordScale = maxSampled > 1.5 ? inputSize.toDouble() : 1.0;
+    // The detector ran on a plain (non-aspect-preserving) stretch to
+    // inputSize x inputSize, so boxes map back to source pixels the same way.
+    final sx = source.width / inputSize;
+    final sy = source.height / inputSize;
+
+    final candidates = <_LabeledBox>[];
+    for (var i = 0; i < numBoxes; i++) {
+      var maxScore = -1.0;
+      var classId = -1;
+      for (var j = 4; j < numElements; j++) {
+        final score = isTransposed ? raw[j][i] : raw[i][j];
+        if (score > maxScore) {
+          maxScore = score;
+          classId = j - 4;
+        }
+      }
+      if (maxScore < threshold || classId < 0 || classId >= labels.length) continue;
+
+      final cx = (isTransposed ? raw[0][i] : raw[i][0]) * coordScale;
+      final cy = (isTransposed ? raw[1][i] : raw[i][1]) * coordScale;
+      final w = (isTransposed ? raw[2][i] : raw[i][2]) * coordScale;
+      final h = (isTransposed ? raw[3][i] : raw[i][3]) * coordScale;
+
+      final x = ((cx - w / 2) * sx).round();
+      final y = ((cy - h / 2) * sy).round();
+      final bw = (w * sx).round();
+      final bh = (h * sy).round();
+      if (bw < 2 || bh < 2) continue;
+
+      candidates.add(_LabeledBox(x, y, bw, bh, maxScore, labels[classId]));
+    }
+    return _nms(candidates);
+  }
+
+  static List<_LabeledBox> _nms(List<_LabeledBox> boxes, {double iouThreshold = 0.45}) {
+    if (boxes.length < 2) return boxes;
+    final sorted = List<_LabeledBox>.from(boxes)..sort((a, b) => b.confidence.compareTo(a.confidence));
+    final kept = <_LabeledBox>[];
+    for (final candidate in sorted) {
+      var suppressed = false;
+      for (final keptBox in kept) {
+        if (keptBox.className != candidate.className) continue;
+        if (_iou(keptBox, candidate) > iouThreshold) {
+          suppressed = true;
+          break;
+        }
+      }
+      if (!suppressed) kept.add(candidate);
+    }
+    return kept;
+  }
+
+  static double _iou(_LabeledBox a, _LabeledBox b) {
+    final interLeft = a.x > b.x ? a.x : b.x;
+    final interTop = a.y > b.y ? a.y : b.y;
+    final interRight = (a.x + a.w) < (b.x + b.w) ? (a.x + a.w) : (b.x + b.w);
+    final interBottom = (a.y + a.h) < (b.y + b.h) ? (a.y + a.h) : (b.y + b.h);
+    final interW = interRight > interLeft ? interRight - interLeft : 0;
+    final interH = interBottom > interTop ? interBottom - interTop : 0;
+    final interArea = (interW * interH).toDouble();
+    final unionArea = (a.w * a.h + b.w * b.h).toDouble() - interArea;
+    return unionArea > 0 ? interArea / unionArea : 0.0;
+  }
+
+  // ── Reading-order assembly: group into rows (top-to-bottom), sort each
+  // row left-to-right. Ports `_sort_boxes_reading_order` (ocr.py). ───────
+
+  static List<List<_LabeledBox>> _groupIntoRows(List<_LabeledBox> boxes) {
+    if (boxes.isEmpty) return [];
+    final medH = _median(boxes.map((b) => b.h.toDouble()).toList());
+    final sorted = List<_LabeledBox>.from(boxes)
+      ..sort((a, b) => (a.y + a.h / 2).compareTo(b.y + b.h / 2));
+    final rows = <List<_LabeledBox>>[];
+    for (final b in sorted) {
+      final cy = b.y + b.h / 2;
+      var placed = false;
+      for (final row in rows) {
+        final ry = row.map((r) => r.y + r.h / 2).reduce((p, q) => p + q) / row.length;
+        if ((cy - ry).abs() < medH * 0.6) {
+          row.add(b);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) rows.add([b]);
+    }
+    for (final row in rows) {
+      row.sort((a, b) => a.x.compareTo(b.x));
+    }
+    rows.sort((a, b) {
+      final ay = a.map((r) => r.y + r.h / 2).reduce((p, q) => p + q) / a.length;
+      final by = b.map((r) => r.y + r.h / 2).reduce((p, q) => p + q) / b.length;
+      return ay.compareTo(by);
+    });
+    return rows;
+  }
+
+  static double _median(List<double> vals) {
+    if (vals.isEmpty) return 0;
+    final sorted = List<double>.from(vals)..sort();
+    final mid = sorted.length ~/ 2;
+    return sorted.length.isOdd ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  // ── Stage 2a: CRNN+CTC line reader ──────────────────────────────────────
+  // Region priority mirrors `_predict_with_crnn`: character-class boxes
+  // grouped into row bands first (most precise), else the whole "PLATE"
+  // region box, else the full frame as a last resort.
+
+  static OcrResult _recognizeWithCrnn(
+    img.Image source,
+    List<_LabeledBox> boxes,
+    Interpreter recognizer,
+    List<String> charset,
+    int blankIndex,
+  ) {
+    final charBoxes = boxes
+        .where((b) => b.className.toUpperCase() != plateClassName && b.className.length == 1)
+        .toList();
+
+    List<List<int>> lineRects;
+    if (charBoxes.isNotEmpty) {
+      final rows = _groupIntoRows(charBoxes);
+      lineRects = rows.map((row) {
+        final x1 = (row.map((b) => b.x).reduce((a, b) => a < b ? a : b) - 4).clamp(0, source.width - 1);
+        final y1 = (row.map((b) => b.y).reduce((a, b) => a < b ? a : b) - 4).clamp(0, source.height - 1);
+        final x2 = (row.map((b) => b.x + b.w).reduce((a, b) => a > b ? a : b) + 4).clamp(1, source.width);
+        final y2 = (row.map((b) => b.y + b.h).reduce((a, b) => a > b ? a : b) + 4).clamp(1, source.height);
+        return [x1, y1, x2 - x1, y2 - y1];
+      }).toList();
+    } else {
+      final plateBoxes = boxes.where((b) => b.className.toUpperCase() == plateClassName).toList()
+        ..sort((a, b) => b.confidence.compareTo(a.confidence));
+      if (plateBoxes.isNotEmpty) {
+        final p = plateBoxes.first;
+        lineRects = [
+          [p.x, p.y, p.w, p.h]
+        ];
+      } else {
+        lineRects = [
+          [0, 0, source.width, source.height]
+        ];
+      }
+    }
+
+    const normalizer = LineNormalizer();
+    final decoder = CtcDecoder(charset: charset, blankIndex: blankIndex);
+    final lines = <String>[];
+    final confs = <double>[];
+
+    for (final rect in lineRects) {
+      if (rect[2] <= 0 || rect[3] <= 0) continue;
+      final crop = img.copyCrop(source, x: rect[0], y: rect[1], width: rect[2], height: rect[3]);
+      final normalized = normalizer.normalize(crop);
+      final input = normalized.reshape([1, normalizer.imgH, normalizer.imgW, 1]);
+
+      final shape = recognizer.getOutputTensor(0).shape; // [1, T, C]
+      if (shape.length != 3) continue;
+      final output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+      recognizer.run(input, output);
+      final probs = output[0];
+
+      final text = decoder.decode(probs);
+      if (text.isNotEmpty) lines.add(text);
+      final conf = decoder.meanConfidence(probs);
+      if (conf != null) confs.add(conf);
+    }
+
+    final avgConf = confs.isEmpty ? null : confs.reduce((a, b) => a + b) / confs.length;
+    return OcrResult(text: lines.join(), confidence: avgConf, engine: 'crnn');
+  }
+
+  // ── Stage 2b: per-character CNN classifier ──────────────────────────────
+  // Detects char boxes -> row-groups + left-to-right sorts them
+  // (`_sort_boxes_reading_order`) -> crops + classifies each independently.
+
+  static OcrResult _recognizeWithCnn(
+    img.Image source,
+    List<_LabeledBox> boxes,
+    Interpreter recognizer,
+    List<String> charset,
+  ) {
+    final charBoxes = boxes
+        .where((b) => b.className.toUpperCase() != plateClassName && b.className.length == 1)
+        .toList();
+    if (charBoxes.isEmpty) return const OcrResult(text: '', confidence: null, engine: 'cnn');
+
+    final inputShape = recognizer.getInputTensor(0).shape; // [1, size, size, 1]
+    if (inputShape.length != 4) return const OcrResult(text: '', confidence: null, engine: 'cnn');
+    final size = inputShape[1];
+    final numClasses = recognizer.getOutputTensor(0).shape.last;
+
+    final rows = _groupIntoRows(charBoxes);
+    final buffer = StringBuffer();
+    final confs = <double>[];
+
+    for (final row in rows) {
+      for (final b in row) {
+        final crop = _extractCharCrop(source, b, size);
+        if (crop == null) continue;
+        final input = crop.reshape([1, size, size, 1]);
+        final output = List.generate(1, (_) => List<double>.filled(numClasses, 0.0));
+        recognizer.run(input, output);
+        final probs = output[0];
+
+        var best = 0;
+        var bestScore = probs[0];
+        for (var c = 1; c < probs.length; c++) {
+          if (probs[c] > bestScore) {
+            bestScore = probs[c];
+            best = c;
+          }
+        }
+        if (best >= 0 && best < charset.length) buffer.write(charset[best]);
+        confs.add(bestScore);
+      }
+    }
+
+    final avgConf = confs.isEmpty ? null : confs.reduce((a, b) => a + b) / confs.length;
+    return OcrResult(text: buffer.toString(), confidence: avgConf, engine: 'cnn');
+  }
+
+  /// Ports `_extract_char_crop` (ai-vision-platform's ocr_training.py):
+  /// margin, contrast enhancement, aspect-preserving resize onto a square
+  /// canvas padded with the crop's own edge-median value (matches the
+  /// border color instead of a hard black/white edge the classifier never
+  /// saw during training).
+  static Float32List? _extractCharCrop(img.Image source, _LabeledBox b, int size, {double margin = 0.12}) {
+    final mx = (b.w * margin).round();
+    final my = (b.h * margin).round();
+    final x1 = (b.x - mx).clamp(0, source.width - 1);
+    final y1 = (b.y - my).clamp(0, source.height - 1);
+    final x2 = (b.x + b.w + mx).clamp(0, source.width);
+    final y2 = (b.y + b.h + my).clamp(0, source.height);
+    if (x2 - x1 < 2 || y2 - y1 < 2) return null;
+
+    final cropped = img.copyCrop(source, x: x1, y: y1, width: x2 - x1, height: y2 - y1);
+    final gray = img.grayscale(cropped);
+    final enhanced = LineNormalizer.equalizeHistogram(gray);
+
+    final ch = enhanced.height, cw = enhanced.width;
+    final scale = size / (ch > cw ? ch : cw);
+    final nw = (cw * scale).round().clamp(1, size);
+    final nh = (ch * scale).round().clamp(1, size);
+    final resized = img.copyResize(enhanced, width: nw, height: nh, interpolation: img.Interpolation.average);
+
+    final edge = <int>[];
+    for (var x = 0; x < nw; x++) {
+      edge.add(resized.getPixel(x, 0).r.toInt());
+      edge.add(resized.getPixel(x, nh - 1).r.toInt());
+    }
+    for (var y = 0; y < nh; y++) {
+      edge.add(resized.getPixel(0, y).r.toInt());
+      edge.add(resized.getPixel(nw - 1, y).r.toInt());
+    }
+    edge.sort();
+    final padVal = edge.isEmpty ? 255 : edge[edge.length ~/ 2];
+
+    final canvas = img.Image(width: size, height: size);
+    img.fill(canvas, color: img.ColorRgb8(padVal, padVal, padVal));
+    final y0 = (size - nh) ~/ 2;
+    final x0 = (size - nw) ~/ 2;
+    img.compositeImage(canvas, resized, dstX: x0, dstY: y0);
+
+    final out = Float32List(size * size);
+    var idx = 0;
+    for (var y = 0; y < size; y++) {
+      for (var x = 0; x < size; x++) {
+        out[idx++] = canvas.getPixel(x, y).r.toDouble() / 255.0;
+      }
+    }
+    return out;
+  }
+}

@@ -1,0 +1,65 @@
+/// Greedy CTC decoder for the CRNN line-recognizer.
+///
+/// Ports `_greedy_decode` from ai-vision-platform's
+/// `backend/app/tasks/crnn_training.py` exactly. A CRNN+CTC model emits one
+/// softmax vector PER TIMESTEP, and a single real character naturally spans
+/// several consecutive timesteps -- decoding by taking the argmax of every
+/// timestep and concatenating the mapped characters (without collapsing
+/// repeats or dropping the blank class) turns one physical character into
+/// several duplicate characters in the output string. This is the exact bug
+/// class this file exists to avoid: the collapse-and-skip logic below must
+/// stay bit-for-bit equivalent to the Python reference.
+class CtcDecoder {
+  final List<String> charset;
+  final int blankIndex;
+
+  const CtcDecoder({required this.charset, required this.blankIndex});
+
+  /// [probs] is shaped [T][numClasses] (one softmax row per timestep).
+  /// For each timestep: take the argmax class; emit its character only if
+  /// it differs from the PREVIOUS timestep's argmax AND isn't the blank
+  /// class. `prev` is updated after every timestep, including blank ones --
+  /// that's what lets "AA_A" (A, A, blank, A) decode to "AA" (two emitted
+  /// A's, not one) while "AAAA" (no blank between) decodes to a single "A".
+  String decode(List<List<double>> probs) {
+    final buffer = StringBuffer();
+    int prev = -1;
+    for (final step in probs) {
+      final idx = _argmax(step);
+      if (idx != prev && idx != blankIndex && idx >= 0 && idx < charset.length) {
+        buffer.write(charset[idx]);
+      }
+      prev = idx;
+    }
+    return buffer.toString();
+  }
+
+  /// Mean confidence across the emitted (non-blank) timesteps -- the same
+  /// definition the Python test window (`_predict_with_crnn`) reports, so a
+  /// confidence shown in the app means the same thing as in the training
+  /// tool's test window.
+  double? meanConfidence(List<List<double>> probs) {
+    final confs = <double>[];
+    for (final step in probs) {
+      final idx = _argmax(step);
+      if (idx != blankIndex && idx >= 0 && idx < step.length) {
+        confs.add(step[idx]);
+      }
+    }
+    if (confs.isEmpty) return null;
+    return confs.reduce((a, b) => a + b) / confs.length;
+  }
+
+  static int _argmax(List<double> step) {
+    if (step.isEmpty) return -1;
+    var best = 0;
+    var bestScore = step[0];
+    for (var c = 1; c < step.length; c++) {
+      if (step[c] > bestScore) {
+        bestScore = step[c];
+        best = c;
+      }
+    }
+    return best;
+  }
+}

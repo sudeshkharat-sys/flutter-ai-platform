@@ -235,12 +235,20 @@ def build_apk_task(self, app_id: str):
             for idx, ma in enumerate(all_model_assets):
                 if ma.get("tflite_path"):
                     shutil.copy(ma["tflite_path"], assets_dir / f"model_{idx}.tflite")
-                    
+
                     classes = ma.get("classes", [])
                     if isinstance(classes, str):
                         classes = json.loads(classes)
                     labels_content = "\n".join(classes or [])
                     (assets_dir / f"labels_{idx}.txt").write_text(labels_content)
+
+                    # OCR bundles (model_kind "ocr_cnn"/"ocr_crnn") carry a
+                    # charset/blank-index sidecar the CTC decoder needs at
+                    # runtime -- copy it alongside the tflite when present.
+                    if ma.get("charset_path") and os.path.exists(ma["charset_path"]):
+                        shutil.copy(ma["charset_path"], assets_dir / f"charset_{idx}.txt")
+                    if ma.get("meta_path") and os.path.exists(ma["meta_path"]):
+                        shutil.copy(ma["meta_path"], assets_dir / f"meta_{idx}.json")
         
         # 4. Run Flutter build
         flutter_path = r"C:\flutter\bin\flutter.bat"
