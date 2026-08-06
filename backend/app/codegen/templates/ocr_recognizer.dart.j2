@@ -148,12 +148,34 @@ class OcrRecognizer {
     int inputSize,
     double threshold,
   ) {
-    final resized = img.copyResize(source, width: inputSize, height: inputSize, interpolation: img.Interpolation.linear);
+    // Letterbox: resize preserving aspect ratio to fit within
+    // inputSize x inputSize, pad the remainder with Ultralytics' standard
+    // gray (114,114,114). This MUST match Ultralytics' own LetterBox
+    // preprocessing exactly -- the exported .tflite graph has no
+    // preprocessing baked in, so whoever calls it is responsible for
+    // reproducing it. A plain non-aspect-preserving stretch (what this used
+    // to do) distorts small/thin features -- engraved characters that are
+    // only a few dozen pixels tall in a wide engine-bay photo -- badly
+    // enough to collapse detection to zero or one weak box, even though
+    // it's "close enough" for large single objects like a bumper.
+    final ratio = (inputSize / source.width < inputSize / source.height)
+        ? inputSize / source.width
+        : inputSize / source.height;
+    final unpadW = (source.width * ratio).round().clamp(1, inputSize);
+    final unpadH = (source.height * ratio).round().clamp(1, inputSize);
+    final padX = ((inputSize - unpadW) / 2).floor();
+    final padY = ((inputSize - unpadH) / 2).floor();
+
+    final resized = img.copyResize(source, width: unpadW, height: unpadH, interpolation: img.Interpolation.linear);
+    final canvas = img.Image(width: inputSize, height: inputSize);
+    img.fill(canvas, color: img.ColorRgb8(114, 114, 114));
+    img.compositeImage(canvas, resized, dstX: padX, dstY: padY);
+
     final inputData = Float32List(inputSize * inputSize * 3);
     var idx = 0;
     for (var y = 0; y < inputSize; y++) {
       for (var x = 0; x < inputSize; x++) {
-        final p = resized.getPixel(x, y);
+        final p = canvas.getPixel(x, y);
         inputData[idx++] = p.r.toDouble() / 255.0;
         inputData[idx++] = p.g.toDouble() / 255.0;
         inputData[idx++] = p.b.toDouble() / 255.0;
@@ -180,10 +202,6 @@ class OcrRecognizer {
       if (cy > maxSampled) maxSampled = cy;
     }
     final coordScale = maxSampled > 1.5 ? inputSize.toDouble() : 1.0;
-    // The detector ran on a plain (non-aspect-preserving) stretch to
-    // inputSize x inputSize, so boxes map back to source pixels the same way.
-    final sx = source.width / inputSize;
-    final sy = source.height / inputSize;
 
     final candidates = <_LabeledBox>[];
     for (var i = 0; i < numBoxes; i++) {
@@ -203,10 +221,13 @@ class OcrRecognizer {
       final w = (isTransposed ? raw[2][i] : raw[i][2]) * coordScale;
       final h = (isTransposed ? raw[3][i] : raw[i][3]) * coordScale;
 
-      final x = ((cx - w / 2) * sx).round();
-      final y = ((cy - h / 2) * sy).round();
-      final bw = (w * sx).round();
-      final bh = (h * sy).round();
+      // Undo the letterbox: subtract the pad offset, then divide by the
+      // same ratio used to shrink the source into the canvas (NOT a
+      // separate x/y stretch factor -- the resize was aspect-preserving).
+      final x = (((cx - w / 2) - padX) / ratio).round();
+      final y = (((cy - h / 2) - padY) / ratio).round();
+      final bw = (w / ratio).round();
+      final bh = (h / ratio).round();
       if (bw < 2 || bh < 2) continue;
 
       candidates.add(_LabeledBox(x, y, bw, bh, maxScore, labels[classId]));
