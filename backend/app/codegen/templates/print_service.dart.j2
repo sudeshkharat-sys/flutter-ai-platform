@@ -28,6 +28,7 @@ class PrintService {
   static const _kDefaultMacKey = 'default_printer_mac';
   static const _kDefaultNameKey = 'default_printer_name';
   static const _kDpiKey = 'printer_dpi';
+  static const _kPromptedKey = 'printer_setup_prompted';
 
   /// Supported label print resolutions.
   static const List<int> supportedDpi = [203, 300];
@@ -65,6 +66,21 @@ class PrintService {
   Future<int> getPrinterDpi() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getInt(_kDpiKey) ?? defaultDpi;
+  }
+
+  /// Whether the operator has already been asked (once) to set up a
+  /// printer after submitting with none configured. Lets that prompt show
+  /// exactly once per install instead of on every single submit -- the
+  /// print icon on the scan screen is always available for setting one up
+  /// later regardless of this flag.
+  Future<bool> hasPromptedPrinterSetup() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kPromptedKey) ?? false;
+  }
+
+  Future<void> markPrinterSetupPrompted() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kPromptedKey, true);
   }
 
   // ── Bluetooth discovery ───────────────────────────────────────────────────

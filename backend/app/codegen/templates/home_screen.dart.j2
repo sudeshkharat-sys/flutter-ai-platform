@@ -245,27 +245,50 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
 
     if (defaultPrinter == null) {
-      // No printer chosen yet — open the picker so the user selects one once.
-      // Their choice is saved and used automatically next time.
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Select your printer once — it will be remembered."),
-          backgroundColor: Colors.blue,
-          duration: Duration(seconds: 3),
-        ),
-      );
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PrinterDiscoveryScreen(
-            vin: widget.vin ?? 'UNKNOWN',
-            modelCode: widget.modelCode ?? 'UNKNOWN',
-            timestamp: timestampNow,
-            overallSuccess: overallOk,
-            tasks: printTasks,
+      // No printer chosen yet. Used to force every single submit through
+      // the printer picker until one was chosen -- fine once, but with no
+      // printer on hand (or one the operator doesn't want yet) it turned
+      // every scan into a detour through a page about Bluetooth pairing.
+      // Ask once (a small dialog, not a full-page navigation), remember
+      // the answer, and never interrupt again -- the print icon on the
+      // scan screen still opens the picker any time it's wanted later.
+      final alreadyPrompted = await PrintService.instance.hasPromptedPrinterSetup();
+      if (!mounted) return;
+      if (!alreadyPrompted) {
+        await PrintService.instance.markPrinterSetupPrompted();
+        final setUpNow = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("No printer connected"),
+            content: const Text(
+              "You can set up a Zebra printer now, or skip this and do it "
+              "later from the print icon on the scan screen. This won't "
+              "ask again either way.",
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Skip for now")),
+              ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text("Set Up Printer")),
+            ],
           ),
-        ),
-      );
+        );
+        if (!mounted) return;
+        if (setUpNow == true) {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => PrinterDiscoveryScreen(
+                vin: widget.vin ?? 'UNKNOWN',
+                modelCode: widget.modelCode ?? 'UNKNOWN',
+                timestamp: timestampNow,
+                overallSuccess: overallOk,
+                tasks: printTasks,
+              ),
+            ),
+          );
+        }
+      }
+      // Otherwise (already asked before, or just skipped) -- fall straight
+      // through to the next scan below, same as a successful print would.
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
