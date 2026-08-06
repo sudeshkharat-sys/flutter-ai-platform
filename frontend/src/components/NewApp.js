@@ -76,6 +76,12 @@ export default function NewApp() {
   const [ocrMetaFile, setOcrMetaFile] = useState(null);
   const [ocrModelName, setOcrModelName] = useState('');
   const [ocrUploading, setOcrUploading] = useState(false);
+  // Which detected class is the plate/region box (picked explicitly here
+  // instead of guessed in code -- avoids any class-naming mismatch).
+  const [ocrRegionClass, setOcrRegionClass] = useState('');
+  // modelId -> classes[], so the OCR tab can offer a dropdown of every
+  // class across whichever detector(s) got added to this app.
+  const [modelClassesById, setModelClassesById] = useState({});
 
   const pollRef = useRef(null);
   const logEndRef = useRef(null);
@@ -129,6 +135,7 @@ export default function NewApp() {
             setConverting(false);
             setSelectedModelIds(prev => [...prev, assetId]);
             setSelectedModelNames(prev => [...prev, modelName || ptFile.name]);
+            setModelClassesById(prev => ({ ...prev, [assetId]: classes }));
             setPtFile(null);
             setModelName('');
             setClasses([]);
@@ -154,8 +161,15 @@ export default function NewApp() {
     } else {
       setSelectedModelIds([...selectedModelIds, m.id]);
       setSelectedModelNames([...selectedModelNames, m.vision_project_name]);
+      setModelClassesById(prev => ({ ...prev, [m.id]: m.classes }));
     }
   };
+
+  // Every class across whichever detector(s) are in this app so far --
+  // populates the OCR tab's "which class is the plate/region box" dropdown.
+  const availableDetectorClasses = [
+    ...new Set(selectedModelIds.flatMap(id => modelClassesById[id] || [])),
+  ];
 
   const submitOcrRecognizer = async () => {
     if (!ocrTfliteFile || !ocrCharsetFile) {
@@ -185,7 +199,7 @@ export default function NewApp() {
   const handleCreate = async () => {
     try {
       const app_settings = isOcrApp
-        ? { app_type: 'ocr', ocr_engine: ocrEngine, confidence_threshold: 0.5 }
+        ? { app_type: 'ocr', ocr_engine: ocrEngine, ocr_region_class: ocrRegionClass, confidence_threshold: 0.5 }
         : { app_type: 'sequential', confidence_threshold: 0.5 };
       const r = await createApp({
         name: appName || 'Inspection App',
@@ -322,6 +336,35 @@ export default function NewApp() {
                       /> Per-character CNN
                     </label>
                   </div>
+                </div>
+
+                <div className="model-preview-field">
+                  <label className="section-label">
+                    Plate / region class{' '}
+                    {ocrEngine === 'cnn' && <span style={{ opacity: 0.6 }}>(not used by the CNN engine)</span>}
+                  </label>
+                  {availableDetectorClasses.length === 0 ? (
+                    <div className="newapp-sidebar-hint">
+                      Add the detector .pt first (other two tabs) — its classes will show up here to pick from.
+                    </div>
+                  ) : (
+                    <select
+                      className="field-input"
+                      value={ocrRegionClass}
+                      onChange={e => setOcrRegionClass(e.target.value)}
+                    >
+                      <option value="">(auto — none matched exactly)</option>
+                      {availableDetectorClasses.map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  )}
+                  <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
+                    Which detected class is the whole-plate box (used when individual
+                    character boxes aren't found, so the CRNN reads that crop instead of
+                    the full photo). Pick it explicitly here rather than relying on the
+                    class being named exactly "PLATE".
+                  </p>
                 </div>
 
                 <div className="model-preview-field">

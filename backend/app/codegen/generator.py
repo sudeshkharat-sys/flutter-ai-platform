@@ -211,6 +211,10 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             "ocr_recognizer_tflite": rec_paths.get("tflite"),
             "ocr_recognizer_charset": rec_paths.get("charset"),
             "ocr_recognizer_meta": rec_paths.get("meta"),
+            # The whole-plate/region class name, picked explicitly in the
+            # New App UI rather than guessed by naming convention -- used by
+            # the CRNN engine when individual character boxes aren't found.
+            "ocr_region_class": settings.get("ocr_region_class") or None,
         }
 
     app_name = get_attr(app_project, "name", "My App")

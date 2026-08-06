@@ -38,6 +38,10 @@ class OcrRecognizer {
 
   static const String engine = '{{ ocr_engine }}';
   static const int detectorInputSize = {{ ocr_detector_input_size | default(640) }};
+  // Plate/region class name, picked explicitly in the app builder UI
+  // (rather than guessed by naming convention) so it's never ambiguous.
+  // Null when not configured -- falls back to the length-based heuristic.
+  static const String? regionClassName = {% if ocr_region_class %}'{{ ocr_region_class }}'{% else %}null{% endif %};
 
   Interpreter? _detector;
   Interpreter? _recognizer;
@@ -328,7 +332,13 @@ class OcrRecognizer {
     int blankIndex,
   ) {
     final charBoxes = boxes.where((b) => b.className.length == 1).toList();
-    final regionBoxes = boxes.where((b) => b.className.length != 1).toList()
+    // Prefer the explicitly-configured region class (set in the app
+    // builder UI) over the length-based heuristic -- exact and unambiguous
+    // when it's set; the heuristic only matters when it isn't.
+    final regionBoxes = (regionClassName != null
+        ? boxes.where((b) => b.className.toLowerCase() == regionClassName!.toLowerCase())
+        : boxes.where((b) => b.className.length != 1))
+        .toList()
       ..sort((a, b) => b.confidence.compareTo(a.confidence));
 
     List<List<int>> lineRects;
