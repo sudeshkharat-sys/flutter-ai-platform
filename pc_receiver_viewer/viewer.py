@@ -643,7 +643,14 @@ VIEWER_HTML = """<!doctype html>
   header { background: var(--navy); color: #fff; padding: 10px 24px; display: flex; align-items: center; gap: 14px;
            box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
   header img { height: 48px; }
-  header .titles h1 { margin: 0; font-size: 16px; }
+  /* Chrome/silver text to match the logo's metallic wordmark treatment. */
+  header .titles h1 {
+    margin: 0; font-size: 16px; font-weight: 800;
+    background: linear-gradient(180deg, #ffffff 0%, #f2f2f2 20%, #b6b6b6 45%, #8a8a8a 55%, #d8d8d8 68%, #ffffff 88%, #eaeaea 100%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.35);
+  }
   header .titles p { margin: 2px 0 0; font-size: 11px; color: #9aa0ad; }
   header .spacer { flex: 1; }
   header a { color: #cfd3db; font-size: 12px; text-decoration: none; }
