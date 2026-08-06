@@ -901,6 +901,101 @@ async def api_device_data(deviceId: str, _: None = Depends(_require_local)):
     return {"deviceName": device["deviceName"], "appName": device.get("appName", "app"), "rows": rows}
 
 
+@app.get("/api/apps")
+async def api_apps(_: None = Depends(_require_local)):
+    """Same idea as /api/devices, but grouped by app instead of by phone --
+    every generated app that at least one currently-paired phone belongs
+    to, with stats merged across every device paired under it."""
+    with _lock:
+        items = list(_paired_devices.values())
+
+    by_app: dict[str, dict] = {}
+    for d in items:
+        app_name = d.get("appName", "app")
+        app_name_safe = _safe_name(app_name)
+        bucket = by_app.setdefault(app_name_safe, {"appName": app_name, "deviceNames": set(), "pairedAt": d["pairedAt"]})
+        bucket["deviceNames"].add(d["deviceName"])
+        bucket["pairedAt"] = max(bucket["pairedAt"], d["pairedAt"])
+
+    result = []
+    for app_name_safe, bucket in by_app.items():
+        device_dirs = _device_dirs_for_app(app_name_safe)
+        batch_count = 0
+        total_bytes = 0
+        last_received = None
+        for device_dir in device_dirs:
+            batch_dirs = sorted([p for p in device_dir.iterdir() if p.is_dir()]) if device_dir.exists() else []
+            batch_count += len(batch_dirs)
+            _, dir_bytes = _dir_stats(device_dir)
+            total_bytes += dir_bytes
+            if batch_dirs and (last_received is None or batch_dirs[-1].name > last_received):
+                last_received = batch_dirs[-1].name
+        result.append({
+            "appName": bucket["appName"],
+            "appNameSafe": app_name_safe,
+            "deviceCount": len(bucket["deviceNames"]),
+            "pairedAt": bucket["pairedAt"],
+            "batchCount": batch_count,
+            "totalBytes": total_bytes,
+            "lastReceivedAt": last_received,
+        })
+    result.sort(key=lambda a: a["pairedAt"], reverse=True)
+    return result
+
+
+def _device_dirs_for_app(app_name_safe: str) -> list[Path]:
+    """Every <device>/<appName> folder on disk for this app -- not just
+    currently-paired devices, so a device that was later unpaired or
+    re-paired under a new name still contributes its historical data to
+    the merged app view (same scope the master Excel already covers)."""
+    dirs = []
+    if not DATA_DIR.exists():
+        return dirs
+    for device_dir in DATA_DIR.iterdir():
+        if not device_dir.is_dir() or device_dir.name.startswith("_"):
+            continue
+        app_dir = device_dir / app_name_safe
+        if app_dir.exists():
+            dirs.append(app_dir)
+    return dirs
+
+
+@app.get("/api/app-data")
+async def api_app_data(appName: str, _: None = Depends(_require_local)):
+    """Every task-result row every device has ever sent for this app,
+    merged into one dataset -- the live-dashboard equivalent of the
+    master Excel (_app_master_dir), which already aggregates by app
+    rather than by device."""
+    app_name_safe = _safe_name(appName)
+
+    # Best-effort raw device name for display -- falls back to the safe
+    # folder name for a device no longer in _paired_devices (unpaired,
+    # or re-paired under a different name since).
+    with _lock:
+        safe_to_raw = {_safe_name(d["deviceName"]): d["deviceName"] for d in _paired_devices.values()}
+
+    rows: list[dict] = []
+    for app_dir in _device_dirs_for_app(app_name_safe):
+        device_dir_safe = app_dir.parent.name
+        device_name_raw = safe_to_raw.get(device_dir_safe, device_dir_safe)
+        rows.extend(_flatten_device_rows_cached(app_dir, device_name_raw, device_dir_safe, app_name_safe))
+
+    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    return {"appName": appName, "rows": rows}
+
+
+@app.get("/api/export/master-excel-by-app")
+async def api_export_master_excel_by_app(appName: str, _: None = Depends(_require_local)):
+    """Same file /api/export/master-excel resolves to for any device paired
+    under this app -- exposed without needing a deviceId so the Apps tab's
+    "Download Full Excel" doesn't need one on hand."""
+    app_name_safe = _safe_name(appName)
+    xlsx_path = _app_master_dir(app_name_safe) / "data.xlsx"
+    if not xlsx_path.exists():
+        raise HTTPException(status_code=404, detail="No data received yet")
+    return FileResponse(xlsx_path, filename=f"{app_name_safe}.xlsx")
+
+
 def _flatten_device_rows_cached(device_dir: Path, device_name_raw: str, device_name_safe: str, app_name_safe: str) -> list[dict]:
     """Same output as re-scanning every batch under [device_dir], but only
     parses batch folders this cache hasn't seen before -- batches are
@@ -1288,6 +1383,7 @@ DASHBOARD_HTML = """<!doctype html>
 
 <nav>
   <button class="tab-btn active" data-tab="devices">Devices</button>
+  <button class="tab-btn" data-tab="apps">Apps</button>
   <button class="tab-btn" data-tab="storage">Vault</button>
 </nav>
 
@@ -1299,6 +1395,14 @@ DASHBOARD_HTML = """<!doctype html>
     </div>
     <div class="breadcrumb" id="devicesBreadcrumb"></div>
     <div id="devicesList"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section id="tab-apps" class="tab">
+    <div class="toolbar">
+      <h2>Apps</h2>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin:-6px 0 14px;">Same data as Devices, merged across every phone paired under each app -- use this when multiple phones share one app and you want one continuous dataset instead of switching between devices.</p>
+    <div id="appsList"><div class="empty">Loading…</div></div>
   </section>
 
   <section id="tab-storage" class="tab">
@@ -1389,6 +1493,9 @@ DASHBOARD_HTML = """<!doctype html>
     </select>
     <input id="fBatch" list="dlBatch" placeholder="Filter Send/Batch…" oninput="renderTable()">
     <datalist id="dlBatch"></datalist>
+    <select id="fDevice" onchange="renderTable()">
+      <option value="">All Devices</option>
+    </select>
     <button class="ghost" onclick="clearFilters()">Clear Filters</button>
     <div class="filter-count" id="filterCount"></div>
   </div>
@@ -1398,7 +1505,7 @@ DASHBOARD_HTML = """<!doctype html>
       <thead>
         <tr>
           <th></th><th>VIN</th><th>Model Code</th><th>Model Name</th><th>Date</th><th>Time</th>
-          <th>Shift</th><th>Tasks</th><th>Result</th><th>Batch</th>
+          <th>Shift</th><th>Tasks</th><th>Result</th><th>Batch</th><th>Device</th>
         </tr>
       </thead>
       <tbody id="viewerRows"></tbody>
@@ -1431,6 +1538,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'storage') loadStorage();
+    if (btn.dataset.tab === 'apps') loadApps();
   });
 });
 
@@ -1563,6 +1671,42 @@ function renderDevices() {
 // Re-render every 20s from the already-fetched data so "Last received: Xm
 // ago" keeps ticking without hitting the server again.
 setInterval(renderDevices, 20000);
+
+let lastAppsData = [];
+
+async function loadApps() {
+  try {
+    const r = await fetch('/api/apps');
+    lastAppsData = await r.json();
+    renderApps();
+  } catch (e) {
+    document.getElementById('appsList').innerHTML = '<div class="empty">Could not load apps.</div>';
+  }
+}
+
+function renderApps() {
+  const el = document.getElementById('appsList');
+  if (!lastAppsData.length) {
+    el.innerHTML = '<div class="empty">No apps yet -- pair a phone under the Devices tab first.</div>';
+    return;
+  }
+  el.innerHTML = lastAppsData.map(a => `
+    <div class="app-row" data-app-name="${a.appNameSafe}">
+      <div class="a-info">
+        <div class="a-name">${a.appName}</div>
+        <div class="a-meta">${a.deviceCount} device${a.deviceCount === 1 ? '' : 's'} paired • Last received ${timeAgo(parseBatchTimestamp(a.lastReceivedAt))}</div>
+      </div>
+      <div class="a-stats">
+        <div><b>${a.batchCount}</b>sends</div>
+        <div><b>${fmtBytes(a.totalBytes)}</b>size</div>
+      </div>
+      <button class="primary" onclick="openAppDataViewer('${a.appNameSafe.replace(/'/g, "\\'")}', '${a.appName.replace(/'/g, "\\'")}')">View Data</button>
+      <button class="ghost" onclick="window.location='/api/export/master-excel-by-app?appName=${encodeURIComponent(a.appNameSafe)}'" ${a.batchCount === 0 ? 'disabled' : ''}>Download Excel</button>
+    </div>
+  `).join('');
+}
+
+setInterval(() => { if (lastAppsData.length) loadApps(); }, 20000);
 
 async function removeDevice(id, name) {
   if (!confirm(`Remove pairing for "${name}"? The phone will need to scan a new QR code to send data again.`)) return;
@@ -1757,9 +1901,11 @@ async function saveDataDir() {
 let viewerRows = [];
 let viewerDeviceLabel = '';
 let currentViewerDeviceId = null;
+let currentViewerAppNameSafe = null;
 
 async function openDataViewer(deviceId) {
   currentViewerDeviceId = deviceId;
+  currentViewerAppNameSafe = null;
   pinnedDay = null;
   document.getElementById('viewerPage').classList.add('open');
   document.getElementById('viewerTitle').textContent = 'Loading…';
@@ -1772,6 +1918,28 @@ async function openDataViewer(deviceId) {
     viewerDeviceLabel = `${d.deviceName} — ${d.appName}`;
     document.getElementById('viewerTitle').textContent = viewerDeviceLabel;
     document.getElementById('viewerSubtitle').textContent = `${viewerRows.length} task result(s) across all sends`;
+    populateFilterSuggestions();
+    clearFilters();
+  } catch (e) {
+    document.getElementById('viewerTitle').textContent = 'Could not load data';
+  }
+}
+
+async function openAppDataViewer(appNameSafe, appNameDisplay) {
+  currentViewerDeviceId = null;
+  currentViewerAppNameSafe = appNameSafe;
+  pinnedDay = null;
+  document.getElementById('viewerPage').classList.add('open');
+  document.getElementById('viewerTitle').textContent = 'Loading…';
+  document.getElementById('viewerRows').innerHTML = '';
+  try {
+    const r = await fetch('/api/app-data?appName=' + encodeURIComponent(appNameSafe));
+    if (!r.ok) throw new Error('fetch failed');
+    const d = await r.json();
+    viewerRows = d.rows;
+    viewerDeviceLabel = `${appNameDisplay} (all devices)`;
+    document.getElementById('viewerTitle').textContent = viewerDeviceLabel;
+    document.getElementById('viewerSubtitle').textContent = `${viewerRows.length} task result(s) merged across every device paired under this app`;
     populateFilterSuggestions();
     clearFilters();
   } catch (e) {
@@ -1803,11 +1971,20 @@ function populateFilterSuggestions() {
   const keepYear = yearSelect.value;
   yearSelect.innerHTML = '<option value="">All Years</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
   yearSelect.value = years.includes(keepYear) ? keepYear : '';
+
+  // Device dropdown: only meaningfully different from "All Devices" in the
+  // merged Apps view, but harmless (and a single option) in the per-device
+  // view too -- so it's always populated the same way.
+  const devices = [...new Set(viewerRows.map(r => r.deviceName).filter(Boolean))].sort();
+  const deviceSelect = document.getElementById('fDevice');
+  const keepDevice = deviceSelect.value;
+  deviceSelect.innerHTML = '<option value="">All Devices</option>' + devices.map(d => `<option value="${d}">${d}</option>`).join('');
+  deviceSelect.value = devices.includes(keepDevice) ? keepDevice : '';
 }
 
 function clearFilters() {
   ['fVin', 'fModel', 'fModelName', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
-  ['fDate', 'fYear', 'fMonth', 'fShift', 'fResult'].forEach(id => document.getElementById(id).value = '');
+  ['fDate', 'fYear', 'fMonth', 'fShift', 'fResult', 'fDevice'].forEach(id => document.getElementById(id).value = '');
   pinnedDay = null;
   renderTable();
 }
@@ -1824,6 +2001,7 @@ function getFilteredRows() {
   const cls = document.getElementById('fClass').value.toLowerCase();
   const result = document.getElementById('fResult').value;
   const batch = document.getElementById('fBatch').value.toLowerCase();
+  const device = document.getElementById('fDevice').value;
 
   return viewerRows.filter(row => {
     const rowYear = (row.date || '').slice(0, 4);
@@ -1839,7 +2017,8 @@ function getFilteredRows() {
       (!task || (row.taskName || '').toLowerCase().includes(task)) &&
       (!cls || (row.className || '').toLowerCase().includes(cls)) &&
       (!result || row.result === result) &&
-      (!batch || (row.batch || '').toLowerCase().includes(batch));
+      (!batch || (row.batch || '').toLowerCase().includes(batch)) &&
+      (!device || row.deviceName === device);
   });
 }
 
@@ -1854,7 +2033,7 @@ function groupRowsByInspection(rows) {
     if (!groups[key]) {
       groups[key] = {
         key, vin: r.vin, modelCode: r.modelCode, modelName: r.modelName,
-        date: r.date, time: r.time, shift: r.shift, batch: r.batch, tasks: [],
+        date: r.date, time: r.time, shift: r.shift, batch: r.batch, device: r.deviceName, tasks: [],
       };
       order.push(key);
     }
@@ -1887,7 +2066,7 @@ function renderTable() {
 
   const tbody = document.getElementById('viewerRows');
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:24px;">No rows match these filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:24px;">No rows match these filters.</td></tr>';
     return;
   }
 
@@ -1924,9 +2103,10 @@ function renderTable() {
         <td>${taskSummary}</td>
         <td class="${vinResult === 'PASS' ? 'badge-ok' : 'badge-fail'}">${vinResult}</td>
         <td>${g.batch || ''}</td>
+        <td>${g.device || ''}</td>
       </tr>
       <tr class="detail-row ${expanded ? 'open' : ''}" data-key="${escapeAttr(g.key)}">
-        <td colspan="10">
+        <td colspan="11">
           <table class="mini-table">
             <thead><tr><th>Task</th><th>Detected</th><th>Result</th><th>Image</th></tr></thead>
             <tbody>${detailRows}</tbody>
@@ -2229,6 +2409,10 @@ function closeLightbox() {
 }
 
 function downloadFullExcel() {
+  if (currentViewerAppNameSafe) {
+    window.location = '/api/export/master-excel-by-app?appName=' + encodeURIComponent(currentViewerAppNameSafe);
+    return;
+  }
   if (!currentViewerDeviceId) return;
   window.location = '/api/export/master-excel?deviceId=' + encodeURIComponent(currentViewerDeviceId);
 }
