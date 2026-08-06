@@ -227,6 +227,14 @@ def _verify_password(password: str) -> bool:
 _lock = threading.Lock()
 _failed_attempts: dict[str, list[float]] = {}
 
+# Incremental cache for flattened rows, keyed by device_dir path -- see
+# receiver.py's identical cache for why: batch folders are immutable once
+# written, so a batch already parsed never needs re-reading. Without this,
+# every /api/data call re-read and re-JSON-parsed every manifest.json on
+# disk, which got slow once a plant's data grew into the thousands of sends.
+_rows_cache_lock = threading.Lock()
+_rows_cache: dict[str, dict] = {}  # str(device_dir) -> {"batches": set[str], "rows": list[dict], "seen_keys": set}
+
 
 def _is_locked_out(ip: str) -> bool:
     with _lock:
@@ -363,61 +371,73 @@ def _dedup_key(row: dict) -> tuple:
 
 def _flatten_rows(device: str, app_name: str) -> list[dict]:
     device_dir = DATA_DIR / _safe_name(device) / _safe_name(app_name)
-    rows = []
-    seen_keys = set()
     if not device_dir.exists():
-        return rows
-    for batch_dir in sorted(device_dir.iterdir()):
-        if not batch_dir.is_dir():
-            continue
-        manifest_path = batch_dir / "manifest.json"
-        if not manifest_path.exists():
-            continue
-        try:
-            inspections = json.loads(manifest_path.read_text())
-        except Exception:
-            continue
+        return []
 
-        def _image_url(rel, _batch=batch_dir.name):
-            if not rel:
-                return None
-            return (
-                f"/api/image?device={device}&appName={app_name}"
-                f"&batch={_batch}&rel={rel}"
-            )
+    cache_key = str(device_dir)
+    batch_dirs = sorted(p for p in device_dir.iterdir() if p.is_dir())
 
-        for insp in inspections:
-            tasks = insp.get("tasks") or [{}]
-            for task in tasks:
-                row = {
-                    "device": device,
-                    "appName": app_name,
-                    "batch": batch_dir.name,
-                    "inspectionId": insp.get("inspectionId"),
-                    "vin": insp.get("vin"),
-                    "modelCode": insp.get("modelCode"),
-                    "modelName": insp.get("modelName"),
-                    "date": insp.get("date"),
-                    "time": insp.get("time"),
-                    "shift": insp.get("shift"),
-                    "shiftDate": insp.get("shiftDate") or insp.get("date"),
-                    "taskName": task.get("taskName"),
-                    "className": task.get("className"),
-                    "result": "OK" if task.get("success") else "NOT OK",
-                    "imageUrl": _image_url(task.get("imagePath")),
-                }
-                # A phone can legitimately re-send data it already sent
-                # before (a forced "Resync All", a retried upload,
-                # re-pairing after a reinstall) -- each send lands in its
-                # own batch folder, so without this the same inspection
-                # would show up once per batch it was sent in.
-                key = _dedup_key(row)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                rows.append(row)
-    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
-    return rows
+    with _rows_cache_lock:
+        entry = _rows_cache.get(cache_key)
+        if entry is None:
+            entry = {"batches": set(), "rows": [], "seen_keys": set()}
+            _rows_cache[cache_key] = entry
+
+        new_batch_dirs = [b for b in batch_dirs if b.name not in entry["batches"]]
+        if not new_batch_dirs:
+            return list(entry["rows"])
+
+        for batch_dir in new_batch_dirs:
+            manifest_path = batch_dir / "manifest.json"
+            entry["batches"].add(batch_dir.name)
+            if not manifest_path.exists():
+                continue
+            try:
+                inspections = json.loads(manifest_path.read_text())
+            except Exception:
+                continue
+
+            def _image_url(rel, _batch=batch_dir.name):
+                if not rel:
+                    return None
+                return (
+                    f"/api/image?device={device}&appName={app_name}"
+                    f"&batch={_batch}&rel={rel}"
+                )
+
+            for insp in inspections:
+                tasks = insp.get("tasks") or [{}]
+                for task in tasks:
+                    row = {
+                        "device": device,
+                        "appName": app_name,
+                        "batch": batch_dir.name,
+                        "inspectionId": insp.get("inspectionId"),
+                        "vin": insp.get("vin"),
+                        "modelCode": insp.get("modelCode"),
+                        "modelName": insp.get("modelName"),
+                        "date": insp.get("date"),
+                        "time": insp.get("time"),
+                        "shift": insp.get("shift"),
+                        "shiftDate": insp.get("shiftDate") or insp.get("date"),
+                        "taskName": task.get("taskName"),
+                        "className": task.get("className"),
+                        "result": "OK" if task.get("success") else "NOT OK",
+                        "imageUrl": _image_url(task.get("imagePath")),
+                    }
+                    # A phone can legitimately re-send data it already sent
+                    # before (a forced "Resync All", a retried upload,
+                    # re-pairing after a reinstall) -- each send lands in its
+                    # own batch folder, so without this the same inspection
+                    # would show up once per batch it was sent in.
+                    key = _dedup_key(row)
+                    if key in entry["seen_keys"]:
+                        continue
+                    entry["seen_keys"].add(key)
+                    entry["rows"].append(row)
+
+        entry["rows"].sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+        return list(entry["rows"])
 
 
 def _style_worksheet(ws, n_cols: int):
@@ -959,7 +979,14 @@ function pieSvg(ok, fail, size) {
     const redPath = `M${cx},${cy} L${sx2},${sy2} A${r},${r} 0 ${(360 - angle) > 180 ? 1 : 0} 1 ${ex2},${ey2} Z`;
     slices = `<path d="${greenPath}" fill="#1f9d55"/><path d="${redPath}" fill="#DC143C"/>`;
   }
-  const pct = Math.round(p * 100);
+  // Rounding to a whole percent can display "100%" (or "0%") even when
+  // real failures (or passes) exist, once one side is a small enough
+  // fraction of a large total -- e.g. 7891 OK / 18 NOT OK rounds to 100%.
+  // Clamp away from the misleading extremes whenever the other side is
+  // genuinely non-zero, so "100%" always means zero failures.
+  let pct = Math.round(p * 100);
+  if (fail > 0 && pct >= 100) pct = 99;
+  if (ok > 0 && pct <= 0) pct = 1;
   return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${slices}
     <circle cx="${cx}" cy="${cy}" r="${r * 0.55}" fill="white"/>
     <text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="12" font-weight="700" fill="#1c1f26">${pct}%</text></svg>`;

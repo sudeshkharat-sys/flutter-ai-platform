@@ -201,6 +201,16 @@ _failed_attempts: dict[str, list[float]] = {}   # client ip -> [failure timestam
 _recent_events: list[dict] = []                 # recent uploads, for the dashboard's live activity feed
 _MAX_RECENT_EVENTS = 50
 
+# Incremental cache for the flattened data-viewer rows, keyed by device_dir
+# path. Batch folders are immutable once written (a "send" never gets
+# retroactively edited), so once a batch's manifest.json has been parsed and
+# cached, it never needs to be re-read -- only batch dirs that weren't seen
+# last time need parsing. Without this, every dashboard open/filter change
+# re-read and re-JSON-parsed every manifest.json under a device/app on disk,
+# which got slow once a plant's data grew into the thousands of sends.
+_rows_cache_lock = threading.Lock()
+_rows_cache: dict[str, dict] = {}  # str(device_dir) -> {"batches": set[str], "rows": list[dict], "seen_keys": set}
+
 
 # ── Persistence ──────────────────────────────────────────────────────────
 
@@ -887,13 +897,34 @@ async def api_device_data(deviceId: str, _: None = Depends(_require_local)):
     app_name = _safe_name(device.get("appName", "app"))
     device_dir = DATA_DIR / device_name / app_name
 
-    rows = []
-    seen_keys = set()
-    if device_dir.exists():
-        for batch_dir in sorted(device_dir.iterdir()):
-            if not batch_dir.is_dir():
-                continue
+    rows = _flatten_device_rows_cached(device_dir, device["deviceName"], device_name, app_name)
+    return {"deviceName": device["deviceName"], "appName": device.get("appName", "app"), "rows": rows}
+
+
+def _flatten_device_rows_cached(device_dir: Path, device_name_raw: str, device_name_safe: str, app_name_safe: str) -> list[dict]:
+    """Same output as re-scanning every batch under [device_dir], but only
+    parses batch folders this cache hasn't seen before -- batches are
+    immutable once written, so anything already parsed is reused as-is.
+    See _rows_cache's declaration for why this exists."""
+    cache_key = str(device_dir)
+    if not device_dir.exists():
+        return []
+
+    batch_dirs = sorted(p for p in device_dir.iterdir() if p.is_dir())
+
+    with _rows_cache_lock:
+        entry = _rows_cache.get(cache_key)
+        if entry is None:
+            entry = {"batches": set(), "rows": [], "seen_keys": set()}
+            _rows_cache[cache_key] = entry
+
+        new_batch_dirs = [b for b in batch_dirs if b.name not in entry["batches"]]
+        if not new_batch_dirs:
+            return list(entry["rows"])
+
+        for batch_dir in new_batch_dirs:
             manifest_path = batch_dir / "manifest.json"
+            entry["batches"].add(batch_dir.name)
             if not manifest_path.exists():
                 continue
             try:
@@ -904,24 +935,24 @@ async def api_device_data(deviceId: str, _: None = Depends(_require_local)):
             def _image_url(rel, _batch=batch_dir.name):
                 if not rel:
                     return None
-                return f"/api/storage/image?path={device_name}/{app_name}/{_batch}/{rel}"
+                return f"/api/storage/image?path={device_name_safe}/{app_name_safe}/{_batch}/{rel}"
 
             # A phone can legitimately re-send the same data it sent before
             # (a forced "Resync All", a retried upload, re-pairing after a
             # reinstall) -- each send lands in its own batch folder, so
             # without this the same inspection would show up once per
             # batch it was sent in.
-            for row in _flatten_manifest_rows(inspections, batch_dir.name, device_name=device["deviceName"]):
+            for row in _flatten_manifest_rows(inspections, batch_dir.name, device_name=device_name_raw):
                 key = _dedup_key(row)
-                if key in seen_keys:
+                if key in entry["seen_keys"]:
                     continue
-                seen_keys.add(key)
+                entry["seen_keys"].add(key)
                 row["imageUrl"] = _image_url(row.pop("imagePath", None))
                 row["backupImageUrl"] = _image_url(row.pop("backupImagePath", None))
-                rows.append(row)
+                entry["rows"].append(row)
 
-    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
-    return {"deviceName": device["deviceName"], "appName": device.get("appName", "app"), "rows": rows}
+        entry["rows"].sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+        return list(entry["rows"])
 
 
 @app.get("/api/export/master-excel")
@@ -1937,7 +1968,14 @@ function pieSvg(ok, fail, size) {
     const redPath = `M${cx},${cy} L${sx2},${sy2} A${r},${r} 0 ${largeArc2} 1 ${ex2},${ey2} Z`;
     slices = `<path d="${greenPath}" fill="#1f9d55"/><path d="${redPath}" fill="#DC143C"/>`;
   }
-  const pct = Math.round(p * 100);
+  // Rounding to a whole percent can display "100%" (or "0%") even when
+  // real failures (or passes) exist, once one side is a small enough
+  // fraction of a large total -- e.g. 7891 OK / 18 NOT OK rounds to 100%.
+  // Clamp away from the misleading extremes whenever the other side is
+  // genuinely non-zero, so "100%" always means zero failures.
+  let pct = Math.round(p * 100);
+  if (fail > 0 && pct >= 100) pct = 99;
+  if (ok > 0 && pct <= 0) pct = 1;
   return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
     ${slices}
     <circle cx="${cx}" cy="${cy}" r="${r * 0.55}" fill="white"/>
