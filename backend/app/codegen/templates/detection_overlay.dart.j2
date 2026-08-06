@@ -58,13 +58,14 @@ class _BoundingBoxPainter extends CustomPainter {
     return cn.contains('not') && cn.contains('ok');
   }
 
+  bool _isIgnoredClass(String className) {
+    return ignoredClasses.any((ig) => ig.toLowerCase().trim() == className.toLowerCase().trim());
+  }
+
   Color _colorForClass(String className, int index) {
     if (_isNotOk(className)) return const Color(0xFFE53935); // red — defect
     if (mandatoryClasses.any((m) => m.toLowerCase().trim() == className.toLowerCase().trim())) {
       return const Color(0xFF43A047); // green — mandatory
-    }
-    if (ignoredClasses.any((ig) => ig.toLowerCase().trim() == className.toLowerCase().trim())) {
-      return const Color(0xFF9E9E9E); // grey — ignored, no effect on result
     }
     return const Color(0xFFE53935); // red — unchecked/fail class detected
   }
@@ -83,6 +84,11 @@ class _BoundingBoxPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     for (int i = 0; i < results.length; i++) {
       final result = results[i];
+      // An explicitly ignored class has no effect on the result -- drawing
+      // a box for it anyway just clutters the photo with something the
+      // inspector doesn't need to look at, so skip it entirely rather than
+      // giving it its own (e.g. grey) color.
+      if (_isIgnoredClass(result.className)) continue;
       // overrideColor lets the caller force green/red based on pass/fail logic
       // rather than relying on class name substring matching.
       final color = overrideColor ?? _colorForClass(result.className, i);

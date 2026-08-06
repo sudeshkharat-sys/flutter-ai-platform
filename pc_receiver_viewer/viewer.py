@@ -521,6 +521,58 @@ async def api_data(device: str, appName: str, _: None = Depends(_require_session
     return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
 
 
+def _device_dirs_for_app(app_name_safe: str) -> list[str]:
+    """Every device's safe folder name that has data for this exact app
+    name. Unlike receiver.py's equivalent, this has no alias/merge concept
+    of its own -- it's derived purely from the folder layout (same as
+    _list_groups), so it always reflects whatever receiver.py's own Apps
+    tab has already merged on disk structure, nothing more."""
+    devices = []
+    if not DATA_DIR.exists():
+        return devices
+    for device_dir in DATA_DIR.iterdir():
+        if not device_dir.is_dir() or device_dir.name == "_master":
+            continue
+        if (device_dir / app_name_safe).exists():
+            devices.append(device_dir.name)
+    return devices
+
+
+@app.get("/api/apps")
+async def api_apps(_: None = Depends(_require_session)):
+    """Same idea as /api/groups, but grouped by app instead of by device --
+    lets the Apps tab show one continuous dataset per app instead of
+    switching between each device paired under it."""
+    by_app: dict[str, dict] = {}
+    for g in _list_groups():
+        safe = _safe_name(g["appName"])
+        bucket = by_app.setdefault(safe, {
+            "appName": g["appName"], "appNameSafe": safe,
+            "deviceCount": 0, "batchCount": 0, "lastReceivedAt": None, "hasExcel": g["hasExcel"],
+        })
+        bucket["deviceCount"] += 1
+        bucket["batchCount"] += g["batchCount"]
+        bucket["hasExcel"] = bucket["hasExcel"] or g["hasExcel"]
+        if g["lastReceivedAt"] and (not bucket["lastReceivedAt"] or g["lastReceivedAt"] > bucket["lastReceivedAt"]):
+            bucket["lastReceivedAt"] = g["lastReceivedAt"]
+    result = list(by_app.values())
+    result.sort(key=lambda a: a["lastReceivedAt"] or "", reverse=True)
+    return result
+
+
+@app.get("/api/app-data")
+async def api_app_data(appName: str, _: None = Depends(_require_session)):
+    """Every row for this app, merged across every device that has data
+    for it -- the Apps-tab equivalent of /api/data."""
+    app_name_safe = _safe_name(appName)
+    rows: list[dict] = []
+    for device_safe in _device_dirs_for_app(app_name_safe):
+        rows.extend(_flatten_rows(device_safe, app_name_safe))
+    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    truncated = len(rows) > MAX_ROWS_RETURNED
+    return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
+
+
 @app.get("/api/image")
 async def api_image(device: str, appName: str, batch: str, rel: str, _: None = Depends(_require_session)):
     rel_path = f"{_safe_name(device)}/{_safe_name(appName)}/{batch}/{rel}"
@@ -532,7 +584,7 @@ async def api_image(device: str, appName: str, batch: str, rel: str, _: None = D
 
 
 @app.get("/download/excel")
-async def download_master_excel(device: str, appName: str, _: None = Depends(_require_session)):
+async def download_master_excel(appName: str, device: str = "", _: None = Depends(_require_session)):
     """The receiver's own running data.xlsx for this app -- always current
     as of the last successful upload from any device paired under it,
     downloaded as-is. [device] is accepted (unused for the file lookup) so
@@ -658,6 +710,10 @@ VIEWER_HTML = """<!doctype html>
 
   main { padding: 20px 24px 60px; max-width: 1300px; margin: 0 auto; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .group-tabs { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .group-tab-btn { border: none; background: var(--card); color: var(--muted); padding: 8px 14px; font-size: 12px; font-weight: 700; cursor: pointer; }
+  .group-tab-btn + .group-tab-btn { border-left: 1px solid var(--border); }
+  .group-tab-btn.active { background: var(--crimson); color: #fff; }
   select, input[type=text], input[type=date] {
     padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
   }
@@ -757,6 +813,10 @@ VIEWER_HTML = """<!doctype html>
 </header>
 <main>
   <div class="toolbar">
+    <div class="group-tabs">
+      <button type="button" class="group-tab-btn active" data-mode="device" onclick="setGroupMode('device')">Devices</button>
+      <button type="button" class="group-tab-btn" data-mode="app" onclick="setGroupMode('app')">Apps</button>
+    </div>
     <select id="groupSelect"></select>
     <span style="flex:1"></span>
     <button class="secondary" id="downloadFullBtn">Download Full Excel</button>
@@ -814,29 +874,60 @@ VIEWER_HTML = """<!doctype html>
 
 <script>
 let groups = [];
+let apps = [];
+let groupMode = 'device'; // 'device' | 'app' -- which tab is active
 let viewerRows = [];
 let currentDevice = '', currentAppName = '';
+
+function setGroupMode(mode) {
+  if (mode === groupMode) return;
+  groupMode = mode;
+  document.querySelectorAll('.group-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  populateGroupSelect();
+}
 
 async function loadGroups() {
   const res = await fetch('/api/groups');
   if (res.status === 401) { window.location = '/login'; return; }
   groups = await res.json();
+  const appsRes = await fetch('/api/apps');
+  apps = appsRes.status === 401 ? (window.location = '/login', []) : await appsRes.json();
+  populateGroupSelect();
+}
+
+function populateGroupSelect() {
   const sel = document.getElementById('groupSelect');
-  sel.innerHTML = groups.map(g =>
-    `<option value="${g.device}|${g.appName}">${g.device} / ${g.appName} (${g.batchCount} sends)</option>`
-  ).join('');
-  if (groups.length === 0) {
+  if (groupMode === 'app') {
+    sel.innerHTML = apps.map(a =>
+      `<option value="app|${a.appNameSafe}">${a.appName} — all devices (${a.deviceCount} device${a.deviceCount === 1 ? '' : 's'}, ${a.batchCount} sends)</option>`
+    ).join('');
+  } else {
+    sel.innerHTML = groups.map(g =>
+      `<option value="device|${g.device}|${g.appName}">${g.device} / ${g.appName} (${g.batchCount} sends)</option>`
+    ).join('');
+  }
+  if (!sel.options.length) {
     document.getElementById('viewerRows').innerHTML =
       '<tr><td colspan="10" class="empty">No data received yet.</td></tr>';
     return;
   }
-  await loadData();
+  loadData();
 }
 
 async function loadData() {
-  const [device, appName] = document.getElementById('groupSelect').value.split('|');
-  currentDevice = device; currentAppName = appName;
-  const res = await fetch('/api/data?' + new URLSearchParams({ device, appName }));
+  const parts = document.getElementById('groupSelect').value.split('|');
+  let res;
+  if (parts[0] === 'app') {
+    const appNameSafe = parts[1];
+    const appObj = apps.find(a => a.appNameSafe === appNameSafe);
+    currentDevice = 'AllDevices';
+    currentAppName = appObj ? appObj.appName : appNameSafe;
+    res = await fetch('/api/app-data?' + new URLSearchParams({ appName: currentAppName }));
+  } else {
+    const [, device, appName] = parts;
+    currentDevice = device; currentAppName = appName;
+    res = await fetch('/api/data?' + new URLSearchParams({ device, appName }));
+  }
   if (res.status === 401) { window.location = '/login'; return; }
   const data = await res.json();
   viewerRows = data.rows;

@@ -432,21 +432,21 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           final ih = decoded.height.toDouble();
 
           for (final det in allDetections) {
+            // An explicitly ignored class has no effect on the result --
+            // drawing a box for it anyway just clutters the saved photo
+            // with something the inspector doesn't need to look at, and
+            // burning it in red would make a genuinely-OK inspection look
+            // like it failed when reviewed later. Skip it entirely instead
+            // of giving it its own color, keeping the clean green/red look.
+            if (_isIgnored(det.className, ignoredClasses)) continue;
+
             final isMandatory = targetClasses.any(
               (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
             );
-            final isIgnored = _isIgnored(det.className, ignoredClasses);
-            // 3-color logic: green=mandatory found, grey=explicitly ignored
-            // (no effect on the result), red=unexpected/unchecked or defect.
-            // This mirrors the live on-screen overlay's coloring -- burning
-            // an ignored class in red here would make a genuinely-OK
-            // inspection look like it failed when the saved photo is
-            // reviewed later in History or on the PC dashboard.
+            // 2-color logic: green=mandatory found, red=not ok or unexpected unchecked
             final img.Color boxColor;
             if (isMandatory) {
               boxColor = img.ColorRgb8(0, 200, 0);       // green — mandatory found
-            } else if (isIgnored) {
-              boxColor = img.ColorRgb8(140, 140, 140);   // grey — ignored, no effect on result
             } else {
               boxColor = img.ColorRgb8(220, 0, 0);       // red — unexpected/unchecked or defect
             }
