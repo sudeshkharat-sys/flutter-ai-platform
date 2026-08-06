@@ -268,7 +268,7 @@ export default function NewApp() {
                   </div>
                 )}
               </div>
-            ) : (
+            ) : tab === 'existing' ? (
               <div className="existing-models-list">
                 {existingModels.length === 0 && (
                   <div className="newapp-sidebar-empty" style={{ marginTop: 8 }}>
@@ -293,7 +293,7 @@ export default function NewApp() {
                   </div>
                 ))}
               </div>
-            )}
+            ) : null}
 
             {tab === 'ocr' && (
               <div className="newapp-upload-body">
