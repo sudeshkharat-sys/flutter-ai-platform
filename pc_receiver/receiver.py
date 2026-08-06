@@ -98,6 +98,7 @@ APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path
 # e.g. a network/SAN volume, without editing any config file by hand.
 CONFIG_FILE = APP_DIR / "config.json"
 DEVICES_FILE = APP_DIR / "paired_devices.json"
+APP_ALIASES_FILE = APP_DIR / "app_aliases.json"
 
 
 def _load_config() -> dict:
@@ -259,6 +260,45 @@ def _save_devices():
         ) from e
 
 
+# App aliases -- for when two builds of what's really the same production
+# app ended up with different names (a rename, a typo, a leftover "(Copy)"
+# from Duplicate), which otherwise fragments their data into two unrelated
+# app buckets since the app name is the merge key everywhere. Rather than
+# physically moving/renaming anything on disk (risky on a live production
+# folder), an alias just says "treat app A's data as app B's data" --
+# resolved wherever an app name is used to group/merge, both for history
+# already on disk and for anything uploaded after the alias is added.
+# {non-canonical safe app name -> canonical safe app name}
+_app_aliases: dict[str, str] = {}
+
+
+def _load_app_aliases():
+    global _app_aliases
+    if APP_ALIASES_FILE.exists():
+        try:
+            _app_aliases = json.loads(APP_ALIASES_FILE.read_text())
+        except Exception:
+            _app_aliases = {}
+
+
+def _save_app_aliases():
+    APP_ALIASES_FILE.write_text(json.dumps(_app_aliases, indent=2))
+
+
+def _resolve_app_alias(app_name_safe: str) -> str:
+    """Follows the alias chain to its canonical name. Bounded to a handful
+    of hops so a corrupt/cyclical aliases file can't hang a request."""
+    seen = set()
+    current = app_name_safe
+    for _ in range(10):
+        target = _app_aliases.get(current)
+        if not target or target == current or target in seen:
+            return current
+        seen.add(current)
+        current = target
+    return current
+
+
 # Columns for both the persistent per-app master workbook and the
 # browser's ad-hoc filtered export -- kept in one place so they stay in sync.
 # "Device" records which phone sent each row, since the master workbook is
@@ -373,8 +413,12 @@ def _app_master_dir(app_name: str) -> Path:
     phone. That split used to also mean a phone that dropped its pairing and
     got re-paired as e.g. "Samsung (2)" would start a brand new, empty
     workbook -- fragmenting one continuous production run across multiple
-    files for no reason a phone-side identity hiccup should ever cause."""
-    return DATA_DIR / "_master" / _safe_name(app_name)
+    files for no reason a phone-side identity hiccup should ever cause.
+
+    Also resolves through _app_aliases, so two differently-named apps that
+    are really the same production line share one workbook once an admin
+    aliases one to the other -- both new uploads and the Apps-tab merge."""
+    return DATA_DIR / "_master" / _resolve_app_alias(_safe_name(app_name))
 
 
 def _seed_master_from_legacy_device_excels(app_name_safe: str, xlsx_path: Path):
@@ -905,16 +949,20 @@ async def api_device_data(deviceId: str, _: None = Depends(_require_local)):
 async def api_apps(_: None = Depends(_require_local)):
     """Same idea as /api/devices, but grouped by app instead of by phone --
     every generated app that at least one currently-paired phone belongs
-    to, with stats merged across every device paired under it."""
+    to, with stats merged across every device paired under it. Apps
+    aliased to each other (see _app_aliases) collapse into a single row,
+    labeled with whichever app name was paired most recently."""
     with _lock:
         items = list(_paired_devices.values())
 
     by_app: dict[str, dict] = {}
     for d in items:
         app_name = d.get("appName", "app")
-        app_name_safe = _safe_name(app_name)
+        app_name_safe = _resolve_app_alias(_safe_name(app_name))
         bucket = by_app.setdefault(app_name_safe, {"appName": app_name, "deviceNames": set(), "pairedAt": d["pairedAt"]})
         bucket["deviceNames"].add(d["deviceName"])
+        if d["pairedAt"] >= bucket["pairedAt"]:
+            bucket["appName"] = app_name  # label from whichever pairing is newest
         bucket["pairedAt"] = max(bucket["pairedAt"], d["pairedAt"])
 
     result = []
@@ -943,20 +991,77 @@ async def api_apps(_: None = Depends(_require_local)):
     return result
 
 
-def _device_dirs_for_app(app_name_safe: str) -> list[Path]:
-    """Every <device>/<appName> folder on disk for this app -- not just
-    currently-paired devices, so a device that was later unpaired or
-    re-paired under a new name still contributes its historical data to
-    the merged app view (same scope the master Excel already covers)."""
+@app.post("/api/apps/alias")
+async def api_apps_alias(request: Request, _: None = Depends(_require_local)):
+    """Merges [fromApp]'s data (past and future) into [toApp] -- for when
+    two builds of what's really the same production app ended up with
+    different names. Doesn't move or delete anything on disk; just makes
+    every merge point (the Apps tab, /api/app-data, the master Excel)
+    treat fromApp's folders as toApp's from now on."""
+    body = await request.json()
+    from_app = _safe_name(str(body.get("fromApp", "")))
+    to_app = _safe_name(str(body.get("toApp", "")))
+    if not from_app or not to_app:
+        raise HTTPException(status_code=400, detail="fromApp and toApp are required")
+    if from_app == to_app:
+        raise HTTPException(status_code=400, detail="Can't merge an app into itself")
+    # If [to_app] itself is already aliased elsewhere, point at its final
+    # canonical target instead of creating a chain -- keeps every alias a
+    # single hop, so nothing downstream needs to follow more than one link.
+    to_app = _resolve_app_alias(to_app)
+    if from_app == to_app:
+        raise HTTPException(status_code=400, detail="These apps are already merged")
+    with _lock:
+        _app_aliases[from_app] = to_app
+        # Anything that already aliased TO from_app now chains through it --
+        # repoint those directly at the new canonical target too.
+        for k, v in list(_app_aliases.items()):
+            if v == from_app:
+                _app_aliases[k] = to_app
+        _save_app_aliases()
+    return {"merged": True, "fromApp": from_app, "toApp": to_app}
+
+
+@app.get("/api/apps/aliases")
+async def api_apps_aliases_list(_: None = Depends(_require_local)):
+    return _app_aliases
+
+
+@app.delete("/api/apps/alias/{from_app}")
+async def api_apps_alias_remove(from_app: str, _: None = Depends(_require_local)):
+    """Un-merges an app -- its data (already-received and future) goes
+    back to being counted under its own name instead of the app it was
+    merged into. Nothing on disk moves either way."""
+    with _lock:
+        removed = _app_aliases.pop(_safe_name(from_app), None)
+        if removed is not None:
+            _save_app_aliases()
+    if removed is None:
+        raise HTTPException(status_code=404, detail="No such alias")
+    return {"removed": True}
+
+
+def _device_dirs_for_app(canonical_app_name_safe: str) -> list[Path]:
+    """Every <device>/<appName> folder on disk that resolves (through
+    _app_aliases, if any) to this canonical app -- not just currently
+    -paired devices, so a device that was later unpaired or re-paired
+    under a new name still contributes its historical data to the merged
+    app view (same scope the master Excel already covers). Matches any
+    on-disk app folder whose name aliases to the canonical one, not just
+    an exact name match, so an aliased app's existing history is included
+    immediately -- no file needs to move."""
+    canonical_app_name_safe = _resolve_app_alias(canonical_app_name_safe)
     dirs = []
     if not DATA_DIR.exists():
         return dirs
     for device_dir in DATA_DIR.iterdir():
         if not device_dir.is_dir() or device_dir.name.startswith("_"):
             continue
-        app_dir = device_dir / app_name_safe
-        if app_dir.exists():
-            dirs.append(app_dir)
+        for app_dir in device_dir.iterdir():
+            if not app_dir.is_dir():
+                continue
+            if _resolve_app_alias(app_dir.name) == canonical_app_name_safe:
+                dirs.append(app_dir)
     return dirs
 
 
@@ -966,7 +1071,7 @@ async def api_app_data(appName: str, _: None = Depends(_require_local)):
     merged into one dataset -- the live-dashboard equivalent of the
     master Excel (_app_master_dir), which already aggregates by app
     rather than by device."""
-    app_name_safe = _safe_name(appName)
+    app_name_safe = _resolve_app_alias(_safe_name(appName))
 
     # Best-effort raw device name for display -- falls back to the safe
     # folder name for a device no longer in _paired_devices (unpaired,
@@ -978,7 +1083,10 @@ async def api_app_data(appName: str, _: None = Depends(_require_local)):
     for app_dir in _device_dirs_for_app(app_name_safe):
         device_dir_safe = app_dir.parent.name
         device_name_raw = safe_to_raw.get(device_dir_safe, device_dir_safe)
-        rows.extend(_flatten_device_rows_cached(app_dir, device_name_raw, device_dir_safe, app_name_safe))
+        # app_dir.name (this device's real on-disk app folder) is used for
+        # image URLs -- it may differ from the canonical app_name_safe once
+        # aliased, and images physically live under the real folder name.
+        rows.extend(_flatten_device_rows_cached(app_dir, device_name_raw, device_dir_safe, app_dir.name))
 
     rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
     return {"appName": appName, "rows": rows}
@@ -1410,6 +1518,7 @@ DASHBOARD_HTML = """<!doctype html>
     </div>
     <p style="font-size:12px;color:var(--muted);margin:-6px 0 14px;">Same data as Devices, merged across every phone paired under each app -- use this when multiple phones share one app and you want one continuous dataset instead of switching between devices.</p>
     <div id="appsList"><div class="empty">Loading…</div></div>
+    <div id="mergedAppsPanel"></div>
   </section>
 
   <section id="tab-storage" class="tab">
@@ -1695,6 +1804,7 @@ function renderApps() {
   const el = document.getElementById('appsList');
   if (!lastAppsData.length) {
     el.innerHTML = '<div class="empty">No apps yet -- pair a phone under the Devices tab first.</div>';
+    document.getElementById('mergedAppsPanel').innerHTML = '';
     return;
   }
   el.innerHTML = lastAppsData.map(a => `
@@ -1709,8 +1819,68 @@ function renderApps() {
       </div>
       <button class="primary" onclick="openAppDataViewer('${a.appNameSafe.replace(/'/g, "\\'")}', '${a.appName.replace(/'/g, "\\'")}')">View Data</button>
       <button class="ghost" onclick="window.location='/api/export/master-excel-by-app?appName=${encodeURIComponent(a.appNameSafe)}'" ${a.batchCount === 0 ? 'disabled' : ''}>Download Excel</button>
+      <button class="icon-btn" title="Merge this app's data into another app" onclick="mergeApp('${a.appNameSafe.replace(/'/g, "\\'")}', '${a.appName.replace(/'/g, "\\'")}')">⇄</button>
     </div>
   `).join('');
+  loadMergedApps();
+}
+
+// Two apps really being the same production line but paired under
+// different names (a rename, a typo, a leftover "(Copy)") otherwise never
+// merge, since the app name is the merge key everywhere. This lets an
+// admin say "treat A's data as B's" without moving/deleting anything on
+// disk -- see /api/apps/alias.
+async function mergeApp(fromAppSafe, fromAppDisplay) {
+  const others = lastAppsData.filter(a => a.appNameSafe !== fromAppSafe);
+  if (!others.length) { alert('No other app to merge into yet.'); return; }
+  const optionsText = others.map(a => a.appName).join('", "');
+  const typed = prompt(
+    `Merge "${fromAppDisplay}"'s data (past and future) into which app?\n\nType the exact name: "${optionsText}"`, ''
+  );
+  if (!typed || !typed.trim()) return;
+  const target = others.find(a => a.appName.toLowerCase() === typed.trim().toLowerCase());
+  if (!target) { alert('No app with that exact name -- nothing changed.'); return; }
+  if (!confirm(`Merge "${fromAppDisplay}" into "${target.appName}"?\n\nNothing on disk moves -- this can be undone later from the same "⇄" menu.`)) return;
+  try {
+    const r = await fetch('/api/apps/alias', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fromApp: fromAppSafe, toApp: target.appNameSafe }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.status); }
+    showToast(`Merged "${fromAppDisplay}" into "${target.appName}"`);
+    loadApps();
+  } catch (e) {
+    alert('Merge failed: ' + e.message);
+  }
+}
+
+async function loadMergedApps() {
+  const panel = document.getElementById('mergedAppsPanel');
+  try {
+    const r = await fetch('/api/apps/aliases');
+    const aliases = await r.json();
+    const entries = Object.entries(aliases);
+    if (!entries.length) { panel.innerHTML = ''; return; }
+    const nameFor = (safe) => (lastAppsData.find(a => a.appNameSafe === safe)?.appName) || safe;
+    panel.innerHTML = `
+      <div class="toolbar" style="margin-top:18px;"><h2 style="font-size:14px;">Merged Apps</h2></div>
+      ${entries.map(([from, to]) => `
+        <div class="app-row">
+          <div class="a-info"><div class="a-name">${nameFor(from)} → ${nameFor(to)}</div>
+          <div class="a-meta">Data from "${nameFor(from)}" counts under "${nameFor(to)}"</div></div>
+          <button class="ghost" onclick="unmergeApp('${from.replace(/'/g, "\\'")}')">Undo</button>
+        </div>
+      `).join('')}
+    `;
+  } catch (e) {
+    panel.innerHTML = '';
+  }
+}
+
+async function unmergeApp(fromAppSafe) {
+  if (!confirm('Undo this merge? The app goes back to being counted under its own name.')) return;
+  await fetch('/api/apps/alias/' + encodeURIComponent(fromAppSafe), { method: 'DELETE' });
+  loadApps();
 }
 
 setInterval(() => { if (lastAppsData.length) loadApps(); }, 20000);
@@ -2524,6 +2694,7 @@ def _port_available(port: int) -> bool:
 
 def main():
     _load_devices()
+    _load_app_aliases()
     zeroconf = start_mdns()
 
     ip = _local_ip()
