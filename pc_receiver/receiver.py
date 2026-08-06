@@ -1499,13 +1499,13 @@ DASHBOARD_HTML = """<!doctype html>
 </div>
 
 <nav>
-  <button class="tab-btn active" data-tab="devices">Devices</button>
-  <button class="tab-btn" data-tab="apps">Apps</button>
+  <button class="tab-btn" data-tab="devices">Devices</button>
+  <button class="tab-btn active" data-tab="apps">Apps</button>
   <button class="tab-btn" data-tab="storage">Vault</button>
 </nav>
 
 <main>
-  <section id="tab-devices" class="tab active">
+  <section id="tab-devices" class="tab">
     <div class="toolbar">
       <h2>Paired Devices</h2>
       <button class="primary" onclick="openPairModal()">+ Add New Device</button>
@@ -1514,7 +1514,7 @@ DASHBOARD_HTML = """<!doctype html>
     <div id="devicesList"><div class="empty">Loading…</div></div>
   </section>
 
-  <section id="tab-apps" class="tab">
+  <section id="tab-apps" class="tab active">
     <div class="toolbar">
       <h2>Apps</h2>
     </div>
@@ -2669,6 +2669,7 @@ function handleNewEvents(events) {
 }
 
 loadDevices();
+loadApps();
 checkStorageBanner();
 setInterval(loadDevices, 15000);
 setInterval(pollEvents, 3000);

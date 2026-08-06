@@ -169,7 +169,7 @@ TLS_KEY = os.environ.get("VIEWER_TLS_KEY")
 SESSION_TTL_SECONDS = 12 * 3600  # a logged-in session stays valid 12h
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_SECONDS = 60
-MAX_ROWS_RETURNED = 5000  # keeps very large datasets from freezing the browser
+MAX_ROWS_RETURNED = 30000  # keeps very large datasets from freezing the browser
 
 # ── One-time secrets: session-signing key, and the login password hash ─────
 # Both are generated on first run and persisted in viewer_config.json so
@@ -712,10 +712,12 @@ VIEWER_HTML = """<!doctype html>
 
   main { padding: 20px 24px 60px; max-width: 1300px; margin: 0 auto; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
-  .group-tabs { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-  .group-tab-btn { border: none; background: var(--card); color: var(--muted); padding: 8px 14px; font-size: 12px; font-weight: 700; cursor: pointer; }
-  .group-tab-btn + .group-tab-btn { border-left: 1px solid var(--border); }
-  .group-tab-btn.active { background: var(--crimson); color: #fff; }
+  .group-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+  #truncatedBanner { background: #fff4e5; border: 1px solid #f0c987; color: #8a5a00; font-size: 12px; font-weight: 600;
+                      padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
+  .group-tab-btn { border: none; background: transparent; color: var(--muted); padding: 9px 16px 8px; font-size: 13px; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -1px; }
+  .group-tab-btn:hover { color: var(--text); }
+  .group-tab-btn.active { color: var(--crimson); border-bottom-color: var(--crimson); }
   select, input[type=text], input[type=date] {
     padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
   }
@@ -814,16 +816,17 @@ VIEWER_HTML = """<!doctype html>
   <a href="/logout">Log out</a>
 </header>
 <main>
+  <div class="group-tabs">
+    <button type="button" class="group-tab-btn" data-mode="device" onclick="setGroupMode('device')">Devices</button>
+    <button type="button" class="group-tab-btn active" data-mode="app" onclick="setGroupMode('app')">Apps</button>
+  </div>
   <div class="toolbar">
-    <div class="group-tabs">
-      <button type="button" class="group-tab-btn active" data-mode="device" onclick="setGroupMode('device')">Devices</button>
-      <button type="button" class="group-tab-btn" data-mode="app" onclick="setGroupMode('app')">Apps</button>
-    </div>
     <select id="groupSelect"></select>
     <span style="flex:1"></span>
     <button class="secondary" id="downloadFullBtn">Download Full Excel</button>
     <button class="primary" id="downloadFilteredBtn">Download Filtered Excel</button>
   </div>
+  <div id="truncatedBanner" style="display:none;"></div>
 
   <div class="filters">
     <input id="fVin" placeholder="Filter VIN..." oninput="renderTable()">
@@ -877,7 +880,7 @@ VIEWER_HTML = """<!doctype html>
 <script>
 let groups = [];
 let apps = [];
-let groupMode = 'device'; // 'device' | 'app' -- which tab is active
+let groupMode = 'app'; // 'device' | 'app' -- which tab is active; defaults to Apps (merged view)
 let viewerRows = [];
 let currentDevice = '', currentAppName = '';
 
@@ -933,6 +936,13 @@ async function loadData() {
   if (res.status === 401) { window.location = '/login'; return; }
   const data = await res.json();
   viewerRows = data.rows;
+  const banner = document.getElementById('truncatedBanner');
+  if (data.truncated) {
+    banner.style.display = 'block';
+    banner.textContent = `Showing the newest ${data.rows.length.toLocaleString()} of ${data.totalCount.toLocaleString()} total rows -- narrow the filters, or download the full Excel below to get everything.`;
+  } else {
+    banner.style.display = 'none';
+  }
   populateYearOptions();
   renderTable();
 }
