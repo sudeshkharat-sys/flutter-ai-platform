@@ -853,6 +853,9 @@ VIEWER_HTML = """<!doctype html>
       <option value="NOT OK">NOT OK</option>
     </select>
     <input id="fBatch" placeholder="Filter Send/Batch..." oninput="renderTable()">
+    <select id="fDevice" onchange="renderTable()">
+      <option value="">All Devices</option>
+    </select>
     <button class="secondary" onclick="clearFilters()">Clear Filters</button>
     <div class="filter-count" id="filterCount"></div>
   </div>
@@ -864,7 +867,7 @@ VIEWER_HTML = """<!doctype html>
       <thead>
         <tr>
           <th></th><th>VIN</th><th>Model Code</th><th>Model Name</th><th>Date</th><th>Time</th>
-          <th>Shift</th><th>Tasks</th><th>Result</th><th>Batch</th>
+          <th>Shift</th><th>Tasks</th><th>Result</th><th>Batch</th><th>Device</th>
         </tr>
       </thead>
       <tbody id="viewerRows"></tbody>
@@ -953,11 +956,20 @@ function populateYearOptions() {
   const current = sel.value;
   sel.innerHTML = '<option value="">All Years</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
   sel.value = current;
+
+  // Device dropdown: only meaningfully different from "All Devices" in the
+  // merged Apps view, but harmless (a single option) in the per-device
+  // Devices view too -- so it's always populated the same way.
+  const devices = [...new Set(viewerRows.map(r => r.device).filter(Boolean))].sort();
+  const deviceSel = document.getElementById('fDevice');
+  const currentDeviceFilter = deviceSel.value;
+  deviceSel.innerHTML = '<option value="">All Devices</option>' + devices.map(d => `<option value="${d}">${d}</option>`).join('');
+  deviceSel.value = devices.includes(currentDeviceFilter) ? currentDeviceFilter : '';
 }
 
 function clearFilters() {
   ['fVin','fModel','fModelName','fTask','fClass','fBatch'].forEach(id => document.getElementById(id).value = '');
-  ['fDate','fYear','fMonth','fShift','fResult'].forEach(id => document.getElementById(id).value = '');
+  ['fDate','fYear','fMonth','fShift','fResult','fDevice'].forEach(id => document.getElementById(id).value = '');
   pinnedDay = null;
   renderTable();
 }
@@ -976,6 +988,7 @@ function getFilteredRows() {
   const cls = document.getElementById('fClass').value.toLowerCase();
   const result = document.getElementById('fResult').value;
   const batch = document.getElementById('fBatch').value.toLowerCase();
+  const device = document.getElementById('fDevice').value;
 
   return viewerRows.filter(row => {
     const rowYear = (row.date || '').slice(0, 4);
@@ -991,7 +1004,8 @@ function getFilteredRows() {
       (!task || (row.taskName || '').toLowerCase().includes(task)) &&
       (!cls || (row.className || '').toLowerCase().includes(cls)) &&
       (!result || row.result === result) &&
-      (!batch || (row.batch || '').toLowerCase().includes(batch));
+      (!batch || (row.batch || '').toLowerCase().includes(batch)) &&
+      (!device || row.device === device);
   });
 }
 
@@ -1003,7 +1017,7 @@ function groupRowsByInspection(rows) {
     const key = `${r.batch}|${r.inspectionId ?? ''}|${r.vin}|${r.date}|${r.time}`;
     if (!groups[key]) {
       groups[key] = { key, vin: r.vin, modelCode: r.modelCode, modelName: r.modelName,
-                      date: r.date, time: r.time, shift: r.shift, shiftDate: r.shiftDate, batch: r.batch, tasks: [] };
+                      date: r.date, time: r.time, shift: r.shift, shiftDate: r.shiftDate, batch: r.batch, device: r.device, tasks: [] };
       order.push(key);
     }
     groups[key].tasks.push(r);
@@ -1026,7 +1040,7 @@ function renderTable() {
 
   const tbody = document.getElementById('viewerRows');
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">No rows match these filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">No rows match these filters.</td></tr>';
     return;
   }
 
@@ -1056,9 +1070,10 @@ function renderTable() {
         <td>${taskSummary}</td>
         <td class="${vinResult === 'PASS' ? 'badge-ok' : 'badge-fail'}">${vinResult}</td>
         <td>${g.batch || ''}</td>
+        <td>${g.device || ''}</td>
       </tr>
       <tr class="detail-row ${expanded ? 'open' : ''}" data-key="${escapeAttr(g.key)}">
-        <td colspan="10">
+        <td colspan="11">
           <table class="mini-table">
             <thead><tr><th>Task</th><th>Detected</th><th>Result</th><th>Image</th></tr></thead>
             <tbody>${detailRows}</tbody>
