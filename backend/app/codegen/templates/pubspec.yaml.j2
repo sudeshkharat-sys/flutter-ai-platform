@@ -25,7 +25,7 @@ dependencies:
   archive: ^3.6.1
   http: ^1.2.2
   crypto: ^3.0.5
-{% if ocr_enabled %}
+{% if ocr_enabled or ocr_use_mlkit_fallback %}
   google_mlkit_text_recognition: ^0.13.0
 {% endif %}
 

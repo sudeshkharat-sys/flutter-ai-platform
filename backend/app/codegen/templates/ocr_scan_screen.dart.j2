@@ -1,9 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:drift/drift.dart' as drift;
+import 'package:permission_handler/permission_handler.dart';
 import '../database/database.dart';
 import '../ml/ocr_recognizer.dart';
+import 'history_screen.dart';
 
 /// Capture -> detect plate/chars -> read the string ('{{ ocr_engine }}'
 /// engine, baked in at generation time) -> show + save. This is the OCR
@@ -11,9 +16,15 @@ import '../ml/ocr_recognizer.dart';
 /// kept intentionally self-contained rather than reusing the multi-task
 /// inspection screens, since a plate read is a single result, not a task
 /// checklist.
+///
+/// [truthValue], when set, comes from a QR/barcode scan of the engine's
+/// sticker (see ocr_qr_scan_screen.dart) -- a checksum-protected read that's
+/// trustworthy in a way no OCR ever is. The camera read gets checked
+/// against it, and only falls back to Google ML Kit on a mismatch.
 class OcrScanScreen extends StatefulWidget {
   final List<CameraDescription> cameras;
-  const OcrScanScreen({super.key, required this.cameras});
+  final String? truthValue;
+  const OcrScanScreen({super.key, required this.cameras, this.truthValue});
 
   @override
   State<OcrScanScreen> createState() => _OcrScanScreenState();
@@ -25,6 +36,7 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
   bool _modelReady = false;
   bool _processing = false;
   OcrResult? _lastResult;
+  Uint8List? _lastPhotoBytes;
   String? _error;
   // No detector is flawless on every frame -- a stray extra character or a
   // misread digit should be a quick edit before saving, not a retake.
@@ -95,10 +107,11 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
     try {
       final file = await _controller!.takePicture();
       final bytes = await file.readAsBytes();
-      final result = await OcrRecognizer().recognize(bytes);
+      final result = await OcrRecognizer().recognize(bytes, truthValue: widget.truthValue);
       if (!mounted) return;
       setState(() {
         _lastResult = result;
+        _lastPhotoBytes = bytes;
         _textController.text = result.text;
         _processing = false;
       });
@@ -111,13 +124,58 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
     }
   }
 
+  /// Saves the captured photo under the same Pictures/MAI/{app}/... tree
+  /// the inspection screens already use, so it shows up alongside them
+  /// and survives an app reinstall/PC sync the same way. Returns null (and
+  /// the save falls back to no image) if storage permission is denied --
+  /// the read itself still gets saved either way.
+  Future<String?> _savePhoto(String label) async {
+    try {
+      PermissionStatus status = await Permission.photos.request();
+      if (!status.isGranted) status = await Permission.storage.request();
+      if (!status.isGranted) return null;
+
+      final baseDir = Directory('/storage/emulated/0/Pictures');
+      final appName = '{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final safeLabel = label.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final imgDir = Directory('${baseDir.path}/MAI/$appName/OCR/$safeLabel');
+      await imgDir.create(recursive: true);
+
+      final now = DateTime.now();
+      final dateStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      final timeStr = '${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}';
+      final path = '${imgDir.path}/ocr_${dateStr}_$timeStr.jpg';
+      await File(path).writeAsBytes(_lastPhotoBytes!, flush: true);
+      return path;
+    } catch (e) {
+      debugPrint('[OCR] Could not save photo: $e');
+      return null;
+    }
+  }
+
   Future<void> _saveResult() async {
     final result = _lastResult;
     final text = _textController.text.trim();
     if (result == null || text.isEmpty) return;
 
+    String? imagePath;
+    if (_lastPhotoBytes != null) {
+      imagePath = await _savePhoto(widget.truthValue ?? text);
+    }
+
+    final detectionsJson = result.boxes.isEmpty
+        ? null
+        : jsonEncode(result.boxes.map((b) => b.toJson()).toList());
+
+    // With a truth value, an unedited mismatch should still record as a
+    // fail even if the operator saves without correcting it -- success
+    // reflects the edited text actually matching, not just "a read happened".
+    final normText = text.toUpperCase().replaceAll(RegExp(r'\s+'), '');
+    final normTruth = widget.truthValue?.toUpperCase().replaceAll(RegExp(r'\s+'), '');
+    final success = normTruth == null ? true : normText == normTruth;
+
     final inspectionId = await db.saveInspection(InspectionsCompanion.insert(
-      vin: text,
+      vin: widget.truthValue ?? text,
       modelCode: 'OCR',
     ));
     await db.saveTaskResult(TaskResultsCompanion.insert(
@@ -125,28 +183,47 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
       taskName: 'ocr_read',
       className: text,
       confidence: result.confidence ?? 0.0,
-      success: true,
+      success: success,
+      imagePath: drift.Value(imagePath),
+      detectionsJson: drift.Value(detectionsJson),
     ));
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Saved'), backgroundColor: Colors.green),
+      SnackBar(
+        content: Text(success ? 'Saved (OK)' : 'Saved (NOT OK -- did not match truth value)'),
+        backgroundColor: success ? Colors.green : Colors.red,
+      ),
     );
     setState(() {
       _lastResult = null;
+      _lastPhotoBytes = null;
       _textController.clear();
     });
   }
 
   void _scanAgain() => setState(() {
         _lastResult = null;
+        _lastPhotoBytes = null;
         _textController.clear();
       });
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('{{ app_name }}')),
+      appBar: AppBar(
+        title: const Text('{{ app_name }}'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: 'History',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const HistoryScreen()),
+            ),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(
@@ -222,6 +299,35 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (_lastPhotoBytes != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.memory(_lastPhotoBytes!, height: 140, fit: BoxFit.cover, width: double.infinity),
+              ),
+            ),
+          if (result.matched != null)
+            Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: result.matched! ? Colors.green.shade700 : Colors.red.shade700,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                result.matched! ? 'OK -- matches truth value' : 'NOT OK -- does not match truth value',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+            ),
+          if (result.truthValue != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                'Truth value (QR): ${result.truthValue}',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+            ),
           TextField(
             controller: _textController,
             autocorrect: false,
@@ -253,6 +359,14 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
               child: Text(
                 'Confidence: ${(result.confidence! * 100).toStringAsFixed(1)}%',
                 style: const TextStyle(color: Colors.white70),
+              ),
+            ),
+          if (result.mlKitText != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'ML Kit read: ${result.mlKitText} (matched: ${result.matchedEngine == 'mlkit'})',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
               ),
             ),
           Padding(

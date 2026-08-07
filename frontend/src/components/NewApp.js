@@ -79,6 +79,11 @@ export default function NewApp() {
   // Which detected class is the plate/region box (picked explicitly here
   // instead of guessed in code -- avoids any class-naming mismatch).
   const [ocrRegionClass, setOcrRegionClass] = useState('');
+  // Truth-value flow: scan a QR/barcode sticker for the real engine number,
+  // check the camera OCR read against it, optionally fall back to ML Kit.
+  const [ocrUseQrTruth, setOcrUseQrTruth] = useState(false);
+  const [ocrExpectedLength, setOcrExpectedLength] = useState('');
+  const [ocrUseMlkitFallback, setOcrUseMlkitFallback] = useState(false);
   // modelId -> classes[], so the OCR tab can offer a dropdown of every
   // class across whichever detector(s) got added to this app.
   const [modelClassesById, setModelClassesById] = useState({});
@@ -199,7 +204,15 @@ export default function NewApp() {
   const handleCreate = async () => {
     try {
       const app_settings = isOcrApp
-        ? { app_type: 'ocr', ocr_engine: ocrEngine, ocr_region_class: ocrRegionClass, confidence_threshold: 0.5 }
+        ? {
+            app_type: 'ocr',
+            ocr_engine: ocrEngine,
+            ocr_region_class: ocrRegionClass,
+            ocr_use_qr_truth: ocrUseQrTruth,
+            ocr_expected_length: ocrExpectedLength ? parseInt(ocrExpectedLength, 10) : null,
+            ocr_use_mlkit_fallback: ocrUseMlkitFallback,
+            confidence_threshold: 0.5,
+          }
         : { app_type: 'sequential', confidence_threshold: 0.5 };
       const r = await createApp({
         name: appName || 'Inspection App',
@@ -365,6 +378,40 @@ export default function NewApp() {
                     the full photo). Pick it explicitly here rather than relying on the
                     class being named exactly "PLATE".
                   </p>
+                </div>
+
+                <div className="model-preview-field">
+                  <label className="section-label">
+                    <input
+                      type="checkbox"
+                      checked={ocrUseQrTruth}
+                      onChange={e => setOcrUseQrTruth(e.target.checked)}
+                      style={{ marginRight: 6 }}
+                    />
+                    Scan a QR/barcode for the real value first (truth-value check)
+                  </label>
+                  {ocrUseQrTruth && (
+                    <>
+                      <input
+                        className="field-input"
+                        type="number"
+                        min="1"
+                        value={ocrExpectedLength}
+                        onChange={e => setOcrExpectedLength(e.target.value)}
+                        placeholder="Expected code length (e.g. 10) -- optional"
+                        style={{ marginTop: 8 }}
+                      />
+                      <label style={{ display: 'block', marginTop: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={ocrUseMlkitFallback}
+                          onChange={e => setOcrUseMlkitFallback(e.target.checked)}
+                          style={{ marginRight: 6 }}
+                        />
+                        Fall back to Google ML Kit if the camera read doesn't match
+                      </label>
+                    </>
+                  )}
                 </div>
 
                 <div className="model-preview-field">

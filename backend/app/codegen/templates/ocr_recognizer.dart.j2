@@ -1,11 +1,17 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
+{% if ocr_use_mlkit_fallback %}
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+{% endif %}
 import 'line_normalizer.dart';
 import 'ctc_decoder.dart';
+import 'detection_result.dart';
 
 /// One YOLO detection box, in pixel coordinates of the source image.
 class _LabeledBox {
@@ -32,6 +38,23 @@ class OcrResult {
   /// question) or the output tensor shape didn't match what the parser
   /// expected at all (a structural bug, not a tuning one).
   final String detectorDebug;
+  /// Detected boxes, normalized to the source photo -- reused directly by
+  /// the existing DetectionOverlay/history-screen machinery so a saved OCR
+  /// scan can show the same box-overlay review other inspection results do.
+  final List<DetectionResult> boxes;
+  /// JPEG bytes of the crop actually fed to the recognizer -- kept around
+  /// so a mismatch can be retried through Google ML Kit on the exact same
+  /// crop, without re-running detection.
+  final Uint8List? cropImageBytes;
+  /// The QR-scanned engine number this read was checked against, if any.
+  final String? truthValue;
+  /// Null when there's no truthValue to check against (nothing to compare).
+  final bool? matched;
+  /// Which engine's read matched the truth value: 'crnn' / 'mlkit' / 'none'.
+  final String matchedEngine;
+  /// Google ML Kit's read of the same crop, only populated when the CRNN
+  /// read didn't match the truth value and the fallback ran.
+  final String? mlKitText;
   const OcrResult({
     required this.text,
     required this.confidence,
@@ -39,6 +62,12 @@ class OcrResult {
     this.regionSource = 'unknown',
     this.totalBoxesFound = 0,
     this.detectorDebug = '',
+    this.boxes = const [],
+    this.cropImageBytes,
+    this.truthValue,
+    this.matched,
+    this.matchedEngine = 'none',
+    this.mlKitText,
   });
 }
 
@@ -116,9 +145,17 @@ class OcrRecognizer {
     _ready = false;
   }
 
-  Future<OcrResult> recognize(Uint8List jpegBytes, {double detectorThreshold = 0.25}) async {
+  /// [truthValue], when provided (from a QR/barcode scan of the engine's
+  /// sticker), is compared against the CRNN/CNN read. On a mismatch, and
+  /// only when this app was built with the ML Kit fallback enabled, Google
+  /// ML Kit gets one attempt at reading the exact same crop as a second
+  /// opinion before giving up. ML Kit runs here, on the calling isolate,
+  /// deliberately -- not inside the compute() isolate above -- because its
+  /// platform-channel calls aren't available from a background isolate
+  /// without extra root-isolate-token plumbing this doesn't set up.
+  Future<OcrResult> recognize(Uint8List jpegBytes, {double detectorThreshold = 0.25, String? truthValue}) async {
     if (!_ready) return const OcrResult(text: '', confidence: null, engine: 'none');
-    return compute(_runRecognize, {
+    final result = await compute(_runRecognize, {
       'bytes': jpegBytes,
       'detector_address': _detector!.address,
       'recognizer_address': _recognizer!.address,
@@ -129,7 +166,65 @@ class OcrRecognizer {
       'detectorInputSize': detectorInputSize,
       'detectorThreshold': detectorThreshold,
     });
+
+    if (truthValue == null || truthValue.trim().isEmpty) {
+      return result;
+    }
+
+    final normTruth = _normalizeForMatch(truthValue);
+    var matched = _normalizeForMatch(result.text) == normTruth;
+    var matchedEngine = matched ? 'crnn' : 'none';
+    String? mlKitText;
+
+{% if ocr_use_mlkit_fallback %}
+    if (!matched && result.cropImageBytes != null) {
+      mlKitText = await _tryMlKit(result.cropImageBytes!);
+      if (mlKitText != null && _normalizeForMatch(mlKitText) == normTruth) {
+        matched = true;
+        matchedEngine = 'mlkit';
+      }
+    }
+{% endif %}
+
+    return OcrResult(
+      text: result.text,
+      confidence: result.confidence,
+      engine: result.engine,
+      regionSource: result.regionSource,
+      totalBoxesFound: result.totalBoxesFound,
+      detectorDebug: result.detectorDebug,
+      boxes: result.boxes,
+      cropImageBytes: result.cropImageBytes,
+      truthValue: truthValue,
+      matched: matched,
+      matchedEngine: matchedEngine,
+      mlKitText: mlKitText,
+    );
   }
+
+  static String _normalizeForMatch(String s) => s.toUpperCase().replaceAll(RegExp(r'\s+'), '');
+
+{% if ocr_use_mlkit_fallback %}
+  static Future<String?> _tryMlKit(Uint8List cropJpeg) async {
+    try {
+      final tempDir = await Directory.systemTemp.createTemp('ocr_mlkit_');
+      final tempFile = File('${tempDir.path}/crop.jpg');
+      await tempFile.writeAsBytes(cropJpeg);
+      try {
+        final inputImage = InputImage.fromFilePath(tempFile.path);
+        final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+        final mlResult = await recognizer.processImage(inputImage);
+        recognizer.close();
+        return mlResult.text.replaceAll(RegExp(r'\s+'), '');
+      } finally {
+        await tempDir.delete(recursive: true);
+      }
+    } catch (e) {
+      debugPrint('[OCR] ML Kit fallback error: $e');
+      return null;
+    }
+  }
+{% endif %}
 
   // ── Isolate entry point ────────────────────────────────────────────────
 
@@ -294,6 +389,22 @@ class OcrRecognizer {
         'threshold=$threshold candidates=${candidates.length} afterNMS=${kept.length}';
     debugPrint('[OCR] $debug, classes: ${kept.map((b) => b.className).toList()}');
     return (kept, debug);
+  }
+
+  /// Converts pixel-space detections into the same normalized DetectionResult
+  /// shape the rest of the app already uses (detection_result.dart) -- lets
+  /// a saved OCR scan reuse the existing DetectionOverlay/history-screen box
+  /// review UI instead of building a parallel one.
+  static List<DetectionResult> _toDetectionResults(List<_LabeledBox> boxes, img.Image source) {
+    final w = source.width.toDouble();
+    final h = source.height.toDouble();
+    return boxes
+        .map((b) => DetectionResult(
+              className: b.className,
+              confidence: b.confidence,
+              bbox: Rect.fromLTWH(b.x / w, b.y / h, b.w / w, b.h / h),
+            ))
+        .toList();
   }
 
   static List<_LabeledBox> _nms(List<_LabeledBox> boxes, {double iouThreshold = 0.45}) {
@@ -483,10 +594,15 @@ class OcrRecognizer {
     final decoder = CtcDecoder(charset: charset, blankIndex: blankIndex);
     final lines = <String>[];
     final confs = <double>[];
+    Uint8List? firstCropJpeg;
 
     for (final rect in lineRects) {
       if (rect[2] <= 0 || rect[3] <= 0) continue;
       final crop = img.copyCrop(source, x: rect[0], y: rect[1], width: rect[2], height: rect[3]);
+      // Kept for a possible ML Kit fallback attempt on the exact crop the
+      // CRNN read, and as a compact image for saving to history -- only the
+      // first line's crop, since a plate is almost always a single line.
+      firstCropJpeg ??= Uint8List.fromList(img.encodeJpg(crop, quality: 85));
       final normalized = normalizer.normalize(crop);
       final input = normalized.reshape([1, normalizer.imgH, normalizer.imgW, 1]);
 
@@ -509,6 +625,8 @@ class OcrRecognizer {
       engine: 'crnn',
       regionSource: regionSource,
       totalBoxesFound: boxes.length,
+      boxes: _toDetectionResults(boxes, source),
+      cropImageBytes: firstCropJpeg,
       detectorDebug: detectorDebug,
     );
   }
@@ -541,6 +659,7 @@ class OcrRecognizer {
         regionSource: 'no_char_boxes',
         totalBoxesFound: boxes.length,
         detectorDebug: detectorDebug,
+        boxes: _toDetectionResults(boxes, source),
       );
     }
 
@@ -583,6 +702,7 @@ class OcrRecognizer {
       regionSource: 'char_boxes(${charBoxes.length})',
       totalBoxesFound: boxes.length,
       detectorDebug: detectorDebug,
+      boxes: _toDetectionResults(boxes, source),
     );
   }
 

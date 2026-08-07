@@ -215,6 +215,17 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             # New App UI rather than guessed by naming convention -- used by
             # the CRNN engine when individual character boxes aren't found.
             "ocr_region_class": settings.get("ocr_region_class") or None,
+            # Truth-value flow: scan a QR/barcode sticker for the real
+            # engine number first, compare the camera OCR read against it.
+            "ocr_use_qr_truth": bool(settings.get("ocr_use_qr_truth")),
+            # Per-app, not hardcoded in the template -- how many characters
+            # the engine number should be, used to validate/pick the right
+            # substring out of the QR payload and as a sanity check on the
+            # OCR read. None (not configured) skips length-based logic.
+            "ocr_expected_length": settings.get("ocr_expected_length") or None,
+            # If the CRNN read doesn't match the QR truth value, try Google
+            # ML Kit on the same crop as a second opinion before giving up.
+            "ocr_use_mlkit_fallback": bool(settings.get("ocr_use_mlkit_fallback")),
         }
 
     app_name = get_attr(app_project, "name", "My App")
@@ -252,7 +263,10 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         ),
         "app_type": app_type,
         "is_ocr_app": is_ocr_app,
-        "scan_type": settings.get("scan_type", "model"),
+        # OCR apps default to "engine" so the shared history screen shows
+        # "Serial"/"Engine Code" labels instead of "VIN"/"Model" -- already
+        # built into history_screen.dart.j2, just needs this flag set.
+        "scan_type": settings.get("scan_type", "engine" if is_ocr_app else "model"),
         "app_settings": settings,
         # Detection engine selector: 'default' (single-target flow) or
         # 'multiclass' (mandatory-class checklist + per-class OCR verification).
@@ -334,6 +348,8 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             "lib/ml/ctc_decoder.dart": "ctc_decoder.dart.j2",
             "lib/ml/ocr_recognizer.dart": "ocr_recognizer.dart.j2",
         })
+        if ocr_ctx.get("ocr_use_qr_truth"):
+            files["lib/screens/ocr_qr_scan_screen.dart"] = "ocr_qr_scan_screen.dart.j2"
 
     # Android mipmap icon sizes: density -> (width, height)
     MIPMAP_SIZES = {
