@@ -326,6 +326,42 @@ class OcrRecognizer {
     return unionArea > 0 ? interArea / unionArea : 0.0;
   }
 
+  /// Fraction of [inner]'s own area that falls inside [outer]. Unlike IoU
+  /// (which penalizes size mismatch), this only asks "is inner substantially
+  /// contained by outer" -- exactly what "is this character box inside the
+  /// plate box" needs, since a small char box inside a much larger plate box
+  /// should score near 1.0, not get penalized for the size difference the
+  /// way IoU would.
+  static double _containment(_LabeledBox inner, _LabeledBox outer) {
+    final interLeft = inner.x > outer.x ? inner.x : outer.x;
+    final interTop = inner.y > outer.y ? inner.y : outer.y;
+    final interRight = (inner.x + inner.w) < (outer.x + outer.w) ? (inner.x + inner.w) : (outer.x + outer.w);
+    final interBottom = (inner.y + inner.h) < (outer.y + outer.h) ? (inner.y + inner.h) : (outer.y + outer.h);
+    final interW = interRight > interLeft ? interRight - interLeft : 0;
+    final interH = interBottom > interTop ? interBottom - interTop : 0;
+    final interArea = (interW * interH).toDouble();
+    final innerArea = (inner.w * inner.h).toDouble();
+    return innerArea > 0 ? interArea / innerArea : 0.0;
+  }
+
+  /// Real characters are always inside the plate box, by construction --
+  /// that's how every training photo is labeled (a `plate` box drawn around
+  /// the whole plate, then character boxes drawn on characters that are
+  /// physically inside it). A "character" detection that falls outside the
+  /// plate boundary is noise (a scratch, reflection, or adjacent surface
+  /// feature that happened to score above threshold), not a real character
+  /// -- this is what was turning into stray extra characters in the decoded
+  /// text. Filtering by containment instead of by an expected character
+  /// count keeps this universal across any plate format/length, with
+  /// nothing to configure per project. Falls back to the unfiltered list
+  /// when no plate/region box was found in this frame at all -- no spatial
+  /// reference to filter against.
+  static List<_LabeledBox> _filterCharBoxesToPlate(List<_LabeledBox> charBoxes, List<_LabeledBox> regionBoxes) {
+    if (regionBoxes.isEmpty) return charBoxes;
+    final plate = regionBoxes.first;
+    return charBoxes.where((b) => _containment(b, plate) >= 0.5).toList();
+  }
+
   // ── Reading-order assembly: group into rows (top-to-bottom), sort each
   // row left-to-right. Ports `_sort_boxes_reading_order` (ocr.py). ───────
 
@@ -390,7 +426,8 @@ class OcrRecognizer {
     int blankIndex,
     String detectorDebug,
   ) {
-    final charBoxes = boxes.where((b) => b.className.length == 1).toList();
+    // Region box first -- character boxes get filtered through it below,
+    // so it has to be known before charBoxes is finalized.
     // Prefer the explicitly-configured region class (set in the app
     // builder UI) over the length-based heuristic -- exact and unambiguous
     // when it's set; the heuristic only matters when it isn't.
@@ -399,6 +436,11 @@ class OcrRecognizer {
         : boxes.where((b) => b.className.length != 1))
         .toList()
       ..sort((a, b) => b.confidence.compareTo(a.confidence));
+
+    final rawCharBoxes = boxes.where((b) => b.className.length == 1).toList();
+    final charBoxes = _filterCharBoxesToPlate(rawCharBoxes, regionBoxes);
+    debugPrint('[OCR] char boxes: ${rawCharBoxes.length} raw -> ${charBoxes.length} after plate-containment filter '
+        '(region boxes: ${regionBoxes.length})');
 
     List<List<int>> lineRects;
     String regionSource;
@@ -482,8 +524,15 @@ class OcrRecognizer {
     List<String> charset,
     String detectorDebug,
   ) {
-    final charBoxes = boxes.where((b) => b.className.length == 1).toList();
-    debugPrint('[OCR] detector found ${boxes.length} total boxes, ${charBoxes.length} single-character-class boxes');
+    final regionBoxes = (regionClassName != null
+        ? boxes.where((b) => b.className.toLowerCase() == regionClassName!.toLowerCase())
+        : boxes.where((b) => b.className.length != 1))
+        .toList()
+      ..sort((a, b) => b.confidence.compareTo(a.confidence));
+    final rawCharBoxes = boxes.where((b) => b.className.length == 1).toList();
+    final charBoxes = _filterCharBoxesToPlate(rawCharBoxes, regionBoxes);
+    debugPrint('[OCR] char boxes: ${rawCharBoxes.length} raw -> ${charBoxes.length} after plate-containment filter '
+        '(region boxes: ${regionBoxes.length})');
     if (charBoxes.isEmpty) {
       return OcrResult(
         text: '',
