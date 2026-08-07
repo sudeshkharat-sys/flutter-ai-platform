@@ -26,6 +26,9 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
   bool _processing = false;
   OcrResult? _lastResult;
   String? _error;
+  // No detector is flawless on every frame -- a stray extra character or a
+  // misread digit should be a quick edit before saving, not a retake.
+  final TextEditingController _textController = TextEditingController();
 
   @override
   void initState() {
@@ -79,6 +82,7 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
+    _textController.dispose();
     super.dispose();
   }
 
@@ -95,6 +99,7 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
       if (!mounted) return;
       setState(() {
         _lastResult = result;
+        _textController.text = result.text;
         _processing = false;
       });
     } catch (e) {
@@ -108,16 +113,17 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
 
   Future<void> _saveResult() async {
     final result = _lastResult;
-    if (result == null || result.text.isEmpty) return;
+    final text = _textController.text.trim();
+    if (result == null || text.isEmpty) return;
 
     final inspectionId = await db.saveInspection(InspectionsCompanion.insert(
-      vin: result.text,
+      vin: text,
       modelCode: 'OCR',
     ));
     await db.saveTaskResult(TaskResultsCompanion.insert(
       inspectionId: inspectionId,
       taskName: 'ocr_read',
-      className: result.text,
+      className: text,
       confidence: result.confidence ?? 0.0,
       success: true,
     ));
@@ -126,10 +132,16 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Saved'), backgroundColor: Colors.green),
     );
-    setState(() => _lastResult = null);
+    setState(() {
+      _lastResult = null;
+      _textController.clear();
+    });
   }
 
-  void _scanAgain() => setState(() => _lastResult = null);
+  void _scanAgain() => setState(() {
+        _lastResult = null;
+        _textController.clear();
+      });
 
   @override
   Widget build(BuildContext context) {
@@ -210,13 +222,29 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            result.text.isEmpty ? '(no text detected)' : result.text,
+          TextField(
+            controller: _textController,
+            autocorrect: false,
+            enableSuggestions: false,
+            textCapitalization: TextCapitalization.characters,
             style: const TextStyle(
               color: Colors.white,
               fontSize: 28,
               fontWeight: FontWeight.bold,
               letterSpacing: 2,
+            ),
+            decoration: InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              hintText: result.text.isEmpty ? '(no text detected -- type it in)' : null,
+              hintStyle: const TextStyle(color: Colors.white38, fontSize: 20),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(top: 2),
+            child: Text(
+              'Tap to correct before saving',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
             ),
           ),
           if (result.confidence != null)
