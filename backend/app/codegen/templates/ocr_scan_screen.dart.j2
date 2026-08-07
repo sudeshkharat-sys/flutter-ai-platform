@@ -227,6 +227,13 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
                 style: const TextStyle(color: Colors.white70),
               ),
             ),
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              'Debug: ${result.totalBoxesFound} boxes found, source: ${result.regionSource}',
+              style: const TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+          ),
         ],
       ),
     );

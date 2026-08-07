@@ -19,7 +19,20 @@ class OcrResult {
   final String text;
   final double? confidence;
   final String engine;
-  const OcrResult({required this.text, required this.confidence, required this.engine});
+  /// Which region-selection branch produced the crop(s) fed to the
+  /// recognizer -- 'char_boxes' / 'region_class' / 'any_box_union' /
+  /// 'full_frame' (or 'no_char_boxes' for the CNN engine). Shown in the app
+  /// so a bad read can be diagnosed (detector problem vs. recognizer
+  /// problem) without needing adb logcat.
+  final String regionSource;
+  final int totalBoxesFound;
+  const OcrResult({
+    required this.text,
+    required this.confidence,
+    required this.engine,
+    this.regionSource = 'unknown',
+    this.totalBoxesFound = 0,
+  });
 }
 
 /// Two-stage OCR pipeline: a YOLO plate/character detector locates the
@@ -235,7 +248,10 @@ class OcrRecognizer {
 
       candidates.add(_LabeledBox(x, y, bw, bh, maxScore, labels[classId]));
     }
-    return _nms(candidates);
+    final kept = _nms(candidates);
+    debugPrint('[OCR] raw candidates above threshold ($threshold): ${candidates.length}, '
+        'after NMS: ${kept.length}, classes: ${kept.map((b) => b.className).toList()}');
+    return kept;
   }
 
   static List<_LabeledBox> _nms(List<_LabeledBox> boxes, {double iouThreshold = 0.45}) {
@@ -342,7 +358,9 @@ class OcrRecognizer {
       ..sort((a, b) => b.confidence.compareTo(a.confidence));
 
     List<List<int>> lineRects;
+    String regionSource;
     if (charBoxes.isNotEmpty) {
+      regionSource = 'char_boxes(${charBoxes.length})';
       final rows = _groupIntoRows(charBoxes);
       lineRects = rows.map((row) {
         final x1 = (row.map((b) => b.x).reduce((a, b) => a < b ? a : b) - 4).clamp(0, source.width - 1);
@@ -352,11 +370,13 @@ class OcrRecognizer {
         return [x1, y1, x2 - x1, y2 - y1];
       }).toList();
     } else if (regionBoxes.isNotEmpty) {
+      regionSource = 'region_class(${regionBoxes.length})';
       final p = regionBoxes.first;
       lineRects = [
         [p.x, p.y, p.w, p.h]
       ];
     } else if (boxes.isNotEmpty) {
+      regionSource = 'any_box_union(${boxes.length})';
       final x1 = boxes.map((b) => b.x).reduce((a, b) => a < b ? a : b).clamp(0, source.width - 1);
       final y1 = boxes.map((b) => b.y).reduce((a, b) => a < b ? a : b).clamp(0, source.height - 1);
       final x2 = boxes.map((b) => b.x + b.w).reduce((a, b) => a > b ? a : b).clamp(1, source.width);
@@ -365,10 +385,14 @@ class OcrRecognizer {
         [x1, y1, x2 - x1, y2 - y1]
       ];
     } else {
+      regionSource = 'full_frame(0)';
       lineRects = [
         [0, 0, source.width, source.height]
       ];
     }
+    debugPrint('[OCR] detector found ${boxes.length} total boxes '
+        '(${charBoxes.length} char, ${regionBoxes.length} region) -> $regionSource, '
+        'crop rects: $lineRects');
 
     const normalizer = LineNormalizer();
     final decoder = CtcDecoder(charset: charset, blankIndex: blankIndex);
@@ -394,7 +418,13 @@ class OcrRecognizer {
     }
 
     final avgConf = confs.isEmpty ? null : confs.reduce((a, b) => a + b) / confs.length;
-    return OcrResult(text: lines.join(), confidence: avgConf, engine: 'crnn');
+    return OcrResult(
+      text: lines.join(),
+      confidence: avgConf,
+      engine: 'crnn',
+      regionSource: regionSource,
+      totalBoxesFound: boxes.length,
+    );
   }
 
   // ── Stage 2b: per-character CNN classifier ──────────────────────────────
@@ -408,7 +438,10 @@ class OcrRecognizer {
     List<String> charset,
   ) {
     final charBoxes = boxes.where((b) => b.className.length == 1).toList();
-    if (charBoxes.isEmpty) return const OcrResult(text: '', confidence: null, engine: 'cnn');
+    debugPrint('[OCR] detector found ${boxes.length} total boxes, ${charBoxes.length} single-character-class boxes');
+    if (charBoxes.isEmpty) {
+      return OcrResult(text: '', confidence: null, engine: 'cnn', regionSource: 'no_char_boxes', totalBoxesFound: boxes.length);
+    }
 
     final inputShape = recognizer.getInputTensor(0).shape; // [1, size, size, 1]
     if (inputShape.length != 4) return const OcrResult(text: '', confidence: null, engine: 'cnn');
@@ -442,7 +475,13 @@ class OcrRecognizer {
     }
 
     final avgConf = confs.isEmpty ? null : confs.reduce((a, b) => a + b) / confs.length;
-    return OcrResult(text: buffer.toString(), confidence: avgConf, engine: 'cnn');
+    return OcrResult(
+      text: buffer.toString(),
+      confidence: avgConf,
+      engine: 'cnn',
+      regionSource: 'char_boxes(${charBoxes.length})',
+      totalBoxesFound: boxes.length,
+    );
   }
 
   /// Ports `_extract_char_crop` (ai-vision-platform's ocr_training.py):
