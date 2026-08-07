@@ -26,12 +26,19 @@ class OcrResult {
   /// problem) without needing adb logcat.
   final String regionSource;
   final int totalBoxesFound;
+  /// Raw detector diagnostics: input/output tensor shapes and the best
+  /// score seen across every anchor (even below threshold) -- tells us
+  /// whether the model produced weak-but-real scores (a threshold/tuning
+  /// question) or the output tensor shape didn't match what the parser
+  /// expected at all (a structural bug, not a tuning one).
+  final String detectorDebug;
   const OcrResult({
     required this.text,
     required this.confidence,
     required this.engine,
     this.regionSource = 'unknown',
     this.totalBoxesFound = 0,
+    this.detectorDebug = '',
   });
 }
 
@@ -143,12 +150,12 @@ class OcrRecognizer {
     // model runs on a landscape frame while boxes get drawn as if portrait.
     decoded = img.bakeOrientation(decoded);
 
-    final boxes = _detectBoxes(decoded, detector, labels, inputSize, threshold);
+    final (boxes, detectorDebug) = _detectBoxes(decoded, detector, labels, inputSize, threshold);
 
     if (engine == 'cnn') {
-      return _recognizeWithCnn(decoded, boxes, recognizer, charset);
+      return _recognizeWithCnn(decoded, boxes, recognizer, charset, detectorDebug);
     }
-    return _recognizeWithCrnn(decoded, boxes, recognizer, charset, blankIndex);
+    return _recognizeWithCrnn(decoded, boxes, recognizer, charset, blankIndex, detectorDebug);
   }
 
   // ── Stage 1: YOLO detector (plate + character boxes) ───────────────────
@@ -157,7 +164,14 @@ class OcrRecognizer {
   // because ModelManager is a single-active-model singleton and this
   // pipeline needs the detector and the recognizer loaded simultaneously.
 
-  static List<_LabeledBox> _detectBoxes(
+  /// Returns the kept boxes plus a human-readable diagnostic string (input
+  /// tensor shape, output tensor shape, best raw score seen across every
+  /// anchor even if below threshold) -- distinguishes "the model produced
+  /// weak-but-real scores" (a threshold/training question) from "the output
+  /// tensor shape didn't match what this code expects at all" (a structural
+  /// parsing bug), which look identical from the outside (both give zero
+  /// kept boxes) but need completely different fixes.
+  static (List<_LabeledBox>, String) _detectBoxes(
     img.Image source,
     Interpreter interpreter,
     List<String> labels,
@@ -199,8 +213,14 @@ class OcrRecognizer {
     }
     final input = inputData.reshape([1, inputSize, inputSize, 3]);
 
+    final inTensorShape = interpreter.getInputTensor(0).shape;
     final shape = interpreter.getOutputTensor(0).shape;
-    if (shape.length != 3) return [];
+    if (shape.length != 3) {
+      final debug = 'input=$inTensorShape output=$shape (rank ${shape.length}, expected 3) '
+          '-- UNEXPECTED SHAPE, aborting parse. labels=${labels.length}';
+      debugPrint('[OCR] $debug');
+      return (<_LabeledBox>[], debug);
+    }
     final output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
     interpreter.run(input, output);
     final raw = output[0];
@@ -220,6 +240,8 @@ class OcrRecognizer {
     final coordScale = maxSampled > 1.5 ? inputSize.toDouble() : 1.0;
 
     final candidates = <_LabeledBox>[];
+    var bestScoreSeen = -1.0;
+    var bestScoreClass = '?';
     for (var i = 0; i < numBoxes; i++) {
       var maxScore = -1.0;
       var classId = -1;
@@ -229,6 +251,10 @@ class OcrRecognizer {
           maxScore = score;
           classId = j - 4;
         }
+      }
+      if (maxScore > bestScoreSeen) {
+        bestScoreSeen = maxScore;
+        bestScoreClass = (classId >= 0 && classId < labels.length) ? labels[classId] : 'id:$classId';
       }
       if (maxScore < threshold || classId < 0 || classId >= labels.length) continue;
 
@@ -249,9 +275,11 @@ class OcrRecognizer {
       candidates.add(_LabeledBox(x, y, bw, bh, maxScore, labels[classId]));
     }
     final kept = _nms(candidates);
-    debugPrint('[OCR] raw candidates above threshold ($threshold): ${candidates.length}, '
-        'after NMS: ${kept.length}, classes: ${kept.map((b) => b.className).toList()}');
-    return kept;
+    final debug = 'in=$inTensorShape out=$shape anchors=$numBoxes '
+        'bestScore=${bestScoreSeen.toStringAsFixed(3)}(${bestScoreClass}) '
+        'threshold=$threshold candidates=${candidates.length} afterNMS=${kept.length}';
+    debugPrint('[OCR] $debug, classes: ${kept.map((b) => b.className).toList()}');
+    return (kept, debug);
   }
 
   static List<_LabeledBox> _nms(List<_LabeledBox> boxes, {double iouThreshold = 0.45}) {
@@ -346,6 +374,7 @@ class OcrRecognizer {
     Interpreter recognizer,
     List<String> charset,
     int blankIndex,
+    String detectorDebug,
   ) {
     final charBoxes = boxes.where((b) => b.className.length == 1).toList();
     // Prefer the explicitly-configured region class (set in the app
@@ -424,6 +453,7 @@ class OcrRecognizer {
       engine: 'crnn',
       regionSource: regionSource,
       totalBoxesFound: boxes.length,
+      detectorDebug: detectorDebug,
     );
   }
 
@@ -436,11 +466,19 @@ class OcrRecognizer {
     List<_LabeledBox> boxes,
     Interpreter recognizer,
     List<String> charset,
+    String detectorDebug,
   ) {
     final charBoxes = boxes.where((b) => b.className.length == 1).toList();
     debugPrint('[OCR] detector found ${boxes.length} total boxes, ${charBoxes.length} single-character-class boxes');
     if (charBoxes.isEmpty) {
-      return OcrResult(text: '', confidence: null, engine: 'cnn', regionSource: 'no_char_boxes', totalBoxesFound: boxes.length);
+      return OcrResult(
+        text: '',
+        confidence: null,
+        engine: 'cnn',
+        regionSource: 'no_char_boxes',
+        totalBoxesFound: boxes.length,
+        detectorDebug: detectorDebug,
+      );
     }
 
     final inputShape = recognizer.getInputTensor(0).shape; // [1, size, size, 1]
@@ -481,6 +519,7 @@ class OcrRecognizer {
       engine: 'cnn',
       regionSource: 'char_boxes(${charBoxes.length})',
       totalBoxesFound: boxes.length,
+      detectorDebug: detectorDebug,
     );
   }
 
