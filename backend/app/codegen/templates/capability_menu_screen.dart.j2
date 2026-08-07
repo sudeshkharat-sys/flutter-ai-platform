@@ -1,0 +1,99 @@
+import 'package:flutter/material.dart';
+import 'package:camera/camera.dart';
+{% if 'vin' in combined_capabilities %}
+import 'vin_scan_screen.dart';
+{% endif %}
+{% if 'engine' in combined_capabilities %}
+import 'engine_scan_screen.dart';
+{% endif %}
+{% if 'ocr' in combined_capabilities %}
+  {% if ocr_truth_source == 'qr' %}
+import 'ocr_truth_scan_screen.dart';
+  {% else %}
+import 'ocr_scan_screen.dart';
+  {% endif %}
+{% endif %}
+
+/// Home screen for a "combined" app -- one app offering more than one
+/// capability (VIN scan / Chakan-engine scan / OCR plate read), picked at
+/// New App creation time via a checklist rather than a single app_type.
+/// Each button below leads into the exact same screens a single-purpose
+/// app would use; History/Dashboard need no changes since every flow here
+/// already writes into the same shared Inspections/TaskResults tables.
+class CapabilityMenuScreen extends StatelessWidget {
+  final List<CameraDescription> cameras;
+  const CapabilityMenuScreen({super.key, required this.cameras});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('{{ app_name }}')),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+{% if 'vin' in combined_capabilities %}
+            _menuButton(
+              context,
+              'Scan VIN',
+              Icons.qr_code_scanner,
+              () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const VinScanScreen(modelCode: '')),
+              ),
+            ),
+            const SizedBox(height: 16),
+{% endif %}
+{% if 'engine' in combined_capabilities %}
+            _menuButton(
+              context,
+              'Scan Engine Code',
+              Icons.qr_code_scanner,
+              () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const EngineScanScreen(modelCode: '')),
+              ),
+            ),
+            const SizedBox(height: 16),
+{% endif %}
+{% if 'ocr' in combined_capabilities %}
+            _menuButton(
+              context,
+              'Read Plate (OCR)',
+              Icons.camera_alt,
+              () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) =>
+{% if ocr_truth_source == 'qr' %}
+                      OcrTruthScanScreen(modelCode: '', cameras: cameras),
+{% elif ocr_truth_source == 'type' %}
+                      OcrScanScreen(cameras: cameras, truthValue: '{{ ocr_truth_text | default("", true) }}'),
+{% else %}
+                      OcrScanScreen(cameras: cameras),
+{% endif %}
+                ),
+              ),
+            ),
+{% endif %}
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _menuButton(BuildContext context, String label, IconData icon, VoidCallback onPressed) {
+    return ElevatedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon),
+      label: Text(label, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+      style: ElevatedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(vertical: 18),
+        backgroundColor: const Color(0xFFDC143C),
+        foregroundColor: Colors.white,
+      ),
+    );
+  }
+}

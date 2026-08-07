@@ -11,21 +11,31 @@ import '../services/sync_service.dart';
 {% if is_ocr_app %}
 import 'ocr_scan_screen.dart';
 {% endif %}
+{% set SC = scan_screen_class_name | default('ScanScreen') %}
 
-class ScanScreen extends StatefulWidget {
+// This template is normally rendered once as "ScanScreen". A "combined"
+// app (VIN scan + Chakan/engine scan + OCR all in one app) renders it
+// TWICE with different (scan_screen_class_name, scan_type) overrides --
+// once per barcode format -- since scan_type/is_ocr_app drive Jinja
+// conditionals that decide which code exists at all, not a runtime value;
+// two differently-named classes is how both formats coexist in one app
+// without changing a single line of behavior for existing single-format
+// apps (scan_screen_class_name defaults to plain "ScanScreen" for them,
+// identical output to before this existed).
+class {{ SC }} extends StatefulWidget {
   final String modelCode;
   // Only used by the OCR engine-code-truth flow, to hand real cameras on to
   // OcrScanScreen after a successful barcode scan -- the VIN/model-code
   // flow doesn't need this (it navigates to HomeScreen with cameras: []
   // today, unrelated to this change).
   final List<CameraDescription> cameras;
-  const ScanScreen({super.key, required this.modelCode, this.cameras = const []});
+  const {{ SC }}({super.key, required this.modelCode, this.cameras = const []});
 
   @override
-  State<ScanScreen> createState() => _ScanScreenState();
+  State<{{ SC }}> createState() => _{{ SC }}State();
 }
 
-class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
+class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
   bool _isProcessing = false;
   List<dynamic> _scanData = [];
   String? _pendingBarcode;

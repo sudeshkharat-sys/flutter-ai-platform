@@ -68,6 +68,18 @@ export default function NewApp() {
   const [appName, setAppName] = useState('');
   const [packageName, setPackageName] = useState('');
 
+  // ── Combined app: one app offering more than one capability (VIN scan /
+  // Chakan-engine scan / OCR plate-read), instead of the usual single
+  // app_type. Opt-in and separate from every other app_type -- doesn't
+  // change how a plain OCR-only or sequential app gets built.
+  const [isCombinedApp, setIsCombinedApp] = useState(false);
+  const [combinedCapabilities, setCombinedCapabilities] = useState([]); // e.g. ['vin','engine','ocr']
+  const toggleCapability = (cap) => {
+    setCombinedCapabilities(prev =>
+      prev.includes(cap) ? prev.filter(c => c !== cap) : [...prev, cap]
+    );
+  };
+
   // ── OCR bundle (pre-built recognizer .tflite, not a .pt to convert) ────
   const [isOcrApp, setIsOcrApp] = useState(false);
   const [ocrEngine, setOcrEngine] = useState('crnn');
@@ -205,18 +217,27 @@ export default function NewApp() {
 
   const handleCreate = async () => {
     try {
-      const app_settings = isOcrApp
-        ? {
-            app_type: 'ocr',
-            ocr_engine: ocrEngine,
-            ocr_region_class: ocrRegionClass,
-            ocr_truth_source: ocrTruthSource,
-            ocr_expected_length: ocrExpectedLength ? parseInt(ocrExpectedLength, 10) : null,
-            ocr_truth_text: ocrTruthSource === 'type' ? ocrTruthText : null,
-            ocr_use_mlkit_fallback: ocrUseMlkitFallback,
-            confidence_threshold: 0.5,
-          }
-        : { app_type: 'sequential', confidence_threshold: 0.5 };
+      const ocrSettings = {
+        ocr_engine: ocrEngine,
+        ocr_region_class: ocrRegionClass,
+        ocr_truth_source: ocrTruthSource,
+        ocr_expected_length: ocrExpectedLength ? parseInt(ocrExpectedLength, 10) : null,
+        ocr_truth_text: ocrTruthSource === 'type' ? ocrTruthText : null,
+        ocr_use_mlkit_fallback: ocrUseMlkitFallback,
+      };
+      let app_settings;
+      if (isCombinedApp) {
+        app_settings = {
+          app_type: 'combined',
+          combined_capabilities: combinedCapabilities,
+          confidence_threshold: 0.5,
+          ...(combinedCapabilities.includes('ocr') ? ocrSettings : {}),
+        };
+      } else if (isOcrApp) {
+        app_settings = { app_type: 'ocr', confidence_threshold: 0.5, ...ocrSettings };
+      } else {
+        app_settings = { app_type: 'sequential', confidence_threshold: 0.5 };
+      }
       const r = await createApp({
         name: appName || 'Inspection App',
         package_name: packageName,
@@ -249,6 +270,42 @@ export default function NewApp() {
 
         {step === 1 && (
           <div className="newapp-step-body">
+            <div className="model-preview-field" style={{ marginBottom: 4 }}>
+              <label className="section-label">
+                <input
+                  type="checkbox"
+                  checked={isCombinedApp}
+                  onChange={e => setIsCombinedApp(e.target.checked)}
+                  style={{ marginRight: 6 }}
+                />
+                Combined app -- offer more than one capability in this app
+              </label>
+              {isCombinedApp && (
+                <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+                  {[
+                    { key: 'vin', label: 'VIN scan' },
+                    { key: 'engine', label: 'Chakan / Engine scan' },
+                    { key: 'ocr', label: 'OCR plate read' },
+                  ].map(cap => (
+                    <label key={cap.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        checked={combinedCapabilities.includes(cap.key)}
+                        onChange={() => toggleCapability(cap.key)}
+                      />
+                      {cap.label}
+                    </label>
+                  ))}
+                </div>
+              )}
+              {isCombinedApp && combinedCapabilities.includes('ocr') && (
+                <p className="newapp-sidebar-hint" style={{ marginTop: 6 }}>
+                  Configure OCR (region class, expected text source, recognizer upload) in the
+                  "OCR Bundle" tab below, same as a plain OCR app.
+                </p>
+              )}
+            </div>
+
             <div className="newapp-tabs">
               {['upload', 'existing', 'ocr'].map(t => (
                 <button

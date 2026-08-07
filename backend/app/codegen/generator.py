@@ -185,7 +185,19 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
     # so unlike the generic detection app type this resolves by model_kind
     # rather than by inspection_tasks.
     app_type = settings.get("app_type", "sequential")
-    is_ocr_app = app_type == "ocr"
+    # A "combined" app (VIN scan + Chakan/engine scan + OCR all in one app,
+    # picked via a capability checklist rather than a single app_type) is a
+    # new, separate, opt-in app_type -- app_type == "ocr" (and every other
+    # existing app_type) is completely untouched by any of this.
+    is_combined_app = app_type == "combined"
+    combined_capabilities = settings.get("combined_capabilities") or []
+    if isinstance(combined_capabilities, str):
+        import json as _json
+        try:
+            combined_capabilities = _json.loads(combined_capabilities)
+        except Exception:
+            combined_capabilities = []
+    is_ocr_app = app_type == "ocr" or (is_combined_app and "ocr" in combined_capabilities)
     ocr_ctx = {}
     if is_ocr_app:
         ocr_detector = next(
@@ -278,10 +290,16 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         ),
         "app_type": app_type,
         "is_ocr_app": is_ocr_app,
+        "is_combined_app": is_combined_app,
         # OCR apps default to "engine" so the shared history screen shows
         # "Serial"/"Engine Code" labels instead of "VIN"/"Model" -- already
-        # built into history_screen.dart.j2, just needs this flag set.
-        "scan_type": settings.get("scan_type", "engine" if is_ocr_app else "model"),
+        # built into history_screen.dart.j2, just needs this flag set. A
+        # combined app follows the same rule based on which capabilities it
+        # actually has (prefers "engine" labels if engine/OCR is present).
+        "scan_type": settings.get(
+            "scan_type",
+            "engine" if (is_ocr_app or (is_combined_app and "engine" in combined_capabilities)) else "model",
+        ),
         "app_settings": settings,
         # Detection engine selector: 'default' (single-target flow) or
         # 'multiclass' (mandatory-class checklist + per-class OCR verification).
@@ -369,6 +387,20 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         # Logic" section for the PART_NO/SERIAL_NO parsing + engine_data.json
         # lookup this piggybacks on.
 
+    if is_combined_app:
+        # A combined app needs the barcode-scan logic rendered up to THREE
+        # times under different class names -- VIN format, Chakan/engine
+        # format (leads to the multiclass inspection flow), and OCR's own
+        # engine-format QR-truth scan (leads to OcrScanScreen instead) --
+        # since scan_type/is_ocr_app are Jinja-time constants that decide
+        # which code exists at all, not a runtime value. The single default
+        # "lib/screens/scan_screen.dart" entry doesn't apply here; each
+        # variant is rendered separately below, after the main files loop,
+        # with its own ctx override.
+        files.pop("lib/screens/scan_screen.dart", None)
+        files["lib/screens/capability_menu_screen.dart"] = "capability_menu_screen.dart.j2"
+        ctx["combined_capabilities"] = combined_capabilities
+
     # Android mipmap icon sizes: density -> (width, height)
     MIPMAP_SIZES = {
         "mipmap-mdpi":    (48,  48),
@@ -426,7 +458,22 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 tmpl = env.get_template(template_name)
                 content = tmpl.render(**ctx)
                 zf.writestr(full_path, content)
-        
+
+        if is_combined_app:
+            # Render scan_screen.dart.j2 once per barcode-format capability
+            # this app actually has, each as its own class so they can
+            # coexist -- see the comment on files.pop(...) above for why.
+            scan_tmpl = env.get_template("scan_screen.dart.j2")
+            if "vin" in combined_capabilities:
+                vin_ctx = {**ctx, "scan_type": "model", "scan_screen_class_name": "VinScanScreen", "is_ocr_app": False}
+                zf.writestr(f"{root}/lib/screens/vin_scan_screen.dart", scan_tmpl.render(**vin_ctx))
+            if "engine" in combined_capabilities:
+                engine_ctx = {**ctx, "scan_type": "engine", "scan_screen_class_name": "EngineScanScreen", "is_ocr_app": False}
+                zf.writestr(f"{root}/lib/screens/engine_scan_screen.dart", scan_tmpl.render(**engine_ctx))
+            if "ocr" in combined_capabilities and ocr_ctx.get("ocr_truth_source") == "qr":
+                ocr_truth_ctx = {**ctx, "scan_type": "engine", "scan_screen_class_name": "OcrTruthScanScreen", "is_ocr_app": True}
+                zf.writestr(f"{root}/lib/screens/ocr_truth_scan_screen.dart", scan_tmpl.render(**ocr_truth_ctx))
+
         import json
         zf.writestr(f"{root}/assets/models_manifest.json", json.dumps(models_manifest, indent=2))
         zf.writestr(f"{root}/assets/master_data.json", json.dumps(master_data_manifest, indent=2))
