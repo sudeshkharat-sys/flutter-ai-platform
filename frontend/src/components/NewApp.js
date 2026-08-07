@@ -79,10 +79,12 @@ export default function NewApp() {
   // Which detected class is the plate/region box (picked explicitly here
   // instead of guessed in code -- avoids any class-naming mismatch).
   const [ocrRegionClass, setOcrRegionClass] = useState('');
-  // Truth-value flow: scan a QR/barcode sticker for the real engine number,
-  // check the camera OCR read against it, optionally fall back to ML Kit.
-  const [ocrUseQrTruth, setOcrUseQrTruth] = useState(false);
+  // Where the truth value the camera read gets checked against comes from:
+  // 'none' (OCR only, no pass/fail), 'qr' (scan the engine's QR/barcode
+  // sticker), 'type' (one fixed expected string, typed once here).
+  const [ocrTruthSource, setOcrTruthSource] = useState('none');
   const [ocrExpectedLength, setOcrExpectedLength] = useState('');
+  const [ocrTruthText, setOcrTruthText] = useState('');
   const [ocrUseMlkitFallback, setOcrUseMlkitFallback] = useState(false);
   // modelId -> classes[], so the OCR tab can offer a dropdown of every
   // class across whichever detector(s) got added to this app.
@@ -208,8 +210,9 @@ export default function NewApp() {
             app_type: 'ocr',
             ocr_engine: ocrEngine,
             ocr_region_class: ocrRegionClass,
-            ocr_use_qr_truth: ocrUseQrTruth,
+            ocr_truth_source: ocrTruthSource,
             ocr_expected_length: ocrExpectedLength ? parseInt(ocrExpectedLength, 10) : null,
+            ocr_truth_text: ocrTruthSource === 'type' ? ocrTruthText : null,
             ocr_use_mlkit_fallback: ocrUseMlkitFallback,
             confidence_threshold: 0.5,
           }
@@ -381,16 +384,18 @@ export default function NewApp() {
                 </div>
 
                 <div className="model-preview-field">
-                  <label className="section-label">
-                    <input
-                      type="checkbox"
-                      checked={ocrUseQrTruth}
-                      onChange={e => setOcrUseQrTruth(e.target.checked)}
-                      style={{ marginRight: 6 }}
-                    />
-                    Scan a QR/barcode for the real value first (truth-value check)
-                  </label>
-                  {ocrUseQrTruth && (
+                  <label className="section-label">Expected text source (truth value)</label>
+                  <select
+                    className="field-input"
+                    value={ocrTruthSource}
+                    onChange={e => setOcrTruthSource(e.target.value)}
+                  >
+                    <option value="none">None -- OCR only, no pass/fail</option>
+                    <option value="qr">Scan a QR/barcode (e.g. engine number sticker)</option>
+                    <option value="type">Type one fixed expected value</option>
+                  </select>
+
+                  {ocrTruthSource === 'qr' && (
                     <>
                       <input
                         className="field-input"
@@ -401,16 +406,34 @@ export default function NewApp() {
                         placeholder="Expected code length (e.g. 10) -- optional"
                         style={{ marginTop: 8 }}
                       />
-                      <label style={{ display: 'block', marginTop: 8 }}>
-                        <input
-                          type="checkbox"
-                          checked={ocrUseMlkitFallback}
-                          onChange={e => setOcrUseMlkitFallback(e.target.checked)}
-                          style={{ marginRight: 6 }}
-                        />
-                        Fall back to Google ML Kit if the camera read doesn't match
-                      </label>
+                      <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
+                        Reuses the platform's existing engine-code barcode scan: "PART_NO SERIAL_NO"
+                        gets validated against your Engine Data list; a code with no space falls back
+                        to the first N characters as the truth value (needs the length above).
+                      </p>
                     </>
+                  )}
+
+                  {ocrTruthSource === 'type' && (
+                    <input
+                      className="field-input"
+                      value={ocrTruthText}
+                      onChange={e => setOcrTruthText(e.target.value)}
+                      placeholder="Expected text, e.g. ABC123"
+                      style={{ marginTop: 8 }}
+                    />
+                  )}
+
+                  {ocrTruthSource !== 'none' && (
+                    <label style={{ display: 'block', marginTop: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={ocrUseMlkitFallback}
+                        onChange={e => setOcrUseMlkitFallback(e.target.checked)}
+                        style={{ marginRight: 6 }}
+                      />
+                      Fall back to Google ML Kit if the camera read doesn't match
+                    </label>
                   )}
                 </div>
 

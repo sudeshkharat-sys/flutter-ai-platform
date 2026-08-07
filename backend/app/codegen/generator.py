@@ -215,18 +215,33 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             # New App UI rather than guessed by naming convention -- used by
             # the CRNN engine when individual character boxes aren't found.
             "ocr_region_class": settings.get("ocr_region_class") or None,
-            # Truth-value flow: scan a QR/barcode sticker for the real
-            # engine number first, compare the camera OCR read against it.
-            "ocr_use_qr_truth": bool(settings.get("ocr_use_qr_truth")),
             # Per-app, not hardcoded in the template -- how many characters
             # the engine number should be, used to validate/pick the right
             # substring out of the QR payload and as a sanity check on the
             # OCR read. None (not configured) skips length-based logic.
             "ocr_expected_length": settings.get("ocr_expected_length") or None,
-            # If the CRNN read doesn't match the QR truth value, try Google
-            # ML Kit on the same crop as a second opinion before giving up.
+            # If the read doesn't match the truth value, try Google ML Kit
+            # on the same crop as a second opinion before giving up.
             "ocr_use_mlkit_fallback": bool(settings.get("ocr_use_mlkit_fallback")),
         }
+
+        # Where the truth value the camera read gets checked against comes
+        # from -- 'none' (no truth value, OCR-only like the very first
+        # version of this app type), 'qr' (scan the engine's QR/barcode
+        # sticker, reusing scan_screen.dart.j2's existing validated
+        # engine-code logic), or 'type' (one fixed expected string, typed
+        # once at app-build time -- e.g. verifying a stamp that should
+        # always read the same thing, not a per-unit serial).
+        # ocr_use_qr_truth is kept derived from this (rather than removed)
+        # so scan_screen.dart.j2/main.dart.j2's existing checks don't need
+        # to change, and apps built before this option existed (which only
+        # ever set ocr_use_qr_truth) keep behaving the same way.
+        truth_source = settings.get("ocr_truth_source")
+        if not truth_source:
+            truth_source = "qr" if settings.get("ocr_use_qr_truth") else "none"
+        ocr_ctx["ocr_truth_source"] = truth_source
+        ocr_ctx["ocr_use_qr_truth"] = truth_source == "qr"
+        ocr_ctx["ocr_truth_text"] = settings.get("ocr_truth_text") or None
 
     app_name = get_attr(app_project, "name", "My App")
     package_name = get_attr(app_project, "package_name", "com.example.app")
