@@ -237,7 +237,21 @@ class OcrRecognizer {
       if (cx > maxSampled) maxSampled = cx;
       if (cy > maxSampled) maxSampled = cy;
     }
-    final coordScale = maxSampled > 1.5 ? inputSize.toDouble() : 1.0;
+    // NOTE: this is the OPPOSITE ternary from the shared detector.dart's
+    // coordScale -- that code DIVIDES the raw coordinate by coordScale to
+    // normalize it into [0,1] space (so absolute-pixel coords, the >1.5
+    // case, divide by inputSize; already-normalized coords divide by 1).
+    // This code instead MULTIPLIES, because it needs coordinates in
+    // canvas-pixel space (0..inputSize) to feed the letterbox-undo math
+    // below, not normalized [0,1] space. Reusing the same condition with
+    // "multiply" instead of "divide" silently inverted the outcome: an
+    // already-absolute-pixel raw value (e.g. cx=300) got multiplied by
+    // inputSize AGAIN (300*640), and a normalized raw value (e.g. w=0.03,
+    // meaning ~19px) got left unscaled at 0.03 -- which then rounds to 0
+    // after the letterbox-undo division, silently failing the `bw < 2`
+    // check. That's exactly why a 95.5%-confidence detection produced zero
+    // candidates: the classification was fine, the box geometry wasn't.
+    final coordScale = maxSampled > 1.5 ? 1.0 : inputSize.toDouble();
 
     final candidates = <_LabeledBox>[];
     var bestScoreSeen = -1.0;
