@@ -459,4 +459,15 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 if img_path.exists():
                     zf.writestr(f"{root}/assets/reference_images/{filename}", img_path.read_bytes())
 
+        # pubspec.yaml always declares assets/reference_images/ as a required
+        # asset directory, but a zip has no real notion of an empty directory
+        # -- one never gets created here unless at least one task actually
+        # has a reference image. OCR apps (and any app with none configured)
+        # never write anything above, so `flutter pub get` can't find the
+        # directory pubspec.yaml promised and logs "unable to find directory
+        # entry" (non-fatal on its own, but worth not shipping broken).
+        # A trivial always-present placeholder guarantees the directory
+        # exists in the zip regardless.
+        zf.writestr(f"{root}/assets/reference_images/.gitkeep", "")
+
     return buf.getvalue()

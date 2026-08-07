@@ -3,3 +3,16 @@
 -dontwarn org.tensorflow.lite.support.**
 -keep class io.flutter.plugins.** { *; }
 -keep class com.baseflow.permissionhandler.** { *; }
+{% if ocr_enabled or ocr_use_mlkit_fallback %}
+# google_mlkit_text_recognition's TextRecognizer references optional
+# language-specific recognizer classes (Chinese/Japanese/Korean/Devanagari)
+# that only exist if those separate ML Kit dependencies are also pulled in.
+# This app only ever initializes TextRecognitionScript.latin, so those
+# classes are genuinely never used at runtime -- without these -dontwarn
+# rules, R8 (release-build minification) treats the missing references as
+# a hard error and the build fails, even though nothing actually calls them.
+-dontwarn com.google.mlkit.vision.text.chinese.**
+-dontwarn com.google.mlkit.vision.text.devanagari.**
+-dontwarn com.google.mlkit.vision.text.japanese.**
+-dontwarn com.google.mlkit.vision.text.korean.**
+{% endif %}
