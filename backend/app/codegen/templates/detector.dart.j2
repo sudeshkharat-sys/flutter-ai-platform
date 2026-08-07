@@ -7,6 +7,11 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 {% if ocr_enabled %}
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 {% endif %}
+{% if ocr_enabled and ocr_uses_crnn %}
+import 'dart:convert';
+import 'line_normalizer.dart';
+import 'ctc_decoder.dart';
+{% endif %}
 import 'detection_result.dart';
 
 class ModelManager {
@@ -25,10 +30,27 @@ class ModelManager {
   int get labelsCount => _labels.length;
 
 {% if ocr_enabled %}
-  /// Per-class OCR config: className -> target text (empty string = no OCR for that class)
+  /// Per-class OCR config: className -> target text ('' = no target, just
+  /// read and record the text -- OCR still runs, there's simply nothing to
+  /// pass/fail against). A class present here has OCR enabled at all;
+  /// absence means OCR never runs for that class.
   static const Map<String, String> _classOcrTargets = {
-{% set seen_ocr = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.ocrEnabled and cfg.ocrTargetText and cls not in seen_ocr.keys %}{% set seen_ocr.keys = seen_ocr.keys + [cls] %}
-    '{{ cls }}': '{{ cfg.ocrTargetText }}',
+{% set seen_ocr = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.ocrEnabled and cls not in seen_ocr.keys %}{% set seen_ocr.keys = seen_ocr.keys + [cls] %}
+    '{{ cls }}': '{{ cfg.ocrTargetText | default("", true) }}',
+{% endif %}{% endfor %}{% endfor %}
+  };
+
+  /// Per-class OCR reading engine: 'crnn' (this project's trained model,
+  /// falling back to ML Kit only if a target is set and the CRNN read
+  /// doesn't match it) or 'mlkit' (generic ML Kit only, matched against
+  /// target text -- the original behavior). Defaults to 'mlkit' when a
+  /// class has no explicit ocrEngine -- true for every class configured
+  /// before this option existed, so rebuilding an existing app keeps doing
+  /// exactly what it always did. The app builder UI now always writes
+  /// 'crnn' explicitly for any class configured or edited going forward.
+  static const Map<String, String> _classOcrEngine = {
+{% set seen_engine = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.ocrEnabled and cls not in seen_engine.keys %}{% set seen_engine.keys = seen_engine.keys + [cls] %}
+    '{{ cls }}': '{{ cfg.ocrEngine | default("mlkit", true) }}',
 {% endif %}{% endfor %}{% endfor %}
   };
 
@@ -161,20 +183,108 @@ class ModelManager {
     }
   }
 
-  /// Crops bbox, runs OCR on normal + inverted image, picks best result
-  /// using Levenshtein similarity against target. Returns updated DetectionResult.
-  static Future<DetectionResult> _runOcrOnBbox(
+{% if ocr_uses_crnn %}
+  // ── CRNN recognizer (per-class OCR reading, not the whole-image detector
+  // above) -- a second, independent interpreter, since the class it reads
+  // from is already known (found by the main detector); no plate/char
+  // detection of its own is needed, just normalize + CTC decode. Reuses
+  // LineNormalizer/CtcDecoder verbatim from the standalone OCR app type.
+
+  Interpreter? _ocrInterpreter;
+  List<String> _ocrCharset = [];
+  int _ocrBlankIndex = -1;
+  bool _ocrModelLoaded = false;
+
+  Future<void> loadOcrModel(String modelPath, String charsetPath, {String? metaPath}) async {
+    if (_ocrModelLoaded) return;
+    try {
+      _ocrInterpreter = await Interpreter.fromAsset(modelPath);
+      final charsetData = await rootBundle.loadString(charsetPath);
+      _ocrCharset = charsetData.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+      _ocrBlankIndex = _ocrCharset.length;
+      if (metaPath != null) {
+        try {
+          final metaData = await rootBundle.loadString(metaPath);
+          final meta = jsonDecode(metaData) as Map<String, dynamic>;
+          if (meta['charset'] is List) {
+            _ocrCharset = (meta['charset'] as List).map((e) => e.toString()).toList();
+          }
+          if (meta['blank_index'] is int) {
+            _ocrBlankIndex = meta['blank_index'] as int;
+          }
+        } catch (e) {
+          debugPrint('[OCR] Could not parse OCR meta.json, using charset.txt defaults: $e');
+        }
+      }
+      _ocrModelLoaded = true;
+      debugPrint('[OCR] CRNN recognizer loaded: $modelPath (${_ocrCharset.length} chars)');
+    } catch (e) {
+      debugPrint('[OCR] Error loading CRNN recognizer: $e');
+    }
+  }
+
+  static Future<String?> _readWithCrnn(Interpreter interpreter, List<String> charset, int blankIndex, img.Image crop) async {
+    const normalizer = LineNormalizer();
+    final normalized = normalizer.normalize(crop);
+    final input = normalized.reshape([1, normalizer.imgH, normalizer.imgW, 1]);
+    final shape = interpreter.getOutputTensor(0).shape; // [1, T, C]
+    if (shape.length != 3) return null;
+    final output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+    interpreter.run(input, output);
+    final decoder = CtcDecoder(charset: charset, blankIndex: blankIndex);
+    return decoder.decode(output[0]);
+  }
+{% endif %}
+
+  /// Crops bbox, reads it, and returns an updated DetectionResult.
+  /// engine == 'crnn': this project's trained CRNN reads the crop directly;
+  /// if a target is configured and the CRNN read doesn't match it, ML Kit
+  /// gets one fallback attempt on the same crop before giving up.
+  /// engine == 'mlkit' (or unset): original behavior, unchanged -- generic
+  /// ML Kit on normal + inverted crops, matched against target text, and
+  /// (like before) skipped entirely when no target is configured, since
+  /// there's nothing to match against.
+  Future<DetectionResult> _runOcrOnBbox(
     DetectionResult det,
     img.Image source,
   ) async {
-    final String? target = _classOcrTargets[det.className];
-    if (target == null || target.isEmpty) return det;
+    if (!_classOcrTargets.containsKey(det.className)) return det;
+    final String target = _classOcrTargets[det.className] ?? '';
+    final String engine = _classOcrEngine[det.className] ?? 'mlkit';
+    if (engine != 'crnn' && target.isEmpty) return det;
 
     final int x = (det.bbox.left * source.width).round().clamp(0, source.width - 1);
     final int y = (det.bbox.top * source.height).round().clamp(0, source.height - 1);
     final int w = (det.bbox.width * source.width).round().clamp(1, source.width - x);
     final int h = (det.bbox.height * source.height).round().clamp(1, source.height - y);
     final cropped = img.copyCrop(source, x: x, y: y, width: w, height: h);
+
+{% if ocr_uses_crnn %}
+    if (engine == 'crnn' && _ocrModelLoaded && _ocrInterpreter != null) {
+      final crnnText = await _readWithCrnn(_ocrInterpreter!, _ocrCharset, _ocrBlankIndex, cropped) ?? '';
+      if (target.isEmpty) {
+        // No target configured -- just record what was read, no pass/fail.
+        return det.copyWith(ocrText: crnnText);
+      }
+      final normTarget = _normalizeOcr(target);
+      final normCrnn = _normalizeOcr(crnnText);
+      final crnnMatched = normTarget.length <= 8
+          ? normCrnn == normTarget || normCrnn.contains(normTarget)
+          : _ocrSimilarity(normCrnn, normTarget) >= 0.9;
+      debugPrint('[OCR][CRNN] read="$crnnText" target="$target" matched=$crnnMatched');
+      if (crnnMatched) {
+        return det.copyWith(ocrText: crnnText, isOcrMatch: true);
+      }
+      // CRNN didn't match the target -- fall through to the ML Kit path
+      // below as a second opinion on this exact crop, same idea as the
+      // standalone OCR app's CRNN-then-ML-Kit fallback.
+    }
+    if (engine == 'crnn' && target.isEmpty) {
+      // CRNN model not loaded/ready and there's no target to fall back
+      // against with ML Kit -- nothing useful to return.
+      return det;
+    }
+{% endif %}
 
     final normalBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped)));
     final invertBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped, invert: true)));

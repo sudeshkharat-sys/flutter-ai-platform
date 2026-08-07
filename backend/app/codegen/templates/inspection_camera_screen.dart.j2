@@ -202,6 +202,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       _addLog("Loading Task: ${task['name']}");
       _addLog("TFLite: ${task['tflite_path']}");
       await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
+{% if ocr_uses_crnn %}
+      await ModelManager().loadOcrModel(
+        '{{ ocr_class_recognizer_tflite | default("", true) }}',
+        '{{ ocr_class_recognizer_charset | default("", true) }}',
+        metaPath: {% if ocr_class_recognizer_meta %}'{{ ocr_class_recognizer_meta }}'{% else %}null{% endif %},
+      );
+{% endif %}
       if (mounted) {
         setState(() {
           _isLoadingModel = false;
@@ -1240,6 +1247,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       _addLog("Loading Task: ${task['name']}");
       _addLog("TFLite: ${task['tflite_path']}");
       await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
+{% if ocr_uses_crnn %}
+      await ModelManager().loadOcrModel(
+        '{{ ocr_class_recognizer_tflite | default("", true) }}',
+        '{{ ocr_class_recognizer_charset | default("", true) }}',
+        metaPath: {% if ocr_class_recognizer_meta %}'{{ ocr_class_recognizer_meta }}'{% else %}null{% endif %},
+      );
+{% endif %}
       if (mounted) {
         setState(() {
           _isLoadingModel = false;

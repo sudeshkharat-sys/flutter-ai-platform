@@ -308,16 +308,41 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
     }
 
     # OCR codegen is only enabled in multi-class mode AND when at least one
-    # mandatory class has OCR verification configured with target text.
+    # mandatory class has OCR reading turned on. Target text is now OPTIONAL
+    # (empty = just read and record the text, no pass/fail) -- it used to be
+    # required here, which is why this no longer also checks ocrTargetText.
     ctx["ocr_enabled"] = (
         ctx["detection_method"] == "multiclass"
         and any(
             bool((entry.get("classOcrConfig") or {}).get(cls, {}).get("ocrEnabled"))
-            and bool((entry.get("classOcrConfig") or {}).get(cls, {}).get("ocrTargetText"))
             for entry in models_manifest
             for cls in (entry.get("mandatoryClasses") or [])
         )
     )
+
+    # A class's OCR config can pick the reading engine: 'crnn' (this
+    # project's trained model, with ML Kit as a fallback when a target text
+    # is set and the CRNN read doesn't match it) or the original 'mlkit'
+    # (generic ML Kit only, matched against target text -- kept for any
+    # class configured before this option existed, so rebuilding an
+    # existing app doesn't silently change its behavior). One CRNN
+    # recognizer per app, shared by every CRNN-configured class, resolved
+    # the same way the standalone OCR app type resolves its recognizer.
+    ctx["ocr_uses_crnn"] = ctx["ocr_enabled"] and any(
+        (entry.get("classOcrConfig") or {}).get(cls, {}).get("ocrEngine", "mlkit") == "crnn"
+        for entry in models_manifest
+        for cls in (entry.get("mandatoryClasses") or [])
+        if (entry.get("classOcrConfig") or {}).get(cls, {}).get("ocrEnabled")
+    )
+    if ctx["ocr_uses_crnn"]:
+        _ocr_recognizer = next(
+            (ma for ma in models_list if get_attr(ma, "model_kind", "detector") in ("ocr_cnn", "ocr_crnn")), None
+        )
+        _rec_paths = model_id_to_paths.get(get_attr(_ocr_recognizer, "id"), {}) if _ocr_recognizer else {}
+        ctx["ocr_class_engine"] = "cnn" if (_ocr_recognizer and get_attr(_ocr_recognizer, "model_kind") == "ocr_cnn") else "crnn"
+        ctx["ocr_class_recognizer_tflite"] = _rec_paths.get("tflite")
+        ctx["ocr_class_recognizer_charset"] = _rec_paths.get("charset")
+        ctx["ocr_class_recognizer_meta"] = _rec_paths.get("meta")
 
     # Map of zip path -> template name
     files = {
@@ -386,6 +411,13 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         # instead of a separate screen -- see that file's "Engine Code Scan
         # Logic" section for the PART_NO/SERIAL_NO parsing + engine_data.json
         # lookup this piggybacks on.
+
+    if ctx["ocr_uses_crnn"] and "lib/ml/line_normalizer.dart" not in files:
+        # A plain multiclass app (not app_type "ocr") using the new
+        # per-class CRNN OCR option needs these two files too, even though
+        # it's not an "is_ocr_app" -- they're not otherwise included.
+        files["lib/ml/line_normalizer.dart"] = "line_normalizer.dart.j2"
+        files["lib/ml/ctc_decoder.dart"] = "ctc_decoder.dart.j2"
 
     if is_combined_app:
         # A combined app needs the barcode-scan logic rendered up to THREE
