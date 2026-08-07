@@ -4,8 +4,6 @@ import 'screens/home_screen.dart';
 import 'screens/scan_screen.dart';
 {% if is_ocr_app %}import 'screens/ocr_scan_screen.dart';
 {% endif %}
-{% if is_ocr_app and ocr_use_qr_truth %}import 'screens/ocr_qr_scan_screen.dart';
-{% endif %}
 
 List<CameraDescription> cameras = [];
 
@@ -36,7 +34,7 @@ class MyApp extends StatelessWidget {
           elevation: 0,
         ),
       ),
-      home: {% if is_ocr_app and ocr_use_qr_truth %}OcrQrScanScreen(cameras: cameras){% elif is_ocr_app %}OcrScanScreen(cameras: cameras){% elif app_type == 'sequential' %}const ScanScreen(modelCode: '{{ app_settings.model_code }}'){% else %}HomeScreen(cameras: cameras){% endif %},
+      home: {% if is_ocr_app and ocr_use_qr_truth %}ScanScreen(modelCode: '', cameras: cameras){% elif is_ocr_app %}OcrScanScreen(cameras: cameras){% elif app_type == 'sequential' %}const ScanScreen(modelCode: '{{ app_settings.model_code }}'){% else %}HomeScreen(cameras: cameras){% endif %},
     );
   }
 }

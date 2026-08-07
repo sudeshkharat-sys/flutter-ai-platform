@@ -2,15 +2,24 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:camera/camera.dart';
 import 'home_screen.dart';
 import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
 import '../services/sync_service.dart';
+{% if is_ocr_app %}
+import 'ocr_scan_screen.dart';
+{% endif %}
 
 class ScanScreen extends StatefulWidget {
   final String modelCode;
-  const ScanScreen({super.key, required this.modelCode});
+  // Only used by the OCR engine-code-truth flow, to hand real cameras on to
+  // OcrScanScreen after a successful barcode scan -- the VIN/model-code
+  // flow doesn't need this (it navigates to HomeScreen with cameras: []
+  // today, unrelated to this change).
+  final List<CameraDescription> cameras;
+  const ScanScreen({super.key, required this.modelCode, this.cameras = const []});
 
   @override
   State<ScanScreen> createState() => _ScanScreenState();
@@ -258,31 +267,46 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
 
     // Auto mode
     final int spaceIdx = raw.indexOf(' ');
-    if (spaceIdx == -1) {
+    String partNo;
+    String engineSerial;
+    if (spaceIdx != -1) {
+      partNo = raw.substring(0, spaceIdx).trim();
+      engineSerial = raw.substring(spaceIdx + 1).trim();
+      setState(() => _isProcessing = true);
+      if (!_isKnownEngineCode(partNo)) {
+        _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+        return;
+      }
+    } else {
+{% if is_ocr_app and ocr_expected_length %}
+      // Second sticker format: no separator -- the engine number is a
+      // fixed-length prefix. There's no part number in this format, so
+      // nothing to validate against engine_data.json; only the length
+      // gets checked.
+      if (raw.length < {{ ocr_expected_length }}) {
+        setState(() => _isProcessing = true);
+        _showErrorDialog('Invalid engine barcode. Expected "PART_NO SERIAL_NO", or a code at least {{ ocr_expected_length }} characters long.');
+        return;
+      }
+      partNo = '';
+      engineSerial = raw.substring(0, {{ ocr_expected_length }});
+      setState(() => _isProcessing = true);
+{% else %}
       setState(() => _isProcessing = true);
       _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
       return;
-    }
-
-    setState(() => _isProcessing = true);
-
-    final String partNo = raw.substring(0, spaceIdx).trim();
-    final String engineSerial = raw.substring(spaceIdx + 1).trim();
-
-    if (!_isKnownEngineCode(partNo)) {
-      _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
-      return;
+{% endif %}
     }
 
     if (!mounted) return;
     _scannerController.stop();
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => HomeScreen(
+        builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: engineSerial){% else %}HomeScreen(
           vin: engineSerial,
           modelCode: partNo,
           cameras: [],
-        ),
+        ){% endif %},
       ),
     ).then((_) async {
       if (mounted) {
@@ -301,31 +325,42 @@ class _ScanScreenState extends State<ScanScreen> with WidgetsBindingObserver {
     if (raw == null || _isProcessing) return;
 
     final int spaceIdx = raw.indexOf(' ');
-    if (spaceIdx == -1) {
+    String partNo;
+    String engineSerial;
+    if (spaceIdx != -1) {
+      partNo = raw.substring(0, spaceIdx).trim();
+      engineSerial = raw.substring(spaceIdx + 1).trim();
+      setState(() => _isProcessing = true);
+      if (!_isKnownEngineCode(partNo)) {
+        _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+        return;
+      }
+    } else {
+{% if is_ocr_app and ocr_expected_length %}
+      if (raw.length < {{ ocr_expected_length }}) {
+        setState(() => _isProcessing = true);
+        _showErrorDialog('Invalid engine barcode. Expected "PART_NO SERIAL_NO", or a code at least {{ ocr_expected_length }} characters long.');
+        return;
+      }
+      partNo = '';
+      engineSerial = raw.substring(0, {{ ocr_expected_length }});
+      setState(() => _isProcessing = true);
+{% else %}
       setState(() => _isProcessing = true);
       _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
       return;
-    }
-
-    setState(() => _isProcessing = true);
-
-    final String partNo = raw.substring(0, spaceIdx).trim();
-    final String engineSerial = raw.substring(spaceIdx + 1).trim();
-
-    if (!_isKnownEngineCode(partNo)) {
-      _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
-      return;
+{% endif %}
     }
 
     if (!mounted) return;
     _scannerController.stop();
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => HomeScreen(
+        builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: engineSerial){% else %}HomeScreen(
           vin: engineSerial,
           modelCode: partNo,
           cameras: [],
-        ),
+        ){% endif %},
       ),
     ).then((_) async {
       if (mounted) {

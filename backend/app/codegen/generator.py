@@ -348,8 +348,11 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             "lib/ml/ctc_decoder.dart": "ctc_decoder.dart.j2",
             "lib/ml/ocr_recognizer.dart": "ocr_recognizer.dart.j2",
         })
-        if ocr_ctx.get("ocr_use_qr_truth"):
-            files["lib/screens/ocr_qr_scan_screen.dart"] = "ocr_qr_scan_screen.dart.j2"
+        # QR truth-value scanning reuses the platform's existing, validated
+        # engine-code barcode flow (scan_screen.dart.j2, scan_type="engine")
+        # instead of a separate screen -- see that file's "Engine Code Scan
+        # Logic" section for the PART_NO/SERIAL_NO parsing + engine_data.json
+        # lookup this piggybacks on.
 
     # Android mipmap icon sizes: density -> (width, height)
     MIPMAP_SIZES = {
