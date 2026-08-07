@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl } from '../api';
+import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl, uploadOcrModel } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -542,13 +542,19 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     setDefaultAIConfigs(newConfigs);
   };
 
+  // A CRNN recognizer bundle attached to the app (via "Add Model" -> OCR
+  // bundle) makes 'crnn' the default engine for newly-enabled OCR classes;
+  // without one, 'mlkit' is the only usable option (same generic behavior
+  // this checkbox has always had).
+  const hasOcrRecognizer = models.some(m => m.model_kind === 'ocr_cnn' || m.model_kind === 'ocr_crnn');
+
   const handleToggleClassOcr = (index, cls) => {
     const newConfigs = [...defaultAIConfigs];
     const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
     if (ocr[cls]?.ocrEnabled) {
-      ocr[cls] = { ocrEnabled: false, ocrTargetText: '' };
+      ocr[cls] = { ocrEnabled: false, ocrTargetText: '', ocrEngine: ocr[cls]?.ocrEngine || 'mlkit' };
     } else {
-      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '' };
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (hasOcrRecognizer ? 'crnn' : 'mlkit') };
     }
     newConfigs[index].classOcrConfig = ocr;
     setDefaultAIConfigs(newConfigs);
@@ -558,6 +564,14 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newConfigs = [...defaultAIConfigs];
     const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
     ocr[cls] = { ...(ocr[cls] || {}), ocrTargetText: text };
+    newConfigs[index].classOcrConfig = ocr;
+    setDefaultAIConfigs(newConfigs);
+  };
+
+  const handleClassOcrEngine = (index, cls, engine) => {
+    const newConfigs = [...defaultAIConfigs];
+    const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrEngine: engine };
     newConfigs[index].classOcrConfig = ocr;
     setDefaultAIConfigs(newConfigs);
   };
@@ -641,9 +655,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newData = [...reviewData];
     const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
     if (ocr[cls]?.ocrEnabled) {
-      ocr[cls] = { ocrEnabled: false, ocrTargetText: '' };
+      ocr[cls] = { ocrEnabled: false, ocrTargetText: '', ocrEngine: ocr[cls]?.ocrEngine || 'mlkit' };
     } else {
-      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '' };
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (hasOcrRecognizer ? 'crnn' : 'mlkit') };
     }
     newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
     setReviewData(newData);
@@ -653,6 +667,14 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newData = [...reviewData];
     const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
     ocr[cls] = { ...(ocr[cls] || {}), ocrTargetText: text };
+    newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
+    setReviewData(newData);
+  };
+
+  const handleRowClassOcrEngine = (rowIndex, aiIdx, cls, engine) => {
+    const newData = [...reviewData];
+    const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrEngine: engine };
     newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
     setReviewData(newData);
   };
@@ -1029,14 +1051,24 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                             onChange={() => handleToggleClassOcr(idx, c)}
                                             style={{ width: 13, height: 13, accentColor: '#f0a500', cursor: 'pointer' }}
                                           />
-                                          <span style={{ fontSize: 11, color: '#f0a500' }}>OCR verify</span>
+                                          <span style={{ fontSize: 11, color: '#f0a500' }}>Read text</span>
                                           {ocrCfg.ocrEnabled && (
-                                            <input
-                                              style={{ ...inputStyle, padding: '3px 8px', fontSize: 11, width: 160 }}
-                                              placeholder="Target text e.g. AB-1234"
-                                              value={ocrCfg.ocrTargetText || ''}
-                                              onChange={e => handleClassOcrText(idx, c, e.target.value)}
-                                            />
+                                            <>
+                                              <select
+                                                style={{ ...miniSelectStyle, fontSize: 11 }}
+                                                value={ocrCfg.ocrEngine || 'mlkit'}
+                                                onChange={e => handleClassOcrEngine(idx, c, e.target.value)}
+                                              >
+                                                <option value="crnn" disabled={!hasOcrRecognizer}>Trained OCR model{!hasOcrRecognizer ? ' (attach one first)' : ''}</option>
+                                                <option value="mlkit">Generic (ML Kit)</option>
+                                              </select>
+                                              <input
+                                                style={{ ...inputStyle, padding: '3px 8px', fontSize: 11, width: 160 }}
+                                                placeholder="Expected text (optional)"
+                                                value={ocrCfg.ocrTargetText || ''}
+                                                onChange={e => handleClassOcrText(idx, c, e.target.value)}
+                                              />
+                                            </>
                                           )}
                                         </div>
                                       )}
@@ -1161,14 +1193,24 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                               onChange={() => handleToggleRowClassOcr(rowIndex, aiIdx, c)}
                                               style={{ width: 12, height: 12, accentColor: '#f0a500', cursor: 'pointer' }}
                                             />
-                                            <span style={{ fontSize: 10, color: '#f0a500' }}>OCR</span>
+                                            <span style={{ fontSize: 10, color: '#f0a500' }}>Read text</span>
                                             {ocrCfg.ocrEnabled && (
-                                              <input
-                                                style={{ padding: '2px 6px', fontSize: 10, width: 110, borderRadius: 4, border: '1px solid #444', background: '#111', color: '#fff' }}
-                                                placeholder="Target text"
-                                                value={ocrCfg.ocrTargetText || ''}
-                                                onChange={e => handleRowClassOcrText(rowIndex, aiIdx, c, e.target.value)}
-                                              />
+                                              <>
+                                                <select
+                                                  style={{ padding: '2px 6px', fontSize: 10, borderRadius: 4, border: '1px solid #444', background: '#111', color: '#fff' }}
+                                                  value={ocrCfg.ocrEngine || 'mlkit'}
+                                                  onChange={e => handleRowClassOcrEngine(rowIndex, aiIdx, c, e.target.value)}
+                                                >
+                                                  <option value="crnn" disabled={!hasOcrRecognizer}>Trained model{!hasOcrRecognizer ? ' (attach one)' : ''}</option>
+                                                  <option value="mlkit">ML Kit</option>
+                                                </select>
+                                                <input
+                                                  style={{ padding: '2px 6px', fontSize: 10, width: 110, borderRadius: 4, border: '1px solid #444', background: '#111', color: '#fff' }}
+                                                  placeholder="Expected text (optional)"
+                                                  value={ocrCfg.ocrTargetText || ''}
+                                                  onChange={e => handleRowClassOcrText(rowIndex, aiIdx, c, e.target.value)}
+                                                />
+                                              </>
                                             )}
                                           </div>
                                         )}
@@ -1294,6 +1336,32 @@ function ModelModal({ id, appIds, onClose }) {
   const [convLog, setConvLog] = useState('');
   const pollRef = useRef(null);
 
+  // OCR bundle (already-built .tflite + charset, from ai-vision-platform's
+  // OCR trainer) -- registered directly via /models/upload-ocr, no .pt
+  // conversion needed. Once attached to this app, its class's OCR config
+  // can select "Trained OCR model" instead of generic ML Kit.
+  const [ocrTfliteFile, setOcrTfliteFile] = useState(null);
+  const [ocrCharsetFile, setOcrCharsetFile] = useState(null);
+  const [ocrMetaFile, setOcrMetaFile] = useState(null);
+  const [ocrModelName, setOcrModelName] = useState('');
+  const [ocrModelKind, setOcrModelKind] = useState('ocr_crnn');
+  const [ocrUploading, setOcrUploading] = useState(false);
+  const [ocrError, setOcrError] = useState('');
+
+  const startOcrUpload = async () => {
+    if (!ocrTfliteFile || !ocrCharsetFile || !ocrModelName.trim()) return;
+    setOcrUploading(true); setOcrError('');
+    try {
+      const r = await uploadOcrModel(ocrTfliteFile, ocrCharsetFile, ocrModelName.trim(), ocrModelKind, ocrMetaFile);
+      const mid = r.data.id;
+      await updateApp(id, { model_asset_ids: [...appIds, mid] });
+      onClose();
+    } catch (e) {
+      setOcrError(e?.response?.data?.detail || 'Upload failed');
+      setOcrUploading(false);
+    }
+  };
+
   useEffect(() => { getModels().then(r => setExisting(r.data.filter(m => m.status === 'ready'))); }, []);
 
   const handleDrop = async (file) => {
@@ -1333,10 +1401,49 @@ function ModelModal({ id, appIds, onClose }) {
         </div>
 
         <div style={{ display: 'flex', gap: 4, background: C.surface2, padding: 4, borderRadius: 10 }}>
-          {['library', 'new'].map(t => <button key={t} onClick={() => setTab(t)} style={{ flex: 1, padding: '8px', borderRadius: 7, border: 'none', background: tab === t ? C.accent : 'transparent', color: tab === t ? '#fff' : C.muted, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{t === 'library' ? 'From Library' : 'Convert New'}</button>)}
+          {['library', 'new', 'ocr'].map(t => <button key={t} onClick={() => setTab(t)} style={{ flex: 1, padding: '8px', borderRadius: 7, border: 'none', background: tab === t ? C.accent : 'transparent', color: tab === t ? '#fff' : C.muted, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{t === 'library' ? 'From Library' : t === 'new' ? 'Convert New' : 'OCR Bundle'}</button>)}
         </div>
 
-        {tab === 'library' ? (
+        {tab === 'ocr' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <p style={{ fontSize: 12, color: C.muted, margin: 0 }}>
+              Attach a trained OCR recognizer (CRNN or per-char CNN) exported from
+              ai-vision-platform. Once attached, any class's "Read text" option can
+              use it instead of generic ML Kit.
+            </p>
+            <div>
+              <label style={labelStyle}>Model name</label>
+              <input style={inputStyle} value={ocrModelName} onChange={e => setOcrModelName(e.target.value)} placeholder="e.g. Plate CRNN v2" />
+            </div>
+            <div>
+              <label style={labelStyle}>Recognizer type</label>
+              <select style={inputStyle} value={ocrModelKind} onChange={e => setOcrModelKind(e.target.value)}>
+                <option value="ocr_crnn">CRNN (line reader)</option>
+                <option value="ocr_cnn">CNN (per-character)</option>
+              </select>
+            </div>
+            <div onClick={() => document.getElementById('ocr-tflite-up').click()} style={{ border: `2px dashed ${C.border}`, borderRadius: 12, padding: 16, textAlign: 'center', cursor: 'pointer', background: C.surface2, fontSize: 12 }}>
+              <input id="ocr-tflite-up" type="file" accept=".tflite" style={{ display: 'none' }} onChange={e => setOcrTfliteFile(e.target.files[0])} />
+              {ocrTfliteFile ? ocrTfliteFile.name : 'Click to upload recognizer .tflite'}
+            </div>
+            <div onClick={() => document.getElementById('ocr-charset-up').click()} style={{ border: `2px dashed ${C.border}`, borderRadius: 12, padding: 16, textAlign: 'center', cursor: 'pointer', background: C.surface2, fontSize: 12 }}>
+              <input id="ocr-charset-up" type="file" accept=".txt" style={{ display: 'none' }} onChange={e => setOcrCharsetFile(e.target.files[0])} />
+              {ocrCharsetFile ? ocrCharsetFile.name : 'Click to upload charset.txt / labels.txt'}
+            </div>
+            <div onClick={() => document.getElementById('ocr-meta-up').click()} style={{ border: `2px dashed ${C.border}`, borderRadius: 12, padding: 16, textAlign: 'center', cursor: 'pointer', background: C.surface2, fontSize: 12 }}>
+              <input id="ocr-meta-up" type="file" accept=".json" style={{ display: 'none' }} onChange={e => setOcrMetaFile(e.target.files[0])} />
+              {ocrMetaFile ? ocrMetaFile.name : 'Click to upload meta.json (optional)'}
+            </div>
+            {ocrError && <span style={{ fontSize: 12, color: '#e74c3c' }}>{ocrError}</span>}
+            <button
+              disabled={!ocrTfliteFile || !ocrCharsetFile || !ocrModelName.trim() || ocrUploading}
+              onClick={startOcrUpload}
+              style={{ width: '100%', padding: 14, borderRadius: 10, background: C.accent, color: '#fff', fontWeight: 800, border: 'none', cursor: 'pointer', opacity: (!ocrTfliteFile || !ocrCharsetFile || !ocrModelName.trim() || ocrUploading) ? 0.5 : 1 }}
+            >
+              {ocrUploading ? 'Uploading...' : 'Upload & Attach'}
+            </button>
+          </div>
+        ) : tab === 'library' ? (
           <div style={{ maxHeight: 300, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
             {existing.map(m => (
               <div key={m.id} onClick={() => addExisting(m.id)} style={{ padding: 12, borderRadius: 10, background: appIds.includes(m.id) ? 'rgba(76,175,130,0.1)' : C.surface2, border: `1px solid ${appIds.includes(m.id) ? C.success : C.border}`, cursor: appIds.includes(m.id) ? 'default' : 'pointer', display: 'flex', justifyContent: 'space-between' }}>
