@@ -148,6 +148,12 @@ export default function AppBuilder() {
 
   const isBuilding = app.build_status === 'building';
   const isReady = app.build_status === 'ready';
+  // OCR apps don't use the multiclass inspection-task config at all (scan
+  // type, detection method, per-class mandatory/ignore/OCR-target rules) --
+  // showing that whole UI was confusing and non-collapsible for an app type
+  // it doesn't apply to. Show a plain summary of the actual OCR settings
+  // instead.
+  const isOcrApp = app.app_settings?.app_type === 'ocr';
 
   const groupedTasks = (app.inspection_tasks || []).reduce((acc, task) => {
     const code = task.vehicleCode || 'Default';
@@ -223,7 +229,39 @@ export default function AppBuilder() {
         {/* RIGHT SIDEBAR */}
         <div style={{ display: 'flex', flexDirection: 'column', background: C.surface, padding: '24px 20px', gap: 24, overflowY: 'auto' }}>
           
-          {/* 1. Grouped Review Table (Top) */}
+          {/* 1. Grouped Review Table (Top) -- OCR apps get a plain settings
+              summary instead: they don't use per-class inspection tasks,
+              scan type, or detection method at all. */}
+          {isOcrApp ? (
+            <div style={{ background: C.surface2, borderRadius: 16, border: `1px solid ${C.border}`, padding: 20 }}>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: 'uppercase', marginBottom: 14 }}>OCR Configuration</div>
+              {(() => {
+                const s = app.app_settings || {};
+                const truthSource = s.ocr_truth_source || (s.ocr_use_qr_truth ? 'qr' : 'none');
+                const truthLabel = { none: 'None (OCR only, no pass/fail)', qr: 'QR / barcode scan', type: 'Typed fixed value' }[truthSource];
+                const row = (label, value) => (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>
+                    <span style={{ color: C.muted }}>{label}</span>
+                    <span style={{ fontWeight: 700, textAlign: 'right' }}>{value}</span>
+                  </div>
+                );
+                return (
+                  <div>
+                    {row('Recognizer engine', (s.ocr_engine || 'crnn').toUpperCase())}
+                    {row('Plate / region class', s.ocr_region_class || '(auto)')}
+                    {row('Expected text source', truthLabel)}
+                    {truthSource === 'qr' && row('Expected code length', s.ocr_expected_length || '(not set)')}
+                    {truthSource === 'type' && row('Expected value', s.ocr_truth_text || '(not set)')}
+                    {truthSource !== 'none' && row('ML Kit fallback', s.ocr_use_mlkit_fallback ? 'Enabled' : 'Disabled')}
+                  </div>
+                );
+              })()}
+              <div style={{ marginTop: 14, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+                These settings are fixed at creation and aren't editable here yet --
+                to change them, create a fresh app from New App with the new values.
+              </div>
+            </div>
+          ) : (
           <div style={{ background: C.surface2, borderRadius: 16, border: `1px solid ${C.border}`, overflow: 'hidden' }}>
             <div style={{ padding: '16px 20px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.02)' }}>
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: 'uppercase' }}>Inspection Configuration</div>
@@ -231,7 +269,7 @@ export default function AppBuilder() {
                 <Edit3 size={14} /> Edit All
               </button>
             </div>
-            
+
             <div style={{ maxHeight: 400, overflowY: 'auto' }}>
               {Object.keys(groupedTasks).length > 0 ? (
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -275,11 +313,14 @@ export default function AppBuilder() {
               )}
             </div>
           </div>
+          )}
 
           {/* 2. Add Component Button */}
-          <button onClick={() => openProfileModal(false)} style={{ width: '100%', padding: '16px', borderRadius: 12, border: `1px dashed ${C.accent}`, background: 'rgba(220, 20, 60, 0.05)', color: C.accent, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            <Plus size={18} /> Add Component Task
-          </button>
+          {!isOcrApp && (
+            <button onClick={() => openProfileModal(false)} style={{ width: '100%', padding: '16px', borderRadius: 12, border: `1px dashed ${C.accent}`, background: 'rgba(220, 20, 60, 0.05)', color: C.accent, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              <Plus size={18} /> Add Component Task
+            </button>
+          )}
 
           {/* 3. Available AI Assets */}
           <div style={{ background: C.surface2, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` }}>
