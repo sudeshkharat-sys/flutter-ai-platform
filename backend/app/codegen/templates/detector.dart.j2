@@ -315,6 +315,103 @@ class ModelManager {
     final decoder = CtcDecoder(charset: charset, blankIndex: blankIndex);
     return decoder.decode(output[0]);
   }
+
+  /// The tight text-line crops inside [region]'s box -- one per reading row --
+  /// built from the single-character-class boxes the detector found inside it.
+  /// Returns empty when there are none, letting the caller fall back to the
+  /// whole-region crop.
+  ///
+  /// This is the piece the multiclass inspection path was missing entirely:
+  /// the standalone OCR pipeline has always narrowed the plate box down to
+  /// the actual character rows before reading, and the recognizer is trained
+  /// on exactly those tight line crops.
+  static List<img.Image> _lineCropsInsideRegion(
+    DetectionResult region,
+    List<DetectionResult> all,
+    img.Image source,
+  ) {
+    // Real characters are inside the region box by construction -- that is
+    // how the training data is labeled -- so a single-character detection
+    // outside it is noise (a scratch, a reflection, an adjacent surface
+    // feature that scored above threshold) and would otherwise drag junk
+    // pixels into the line crop and invent extra characters.
+    final chars = all
+        .where((d) =>
+            d.className.trim().length == 1 && _containmentNorm(d, region) >= 0.5)
+        .toList();
+    if (chars.isEmpty) return const [];
+
+    final crops = <img.Image>[];
+    for (final row in _groupIntoCharRows(chars)) {
+      double minL = 1.0, minT = 1.0, maxR = 0.0, maxB = 0.0;
+      for (final b in row) {
+        if (b.bbox.left < minL) minL = b.bbox.left;
+        if (b.bbox.top < minT) minT = b.bbox.top;
+        if (b.bbox.right > maxR) maxR = b.bbox.right;
+        if (b.bbox.bottom > maxB) maxB = b.bbox.bottom;
+      }
+      // Same few px of breathing room around the row the standalone
+      // pipeline leaves, so strokes aren't clipped at the crop edge.
+      final int x1 = ((minL * source.width).round() - 4).clamp(0, source.width - 1);
+      final int y1 = ((minT * source.height).round() - 4).clamp(0, source.height - 1);
+      final int x2 = ((maxR * source.width).round() + 4).clamp(1, source.width);
+      final int y2 = ((maxB * source.height).round() + 4).clamp(1, source.height);
+      if (x2 - x1 < 2 || y2 - y1 < 2) continue;
+      crops.add(img.copyCrop(source, x: x1, y: y1, width: x2 - x1, height: y2 - y1));
+    }
+    return crops;
+  }
+
+  /// Fraction of [inner]'s own area that falls inside [outer]. Unlike IoU,
+  /// this doesn't penalize the size gap between a small character box and a
+  /// much larger region box -- "is this character inside the plate" is
+  /// exactly the question being asked.
+  static double _containmentNorm(DetectionResult inner, DetectionResult outer) {
+    final l = inner.bbox.left > outer.bbox.left ? inner.bbox.left : outer.bbox.left;
+    final t = inner.bbox.top > outer.bbox.top ? inner.bbox.top : outer.bbox.top;
+    final r = inner.bbox.right < outer.bbox.right ? inner.bbox.right : outer.bbox.right;
+    final b = inner.bbox.bottom < outer.bbox.bottom ? inner.bbox.bottom : outer.bbox.bottom;
+    final iw = r > l ? r - l : 0.0;
+    final ih = b > t ? b - t : 0.0;
+    final innerArea = inner.bbox.width * inner.bbox.height;
+    return innerArea > 0 ? (iw * ih) / innerArea : 0.0;
+  }
+
+  /// Groups character boxes into row bands (top to bottom), each sorted left
+  /// to right -- i.e. reading order. Ports _groupIntoRows from
+  /// ocr_recognizer.dart so both pipelines assemble text identically.
+  static List<List<DetectionResult>> _groupIntoCharRows(List<DetectionResult> boxes) {
+    if (boxes.isEmpty) return const [];
+    final heights = boxes.map((b) => b.bbox.height).toList()..sort();
+    final mid = heights.length ~/ 2;
+    final medH = heights.length.isOdd
+        ? heights[mid]
+        : (heights[mid - 1] + heights[mid]) / 2;
+
+    double cy(DetectionResult b) => b.bbox.top + b.bbox.height / 2;
+    double rowCy(List<DetectionResult> row) =>
+        row.map(cy).reduce((p, q) => p + q) / row.length;
+
+    final sorted = List<DetectionResult>.from(boxes)
+      ..sort((a, b) => cy(a).compareTo(cy(b)));
+    final rows = <List<DetectionResult>>[];
+    for (final b in sorted) {
+      var placed = false;
+      for (final row in rows) {
+        if ((cy(b) - rowCy(row)).abs() < medH * 0.6) {
+          row.add(b);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) rows.add([b]);
+    }
+    for (final row in rows) {
+      row.sort((a, b) => a.bbox.left.compareTo(b.bbox.left));
+    }
+    rows.sort((a, b) => rowCy(a).compareTo(rowCy(b)));
+    return rows;
+  }
 {% endif %}
 
   /// Crops bbox, reads it, and returns an updated DetectionResult.
@@ -327,8 +424,9 @@ class ModelManager {
   /// there's nothing to match against.
   Future<DetectionResult> _runOcrOnBbox(
     DetectionResult det,
-    img.Image source,
-  ) async {
+    img.Image source, {
+    List<DetectionResult> allDetections = const [],
+  }) async {
     if (!_classOcrTargets.containsKey(det.className)) return det;
     final bool useScanTruth = _classesUsingScanTruth.contains(det.className) &&
         (_scanTruthValue != null && _scanTruthValue!.isNotEmpty);
@@ -344,7 +442,33 @@ class ModelManager {
 
 {% if ocr_uses_crnn %}
     if (engine == 'crnn' && _ocrModelLoaded && _ocrInterpreter != null) {
-      final crnnText = await _readWithCrnn(_ocrInterpreter!, _ocrCharset, _ocrBlankIndex, cropped) ?? '';
+      // Two-stage read, matching the standalone OCR pipeline
+      // (ocr_recognizer.dart's _recognizeWithCrnn) rather than feeding the
+      // recognizer the raw region box. The CRNN is trained on TIGHT SINGLE
+      // LINES of text, so handing it the whole plate box -- border,
+      // background and all the padding around the characters -- is not the
+      // input it was trained on, and it reads badly or not at all. When the
+      // detector also found single-character-class boxes inside this region,
+      // group them into reading rows and read each row's tight merged rect
+      // instead; that is the same crop the standalone screen reads, which is
+      // why that screen reads correctly and this one did not.
+      final lineCrops = _lineCropsInsideRegion(det, allDetections, source);
+      final List<String> lineReads = [];
+      if (lineCrops.isNotEmpty) {
+        for (final lineCrop in lineCrops) {
+          final t = await _readWithCrnn(_ocrInterpreter!, _ocrCharset, _ocrBlankIndex, lineCrop) ?? '';
+          if (t.isNotEmpty) lineReads.add(t);
+        }
+      }
+      // No character boxes inside the region (detector only trained on the
+      // region class, or it missed them this frame) -- fall back to reading
+      // the region crop whole, which is the old behavior.
+      final String crnnText = lineReads.isNotEmpty
+          ? lineReads.join(' ')
+          : (await _readWithCrnn(_ocrInterpreter!, _ocrCharset, _ocrBlankIndex, cropped) ?? '');
+      debugPrint('[OCR][CRNN] region="${det.className}" '
+          'source=${lineCrops.isNotEmpty ? "char_boxes(${lineCrops.length} line(s))" : "region_crop"} '
+          'read="$crnnText"');
       if (target.isEmpty) {
         // No target configured -- just record what was read, no pass/fail.
         return det.copyWith(ocrText: crnnText);
@@ -504,7 +628,9 @@ class ModelManager {
 {% if ocr_enabled %}
     final List<DetectionResult> withOcr = [];
     for (final det in detections) {
-      withOcr.add(await _runOcrOnBbox(det, orientedImage));
+      // Pass every detection, not just this one -- the CRNN path needs the
+      // character boxes found inside this region to build its line crops.
+      withOcr.add(await _runOcrOnBbox(det, orientedImage, allDetections: detections));
     }
     return withOcr;
 {% else %}
@@ -530,7 +656,7 @@ class ModelManager {
     decoded = img.bakeOrientation(decoded);
     final List<DetectionResult> withOcr = [];
     for (final det in detections) {
-      withOcr.add(await _runOcrOnBbox(det, decoded));
+      withOcr.add(await _runOcrOnBbox(det, decoded, allDetections: detections));
     }
     return withOcr;
 {% else %}

@@ -184,7 +184,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
     if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return false;
     // All pass classes must be detected
-    return mandatory.values.every((r) => r != null);
+    if (!mandatory.values.every((r) => r != null)) return false;
+{% if ocr_enabled %}
+    // ...and any class whose text was actually checked against a target must
+    // have matched it. Detecting the plate is not the inspection -- reading
+    // the right characters off it is. isOcrMatch is null when the class has
+    // no target configured (read-and-record only), which stays passing.
+    if (mandatory.values.any((r) => r != null && r.isOcrMatch == false)) return false;
+{% endif %}
+    return true;
   }
 
   /// True only when a genuine defect/wrong part was actually detected (an
@@ -876,6 +884,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                   if (detectedFail.isNotEmpty) return 'Wrong part detected: ${detectedFail.join(', ')}';
                                   final missing = _mandatoryClassResults.values.where((r) => r == null).length;
                                   if (missing > 0) return missing == 1 ? '1 part not found' : '$missing parts not found';
+                                  // Everything was found but a checked text read
+                                  // didn't match -- say so by name instead of a bare
+                                  // "Check failed" that gives the operator nothing.
+                                  final ocrFailed = _mandatoryClassResults.entries
+                                      .where((e) => e.value?.isOcrMatch == false)
+                                      .map((e) => e.key)
+                                      .toList();
+                                  if (ocrFailed.isNotEmpty) return 'Text did not match on: ${ocrFailed.join(', ')}';
                                   return 'Check failed';
                                 }(),
                                 style: TextStyle(
