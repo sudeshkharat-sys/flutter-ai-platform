@@ -283,10 +283,12 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       partNo = raw.substring(0, spaceIdx).trim();
       engineSerial = raw.substring(spaceIdx + 1).trim();
       setState(() => _isProcessing = true);
+{% if not skip_masterdata_validation %}
       if (!_isKnownEngineCode(partNo)) {
         _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
         return;
       }
+{% endif %}
     } else {
 {% if is_ocr_app and ocr_expected_length %}
       // Second sticker format: no separator -- the engine number is a
@@ -341,10 +343,12 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       partNo = raw.substring(0, spaceIdx).trim();
       engineSerial = raw.substring(spaceIdx + 1).trim();
       setState(() => _isProcessing = true);
+{% if not skip_masterdata_validation %}
       if (!_isKnownEngineCode(partNo)) {
         _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
         return;
       }
+{% endif %}
     } else {
 {% if is_ocr_app and ocr_expected_length %}
       if (raw.length < {{ ocr_expected_length }}) {
@@ -403,10 +407,12 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     final String vin = parts[0].trim();
     final String extractedModelCode = _resolveModelCode(parts[1].trim());
 
+{% if not skip_masterdata_validation %}
     if (!_isKnownModelCode(extractedModelCode)) {
       _showErrorDialog('Model code is not present, please add code and rebuild app.');
       return;
     }
+{% endif %}
 
     if (!mounted) return;
     _scannerController.stop();
@@ -481,10 +487,12 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     final String suffix = raw.substring(17);
     final String extractedModelCode = _resolveModelCode(suffix);
 
+{% if not skip_masterdata_validation %}
     if (!_isKnownModelCode(extractedModelCode)) {
       _showErrorDialog('Model code is not present, please add code and rebuild app.');
       return;
     }
+{% endif %}
 
     if (!mounted) return;
     _scannerController.stop();
@@ -524,10 +532,12 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     final String suffix = raw.substring(17);
     final String extractedModelCode = _resolveModelCode(suffix);
 
+{% if not skip_masterdata_validation %}
     if (!_isKnownModelCode(extractedModelCode)) {
       _showErrorDialog('Model code is not present, please add code and rebuild app.');
       return;
     }
+{% endif %}
 
     if (!mounted) return;
     _scannerController.stop();

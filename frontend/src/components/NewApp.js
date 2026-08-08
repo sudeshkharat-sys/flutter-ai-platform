@@ -79,6 +79,12 @@ export default function NewApp() {
       prev.includes(cap) ? prev.filter(c => c !== cap) : [...prev, cap]
     );
   };
+  // When true, every VIN/Engine/Chakan barcode scan in this app skips its
+  // "is this code known" check against Master Data/Engine Data and accepts
+  // whatever was scanned as-is -- for testing, or when that masterdata
+  // simply isn't populated yet. Off by default (masterdata validation runs
+  // as it always has).
+  const [skipMasterdataValidation, setSkipMasterdataValidation] = useState(false);
 
   // ── OCR bundle (pre-built recognizer .tflite, not a .pt to convert) ────
   const [isOcrApp, setIsOcrApp] = useState(false);
@@ -233,12 +239,13 @@ export default function NewApp() {
           app_type: 'combined',
           combined_capabilities: combinedCapabilities,
           confidence_threshold: 0.5,
+          skip_masterdata_validation: skipMasterdataValidation,
           ...(combinedCapabilities.includes('ocr') ? ocrSettings : {}),
         };
       } else if (isOcrApp) {
-        app_settings = { app_type: 'ocr', confidence_threshold: 0.5, ...ocrSettings };
+        app_settings = { app_type: 'ocr', confidence_threshold: 0.5, skip_masterdata_validation: skipMasterdataValidation, ...ocrSettings };
       } else {
-        app_settings = { app_type: 'sequential', confidence_threshold: 0.5 };
+        app_settings = { app_type: 'sequential', confidence_threshold: 0.5, skip_masterdata_validation: skipMasterdataValidation };
       }
       const r = await createApp({
         name: appName || 'Inspection App',
@@ -341,6 +348,23 @@ export default function NewApp() {
                   inspection app.
                 </p>
               )}
+
+              <label className="section-label" style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={skipMasterdataValidation}
+                  onChange={e => setSkipMasterdataValidation(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span>
+                  Skip masterdata validation (open scan-and-match)
+                  <span style={{ display: 'block', color: 'var(--muted, #888)', fontSize: 11.5, fontWeight: 400, marginTop: 1 }}>
+                    Off (default): VIN/Engine/Chakan scans are rejected if the code isn't in Master
+                    Data / Engine Data. On: any scanned code is accepted as-is, no lookup, no
+                    rejection -- use this if you don't have that masterdata populated yet.
+                  </span>
+                </span>
+              </label>
             </div>
 
             <div className="newapp-tabs">

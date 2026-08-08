@@ -299,6 +299,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "app_type": app_type,
         "is_ocr_app": is_ocr_app,
         "is_combined_app": is_combined_app,
+        # When set, VIN/Engine/Chakan barcode scans skip their "is this code
+        # known" check against Master Data/Engine Data entirely and accept
+        # whatever was scanned as-is -- an explicit opt-out for apps that
+        # don't have that masterdata populated (or don't want the scan
+        # rejected), instead of the check being unconditionally required.
+        "skip_masterdata_validation": bool(settings.get("skip_masterdata_validation")),
         # OCR apps default to "engine" so the shared history screen shows
         # "Serial"/"Engine Code" labels instead of "VIN"/"Model" -- already
         # built into history_screen.dart.j2, just needs this flag set. A
