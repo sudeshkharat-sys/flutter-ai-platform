@@ -54,6 +54,28 @@ class ModelManager {
 {% endif %}{% endfor %}{% endfor %}
   };
 
+  /// Classes configured to check their OCR read against whatever code was
+  /// scanned to reach this inspection (the VIN/engine-serial/Chakan VIN from
+  /// the Scan Type step), instead of one fixed _classOcrTargets string --
+  /// e.g. "does the engine-plate stamp actually match the engine number we
+  /// scanned to get here." A per-inspection value, so unlike the maps above
+  /// it can't be a compile-time const -- see scanTruthValue below.
+  static const Set<String> _classesUsingScanTruth = {
+{% set seen_scan_truth = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.ocrEnabled and cfg.ocrTruthSource == 'scan' and cls not in seen_scan_truth.keys %}{% set seen_scan_truth.keys = seen_scan_truth.keys + [cls] %}
+    '{{ cls }}',
+{% endif %}{% endfor %}{% endfor %}
+  };
+
+  /// The code scanned to reach this inspection (Scan Type step's VIN or
+  /// engine serial) -- set once per inspection via [setScanTruthValue]
+  /// before detection runs, and used as the OCR target for any class in
+  /// [_classesUsingScanTruth] instead of its fixed _classOcrTargets entry.
+  String? _scanTruthValue;
+
+  void setScanTruthValue(String? value) {
+    _scanTruthValue = value;
+  }
+
   // ── OCR preprocessing ─────────────────────────────────────────────────────
 
   /// Upscale 3x, grayscale, adaptive threshold (per-tile), sharpen.
@@ -249,7 +271,9 @@ class ModelManager {
     img.Image source,
   ) async {
     if (!_classOcrTargets.containsKey(det.className)) return det;
-    final String target = _classOcrTargets[det.className] ?? '';
+    final bool useScanTruth = _classesUsingScanTruth.contains(det.className) &&
+        (_scanTruthValue != null && _scanTruthValue!.isNotEmpty);
+    final String target = useScanTruth ? _scanTruthValue! : (_classOcrTargets[det.className] ?? '');
     final String engine = _classOcrEngine[det.className] ?? 'mlkit';
     if (engine != 'crnn' && target.isEmpty) return det;
 

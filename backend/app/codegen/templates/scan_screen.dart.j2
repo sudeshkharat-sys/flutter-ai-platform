@@ -316,7 +316,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: engineSerial){% else %}HomeScreen(
           vin: engineSerial,
-          modelCode: partNo,
+          modelCode: {% if skip_masterdata_validation %}''{% else %}partNo{% endif %},
           cameras: [],
         ){% endif %},
       ),
@@ -372,7 +372,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: engineSerial){% else %}HomeScreen(
           vin: engineSerial,
-          modelCode: partNo,
+          modelCode: {% if skip_masterdata_validation %}''{% else %}partNo{% endif %},
           cameras: [],
         ){% endif %},
       ),
@@ -420,7 +420,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: vin){% else %}HomeScreen(
           vin: vin,
-          modelCode: extractedModelCode,
+          modelCode: {% if skip_masterdata_validation %}''{% else %}extractedModelCode{% endif %},
           cameras: [],
         ){% endif %},
       ),
@@ -500,7 +500,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: vin){% else %}HomeScreen(
           vin: vin,
-          modelCode: extractedModelCode,
+          modelCode: {% if skip_masterdata_validation %}''{% else %}extractedModelCode{% endif %},
           cameras: [],
         ){% endif %},
       ),
@@ -545,7 +545,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: vin){% else %}HomeScreen(
           vin: vin,
-          modelCode: extractedModelCode,
+          modelCode: {% if skip_masterdata_validation %}''{% else %}extractedModelCode{% endif %},
           cameras: [],
         ){% endif %},
       ),

@@ -392,6 +392,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const [detectionMethod, setDetectionMethod] = useState(existingApp?.app_settings?.detection_method || 'default');
   const [selectedModelCodes, setSelectedModelCodes] = useState([]);
   const [selectedEngineCodes, setSelectedEngineCodes] = useState([]);
+  // When on, this profile's tasks apply to any scanned code -- no Model/
+  // Engine code selection required, and at runtime the scanned code stops
+  // being checked against Master Data/Engine Data (accepted as-is) and
+  // stops being used to filter which tasks show (every scan sees the same
+  // checklist). Off by default -- masterdata-restricted behavior is
+  // unchanged from before this existed.
+  const [openScan, setOpenScan] = useState(!!existingApp?.app_settings?.skip_masterdata_validation);
   const [showDropdown, setShowDropdown] = useState(false);
   const [showEngineDropdown, setShowEngineDropdown] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -578,13 +585,36 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     setDefaultAIConfigs(newConfigs);
   };
 
+  const handleClassOcrTruthSource = (index, cls, source) => {
+    const newConfigs = [...defaultAIConfigs];
+    const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrTruthSource: source };
+    newConfigs[index].classOcrConfig = ocr;
+    setDefaultAIConfigs(newConfigs);
+  };
+
   const handleEnterReview = () => {
+    const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0) : c.class));
+
+    if (openScan) {
+      // No code restriction -- one universal task group (blank model_code)
+      // that applies to every scan, instead of one row per selected code.
+      setReviewData([{
+        id: 'open-scan',
+        platform_name: 'Any',
+        model_code: '',
+        description: 'Open scan -- applies to any scanned code',
+        selectedAIModels: validAI.map(v => ({ ...v })),
+      }]);
+      setIsReviewing(true);
+      return;
+    }
+
     if (scanType === 'engine') {
       if (selectedEngineCodes.length === 0) {
-        alert("Please select at least one Engine Code.");
+        alert("Please select at least one Engine Code, or turn on Open Scan.");
         return;
       }
-      const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0) : c.class));
       const newReviewData = selectedEngineCodes.map(partNo => {
         const mapping = engineMappings.find(m => m.part_no === partNo) || { part_no: partNo, sheet_name: 'Unknown', description: '' };
         return {
@@ -598,10 +628,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       setReviewData(newReviewData);
     } else {
       if (selectedModelCodes.length === 0) {
-        alert("Please select at least one Vehicle Model Code.");
+        alert("Please select at least one Vehicle Model Code, or turn on Open Scan.");
         return;
       }
-      const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0) : c.class));
       const newReviewData = selectedModelCodes.map(code => {
         const mapping = masterMappings.find(m => m.model_code === code);
         return {
@@ -677,6 +706,14 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newData = [...reviewData];
     const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
     ocr[cls] = { ...(ocr[cls] || {}), ocrEngine: engine };
+    newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
+    setReviewData(newData);
+  };
+
+  const handleRowClassOcrTruthSource = (rowIndex, aiIdx, cls, source) => {
+    const newData = [...reviewData];
+    const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
+    ocr[cls] = { ...(ocr[cls] || {}), ocrTruthSource: source };
     newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
     setReviewData(newData);
   };
@@ -764,6 +801,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           app_type: existingApp?.app_settings?.app_type || 'sequential',
           scan_type: scanType,
           detection_method: detectionMethod,
+          skip_masterdata_validation: openScan,
           model_codes: selectedModelCodes,
           model_code: selectedModelCodes[0],
           engine_codes: selectedEngineCodes,
@@ -860,7 +898,25 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                 </p>
               </div>
 
-              {scanType !== 'engine' ? (
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={openScan}
+                  onChange={e => setOpenScan(e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span>
+                  <span style={{ ...labelStyle, display: 'block', marginBottom: 0 }}>Open Scan (skip masterdata)</span>
+                  <span style={{ fontSize: 11, color: C.muted }}>
+                    Off (default): pick specific {scanType === 'engine' ? 'Engine' : 'Model'} codes below -- scans
+                    are checked against {scanType === 'engine' ? 'Engine Data' : 'Master Data'} and rejected if
+                    unknown, and this checklist only shows for those codes. On: no code selection needed --
+                    any scanned code is accepted as-is and this same checklist applies to every scan.
+                  </span>
+                </span>
+              </label>
+
+              {openScan ? null : scanType !== 'engine' ? (
                 <div style={{ position: 'relative' }}>
                   <label style={labelStyle}>Vehicle Model Code (Multi-Select)</label>
                   <div
@@ -1069,12 +1125,22 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                 <option value="crnn" disabled={!hasOcrRecognizer}>Trained OCR model{!hasOcrRecognizer ? ' (attach one first)' : ''}</option>
                                                 <option value="mlkit">Generic (ML Kit)</option>
                                               </select>
-                                              <input
-                                                style={{ ...inputStyle, padding: '3px 8px', fontSize: 11, width: 160 }}
-                                                placeholder="Expected text (optional)"
-                                                value={ocrCfg.ocrTargetText || ''}
-                                                onChange={e => handleClassOcrText(idx, c, e.target.value)}
-                                              />
+                                              <select
+                                                style={{ ...miniSelectStyle, fontSize: 11 }}
+                                                value={ocrCfg.ocrTruthSource || 'fixed'}
+                                                onChange={e => handleClassOcrTruthSource(idx, c, e.target.value)}
+                                              >
+                                                <option value="fixed">Fixed text</option>
+                                                <option value="scan">Scanned {scanType === 'engine' ? 'Engine No' : 'VIN'}</option>
+                                              </select>
+                                              {(ocrCfg.ocrTruthSource || 'fixed') === 'fixed' && (
+                                                <input
+                                                  style={{ ...inputStyle, padding: '3px 8px', fontSize: 11, width: 160 }}
+                                                  placeholder="Expected text (optional)"
+                                                  value={ocrCfg.ocrTargetText || ''}
+                                                  onChange={e => handleClassOcrText(idx, c, e.target.value)}
+                                                />
+                                              )}
                                             </>
                                           )}
                                         </div>
@@ -1105,8 +1171,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
             <button
               onClick={handleEnterReview}
-              disabled={scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0}
-              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0) ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+              disabled={!openScan && (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0)}
+              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: (!openScan && (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0)) ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
             >
               REVIEW MAPPINGS <ChevronRight size={20} />
             </button>
@@ -1211,12 +1277,22 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                   <option value="crnn" disabled={!hasOcrRecognizer}>Trained model{!hasOcrRecognizer ? ' (attach one)' : ''}</option>
                                                   <option value="mlkit">ML Kit</option>
                                                 </select>
-                                                <input
-                                                  style={{ padding: '2px 6px', fontSize: 10, width: 110, borderRadius: 4, border: '1px solid #444', background: '#111', color: '#fff' }}
-                                                  placeholder="Expected text (optional)"
-                                                  value={ocrCfg.ocrTargetText || ''}
-                                                  onChange={e => handleRowClassOcrText(rowIndex, aiIdx, c, e.target.value)}
-                                                />
+                                                <select
+                                                  style={{ padding: '2px 6px', fontSize: 10, borderRadius: 4, border: '1px solid #444', background: '#111', color: '#fff' }}
+                                                  value={ocrCfg.ocrTruthSource || 'fixed'}
+                                                  onChange={e => handleRowClassOcrTruthSource(rowIndex, aiIdx, c, e.target.value)}
+                                                >
+                                                  <option value="fixed">Fixed text</option>
+                                                  <option value="scan">Scanned {scanType === 'engine' ? 'Engine No' : 'VIN'}</option>
+                                                </select>
+                                                {(ocrCfg.ocrTruthSource || 'fixed') === 'fixed' && (
+                                                  <input
+                                                    style={{ padding: '2px 6px', fontSize: 10, width: 110, borderRadius: 4, border: '1px solid #444', background: '#111', color: '#fff' }}
+                                                    placeholder="Expected text (optional)"
+                                                    value={ocrCfg.ocrTargetText || ''}
+                                                    onChange={e => handleRowClassOcrText(rowIndex, aiIdx, c, e.target.value)}
+                                                  />
+                                                )}
                                               </>
                                             )}
                                           </div>

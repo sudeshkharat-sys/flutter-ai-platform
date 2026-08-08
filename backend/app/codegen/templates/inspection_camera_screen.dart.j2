@@ -202,6 +202,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       _addLog("Loading Task: ${task['name']}");
       _addLog("TFLite: ${task['tflite_path']}");
       await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
+{% if ocr_enabled %}
+      // Whatever code was scanned to reach this inspection (VIN/engine
+      // serial/Chakan VIN) -- used as the OCR target for any mandatory
+      // class configured to check its read against the scanned code
+      // instead of a fixed expected-text string.
+      ModelManager().setScanTruthValue(widget.vin);
+{% endif %}
 {% if ocr_uses_crnn %}
       await ModelManager().loadOcrModel(
         '{{ ocr_class_recognizer_tflite | default("", true) }}',
@@ -1247,6 +1254,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       _addLog("Loading Task: ${task['name']}");
       _addLog("TFLite: ${task['tflite_path']}");
       await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
+{% if ocr_enabled %}
+      // Whatever code was scanned to reach this inspection (VIN/engine
+      // serial/Chakan VIN) -- used as the OCR target for any mandatory
+      // class configured to check its read against the scanned code
+      // instead of a fixed expected-text string.
+      ModelManager().setScanTruthValue(widget.vin);
+{% endif %}
 {% if ocr_uses_crnn %}
       await ModelManager().loadOcrModel(
         '{{ ocr_class_recognizer_tflite | default("", true) }}',
