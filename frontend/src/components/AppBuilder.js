@@ -577,11 +577,19 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     setDefaultAIConfigs(newConfigs);
   };
 
-  // A CRNN recognizer bundle attached to the app (via "Add Model" -> OCR
-  // bundle) makes 'crnn' the default engine for newly-enabled OCR classes;
-  // without one, 'mlkit' is the only usable option (same generic behavior
-  // this checkbox has always had).
-  const hasOcrRecognizer = models.some(m => m.model_kind === 'ocr_cnn' || m.model_kind === 'ocr_crnn');
+  // The OCR recognizer actually attached to THIS app -- `models` is the
+  // whole platform-wide library (getModels() above isn't scoped to this
+  // app), so checking .some(...) on it only proves a recognizer exists
+  // *somewhere*, not that this app has one. That mismatch is exactly what
+  // let "Trained OCR model" show as selectable with nothing behind it: the
+  // dropdown didn't distinguish "no recognizer anywhere" from "a
+  // recognizer exists, just not attached here." Scoping to
+  // existingApp.model_asset_ids fixes both that and lets the dropdown show
+  // which bundle it'll actually use.
+  const attachedOcrRecognizer = models.find(m =>
+    (m.model_kind === 'ocr_cnn' || m.model_kind === 'ocr_crnn') &&
+    (existingApp?.model_asset_ids || []).includes(m.id)
+  );
 
   const handleToggleClassOcr = (index, cls) => {
     const newConfigs = [...defaultAIConfigs];
@@ -589,7 +597,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     if (ocr[cls]?.ocrEnabled) {
       ocr[cls] = { ocrEnabled: false, ocrTargetText: '', ocrEngine: ocr[cls]?.ocrEngine || 'mlkit' };
     } else {
-      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (hasOcrRecognizer ? 'crnn' : 'mlkit') };
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (attachedOcrRecognizer ? 'crnn' : 'mlkit') };
     }
     newConfigs[index].classOcrConfig = ocr;
     setDefaultAIConfigs(newConfigs);
@@ -714,7 +722,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     if (ocr[cls]?.ocrEnabled) {
       ocr[cls] = { ocrEnabled: false, ocrTargetText: '', ocrEngine: ocr[cls]?.ocrEngine || 'mlkit' };
     } else {
-      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (hasOcrRecognizer ? 'crnn' : 'mlkit') };
+      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (attachedOcrRecognizer ? 'crnn' : 'mlkit') };
     }
     newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
     setReviewData(newData);
@@ -1193,7 +1201,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                 value={ocrCfg.ocrEngine || 'mlkit'}
                                                 onChange={e => handleClassOcrEngine(idx, c, e.target.value)}
                                               >
-                                                <option value="crnn" disabled={!hasOcrRecognizer}>Trained OCR model{!hasOcrRecognizer ? ' (attach one first)' : ''}</option>
+                                                <option value="crnn" disabled={!attachedOcrRecognizer}>
+                                                  {attachedOcrRecognizer ? `Trained OCR model (${attachedOcrRecognizer.vision_project_name})` : 'Trained OCR model (attach one first)'}
+                                                </option>
                                                 <option value="mlkit">Generic (ML Kit)</option>
                                               </select>
                                               <select
@@ -1345,7 +1355,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                   value={ocrCfg.ocrEngine || 'mlkit'}
                                                   onChange={e => handleRowClassOcrEngine(rowIndex, aiIdx, c, e.target.value)}
                                                 >
-                                                  <option value="crnn" disabled={!hasOcrRecognizer}>Trained model{!hasOcrRecognizer ? ' (attach one)' : ''}</option>
+                                                  <option value="crnn" disabled={!attachedOcrRecognizer}>
+                                                    {attachedOcrRecognizer ? `Trained (${attachedOcrRecognizer.vision_project_name})` : 'Trained model (attach one)'}
+                                                  </option>
                                                   <option value="mlkit">ML Kit</option>
                                                 </select>
                                                 <select
