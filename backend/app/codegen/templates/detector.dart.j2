@@ -310,21 +310,31 @@ class ModelManager {
     }
 {% endif %}
 
-    final normalBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped)));
-    final invertBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped, invert: true)));
-
     final tempDir = await Directory.systemTemp.createTemp('ocr_');
     String extractedText = '';
     try {
-      final normalText = await _ocrBytes(normalBytes, tempDir, 'normal');
-      final invertText = await _ocrBytes(invertBytes, tempDir, 'invert');
       final normTarget = _normalizeOcr(target);
+      final normalBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped)));
+      final normalText = await _ocrBytes(normalBytes, tempDir, 'normal');
       final normalScore = _ocrSimilarity(_normalizeOcr(normalText), normTarget);
-      final invertScore = _ocrSimilarity(_normalizeOcr(invertText), normTarget);
-      debugPrint('[OCR] normal="$normalText"($normalScore) invert="$invertText"($invertScore) target="$target"');
-      // Pick the read with higher similarity; fall back to normal if both empty
-      extractedText = normalScore >= invertScore ? normalText : invertText;
-      if (extractedText.isEmpty) extractedText = normalText.isNotEmpty ? normalText : invertText;
+      debugPrint('[OCR] normal="$normalText"($normalScore) target="$target"');
+
+      // The inverted pass exists for stickers/lighting where the normal
+      // threshold comes out wrong -- it costs another full upscale +
+      // per-tile-threshold + sharpen pass plus a second ML Kit round-trip,
+      // so skip it once the normal read already scores a strong match
+      // instead of always running both unconditionally.
+      if (normalScore >= 0.9) {
+        extractedText = normalText;
+      } else {
+        final invertBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped, invert: true)));
+        final invertText = await _ocrBytes(invertBytes, tempDir, 'invert');
+        final invertScore = _ocrSimilarity(_normalizeOcr(invertText), normTarget);
+        debugPrint('[OCR] invert="$invertText"($invertScore) target="$target"');
+        // Pick the read with higher similarity; fall back to normal if both empty
+        extractedText = normalScore >= invertScore ? normalText : invertText;
+        if (extractedText.isEmpty) extractedText = normalText.isNotEmpty ? normalText : invertText;
+      }
     } finally {
       await tempDir.delete(recursive: true);
     }
