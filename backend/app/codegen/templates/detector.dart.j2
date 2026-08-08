@@ -245,9 +245,68 @@ class ModelManager {
     }
   }
 
+  /// Runs the actual CRNN read (normalize + interpreter.run + CTC decode) on
+  /// a background isolate via compute(), the same pattern the main YOLO
+  /// detector already uses (_runInferencePng/_runInferenceBytes below) --
+  /// this used to run inline here on the UI isolate, once per matched
+  /// detection box. An inspection class with several OCR-enabled boxes (or
+  /// several single-character boxes reaching this path) meant several
+  /// sequential native TFLite calls blocking the UI isolate back-to-back --
+  /// that's what froze the camera preview and, on slower devices or with
+  /// enough boxes, could starve the platform channel long enough to look
+  /// like a crash. img.Image can't cross the isolate boundary (same reason
+  /// predictImage/predictBytes below PNG-encode first), so the crop is
+  /// PNG-encoded here and decoded again on the other side.
   static Future<String?> _readWithCrnn(Interpreter interpreter, List<String> charset, int blankIndex, img.Image crop) async {
+    final cropPngBytes = Uint8List.fromList(img.encodePng(crop));
+    try {
+      return await compute(_runCrnnInference, {
+        'cropPngBytes': cropPngBytes,
+        'interpreter_address': interpreter.address,
+        'charset': charset,
+        'blankIndex': blankIndex,
+      });
+    } catch (e) {
+      debugPrint('[OCR][CRNN] inference failed: $e');
+      return null;
+    }
+  }
+
+  /// Isolate entry-point for the CRNN read. Validates the input tensor shape
+  /// against what this crop was actually normalized to before ever calling
+  /// interpreter.run() -- a mismatched recognizer (attached .tflite trained
+  /// with different image dimensions than ocr_line_img_h/w, or a bundle
+  /// that isn't really a single-line CRNN with this input layout) used to
+  /// reach interpreter.run() completely unchecked. TFLite's native layer can
+  /// hard-abort the process on a shape mismatch instead of throwing a
+  /// catchable Dart exception -- exactly the kind of crash that shows no
+  /// error banner and just kills the app. Now it's a clear debug log and a
+  /// skipped read (falls through to ML Kit when a target is configured)
+  /// instead.
+  static String? _runCrnnInference(Map<String, dynamic> args) {
+    final Uint8List cropPngBytes = args['cropPngBytes'] as Uint8List;
+    final int interpreterAddress = args['interpreter_address'] as int;
+    final List<String> charset = List<String>.from(args['charset'] as List);
+    final int blankIndex = args['blankIndex'] as int;
+
+    final crop = img.decodePng(cropPngBytes);
+    if (crop == null) return null;
+
+    final interpreter = Interpreter.fromAddress(interpreterAddress);
     const normalizer = LineNormalizer();
     final normalized = normalizer.normalize(crop);
+
+    final inputTensorShape = interpreter.getInputTensor(0).shape;
+    if (inputTensorShape.length != 4 ||
+        inputTensorShape[1] != normalizer.imgH ||
+        inputTensorShape[2] != normalizer.imgW) {
+      debugPrint('[OCR][CRNN] input shape mismatch: model expects $inputTensorShape, '
+          'normalizer produces [1, ${normalizer.imgH}, ${normalizer.imgW}, 1] -- skipping '
+          'read instead of risking a native crash. Check the recognizer bundle\'s meta.json '
+          '(or ocr_line_img_h/ocr_line_img_w) against the actual attached .tflite.');
+      return null;
+    }
+
     final input = normalized.reshape([1, normalizer.imgH, normalizer.imgW, 1]);
     final shape = interpreter.getOutputTensor(0).shape; // [1, T, C]
     if (shape.length != 3) return null;
