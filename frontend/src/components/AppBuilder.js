@@ -807,7 +807,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     }
 
     try {
-      const modelAssetIds = Array.from(new Set(finalTasks.map(t => t.modelId)));
+      // Union with whatever's already attached to the app (existingApp.model_asset_ids)
+      // instead of replacing it outright -- the OCR recognizer (and anything else
+      // attached via "Add Model" but not directly used as a task's modelId, since
+      // classOcrConfig only references it indirectly via ocrEngine: 'crnn'/'cnn')
+      // would otherwise silently fall out of the app's model list on every save,
+      // leaving the build with no recognizer to load and everything falling back
+      // to ML Kit.
+      const modelAssetIds = Array.from(new Set([
+        ...(existingApp?.model_asset_ids || []),
+        ...finalTasks.map(t => t.modelId),
+      ]));
       let profileSlug = (profileName || 'app').toLowerCase().replace(/[^a-z0-9]/g, '_');
       if (!profileSlug) profileSlug = 'app';
       // Java package segments can't start with a digit (e.g. "4x4_reverse").
