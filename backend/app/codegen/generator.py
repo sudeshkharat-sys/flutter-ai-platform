@@ -254,6 +254,14 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         ocr_ctx["ocr_truth_source"] = truth_source
         ocr_ctx["ocr_use_qr_truth"] = truth_source == "qr"
         ocr_ctx["ocr_truth_text"] = settings.get("ocr_truth_text") or None
+        # Which barcode format supplies the truth value when truth_source is
+        # 'qr' -- 'engine' (PART_NO SERIAL_NO sticker, validated against
+        # engine_data.json), 'model' (17-char VIN + model-code suffix,
+        # validated against master_data.json, same as a plain VIN scan), or
+        # 'chakan' (VIN_MODELCODE_GARBAGE sticker, also validated against
+        # master_data.json). Defaults to 'engine' so apps built before this
+        # option existed keep behaving exactly the same way.
+        ocr_ctx["ocr_truth_scan_type"] = settings.get("ocr_truth_scan_type", "engine")
 
     app_name = get_attr(app_project, "name", "My App")
     package_name = get_attr(app_project, "package_name", "com.example.app")
@@ -298,7 +306,9 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         # actually has (prefers "engine" labels if engine/OCR is present).
         "scan_type": settings.get(
             "scan_type",
-            "engine" if (is_ocr_app or (is_combined_app and "engine" in combined_capabilities)) else "model",
+            (ocr_ctx.get("ocr_truth_scan_type", "engine") if (is_ocr_app and not is_combined_app)
+             else "engine" if (is_ocr_app or (is_combined_app and "engine" in combined_capabilities))
+             else "model"),
         ),
         "app_settings": settings,
         # Detection engine selector: 'default' (single-target flow) or
@@ -503,7 +513,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 engine_ctx = {**ctx, "scan_type": "engine", "scan_screen_class_name": "EngineScanScreen", "is_ocr_app": False}
                 zf.writestr(f"{root}/lib/screens/engine_scan_screen.dart", scan_tmpl.render(**engine_ctx))
             if "ocr" in combined_capabilities and ocr_ctx.get("ocr_truth_source") == "qr":
-                ocr_truth_ctx = {**ctx, "scan_type": "engine", "scan_screen_class_name": "OcrTruthScanScreen", "is_ocr_app": True}
+                ocr_truth_ctx = {**ctx, "scan_type": ocr_ctx.get("ocr_truth_scan_type", "engine"), "scan_screen_class_name": "OcrTruthScanScreen", "is_ocr_app": True}
                 zf.writestr(f"{root}/lib/screens/ocr_truth_scan_screen.dart", scan_tmpl.render(**ocr_truth_ctx))
 
         import json

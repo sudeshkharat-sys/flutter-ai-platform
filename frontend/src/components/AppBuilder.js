@@ -239,6 +239,7 @@ export default function AppBuilder() {
                 const s = app.app_settings || {};
                 const truthSource = s.ocr_truth_source || (s.ocr_use_qr_truth ? 'qr' : 'none');
                 const truthLabel = { none: 'None (OCR only, no pass/fail)', qr: 'QR / barcode scan', type: 'Typed fixed value' }[truthSource];
+                const truthScanTypeLabel = { engine: 'Engine number sticker', model: 'VIN plate scan', chakan: 'Chakan Plant sticker' }[s.ocr_truth_scan_type || 'engine'];
                 const row = (label, value) => (
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>
                     <span style={{ color: C.muted }}>{label}</span>
@@ -250,7 +251,8 @@ export default function AppBuilder() {
                     {row('Recognizer engine', (s.ocr_engine || 'crnn').toUpperCase())}
                     {row('Plate / region class', s.ocr_region_class || '(auto)')}
                     {row('Expected text source', truthLabel)}
-                    {truthSource === 'qr' && row('Expected code length', s.ocr_expected_length || '(not set)')}
+                    {truthSource === 'qr' && row('Truth value scan format', truthScanTypeLabel)}
+                    {truthSource === 'qr' && s.ocr_truth_scan_type === 'engine' && row('Expected code length', s.ocr_expected_length || '(not set)')}
                     {truthSource === 'type' && row('Expected value', s.ocr_truth_text || '(not set)')}
                     {truthSource !== 'none' && row('ML Kit fallback', s.ocr_use_mlkit_fallback ? 'Enabled' : 'Disabled')}
                   </div>

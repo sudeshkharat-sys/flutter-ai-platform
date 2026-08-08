@@ -412,11 +412,11 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     _scannerController.stop();
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => HomeScreen(
+        builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: vin){% else %}HomeScreen(
           vin: vin,
           modelCode: extractedModelCode,
           cameras: [],
-        ),
+        ){% endif %},
       ),
     ).then((_) async {
       if (mounted) {
@@ -490,11 +490,11 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     _scannerController.stop();
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => HomeScreen(
+        builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: vin){% else %}HomeScreen(
           vin: vin,
           modelCode: extractedModelCode,
           cameras: [],
-        ),
+        ){% endif %},
       ),
     ).then((_) async {
       if (mounted) {
@@ -533,11 +533,11 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     _scannerController.stop();
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => HomeScreen(
+        builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: vin){% else %}HomeScreen(
           vin: vin,
           modelCode: extractedModelCode,
           cameras: [],
-        ),
+        ){% endif %},
       ),
     ).then((_) async {
       if (mounted) {

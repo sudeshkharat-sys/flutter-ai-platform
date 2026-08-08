@@ -95,6 +95,7 @@ export default function NewApp() {
   // 'none' (OCR only, no pass/fail), 'qr' (scan the engine's QR/barcode
   // sticker), 'type' (one fixed expected string, typed once here).
   const [ocrTruthSource, setOcrTruthSource] = useState('none');
+  const [ocrTruthScanType, setOcrTruthScanType] = useState('engine');
   const [ocrExpectedLength, setOcrExpectedLength] = useState('');
   const [ocrTruthText, setOcrTruthText] = useState('');
   const [ocrUseMlkitFallback, setOcrUseMlkitFallback] = useState(false);
@@ -221,6 +222,7 @@ export default function NewApp() {
         ocr_engine: ocrEngine,
         ocr_region_class: ocrRegionClass,
         ocr_truth_source: ocrTruthSource,
+        ocr_truth_scan_type: ocrTruthSource === 'qr' ? ocrTruthScanType : null,
         ocr_expected_length: ocrExpectedLength ? parseInt(ocrExpectedLength, 10) : null,
         ocr_truth_text: ocrTruthSource === 'type' ? ocrTruthText : null,
         ocr_use_mlkit_fallback: ocrUseMlkitFallback,
@@ -462,20 +464,49 @@ export default function NewApp() {
 
                   {ocrTruthSource === 'qr' && (
                     <>
-                      <input
+                      <select
                         className="field-input"
-                        type="number"
-                        min="1"
-                        value={ocrExpectedLength}
-                        onChange={e => setOcrExpectedLength(e.target.value)}
-                        placeholder="Expected code length (e.g. 10) -- optional"
+                        value={ocrTruthScanType}
+                        onChange={e => setOcrTruthScanType(e.target.value)}
                         style={{ marginTop: 8 }}
-                      />
-                      <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
-                        Reuses the platform's existing engine-code barcode scan: "PART_NO SERIAL_NO"
-                        gets validated against your Engine Data list; a code with no space falls back
-                        to the first N characters as the truth value (needs the length above).
-                      </p>
+                      >
+                        <option value="engine">Engine number sticker (PART_NO SERIAL_NO)</option>
+                        <option value="model">VIN plate scan (17-char VIN + model code)</option>
+                        <option value="chakan">Chakan Plant sticker (VIN_MODELCODE_GARBAGE)</option>
+                      </select>
+
+                      {ocrTruthScanType === 'engine' && (
+                        <>
+                          <input
+                            className="field-input"
+                            type="number"
+                            min="1"
+                            value={ocrExpectedLength}
+                            onChange={e => setOcrExpectedLength(e.target.value)}
+                            placeholder="Expected code length (e.g. 10) -- optional"
+                            style={{ marginTop: 8 }}
+                          />
+                          <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
+                            Reuses the platform's existing engine-code barcode scan: "PART_NO SERIAL_NO"
+                            gets validated against your Engine Data list; a code with no space falls back
+                            to the first N characters as the truth value (needs the length above).
+                          </p>
+                        </>
+                      )}
+                      {ocrTruthScanType === 'model' && (
+                        <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
+                          Reuses the platform's existing VIN scan: the 17-character VIN plus model-code
+                          suffix gets validated against Master Data, then the VIN itself becomes the
+                          truth value the OCR read is checked against.
+                        </p>
+                      )}
+                      {ocrTruthScanType === 'chakan' && (
+                        <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
+                          Reuses the platform's existing Chakan Plant scan ("VIN_MODELCODE_GARBAGE"):
+                          the model code gets validated against Master Data, then the VIN becomes the
+                          truth value the OCR read is checked against.
+                        </p>
+                      )}
                     </>
                   )}
 
