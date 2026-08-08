@@ -69,11 +69,18 @@ export default function NewApp() {
   const [packageName, setPackageName] = useState('');
 
   // ── Combined app: one app offering more than one capability (VIN scan /
-  // Chakan-engine scan / OCR plate-read), instead of the usual single
-  // app_type. Opt-in and separate from every other app_type -- doesn't
-  // change how a plain OCR-only or sequential app gets built.
+  // Engine scan / Chakan Plant scan / Class Inspection), instead of the
+  // usual single app_type. Opt-in and separate from every other app_type --
+  // doesn't change how a plain sequential app gets built.
+  //
+  // OCR is deliberately NOT one of these capabilities: reading text is just
+  // something a Class Inspection class can do (the "Read Text" option on a
+  // mandatory class, configured in the Add Inspection Profile screen after
+  // creating the app), not a separate app mode with its own screen and
+  // truth-value setup. Attach the OCR/CRNN recognizer below the same way
+  // you attach the YOLO detector, then configure it per-class afterward.
   const [isCombinedApp, setIsCombinedApp] = useState(false);
-  const [combinedCapabilities, setCombinedCapabilities] = useState([]); // e.g. ['vin','engine','ocr']
+  const [combinedCapabilities, setCombinedCapabilities] = useState([]); // e.g. ['vin','engine']
   const toggleCapability = (cap) => {
     setCombinedCapabilities(prev =>
       prev.includes(cap) ? prev.filter(c => c !== cap) : [...prev, cap]
@@ -83,31 +90,21 @@ export default function NewApp() {
   // "is this code known" check against Master Data/Engine Data and accepts
   // whatever was scanned as-is -- for testing, or when that masterdata
   // simply isn't populated yet. Off by default (masterdata validation runs
-  // as it always has).
+  // as it always has). Also settable per-profile in Add Inspection Profile
+  // ("Open Scan") -- this is just the value a fresh app starts with.
   const [skipMasterdataValidation, setSkipMasterdataValidation] = useState(false);
 
-  // ── OCR bundle (pre-built recognizer .tflite, not a .pt to convert) ────
-  const [isOcrApp, setIsOcrApp] = useState(false);
+  // ── OCR recognizer bundle (pre-built .tflite, not a .pt to convert) ────
+  // Just another model to attach to the app here -- CRNN/CNN engine choice
+  // and the recognizer files. Everything about *using* it (which class
+  // reads text, which engine, what truth value to check against) is
+  // configured per-class in Add Inspection Profile, not here.
   const [ocrEngine, setOcrEngine] = useState('crnn');
   const [ocrTfliteFile, setOcrTfliteFile] = useState(null);
   const [ocrCharsetFile, setOcrCharsetFile] = useState(null);
   const [ocrMetaFile, setOcrMetaFile] = useState(null);
   const [ocrModelName, setOcrModelName] = useState('');
   const [ocrUploading, setOcrUploading] = useState(false);
-  // Which detected class is the plate/region box (picked explicitly here
-  // instead of guessed in code -- avoids any class-naming mismatch).
-  const [ocrRegionClass, setOcrRegionClass] = useState('');
-  // Where the truth value the camera read gets checked against comes from:
-  // 'none' (OCR only, no pass/fail), 'qr' (scan the engine's QR/barcode
-  // sticker), 'type' (one fixed expected string, typed once here).
-  const [ocrTruthSource, setOcrTruthSource] = useState('none');
-  const [ocrTruthScanType, setOcrTruthScanType] = useState('engine');
-  const [ocrExpectedLength, setOcrExpectedLength] = useState('');
-  const [ocrTruthText, setOcrTruthText] = useState('');
-  const [ocrUseMlkitFallback, setOcrUseMlkitFallback] = useState(false);
-  // modelId -> classes[], so the OCR tab can offer a dropdown of every
-  // class across whichever detector(s) got added to this app.
-  const [modelClassesById, setModelClassesById] = useState({});
 
   const pollRef = useRef(null);
   const logEndRef = useRef(null);
@@ -161,7 +158,6 @@ export default function NewApp() {
             setConverting(false);
             setSelectedModelIds(prev => [...prev, assetId]);
             setSelectedModelNames(prev => [...prev, modelName || ptFile.name]);
-            setModelClassesById(prev => ({ ...prev, [assetId]: classes }));
             setPtFile(null);
             setModelName('');
             setClasses([]);
@@ -187,15 +183,8 @@ export default function NewApp() {
     } else {
       setSelectedModelIds([...selectedModelIds, m.id]);
       setSelectedModelNames([...selectedModelNames, m.vision_project_name]);
-      setModelClassesById(prev => ({ ...prev, [m.id]: m.classes }));
     }
   };
-
-  // Every class across whichever detector(s) are in this app so far --
-  // populates the OCR tab's "which class is the plate/region box" dropdown.
-  const availableDetectorClasses = [
-    ...new Set(selectedModelIds.flatMap(id => modelClassesById[id] || [])),
-  ];
 
   const submitOcrRecognizer = async () => {
     if (!ocrTfliteFile || !ocrCharsetFile) {
@@ -210,7 +199,6 @@ export default function NewApp() {
       );
       setSelectedModelIds(prev => [...prev, r.data.id]);
       setSelectedModelNames(prev => [...prev, name]);
-      setIsOcrApp(true);
       setOcrTfliteFile(null);
       setOcrCharsetFile(null);
       setOcrMetaFile(null);
@@ -224,29 +212,18 @@ export default function NewApp() {
 
   const handleCreate = async () => {
     try {
-      const ocrSettings = {
-        ocr_engine: ocrEngine,
-        ocr_region_class: ocrRegionClass,
-        ocr_truth_source: ocrTruthSource,
-        ocr_truth_scan_type: ocrTruthSource === 'qr' ? ocrTruthScanType : null,
-        ocr_expected_length: ocrExpectedLength ? parseInt(ocrExpectedLength, 10) : null,
-        ocr_truth_text: ocrTruthSource === 'type' ? ocrTruthText : null,
-        ocr_use_mlkit_fallback: ocrUseMlkitFallback,
-      };
-      let app_settings;
-      if (isCombinedApp) {
-        app_settings = {
-          app_type: 'combined',
-          combined_capabilities: combinedCapabilities,
-          confidence_threshold: 0.5,
-          skip_masterdata_validation: skipMasterdataValidation,
-          ...(combinedCapabilities.includes('ocr') ? ocrSettings : {}),
-        };
-      } else if (isOcrApp) {
-        app_settings = { app_type: 'ocr', confidence_threshold: 0.5, skip_masterdata_validation: skipMasterdataValidation, ...ocrSettings };
-      } else {
-        app_settings = { app_type: 'sequential', confidence_threshold: 0.5, skip_masterdata_validation: skipMasterdataValidation };
-      }
+      const app_settings = isCombinedApp
+        ? {
+            app_type: 'combined',
+            combined_capabilities: combinedCapabilities,
+            confidence_threshold: 0.5,
+            skip_masterdata_validation: skipMasterdataValidation,
+          }
+        : {
+            app_type: 'sequential',
+            confidence_threshold: 0.5,
+            skip_masterdata_validation: skipMasterdataValidation,
+          };
       const r = await createApp({
         name: appName || 'Inspection App',
         package_name: packageName,
@@ -287,7 +264,7 @@ export default function NewApp() {
                   onChange={e => setIsCombinedApp(e.target.checked)}
                   style={{ marginRight: 6 }}
                 />
-                Combined app -- offer more than one capability in this app
+                Combined app -- offer more than one scan option in this app
               </label>
               {isCombinedApp && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
@@ -295,27 +272,22 @@ export default function NewApp() {
                     {
                       key: 'vin',
                       label: 'VIN scan',
-                      hint: 'Standalone button: scan a raw VIN barcode, checked against Master Data, then go straight to the Class Inspection checklist. No camera/OCR involved.',
+                      hint: 'Standalone button: scan a raw VIN barcode, checked against Master Data, then go straight to the Class Inspection checklist.',
                     },
                     {
                       key: 'engine',
                       label: 'Engine scan',
-                      hint: 'Standalone button: scan an engine sticker ("PART_NO SERIAL_NO"), checked against Engine Data, then go straight to the Class Inspection checklist. No camera/OCR involved.',
+                      hint: 'Standalone button: scan an engine sticker ("PART_NO SERIAL_NO"), checked against Engine Data, then go straight to the Class Inspection checklist.',
                     },
                     {
                       key: 'chakan',
                       label: 'Chakan Plant scan',
-                      hint: 'Standalone button: scan a Chakan Plant barcode ("VIN_ModelCode_Garbage"), checked against Master Data, then go straight to the Class Inspection checklist. No camera/OCR involved.',
-                    },
-                    {
-                      key: 'ocr',
-                      label: 'OCR plate read',
-                      hint: 'Camera button: detects the plate with your YOLO model, reads the text with your OCR model, and saves it. Configure it in the "OCR Bundle" tab below -- including its own optional barcode-scan step for a truth value (separate from the 3 standalone buttons above).',
+                      hint: 'Standalone button: scan a Chakan Plant barcode ("VIN_ModelCode_Garbage"), checked against Master Data, then go straight to the Class Inspection checklist.',
                     },
                     {
                       key: 'inspection',
-                      label: 'Class Inspection (masterdata mapping)',
-                      hint: 'Camera button: one photo is checked against a checklist of parts/classes your model was trained on (mandatory vs. ignored), with per-class OCR and masterdata validation optional. This is the "old method" multi-part checklist -- configure it after creating the app.',
+                      label: 'Class Inspection',
+                      hint: 'Camera button: straight into the checklist without picking a scan format first (useful if this app only ever uses one Scan Type, set in Add Inspection Profile after creating it).',
                     },
                   ].map(cap => (
                     <label key={cap.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 13 }}>
@@ -335,19 +307,12 @@ export default function NewApp() {
                   ))}
                 </div>
               )}
-              {isCombinedApp && combinedCapabilities.includes('ocr') && (
-                <p className="newapp-sidebar-hint" style={{ marginTop: 6 }}>
-                  Configure OCR (region class, expected text source, recognizer upload) in the
-                  "OCR Bundle" tab below, same as a plain OCR app.
-                </p>
-              )}
-              {isCombinedApp && combinedCapabilities.includes('inspection') && (
-                <p className="newapp-sidebar-hint" style={{ marginTop: 6 }}>
-                  Configure the class checklist, mandatory classes, and masterdata mapping in the
-                  app's "Add Inspection Profile" screen after creating it, same as a plain
-                  inspection app.
-                </p>
-              )}
+              <p className="newapp-sidebar-hint" style={{ marginTop: 6 }}>
+                Every scan option above leads into the same Class Inspection checklist you
+                configure once, after creating the app, in "Add Inspection Profile" -- pick
+                classes, mark them Mandatory/Ignore, and turn on "Read Text" on any class that
+                should extract and check text (using whichever OCR recognizer you attach below).
+              </p>
 
               <label className="section-label" style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 12 }}>
                 <input
@@ -361,7 +326,8 @@ export default function NewApp() {
                   <span style={{ display: 'block', color: 'var(--muted, #888)', fontSize: 11.5, fontWeight: 400, marginTop: 1 }}>
                     Off (default): VIN/Engine/Chakan scans are rejected if the code isn't in Master
                     Data / Engine Data. On: any scanned code is accepted as-is, no lookup, no
-                    rejection -- use this if you don't have that masterdata populated yet.
+                    rejection -- use this if you don't have that masterdata populated yet. Can also
+                    be changed later per-profile in Add Inspection Profile ("Open Scan").
                   </span>
                 </span>
               </label>
@@ -374,7 +340,7 @@ export default function NewApp() {
                   onClick={() => setTab(t)}
                   className={`newapp-tab${tab === t ? ' active' : ''}`}
                 >
-                  {t === 'upload' ? 'Convert New Model' : t === 'existing' ? 'Select from Library' : 'OCR Bundle'}
+                  {t === 'upload' ? 'Convert New Model' : t === 'existing' ? 'Select from Library' : 'OCR Recognizer'}
                 </button>
               ))}
             </div>
@@ -446,10 +412,11 @@ export default function NewApp() {
             {tab === 'ocr' && (
               <div className="newapp-upload-body">
                 <p className="newapp-sidebar-hint" style={{ marginBottom: 12 }}>
-                  Add the plate/character <strong>detector</strong> from the other two tabs
-                  first (it's a normal YOLO .pt model). Then upload the OCR{' '}
-                  <strong>recognizer</strong> here — the .tflite exported from
-                  ai-vision-platform's OCR trainer, plus its charset.txt/labels.txt.
+                  Add your plate/character <strong>detector</strong> from the other two tabs
+                  (a normal YOLO .pt model). Then upload the OCR <strong>recognizer</strong> here
+                  -- the .tflite exported from ai-vision-platform's OCR trainer, plus its
+                  charset.txt/labels.txt. Once attached, go to "Add Inspection Profile" after
+                  creating the app and turn on "Read Text" on whichever class should use it.
                 </p>
 
                 <div className="model-preview-field">
@@ -470,118 +437,6 @@ export default function NewApp() {
                       /> Per-character CNN
                     </label>
                   </div>
-                </div>
-
-                <div className="model-preview-field">
-                  <label className="section-label">
-                    Plate / region class{' '}
-                    {ocrEngine === 'cnn' && <span style={{ opacity: 0.6 }}>(not used by the CNN engine)</span>}
-                  </label>
-                  {availableDetectorClasses.length === 0 ? (
-                    <div className="newapp-sidebar-hint">
-                      Add the detector .pt first (other two tabs) — its classes will show up here to pick from.
-                    </div>
-                  ) : (
-                    <select
-                      className="field-input"
-                      value={ocrRegionClass}
-                      onChange={e => setOcrRegionClass(e.target.value)}
-                    >
-                      <option value="">(auto — none matched exactly)</option>
-                      {availableDetectorClasses.map(c => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
-                  )}
-                  <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
-                    Which detected class is the whole-plate box (used when individual
-                    character boxes aren't found, so the CRNN reads that crop instead of
-                    the full photo). Pick it explicitly here rather than relying on the
-                    class being named exactly "PLATE".
-                  </p>
-                </div>
-
-                <div className="model-preview-field">
-                  <label className="section-label">Expected text source (truth value)</label>
-                  <select
-                    className="field-input"
-                    value={ocrTruthSource}
-                    onChange={e => setOcrTruthSource(e.target.value)}
-                  >
-                    <option value="none">None -- OCR only, no pass/fail</option>
-                    <option value="qr">Scan a QR/barcode (e.g. engine number sticker)</option>
-                    <option value="type">Type one fixed expected value</option>
-                  </select>
-
-                  {ocrTruthSource === 'qr' && (
-                    <>
-                      <select
-                        className="field-input"
-                        value={ocrTruthScanType}
-                        onChange={e => setOcrTruthScanType(e.target.value)}
-                        style={{ marginTop: 8 }}
-                      >
-                        <option value="engine">Engine number sticker (PART_NO SERIAL_NO)</option>
-                        <option value="model">VIN plate scan (17-char VIN + model code)</option>
-                        <option value="chakan">Chakan Plant sticker (VIN_MODELCODE_GARBAGE)</option>
-                      </select>
-
-                      {ocrTruthScanType === 'engine' && (
-                        <>
-                          <input
-                            className="field-input"
-                            type="number"
-                            min="1"
-                            value={ocrExpectedLength}
-                            onChange={e => setOcrExpectedLength(e.target.value)}
-                            placeholder="Expected code length (e.g. 10) -- optional"
-                            style={{ marginTop: 8 }}
-                          />
-                          <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
-                            Reuses the platform's existing engine-code barcode scan: "PART_NO SERIAL_NO"
-                            gets validated against your Engine Data list; a code with no space falls back
-                            to the first N characters as the truth value (needs the length above).
-                          </p>
-                        </>
-                      )}
-                      {ocrTruthScanType === 'model' && (
-                        <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
-                          Reuses the platform's existing VIN scan: the 17-character VIN plus model-code
-                          suffix gets validated against Master Data, then the VIN itself becomes the
-                          truth value the OCR read is checked against.
-                        </p>
-                      )}
-                      {ocrTruthScanType === 'chakan' && (
-                        <p className="newapp-sidebar-hint" style={{ marginTop: 4 }}>
-                          Reuses the platform's existing Chakan Plant scan ("VIN_MODELCODE_GARBAGE"):
-                          the model code gets validated against Master Data, then the VIN becomes the
-                          truth value the OCR read is checked against.
-                        </p>
-                      )}
-                    </>
-                  )}
-
-                  {ocrTruthSource === 'type' && (
-                    <input
-                      className="field-input"
-                      value={ocrTruthText}
-                      onChange={e => setOcrTruthText(e.target.value)}
-                      placeholder="Expected text, e.g. ABC123"
-                      style={{ marginTop: 8 }}
-                    />
-                  )}
-
-                  {ocrTruthSource !== 'none' && (
-                    <label style={{ display: 'block', marginTop: 8 }}>
-                      <input
-                        type="checkbox"
-                        checked={ocrUseMlkitFallback}
-                        onChange={e => setOcrUseMlkitFallback(e.target.checked)}
-                        style={{ marginRight: 6 }}
-                      />
-                      Fall back to Google ML Kit if the camera read doesn't match
-                    </label>
-                  )}
                 </div>
 
                 <div className="model-preview-field">
