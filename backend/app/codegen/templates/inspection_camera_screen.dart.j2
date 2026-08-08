@@ -872,6 +872,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                 final ocrMatch = entry.value?.isOcrMatch;
                                 final ocrCfg = (currentTask['classOcrConfig'] as Map<String, dynamic>? ?? {})[entry.key] as Map<String, dynamic>?;
                                 final hasOcr = ocrCfg != null && ocrCfg['ocrEnabled'] == true;
+                                // What this class's OCR is actually being checked against --
+                                // shown alongside the read text so a mismatch can be verified
+                                // by eye on this screen instead of digging through the debug
+                                // console. Same "scan" vs fixed-text source the backend already
+                                // uses in _runOcrOnBbox.
+                                final String ocrTruth = (ocrCfg?['ocrTruthSource'] == 'scan')
+                                    ? widget.vin
+                                    : (ocrCfg?['ocrTargetText'] as String? ?? '');
                                 return Padding(
                                   padding: const EdgeInsets.only(bottom: 6),
                                   child: Column(
@@ -927,7 +935,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                       ? 'OCR: Class not detected'
                                                       : ocrMatch == null
                                                         ? 'OCR: Not read'
-                                                        : 'OCR ${ocrMatch == true ? "✓ MATCH" : "✗ MISMATCH"}',
+                                                        // Same plain OK/NOT OK wording as the standalone
+                                                        // OCR app's result screen -- one consistent phrase
+                                                        // for "did the read match the truth value" everywhere
+                                                        // in the app, not a different label per screen.
+                                                        : (ocrMatch == true ? 'OK -- matches truth value' : 'NOT OK -- does not match truth value'),
                                                     style: TextStyle(
                                                       fontSize: 12,
                                                       fontWeight: FontWeight.bold,
@@ -938,6 +950,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                 if (detected && ocrText != null && ocrText.isNotEmpty) ...[
                                                   const SizedBox(height: 2),
                                                   Text('Read: "$ocrText"', style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                                                ],
+                                                // Ground truth next to the read text -- this is the
+                                                // "need to see both extracted and truth" ask: verify a
+                                                // mismatch by eye right here instead of only in the debug
+                                                // console. Easy single-block removal later once results
+                                                // are confirmed good and this is no longer needed day to day.
+                                                if (detected && hasOcr && ocrTruth.isNotEmpty) ...[
+                                                  const SizedBox(height: 2),
+                                                  Text('Truth: "$ocrTruth"', style: const TextStyle(fontSize: 11, color: Colors.white54)),
                                                 ],
                                               ],
                                             ),
