@@ -283,6 +283,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           "Capture blocked: analyzing=$_isAnalyzing modelReady=$_isModelLoaded");
       return;
     }
+    // Set this before the first await -- takePicture()/the blur check below
+    // can take long enough for a second tap to land while _isAnalyzing was
+    // still false, re-entering this function and calling takePicture() a
+    // second time on the same CameraController before the first capture
+    // finished. That double-call is what caused "tap capture multiple times
+    // -> app lags/freezes, no image captured".
+    setState(() => _isAnalyzing = true);
     try {
       _addLog('--- Start Inference ---');
       final XFile image = await _cameraController!.takePicture();
@@ -342,12 +349,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
               ],
             ),
           );
+          if (mounted) setState(() => _isAnalyzing = false);
           return;
         }
       }
 
       setState(() {
-        _isAnalyzing = true;
         _bestResult = null;
         _mandatoryClassResults = {};
         _failClassResults = {};
@@ -1335,6 +1342,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           "Capture blocked: analyzing=$_isAnalyzing modelReady=$_isModelLoaded");
       return;
     }
+    // Set this before the first await -- takePicture()/the blur check below
+    // can take long enough for a second tap to land while _isAnalyzing was
+    // still false, re-entering this function and calling takePicture() a
+    // second time on the same CameraController before the first capture
+    // finished. That double-call is what caused "tap capture multiple times
+    // -> app lags/freezes, no image captured".
+    setState(() => _isAnalyzing = true);
     try {
       _addLog('--- Start Inference ---');
       final XFile image = await _cameraController!.takePicture();
@@ -1394,12 +1408,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
               ],
             ),
           );
+          if (mounted) setState(() => _isAnalyzing = false);
           return;
         }
       }
 
       setState(() {
-        _isAnalyzing = true;
         _bestResult = null;
         _capturedImageBytes = bytes;
         _capturedImageSize = imageSize;
