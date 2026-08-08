@@ -377,6 +377,19 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                     "mandatory for its 'Read text' setting to take effect."
                 )
 
+    # Detection threshold for OCR builds. Character boxes score far lower
+    # than whole-object detections, so the app-wide default (0.5) reliably
+    # finds the plate and drops its characters -- and with no character boxes
+    # the recognizer never receives the tight line crop it was trained on.
+    # 0.25 is what the standalone OCR pipeline has always used.
+    ctx["ocr_detector_threshold"] = min(float(ctx["confidence_threshold"]), 0.25)
+    if ctx["ocr_enabled"] and float(ctx["confidence_threshold"]) > 0.25:
+        print(
+            "[generator] NOTE: OCR build -- lowering the detector threshold from "
+            f"{ctx['confidence_threshold']} to {ctx['ocr_detector_threshold']} so small "
+            "character boxes are detected (matches the standalone OCR pipeline)."
+        )
+
     # A class's OCR config can pick the reading engine: 'crnn' (this
     # project's trained model, with ML Kit as a fallback when a target text
     # is set and the CRNN read doesn't match it) or the original 'mlkit'

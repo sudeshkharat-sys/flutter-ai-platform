@@ -14,6 +14,16 @@ import 'ctc_decoder.dart';
 {% endif %}
 import 'detection_result.dart';
 
+{% if ocr_enabled %}
+/// Letterboxed model input plus the mapping needed to undo it when turning
+/// model coordinates back into image coordinates.
+class _LetterboxResult {
+  final Float32List buffer;
+  final int padX, padY, unpadW, unpadH;
+  const _LetterboxResult(this.buffer, this.padX, this.padY, this.unpadW, this.unpadH);
+}
+{% endif %}
+
 class ModelManager {
   static final ModelManager _instance = ModelManager._internal();
   factory ModelManager() => _instance;
@@ -23,7 +33,16 @@ class ModelManager {
   List<String> _labels = [];
   String? _currentModelPath;
   bool _isLoaded = false;
+{% if ocr_enabled %}
+  // Character boxes are tiny next to whole-object detections and score far
+  // lower, so the app-wide default (0.5) finds the plate but drops its
+  // characters -- and without character boxes the recognizer never gets the
+  // tight line crop it is trained on. The standalone OCR pipeline has always
+  // detected at 0.25 for exactly this reason; match it.
+  double confidenceThreshold = {{ ocr_detector_threshold }};
+{% else %}
   double confidenceThreshold = {{ confidence_threshold }};
+{% endif %}
 
   bool get isLoaded => _isLoaded;
 
@@ -633,6 +652,47 @@ class ModelManager {
     return buffer;
   }
 
+{% if ocr_enabled %}
+  /// Ultralytics-style letterbox: aspect-preserving resize, then pad to a
+  /// square canvas with Ultralytics' standard gray (114,114,114).
+  ///
+  /// _imageToFloat32 above stretches to inputSize x inputSize instead, which
+  /// distorts the frame. That is tolerable for large objects but collapses
+  /// detection of small, thin features -- engraved plate characters only a
+  /// few dozen pixels tall. The standalone OCR pipeline was fixed to
+  /// letterbox for precisely this reason; that fix was never carried over to
+  /// this shared detector, which is why the same photo yields character
+  /// boxes there and none here. The exported .tflite has no preprocessing
+  /// baked into the graph, so the caller has to reproduce it exactly.
+  static _LetterboxResult _letterboxToFloat32(img.Image image, int inputSize) {
+    final ratio = (inputSize / image.width < inputSize / image.height)
+        ? inputSize / image.width
+        : inputSize / image.height;
+    final unpadW = (image.width * ratio).round().clamp(1, inputSize);
+    final unpadH = (image.height * ratio).round().clamp(1, inputSize);
+    final padX = ((inputSize - unpadW) / 2).floor();
+    final padY = ((inputSize - unpadH) / 2).floor();
+
+    final resized = img.copyResize(image,
+        width: unpadW, height: unpadH, interpolation: img.Interpolation.linear);
+    final canvas = img.Image(width: inputSize, height: inputSize);
+    img.fill(canvas, color: img.ColorRgb8(114, 114, 114));
+    img.compositeImage(canvas, resized, dstX: padX, dstY: padY);
+
+    final buffer = Float32List(inputSize * inputSize * 3);
+    var idx = 0;
+    for (var y = 0; y < inputSize; y++) {
+      for (var x = 0; x < inputSize; x++) {
+        final p = canvas.getPixel(x, y);
+        buffer[idx++] = p.r.toDouble() / 255.0;
+        buffer[idx++] = p.g.toDouble() / 255.0;
+        buffer[idx++] = p.b.toDouble() / 255.0;
+      }
+    }
+    return _LetterboxResult(buffer, padX, padY, unpadW, unpadH);
+  }
+{% endif %}
+
   /// Fast path: caller already decoded + EXIF-corrected the image (e.g.
   /// during blur detection), so we skip the redundant decode +
   /// bakeOrientation step. The resize-to-model-input-size + per-pixel
@@ -717,10 +777,15 @@ class ModelManager {
     // side); format-agnostic decoding stays correct either way.
     final decoded = img.decodeImage(pngBytes);
     if (decoded == null) return [];
+{% if ocr_enabled %}
+    final lb = _letterboxToFloat32(decoded, inputSize);
+    final input = lb.buffer.reshape([1, inputSize, inputSize, 3]);
+{% else %}
     final inputData = _imageToFloat32(decoded, inputSize);
 
     // Reshape flat buffer to [1, inputSize, inputSize, 3]
     final input = inputData.reshape([1, inputSize, inputSize, 3]);
+{% endif %}
 
     final outputTensor = interpreter.getOutputTensor(0);
     final shape = outputTensor.shape;
@@ -732,7 +797,8 @@ class ModelManager {
     }
 
     interpreter.run(input, output);
-    final detections = _parseGenericYolo(output[0], labels, threshold, inputSize, shape);
+    final detections = _parseGenericYolo(output[0], labels, threshold, inputSize, shape{% if ocr_enabled %},
+        padX: lb.padX, padY: lb.padY, unpadW: lb.unpadW, unpadH: lb.unpadH{% endif %});
     debugPrint('[Detector] raw detections: ${detections.length}, first bbox: ${detections.isNotEmpty ? detections.first.bbox : "none"}');
     return detections;
   }
@@ -757,9 +823,14 @@ class ModelManager {
     // shows a portrait one, causing x/y axes to be effectively swapped.
     baseImage = img.bakeOrientation(baseImage);
 
+{% if ocr_enabled %}
+    final lb = _letterboxToFloat32(baseImage, inputSize);
+    final input = lb.buffer.reshape([1, inputSize, inputSize, 3]);
+{% else %}
     // Use Float32List for fast normalization (avoids nested Dart object alloc).
     final inputData = _imageToFloat32(baseImage, inputSize);
     final input = inputData.reshape([1, inputSize, inputSize, 3]);
+{% endif %}
 
     final outputTensor = interpreter.getOutputTensor(0);
     final shape = outputTensor.shape;
@@ -771,12 +842,26 @@ class ModelManager {
     }
 
     interpreter.run(input, output);
-    final detections = _parseGenericYolo(output[0], labels, threshold, inputSize, shape);
+    final detections = _parseGenericYolo(output[0], labels, threshold, inputSize, shape{% if ocr_enabled %},
+        padX: lb.padX, padY: lb.padY, unpadW: lb.unpadW, unpadH: lb.unpadH{% endif %});
     debugPrint('[Detector] raw detections: ${detections.length}, first bbox: ${detections.isNotEmpty ? detections.first.bbox : "none"}');
     return detections;
   }
 
-  static List<DetectionResult> _parseGenericYolo(List<dynamic> output, List<String> labels, double threshold, int inputSize, List<int> shape) {
+  /// [padX]/[padY]/[unpadW]/[unpadH] describe the letterbox applied to the
+  /// input. When unpadW/unpadH are 0 (no letterbox) the original stretch
+  /// mapping is used unchanged, so non-OCR apps produce byte-identical boxes.
+  static List<DetectionResult> _parseGenericYolo(
+    List<dynamic> output,
+    List<String> labels,
+    double threshold,
+    int inputSize,
+    List<int> shape, {
+    int padX = 0,
+    int padY = 0,
+    int unpadW = 0,
+    int unpadH = 0,
+  }) {
     final results = <DetectionResult>[];
 
     // Check if output is [4+N, 8400] or [8400, 4+N]
@@ -819,15 +904,37 @@ class ModelManager {
         double w = isTransposed ? output[2][i] : output[i][2];
         double h = isTransposed ? output[3][i] : output[i][3];
 
-        results.add(DetectionResult(
-          className: (classId >= 0 && classId < labels.length) ? labels[classId] : 'unknown (id:$classId)',
-          confidence: maxClassScore,
-          bbox: Rect.fromLTWH(
+        // Undo the letterbox when one was applied: convert to canvas pixel
+        // space, subtract the pad offset, then divide by the *unpadded*
+        // extent -- not the full canvas -- to land back in normalized
+        // original-image coordinates. Without this the boxes would be
+        // shifted and scaled by the padding.
+        final bool letterboxed = unpadW > 0 && unpadH > 0;
+        final Rect box;
+        if (letterboxed) {
+          final double toCanvas = maxSampledCoord > 1.5 ? 1.0 : inputSize.toDouble();
+          final double ccx = cx * toCanvas;
+          final double ccy = cy * toCanvas;
+          final double cw = w * toCanvas;
+          final double ch = h * toCanvas;
+          box = Rect.fromLTWH(
+            (ccx - cw / 2 - padX) / unpadW,
+            (ccy - ch / 2 - padY) / unpadH,
+            cw / unpadW,
+            ch / unpadH,
+          );
+        } else {
+          box = Rect.fromLTWH(
             (cx - w / 2) / coordScale,
             (cy - h / 2) / coordScale,
             w / coordScale,
             h / coordScale,
-          ),
+          );
+        }
+        results.add(DetectionResult(
+          className: (classId >= 0 && classId < labels.length) ? labels[classId] : 'unknown (id:$classId)',
+          confidence: maxClassScore,
+          bbox: box,
         ));
       }
     }
