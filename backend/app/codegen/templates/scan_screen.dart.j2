@@ -311,7 +311,16 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     }
 
     if (!mounted) return;
-    _scannerController.stop();
+    // stop() can resolve before the camera HAL actually releases the
+    // hardware -- without a head start here, the next screen's own
+    // CameraController can start binding while this scanner's camera
+    // session is still tearing down, and CameraX throws "No supported
+    // surface combination is found for camera device" from two camera
+    // clients contending for the same device at once. Same race (and same
+    // fix) as the Sync/Pair-PC navigation elsewhere in this file.
+    await _scannerController.stop();
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: engineSerial){% else %}HomeScreen(
@@ -332,7 +341,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     });
   }
 
-  void _processScan() {
+  Future<void> _processScan() async {
     final raw = _pendingBarcode;
     if (raw == null || _isProcessing) return;
 
@@ -367,7 +376,16 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     }
 
     if (!mounted) return;
-    _scannerController.stop();
+    // stop() can resolve before the camera HAL actually releases the
+    // hardware -- without a head start here, the next screen's own
+    // CameraController can start binding while this scanner's camera
+    // session is still tearing down, and CameraX throws "No supported
+    // surface combination is found for camera device" from two camera
+    // clients contending for the same device at once. Same race (and same
+    // fix) as the Sync/Pair-PC navigation elsewhere in this file.
+    await _scannerController.stop();
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: engineSerial){% else %}HomeScreen(
@@ -394,7 +412,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
   // Model code segment may carry 2 trailing junk characters, resolved via the
   // shared _resolveModelCode() above (same stripping rule as the VIN flow).
 
-  void _handleChakanScan(String raw) {
+  Future<void> _handleChakanScan(String raw) async {
     final List<String> parts = raw.split('_');
     if (parts.length < 2 || parts[0].trim().isEmpty || parts[1].trim().isEmpty) {
       setState(() => _isProcessing = true);
@@ -415,7 +433,16 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% endif %}
 
     if (!mounted) return;
-    _scannerController.stop();
+    // stop() can resolve before the camera HAL actually releases the
+    // hardware -- without a head start here, the next screen's own
+    // CameraController can start binding while this scanner's camera
+    // session is still tearing down, and CameraX throws "No supported
+    // surface combination is found for camera device" from two camera
+    // clients contending for the same device at once. Same race (and same
+    // fix) as the Sync/Pair-PC navigation elsewhere in this file.
+    await _scannerController.stop();
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: vin){% else %}HomeScreen(
@@ -452,7 +479,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     _handleChakanScan(raw);
   }
 
-  void _processScan() {
+  Future<void> _processScan() async {
     final raw = _pendingBarcode;
     if (raw == null || _isProcessing) return;
     _handleChakanScan(raw);
@@ -495,7 +522,16 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% endif %}
 
     if (!mounted) return;
-    _scannerController.stop();
+    // stop() can resolve before the camera HAL actually releases the
+    // hardware -- without a head start here, the next screen's own
+    // CameraController can start binding while this scanner's camera
+    // session is still tearing down, and CameraX throws "No supported
+    // surface combination is found for camera device" from two camera
+    // clients contending for the same device at once. Same race (and same
+    // fix) as the Sync/Pair-PC navigation elsewhere in this file.
+    await _scannerController.stop();
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: vin){% else %}HomeScreen(
@@ -516,7 +552,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     });
   }
 
-  void _processScan() {
+  Future<void> _processScan() async {
     final raw = _pendingBarcode;
     if (raw == null || _isProcessing) return;
 
@@ -540,7 +576,16 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% endif %}
 
     if (!mounted) return;
-    _scannerController.stop();
+    // stop() can resolve before the camera HAL actually releases the
+    // hardware -- without a head start here, the next screen's own
+    // CameraController can start binding while this scanner's camera
+    // session is still tearing down, and CameraX throws "No supported
+    // surface combination is found for camera device" from two camera
+    // clients contending for the same device at once. Same race (and same
+    // fix) as the Sync/Pair-PC navigation elsewhere in this file.
+    await _scannerController.stop();
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => {% if is_ocr_app %}OcrScanScreen(cameras: widget.cameras, truthValue: vin){% else %}HomeScreen(
