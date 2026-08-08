@@ -488,7 +488,12 @@ class ModelManager {
   Future<List<DetectionResult>> predictImage(img.Image orientedImage, {Uint8List? orientedPngBytes}) async {
     if (!_isLoaded || _interpreter == null) return [];
 
-    final pngBytes = orientedPngBytes ?? Uint8List.fromList(img.encodePng(orientedImage));
+    // JPEG q92 rather than lossless PNG: this is a full-resolution frame that
+    // only ever gets resized down to the model's input size, so PNG's much
+    // slower encode (and much larger byte array to copy into the isolate)
+    // buys nothing. Callers normally pass orientedPngBytes so this fallback
+    // rarely runs at all.
+    final pngBytes = orientedPngBytes ?? Uint8List.fromList(img.encodeJpg(orientedImage, quality: 92));
     final detections = await compute(_runInferencePng, {
       'pngBytes': pngBytes,
       'interpreter_address': _interpreter!.address,
@@ -546,7 +551,9 @@ class ModelManager {
 
     final interpreter = Interpreter.fromAddress(interpreterAddress);
 
-    final decoded = img.decodePng(pngBytes);
+    // decodeImage, not decodePng -- these bytes are JPEG now (see the encode
+    // side); format-agnostic decoding stays correct either way.
+    final decoded = img.decodeImage(pngBytes);
     if (decoded == null) return [];
     final inputData = _imageToFloat32(decoded, inputSize);
 

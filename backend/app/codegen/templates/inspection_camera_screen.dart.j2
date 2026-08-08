@@ -59,8 +59,17 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
       variance = (sumLapSq / count) - (mean * mean);
     }
     return _BlurCheckResult(
-      variance: variance,
-      orientedPngBytes: Uint8List.fromList(img.encodePng(oriented)),
+      // Deliberately JPEG, not PNG. This byte array is the EXIF-corrected
+      // full-resolution frame, and it gets encoded once here, decoded again
+      // on the UI isolate, then handed to the detector isolate and decoded a
+      // third time. PNG is lossless *compression* -- encoding a full-res
+      // photo with it costs far more CPU than the blur check this isolate
+      // exists to offload, and it produces a byte array several times larger
+      // to copy across two isolate boundaries. Quality 92 JPEG is visually
+      // indistinguishable here (the detector resizes to inputSize anyway, and
+      // the saved photo is re-encoded at quality 40 regardless) while being
+      // dramatically faster to encode and decode.
+      orientedPngBytes: Uint8List.fromList(img.encodeJpg(oriented, quality: 92)),
     );
   } catch (_) {
     return const _BlurCheckResult();
@@ -266,7 +275,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           (c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cameras.first);
       final controller =
-          CameraController(back, ResolutionPreset.medium, enableAudio: false);
+          // ResolutionPreset.medium is only ~720x480. That's fine for judging
+          // "is this part present", but an engine-plate crop out of a 480p
+          // frame is often only ~100x30 px -- far too coarse for the CRNN or
+          // ML Kit to read reliably, which is a large part of why per-class
+          // OCR here reads worse than the standalone OCR screen (that one has
+          // always used ResolutionPreset.high). Match it whenever this build
+          // actually does OCR, and leave plain inspection builds on medium so
+          // their capture stays as fast as before.
+          CameraController(back, {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %}, enableAudio: false);
       _cameraController = controller;
       await controller.initialize();
       if (mounted) setState(() => _isCameraInitialized = true);
@@ -305,7 +322,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       final blurCheck = await compute(_decodeAndCheckBlur, bytes);
       if (blurCheck.orientedPngBytes != null) {
         try {
-          final oriented = img.decodePng(blurCheck.orientedPngBytes!);
+          // decodeImage (not decodePng) -- these bytes are JPEG now, and
+          // format-agnostic decoding keeps this correct either way.
+          final oriented = img.decodeImage(blurCheck.orientedPngBytes!);
           if (oriented != null) {
             orientedImage = oriented;
             imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble());
@@ -1188,8 +1207,17 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
       variance = (sumLapSq / count) - (mean * mean);
     }
     return _BlurCheckResult(
-      variance: variance,
-      orientedPngBytes: Uint8List.fromList(img.encodePng(oriented)),
+      // Deliberately JPEG, not PNG. This byte array is the EXIF-corrected
+      // full-resolution frame, and it gets encoded once here, decoded again
+      // on the UI isolate, then handed to the detector isolate and decoded a
+      // third time. PNG is lossless *compression* -- encoding a full-res
+      // photo with it costs far more CPU than the blur check this isolate
+      // exists to offload, and it produces a byte array several times larger
+      // to copy across two isolate boundaries. Quality 92 JPEG is visually
+      // indistinguishable here (the detector resizes to inputSize anyway, and
+      // the saved photo is re-encoded at quality 40 regardless) while being
+      // dramatically faster to encode and decode.
+      orientedPngBytes: Uint8List.fromList(img.encodeJpg(oriented, quality: 92)),
     );
   } catch (_) {
     return const _BlurCheckResult();
@@ -1346,7 +1374,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           (c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cameras.first);
       final controller =
-          CameraController(back, ResolutionPreset.medium, enableAudio: false);
+          // ResolutionPreset.medium is only ~720x480. That's fine for judging
+          // "is this part present", but an engine-plate crop out of a 480p
+          // frame is often only ~100x30 px -- far too coarse for the CRNN or
+          // ML Kit to read reliably, which is a large part of why per-class
+          // OCR here reads worse than the standalone OCR screen (that one has
+          // always used ResolutionPreset.high). Match it whenever this build
+          // actually does OCR, and leave plain inspection builds on medium so
+          // their capture stays as fast as before.
+          CameraController(back, {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %}, enableAudio: false);
       _cameraController = controller;
       await controller.initialize();
       if (mounted) setState(() => _isCameraInitialized = true);
@@ -1385,7 +1421,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       final blurCheck = await compute(_decodeAndCheckBlur, bytes);
       if (blurCheck.orientedPngBytes != null) {
         try {
-          final oriented = img.decodePng(blurCheck.orientedPngBytes!);
+          // decodeImage (not decodePng) -- these bytes are JPEG now, and
+          // format-agnostic decoding keeps this correct either way.
+          final oriented = img.decodeImage(blurCheck.orientedPngBytes!);
           if (oriented != null) {
             orientedImage = oriented;
             imageSize = Size(oriented.width.toDouble(), oriented.height.toDouble());

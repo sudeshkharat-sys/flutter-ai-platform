@@ -336,6 +336,47 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         )
     )
 
+    # Both conditions above are silent all-or-nothing gates: if either fails,
+    # every OCR code path is omitted from the generated app entirely, and the
+    # build still succeeds. The app then detects boxes normally and simply
+    # shows no read text, no truth value and no ML Kit result -- with nothing
+    # anywhere explaining why. That's indistinguishable from "OCR is broken",
+    # and it's the single easiest way to lose hours on this feature.
+    #
+    # The most common trip-up is a class with "Read text" ticked that isn't
+    # also marked mandatory: ocrEnabled is only ever looked up for classes in
+    # mandatoryClasses, so OCR-on-a-non-mandatory-class silently does nothing.
+    # Warn loudly whenever OCR was configured somewhere but resolved off.
+    if not ctx["ocr_enabled"]:
+        _ocr_classes_anywhere = {
+            cls
+            for entry in models_manifest
+            for cls, cfg in (entry.get("classOcrConfig") or {}).items()
+            if (cfg or {}).get("ocrEnabled")
+        }
+        if _ocr_classes_anywhere:
+            if ctx["detection_method"] != "multiclass":
+                print(
+                    "[generator] WARNING: OCR is configured on class(es) "
+                    f"{sorted(_ocr_classes_anywhere)} but detection_method is "
+                    f"'{ctx['detection_method']}', not 'multiclass' -- ALL OCR code "
+                    "(trained recognizer + ML Kit) has been omitted from this build. "
+                    "Set Detection Method to 'multiclass' in Add Inspection Profile."
+                )
+            else:
+                _mandatory_anywhere = {
+                    cls
+                    for entry in models_manifest
+                    for cls in (entry.get("mandatoryClasses") or [])
+                }
+                print(
+                    "[generator] WARNING: OCR is configured on class(es) "
+                    f"{sorted(_ocr_classes_anywhere)}, but none of them are marked "
+                    f"mandatory (mandatory classes are {sorted(_mandatory_anywhere)}) "
+                    "-- ALL OCR code has been omitted from this build. A class must be "
+                    "mandatory for its 'Read text' setting to take effect."
+                )
+
     # A class's OCR config can pick the reading engine: 'crnn' (this
     # project's trained model, with ML Kit as a fallback when a target text
     # is set and the CRNN read doesn't match it) or the original 'mlkit'
