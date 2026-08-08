@@ -6,6 +6,9 @@ import 'vin_scan_screen.dart';
 {% if 'engine' in combined_capabilities %}
 import 'engine_scan_screen.dart';
 {% endif %}
+{% if 'chakan' in combined_capabilities %}
+import 'chakan_scan_screen.dart';
+{% endif %}
 {% if 'ocr' in combined_capabilities %}
   {% if ocr_truth_source == 'qr' %}
 import 'ocr_truth_scan_screen.dart';
@@ -18,9 +21,9 @@ import 'home_screen.dart';
 {% endif %}
 
 /// Home screen for a "combined" app -- one app offering more than one
-/// capability (VIN scan / Chakan-engine scan / OCR plate read / class
-/// inspection with masterdata mapping), picked at New App creation time
-/// via a checklist rather than a single app_type. Each button below leads
+/// capability (VIN scan / Engine scan / Chakan Plant scan / OCR plate read
+/// / class inspection with masterdata mapping), picked at New App creation
+/// time via a checklist rather than a single app_type. Each button below leads
 /// into the exact same screens a single-purpose app would use --
 /// "inspection" reuses HomeScreen exactly as a plain 'sequential' app's
 /// entry point does, so its task grid, mandatory-class checklist,
@@ -61,6 +64,18 @@ class CapabilityMenuScreen extends StatelessWidget {
               () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const EngineScanScreen(modelCode: '')),
+              ),
+            ),
+            const SizedBox(height: 16),
+{% endif %}
+{% if 'chakan' in combined_capabilities %}
+            _menuButton(
+              context,
+              'Scan Chakan Plant Code',
+              Icons.qr_code_scanner,
+              () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ChakanScanScreen(modelCode: '')),
               ),
             ),
             const SizedBox(height: 16),

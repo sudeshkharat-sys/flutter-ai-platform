@@ -283,20 +283,47 @@ export default function NewApp() {
                 Combined app -- offer more than one capability in this app
               </label>
               {isCombinedApp && (
-                <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
                   {[
-                    { key: 'vin', label: 'VIN scan' },
-                    { key: 'engine', label: 'Chakan / Engine scan' },
-                    { key: 'ocr', label: 'OCR plate read' },
-                    { key: 'inspection', label: 'Class Inspection (masterdata mapping)' },
+                    {
+                      key: 'vin',
+                      label: 'VIN scan',
+                      hint: 'Standalone button: scan a raw VIN barcode, checked against Master Data, then go straight to the Class Inspection checklist. No camera/OCR involved.',
+                    },
+                    {
+                      key: 'engine',
+                      label: 'Engine scan',
+                      hint: 'Standalone button: scan an engine sticker ("PART_NO SERIAL_NO"), checked against Engine Data, then go straight to the Class Inspection checklist. No camera/OCR involved.',
+                    },
+                    {
+                      key: 'chakan',
+                      label: 'Chakan Plant scan',
+                      hint: 'Standalone button: scan a Chakan Plant barcode ("VIN_ModelCode_Garbage"), checked against Master Data, then go straight to the Class Inspection checklist. No camera/OCR involved.',
+                    },
+                    {
+                      key: 'ocr',
+                      label: 'OCR plate read',
+                      hint: 'Camera button: detects the plate with your YOLO model, reads the text with your OCR model, and saves it. Configure it in the "OCR Bundle" tab below -- including its own optional barcode-scan step for a truth value (separate from the 3 standalone buttons above).',
+                    },
+                    {
+                      key: 'inspection',
+                      label: 'Class Inspection (masterdata mapping)',
+                      hint: 'Camera button: one photo is checked against a checklist of parts/classes your model was trained on (mandatory vs. ignored), with per-class OCR and masterdata validation optional. This is the "old method" multi-part checklist -- configure it after creating the app.',
+                    },
                   ].map(cap => (
-                    <label key={cap.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                    <label key={cap.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 13 }}>
                       <input
                         type="checkbox"
                         checked={combinedCapabilities.includes(cap.key)}
                         onChange={() => toggleCapability(cap.key)}
+                        style={{ marginTop: 2 }}
                       />
-                      {cap.label}
+                      <span>
+                        <span style={{ fontWeight: 600 }}>{cap.label}</span>
+                        <span style={{ display: 'block', color: 'var(--muted, #888)', fontSize: 11.5, marginTop: 1 }}>
+                          {cap.hint}
+                        </span>
+                      </span>
                     </label>
                   ))}
                 </div>

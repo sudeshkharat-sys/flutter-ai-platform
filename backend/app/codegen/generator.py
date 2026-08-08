@@ -512,6 +512,9 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             if "engine" in combined_capabilities:
                 engine_ctx = {**ctx, "scan_type": "engine", "scan_screen_class_name": "EngineScanScreen", "is_ocr_app": False}
                 zf.writestr(f"{root}/lib/screens/engine_scan_screen.dart", scan_tmpl.render(**engine_ctx))
+            if "chakan" in combined_capabilities:
+                chakan_ctx = {**ctx, "scan_type": "chakan", "scan_screen_class_name": "ChakanScanScreen", "is_ocr_app": False}
+                zf.writestr(f"{root}/lib/screens/chakan_scan_screen.dart", scan_tmpl.render(**chakan_ctx))
             if "ocr" in combined_capabilities and ocr_ctx.get("ocr_truth_source") == "qr":
                 ocr_truth_ctx = {**ctx, "scan_type": ocr_ctx.get("ocr_truth_scan_type", "engine"), "scan_screen_class_name": "OcrTruthScanScreen", "is_ocr_app": True}
                 zf.writestr(f"{root}/lib/screens/ocr_truth_scan_screen.dart", scan_tmpl.render(**ocr_truth_ctx))
