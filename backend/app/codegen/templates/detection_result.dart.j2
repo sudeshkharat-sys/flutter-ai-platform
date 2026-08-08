@@ -6,6 +6,15 @@ class DetectionResult {
   final Rect bbox; // normalized 0.0–1.0 coordinates (x, y, w, h)
   final String? ocrText;
   final bool? isOcrMatch;
+  // Per-engine reads, kept alongside the final [ocrText] rather than folded
+  // into it. When the trained recognizer's read misses and ML Kit runs as a
+  // fallback, ML Kit's text becomes ocrText -- which used to silently
+  // discard what the recognizer actually read, the single most useful thing
+  // to see when a read goes wrong. Both are retained now so the result
+  // screen can show them side by side, the way the standalone OCR screen
+  // always has. Null means that engine didn't run for this detection.
+  final String? ocrCrnnText;
+  final String? ocrMlKitText;
 
   const DetectionResult({
     required this.className,
@@ -13,14 +22,23 @@ class DetectionResult {
     required this.bbox,
     this.ocrText,
     this.isOcrMatch,
+    this.ocrCrnnText,
+    this.ocrMlKitText,
   });
 
-  DetectionResult copyWith({String? ocrText, bool? isOcrMatch}) => DetectionResult(
+  DetectionResult copyWith({
+    String? ocrText,
+    bool? isOcrMatch,
+    String? ocrCrnnText,
+    String? ocrMlKitText,
+  }) => DetectionResult(
     className: className,
     confidence: confidence,
     bbox: bbox,
     ocrText: ocrText ?? this.ocrText,
     isOcrMatch: isOcrMatch ?? this.isOcrMatch,
+    ocrCrnnText: ocrCrnnText ?? this.ocrCrnnText,
+    ocrMlKitText: ocrMlKitText ?? this.ocrMlKitText,
   );
 
   Map<String, dynamic> toJson() => {
@@ -34,6 +52,8 @@ class DetectionResult {
     },
     'ocrText': ocrText,
     'isOcrMatch': isOcrMatch,
+    'ocrCrnnText': ocrCrnnText,
+    'ocrMlKitText': ocrMlKitText,
   };
 
   static DetectionResult fromJson(Map<String, dynamic> json) => DetectionResult(
@@ -47,6 +67,10 @@ class DetectionResult {
     ),
     ocrText: json['ocrText'] as String?,
     isOcrMatch: json['isOcrMatch'] as bool?,
+    // Absent in rows saved before these fields existed -- null is the
+    // correct "this engine didn't run" value, so old history still loads.
+    ocrCrnnText: json['ocrCrnnText'] as String?,
+    ocrMlKitText: json['ocrMlKitText'] as String?,
   );
 
   @override

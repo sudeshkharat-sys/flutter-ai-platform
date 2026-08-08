@@ -905,6 +905,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                 final detected = entry.value != null;
                                 final ocrText = entry.value?.ocrText;
                                 final ocrMatch = entry.value?.isOcrMatch;
+                                final ocrCrnn = entry.value?.ocrCrnnText;
+                                final ocrMlKit = entry.value?.ocrMlKitText;
                                 final ocrCfg = (currentTask['classOcrConfig'] as Map<String, dynamic>? ?? {})[entry.key] as Map<String, dynamic>?;
                                 final hasOcr = ocrCfg != null && ocrCfg['ocrEnabled'] == true;
                                 // What this class's OCR is actually being checked against --
@@ -985,6 +987,19 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                 if (detected && ocrText != null && ocrText.isNotEmpty) ...[
                                                   const SizedBox(height: 2),
                                                   Text('Read: "$ocrText"', style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                                                ],
+                                                // Per-engine reads, same as the standalone OCR
+                                                // screen shows. Only rendered when that engine
+                                                // actually ran, and only when it differs from the
+                                                // final text -- otherwise it's just the same
+                                                // string three times.
+                                                if (detected && ocrCrnn != null && ocrCrnn.isNotEmpty && ocrCrnn != ocrText) ...[
+                                                  const SizedBox(height: 2),
+                                                  Text('Trained OCR read: "$ocrCrnn"', style: const TextStyle(fontSize: 10, color: Colors.white54)),
+                                                ],
+                                                if (detected && ocrMlKit != null && ocrMlKit.isNotEmpty && ocrMlKit != ocrText) ...[
+                                                  const SizedBox(height: 2),
+                                                  Text('ML Kit read: "$ocrMlKit"', style: const TextStyle(fontSize: 10, color: Colors.white54)),
                                                 ],
                                                 // Ground truth next to the read text -- this is the
                                                 // "need to see both extracted and truth" ask: verify a

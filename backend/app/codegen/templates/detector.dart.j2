@@ -440,6 +440,10 @@ class ModelManager {
     final int h = (det.bbox.height * source.height).round().clamp(1, source.height - y);
     final cropped = img.copyCrop(source, x: x, y: y, width: w, height: h);
 
+    // Survives the CRNN -> ML Kit fallback below so both engines' reads make
+    // it onto the result screen. Stays null when the CRNN never ran.
+    String? crnnReadForReport;
+
 {% if ocr_uses_crnn %}
     if (engine == 'crnn' && _ocrModelLoaded && _ocrInterpreter != null) {
       // Two-stage read, matching the standalone OCR pipeline
@@ -471,7 +475,7 @@ class ModelManager {
           'read="$crnnText"');
       if (target.isEmpty) {
         // No target configured -- just record what was read, no pass/fail.
-        return det.copyWith(ocrText: crnnText);
+        return det.copyWith(ocrText: crnnText, ocrCrnnText: crnnText);
       }
       final normTarget = _normalizeOcr(target);
       final normCrnn = _normalizeOcr(crnnText);
@@ -480,11 +484,14 @@ class ModelManager {
           : _ocrSimilarity(normCrnn, normTarget) >= 0.9;
       debugPrint('[OCR][CRNN] read="$crnnText" target="$target" matched=$crnnMatched');
       if (crnnMatched) {
-        return det.copyWith(ocrText: crnnText, isOcrMatch: true);
+        return det.copyWith(ocrText: crnnText, isOcrMatch: true, ocrCrnnText: crnnText);
       }
       // CRNN didn't match the target -- fall through to the ML Kit path
       // below as a second opinion on this exact crop, same idea as the
-      // standalone OCR app's CRNN-then-ML-Kit fallback.
+      // standalone OCR app's CRNN-then-ML-Kit fallback. Keep the CRNN read
+      // so the result screen can show what each engine actually produced
+      // rather than only ML Kit's overwrite.
+      crnnReadForReport = crnnText;
     }
     if (engine == 'crnn' && target.isEmpty) {
       // CRNN model not loaded/ready and there's no target to fall back
@@ -529,8 +536,14 @@ class ModelManager {
     final bool matched = normTarget.length <= 8
         ? normExtracted == normTarget || normExtracted.contains(normTarget)
         : _ocrSimilarity(normExtracted, normTarget) >= 0.9;
-    debugPrint('[OCR] final="$extractedText" normExtracted=$normExtracted normTarget=$normTarget matched=$matched');
-    return det.copyWith(ocrText: extractedText, isOcrMatch: matched);
+    debugPrint('[OCR] final="$extractedText" crnn="${crnnReadForReport ?? "(not run)"}" '
+        'normExtracted=$normExtracted normTarget=$normTarget matched=$matched');
+    return det.copyWith(
+      ocrText: extractedText,
+      isOcrMatch: matched,
+      ocrCrnnText: crnnReadForReport,
+      ocrMlKitText: extractedText,
+    );
   }
 {% endif %}
 
