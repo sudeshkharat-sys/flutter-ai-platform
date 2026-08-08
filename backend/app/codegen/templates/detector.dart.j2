@@ -141,6 +141,24 @@ class ModelManager {
     return sharpened;
   }
 
+  /// Isolate entry-point for [_preprocessForOcr] + PNG encode.
+  ///
+  /// The preprocessing chain is 3x upscale -> per-tile adaptive threshold ->
+  /// convolution, then a PNG encode of the upscaled result -- hundreds of ms
+  /// on a real crop, and it ran inline on the UI isolate, twice (normal and
+  /// inverted), while the camera preview was still streaming. That is a
+  /// direct cause of the capture-time freeze and camera buffer backlog. Only
+  /// the ML Kit call itself has to stay on the main isolate (platform
+  /// channels aren't available to a background isolate without extra
+  /// plumbing); the expensive pixel work does not.
+  static Uint8List _preprocessForOcrIsolate(Map<String, dynamic> args) {
+    final crop = img.decodeImage(args['cropPng'] as Uint8List);
+    if (crop == null) return Uint8List(0);
+    return Uint8List.fromList(
+      img.encodePng(_preprocessForOcr(crop, invert: args['invert'] as bool)),
+    );
+  }
+
   // ── OCR text helpers ───────────────────────────────────────────────────────
 
   /// Strip non-alphanumeric, uppercase, apply common OCR substitutions.
@@ -504,7 +522,11 @@ class ModelManager {
     String extractedText = '';
     try {
       final normTarget = _normalizeOcr(target);
-      final normalBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped)));
+      // Encoded once here and reused by both passes below; the heavy
+      // preprocessing itself happens on a background isolate.
+      final croppedPng = Uint8List.fromList(img.encodePng(cropped));
+      final normalBytes = await compute(
+          _preprocessForOcrIsolate, {'cropPng': croppedPng, 'invert': false});
       final normalText = await _ocrBytes(normalBytes, tempDir, 'normal');
       final normalScore = _ocrSimilarity(_normalizeOcr(normalText), normTarget);
       debugPrint('[OCR] normal="$normalText"($normalScore) target="$target"');
@@ -517,7 +539,8 @@ class ModelManager {
       if (normalScore >= 0.9) {
         extractedText = normalText;
       } else {
-        final invertBytes = Uint8List.fromList(img.encodePng(_preprocessForOcr(cropped, invert: true)));
+        final invertBytes = await compute(
+            _preprocessForOcrIsolate, {'cropPng': croppedPng, 'invert': true});
         final invertText = await _ocrBytes(invertBytes, tempDir, 'invert');
         final invertScore = _ocrSimilarity(_normalizeOcr(invertText), normTarget);
         debugPrint('[OCR] invert="$invertText"($invertScore) target="$target"');

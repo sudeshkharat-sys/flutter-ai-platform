@@ -76,6 +76,71 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
   }
 }
 
+/// Result of annotating + encoding the captured photo on a background
+/// isolate: the full-size annotated JPEG and its small history thumbnail.
+class _AnnotatedImages {
+  final Uint8List? full;
+  final Uint8List? thumb;
+  const _AnnotatedImages({this.full, this.thumb});
+}
+
+/// Draws the detection boxes onto the captured frame and encodes both the
+/// saved photo and its thumbnail -- on a background isolate.
+///
+/// This is the work that made the camera freeze and its buffers back up on
+/// every capture. It all used to run inline on the UI isolate: box drawing
+/// over a full-resolution image, a full-resolution JPEG encode, then a
+/// resize and a second encode. The camera preview keeps streaming frames
+/// throughout, so blocking the UI isolate for that long starves the preview
+/// and the plugin's image buffers -- which is the freeze/lag/buffer
+/// behavior, not a camera bug.
+///
+/// Boxes arrive as plain maps (normalized coords + colour + label) because
+/// DetectionResult and img.Image can't cross an isolate boundary; building
+/// that list on the UI isolate is trivial compared to the drawing itself.
+_AnnotatedImages _annotateAndEncode(Map<String, dynamic> args) {
+  try {
+    final Uint8List imageBytes = args['imageBytes'] as Uint8List;
+    final List<dynamic> boxes = args['boxes'] as List<dynamic>;
+
+    final decoded = img.decodeImage(imageBytes);
+    if (decoded == null) return const _AnnotatedImages();
+
+    final iw = decoded.width.toDouble();
+    final ih = decoded.height.toDouble();
+
+    for (final raw in boxes) {
+      final b = raw as Map<String, dynamic>;
+      final color = (b['green'] as bool)
+          ? img.ColorRgb8(0, 200, 0)
+          : img.ColorRgb8(220, 0, 0);
+
+      final x1 = ((b['left'] as double) * iw).toInt().clamp(0, decoded.width - 1);
+      final y1 = ((b['top'] as double) * ih).toInt().clamp(0, decoded.height - 1);
+      final x2 = ((b['right'] as double) * iw).toInt().clamp(0, decoded.width - 1);
+      final y2 = ((b['bottom'] as double) * ih).toInt().clamp(0, decoded.height - 1);
+
+      for (int t = 0; t < 3; t++) {
+        img.drawRect(decoded, x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t, color: color);
+      }
+
+      final label = b['label'] as String;
+      final labelY = (y1 - 20).clamp(0, decoded.height - 20);
+      img.fillRect(decoded,
+          x1: x1, y1: labelY, x2: x1 + label.length * 8 + 6, y2: labelY + 18, color: color);
+      img.drawString(decoded, label,
+          font: img.arial14, x: x1 + 3, y: labelY + 2, color: img.ColorRgb8(255, 255, 255));
+    }
+
+    return _AnnotatedImages(
+      full: Uint8List.fromList(img.encodeJpg(decoded, quality: 40)),
+      thumb: Uint8List.fromList(img.encodeJpg(img.copyResize(decoded, width: 480), quality: 15)),
+    );
+  } catch (_) {
+    return const _AnnotatedImages();
+  }
+}
+
 class InspectionCameraScreen extends StatefulWidget {
   final String vin;
   final String modelCode;
@@ -472,61 +537,41 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         final resultBadge = overallPass ? 'OK' : 'NOT_OK';
         savedImagePath = '${imgDir.path}/${safeTask}_${resultBadge}_${dateStr}_$timeStr.jpg';
 
-        // Use orientedImage so boxes align with model inference coordinates
-        final decoded = orientedImage ?? img.decodeImage(bytes);
-        List<int> compressed;
-        if (decoded != null) {
-          final iw = decoded.width.toDouble();
-          final ih = decoded.height.toDouble();
-
-          for (final det in allDetections) {
-            // An explicitly ignored class has no effect on the result --
-            // drawing a box for it anyway just clutters the saved photo
-            // with something the inspector doesn't need to look at, and
-            // burning it in red would make a genuinely-OK inspection look
-            // like it failed when reviewed later. Skip it entirely instead
-            // of giving it its own color, keeping the clean green/red look.
-            if (_isIgnored(det.className, ignoredClasses)) continue;
-
-            final isMandatory = targetClasses.any(
-              (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
-            );
+        // Build a plain, isolate-transferable description of the boxes to
+        // burn in, then do the drawing/encoding off the UI isolate -- see
+        // _annotateAndEncode for why this must not run here.
+        final List<Map<String, dynamic>> boxArgs = [];
+        for (final det in allDetections) {
+          // An explicitly ignored class has no effect on the result --
+          // drawing a box for it anyway just clutters the saved photo
+          // with something the inspector doesn't need to look at, and
+          // burning it in red would make a genuinely-OK inspection look
+          // like it failed when reviewed later. Skip it entirely instead
+          // of giving it its own color, keeping the clean green/red look.
+          if (_isIgnored(det.className, ignoredClasses)) continue;
+          final isMandatory = targetClasses.any(
+            (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
+          );
+          boxArgs.add({
+            'left': det.bbox.left,
+            'top': det.bbox.top,
+            'right': det.bbox.right,
+            'bottom': det.bbox.bottom,
             // 2-color logic: green=mandatory found, red=not ok or unexpected unchecked
-            final img.Color boxColor;
-            if (isMandatory) {
-              boxColor = img.ColorRgb8(0, 200, 0);       // green — mandatory found
-            } else {
-              boxColor = img.ColorRgb8(220, 0, 0);       // red — unexpected/unchecked or defect
-            }
-
-            final x1 = (det.bbox.left * iw).toInt().clamp(0, decoded.width - 1);
-            final y1 = (det.bbox.top * ih).toInt().clamp(0, decoded.height - 1);
-            final x2 = (det.bbox.right * iw).toInt().clamp(0, decoded.width - 1);
-            final y2 = (det.bbox.bottom * ih).toInt().clamp(0, decoded.height - 1);
-
-            for (int t = 0; t < 3; t++) {
-              img.drawRect(decoded,
-                  x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t,
-                  color: boxColor);
-            }
-
-            final label =
-                '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%';
-            final labelY = (y1 - 20).clamp(0, decoded.height - 20);
-            img.fillRect(decoded,
-                x1: x1, y1: labelY, x2: x1 + label.length * 8 + 6, y2: labelY + 18,
-                color: boxColor);
-            img.drawString(decoded, label,
-                font: img.arial14,
-                x: x1 + 3,
-                y: labelY + 2,
-                color: img.ColorRgb8(255, 255, 255));
-          }
-
-          compressed = img.encodeJpg(decoded, quality: 40);
-        } else {
-          compressed = bytes;
+            'green': isMandatory,
+            'label': '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%',
+          });
         }
+
+        // Prefer the already-oriented frame the blur check produced, so the
+        // isolate doesn't redo EXIF work and boxes stay aligned with the
+        // coordinates inference actually ran on.
+        final annotated = await compute(_annotateAndEncode, {
+          'imageBytes': blurCheck.orientedPngBytes ?? bytes,
+          'boxes': boxArgs,
+        });
+        final List<int> compressed = annotated.full ?? bytes;
+
         await File(savedImagePath).writeAsBytes(compressed, flush: true);
         final savedLen = await File(savedImagePath).length();
         _addLog("Image saved (${savedLen}B): $savedImagePath");
@@ -536,12 +581,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           final backupDir = Directory('${appDir.path}/inspection_backups/$safeVin/$safeTask');
           await backupDir.create(recursive: true);
           final backupFile = File('${backupDir.path}/${safeTask}_${resultBadge}_${dateStr}_$timeStr.jpg');
-          if (decoded != null) {
-            final thumb = img.copyResize(decoded, width: 480);
-            await backupFile.writeAsBytes(img.encodeJpg(thumb, quality: 15), flush: true);
-          } else {
-            await backupFile.writeAsBytes(compressed, flush: true);
-          }
+          await backupFile.writeAsBytes(annotated.thumb ?? compressed, flush: true);
           savedBackupPath = backupFile.path;
           _addLog("Backup saved: $savedBackupPath");
         } catch (e) {
