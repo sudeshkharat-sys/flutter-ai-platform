@@ -13,12 +13,19 @@ import 'ocr_truth_scan_screen.dart';
 import 'ocr_scan_screen.dart';
   {% endif %}
 {% endif %}
+{% if 'inspection' in combined_capabilities %}
+import 'home_screen.dart';
+{% endif %}
 
 /// Home screen for a "combined" app -- one app offering more than one
-/// capability (VIN scan / Chakan-engine scan / OCR plate read), picked at
-/// New App creation time via a checklist rather than a single app_type.
-/// Each button below leads into the exact same screens a single-purpose
-/// app would use; History/Dashboard need no changes since every flow here
+/// capability (VIN scan / Chakan-engine scan / OCR plate read / class
+/// inspection with masterdata mapping), picked at New App creation time
+/// via a checklist rather than a single app_type. Each button below leads
+/// into the exact same screens a single-purpose app would use --
+/// "inspection" reuses HomeScreen exactly as a plain 'sequential' app's
+/// entry point does, so its task grid, mandatory-class checklist,
+/// masterdata mapping, printer/sync and history/dashboard all work
+/// unchanged; History/Dashboard need no changes since every flow here
 /// already writes into the same shared Inspections/TaskResults tables.
 class CapabilityMenuScreen extends StatelessWidget {
   final List<CameraDescription> cameras;
@@ -75,6 +82,17 @@ class CapabilityMenuScreen extends StatelessWidget {
                       OcrScanScreen(cameras: cameras),
 {% endif %}
                 ),
+              ),
+            ),
+{% endif %}
+{% if 'inspection' in combined_capabilities %}
+            _menuButton(
+              context,
+              'Class Inspection',
+              Icons.checklist,
+              () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => HomeScreen(cameras: cameras)),
               ),
             ),
 {% endif %}

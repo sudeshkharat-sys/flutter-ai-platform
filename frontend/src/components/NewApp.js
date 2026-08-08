@@ -286,6 +286,7 @@ export default function NewApp() {
                     { key: 'vin', label: 'VIN scan' },
                     { key: 'engine', label: 'Chakan / Engine scan' },
                     { key: 'ocr', label: 'OCR plate read' },
+                    { key: 'inspection', label: 'Class Inspection (masterdata mapping)' },
                   ].map(cap => (
                     <label key={cap.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                       <input
@@ -302,6 +303,13 @@ export default function NewApp() {
                 <p className="newapp-sidebar-hint" style={{ marginTop: 6 }}>
                   Configure OCR (region class, expected text source, recognizer upload) in the
                   "OCR Bundle" tab below, same as a plain OCR app.
+                </p>
+              )}
+              {isCombinedApp && combinedCapabilities.includes('inspection') && (
+                <p className="newapp-sidebar-hint" style={{ marginTop: 6 }}>
+                  Configure the class checklist, mandatory classes, and masterdata mapping in the
+                  app's "Add Inspection Profile" screen after creating it, same as a plain
+                  inspection app.
                 </p>
               )}
             </div>

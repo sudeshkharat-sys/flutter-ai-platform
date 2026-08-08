@@ -754,7 +754,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         inspection_tasks: finalTasks,
         app_settings: {
           ...(existingApp?.app_settings || {}),
-          app_type: 'sequential',
+          // Preserve a 'combined' (or any other non-default) app_type --
+          // configuring the inspection-task checklist here is one of several
+          // capabilities a combined app can offer, not the whole app, so
+          // saving a profile must not silently downgrade it back to a plain
+          // single-purpose 'sequential' app and drop its other capabilities.
+          app_type: existingApp?.app_settings?.app_type || 'sequential',
           scan_type: scanType,
           detection_method: detectionMethod,
           model_codes: selectedModelCodes,
