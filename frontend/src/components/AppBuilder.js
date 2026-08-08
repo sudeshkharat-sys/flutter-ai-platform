@@ -480,16 +480,31 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             return acc;
           }, {});
 
-          const restoredReviewData = codes.map(code => {
-            const mapping = allMappings.find(m => m.model_code === code) || { model_code: code, platform_name: 'Unknown', description: '' };
-            return {
-              id: mapping.id || Math.random().toString(),
-              platform_name: mapping.platform_name,
-              model_code: mapping.model_code,
-              description: mapping.description,
-              selectedAIModels: tasksByCode[code] || []
-            };
-          });
+          // An Open Scan profile saves with no Model/Engine codes selected
+          // at all (that's the whole point), so there's nothing in `codes`
+          // to map over -- its one task group sits under the 'Default' key
+          // instead (see handleEnterReview's openScan branch / vehicleCode:
+          // '' in handleSaveProfile). Rebuild that single row directly
+          // rather than producing an empty (and therefore blank-looking)
+          // review table.
+          const restoredReviewData = existingApp.app_settings?.skip_masterdata_validation
+            ? [{
+                id: 'open-scan',
+                platform_name: 'Any',
+                model_code: '',
+                description: 'Open scan -- applies to any scanned code',
+                selectedAIModels: tasksByCode['Default'] || [],
+              }]
+            : codes.map(code => {
+                const mapping = allMappings.find(m => m.model_code === code) || { model_code: code, platform_name: 'Unknown', description: '' };
+                return {
+                  id: mapping.id || Math.random().toString(),
+                  platform_name: mapping.platform_name,
+                  model_code: mapping.model_code,
+                  description: mapping.description,
+                  selectedAIModels: tasksByCode[code] || []
+                };
+              });
 
           setReviewData(restoredReviewData);
           if (startAtReview) setIsReviewing(true);
