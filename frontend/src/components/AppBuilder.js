@@ -386,6 +386,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const [loading, setLoading] = useState(true);
 
   const [profileName, setProfileName] = useState(existingApp?.name || '');
+  // Combined app: extra standalone scan buttons (VIN/Engine/Chakan/Class
+  // Inspection) on the app's home menu, instead of this profile's own Scan
+  // Type below being the app's single fixed entry point. Off by default --
+  // a plain app just uses Scan Type directly, no menu screen.
+  const [isCombinedApp, setIsCombinedApp] = useState(existingApp?.app_settings?.app_type === 'combined');
+  const [combinedCapabilities, setCombinedCapabilities] = useState(existingApp?.app_settings?.combined_capabilities || []);
+  const toggleCapability = (cap) => {
+    setCombinedCapabilities(prev =>
+      prev.includes(cap) ? prev.filter(c => c !== cap) : [...prev, cap]
+    );
+  };
   const [scanType, setScanType] = useState(existingApp?.app_settings?.scan_type || 'model');
   // Detection engine: 'default' (single target class) or 'multiclass'
   // (mandatory-class checklist + per-class OCR verification).
@@ -793,12 +804,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         inspection_tasks: finalTasks,
         app_settings: {
           ...(existingApp?.app_settings || {}),
-          // Preserve a 'combined' (or any other non-default) app_type --
-          // configuring the inspection-task checklist here is one of several
-          // capabilities a combined app can offer, not the whole app, so
-          // saving a profile must not silently downgrade it back to a plain
-          // single-purpose 'sequential' app and drop its other capabilities.
-          app_type: existingApp?.app_settings?.app_type || 'sequential',
+          app_type: isCombinedApp ? 'combined' : 'sequential',
+          combined_capabilities: isCombinedApp ? combinedCapabilities : [],
           scan_type: scanType,
           detection_method: detectionMethod,
           skip_masterdata_validation: openScan,
@@ -866,6 +873,45 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               <div>
                 <label style={labelStyle}>App Name</label>
                 <input style={inputStyle} value={profileName} onChange={e => setProfileName(e.target.value)} placeholder="e.g. Bumper Inspection" />
+              </div>
+
+              <div>
+                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={isCombinedApp}
+                    onChange={e => setIsCombinedApp(e.target.checked)}
+                  />
+                  Combined app -- extra scan buttons on the home menu
+                </label>
+                {isCombinedApp && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8, paddingLeft: 4 }}>
+                    {[
+                      { key: 'vin', label: 'VIN scan', hint: 'Scan a raw VIN barcode, checked against Master Data, then straight into this checklist.' },
+                      { key: 'engine', label: 'Engine scan', hint: 'Scan an engine sticker ("PART_NO SERIAL_NO"), checked against Engine Data, then straight into this checklist.' },
+                      { key: 'chakan', label: 'Chakan Plant scan', hint: 'Scan a Chakan Plant barcode ("VIN_ModelCode_Garbage"), checked against Master Data, then straight into this checklist.' },
+                      { key: 'inspection', label: 'Class Inspection', hint: 'Skip the barcode scan entirely -- go straight into this checklist with no vehicle/code attached, for whenever no scan is needed.' },
+                    ].map(cap => (
+                      <label key={cap.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={combinedCapabilities.includes(cap.key)}
+                          onChange={() => toggleCapability(cap.key)}
+                          style={{ marginTop: 2 }}
+                        />
+                        <span>
+                          <span style={{ fontWeight: 600 }}>{cap.label}</span>
+                          <span style={{ display: 'block', color: C.muted, fontSize: 11 }}>{cap.hint}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <p style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
+                  Off (default): this app's single entry point uses Scan Type below directly, no
+                  menu screen. On: pick which scan buttons show on a home menu instead -- all of
+                  them lead into the same checklist configured below.
+                </p>
               </div>
 
               <div>

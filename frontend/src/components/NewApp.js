@@ -68,31 +68,11 @@ export default function NewApp() {
   const [appName, setAppName] = useState('');
   const [packageName, setPackageName] = useState('');
 
-  // ── Combined app: one app offering more than one capability (VIN scan /
-  // Engine scan / Chakan Plant scan / Class Inspection), instead of the
-  // usual single app_type. Opt-in and separate from every other app_type --
-  // doesn't change how a plain sequential app gets built.
-  //
-  // OCR is deliberately NOT one of these capabilities: reading text is just
-  // something a Class Inspection class can do (the "Read Text" option on a
-  // mandatory class, configured in the Add Inspection Profile screen after
-  // creating the app), not a separate app mode with its own screen and
-  // truth-value setup. Attach the OCR/CRNN recognizer below the same way
-  // you attach the YOLO detector, then configure it per-class afterward.
-  const [isCombinedApp, setIsCombinedApp] = useState(false);
-  const [combinedCapabilities, setCombinedCapabilities] = useState([]); // e.g. ['vin','engine']
-  const toggleCapability = (cap) => {
-    setCombinedCapabilities(prev =>
-      prev.includes(cap) ? prev.filter(c => c !== cap) : [...prev, cap]
-    );
-  };
-  // When true, every VIN/Engine/Chakan barcode scan in this app skips its
-  // "is this code known" check against Master Data/Engine Data and accepts
-  // whatever was scanned as-is -- for testing, or when that masterdata
-  // simply isn't populated yet. Off by default (masterdata validation runs
-  // as it always has). Also settable per-profile in Add Inspection Profile
-  // ("Open Scan") -- this is just the value a fresh app starts with.
-  const [skipMasterdataValidation, setSkipMasterdataValidation] = useState(false);
+  // App behavior (Combined app / extra scan buttons, masterdata, scan
+  // format, the class checklist, per-class OCR) is all configured in Add
+  // Inspection Profile after creating the app -- this screen only adds
+  // models, so a fresh app is always created as a plain 'sequential' app
+  // and Add Inspection Profile takes it from there.
 
   // ── OCR recognizer bundle (pre-built .tflite, not a .pt to convert) ────
   // Just another model to attach to the app here -- CRNN/CNN engine choice
@@ -212,23 +192,11 @@ export default function NewApp() {
 
   const handleCreate = async () => {
     try {
-      const app_settings = isCombinedApp
-        ? {
-            app_type: 'combined',
-            combined_capabilities: combinedCapabilities,
-            confidence_threshold: 0.5,
-            skip_masterdata_validation: skipMasterdataValidation,
-          }
-        : {
-            app_type: 'sequential',
-            confidence_threshold: 0.5,
-            skip_masterdata_validation: skipMasterdataValidation,
-          };
       const r = await createApp({
         name: appName || 'Inspection App',
         package_name: packageName,
         model_asset_ids: selectedModelIds,
-        app_settings,
+        app_settings: { app_type: 'sequential', confidence_threshold: 0.5 },
       });
       navigate(`/apps/${r.data.id}`);
     } catch {
@@ -256,82 +224,12 @@ export default function NewApp() {
 
         {step === 1 && (
           <div className="newapp-step-body">
-            <div className="model-preview-field" style={{ marginBottom: 4 }}>
-              <label className="section-label">
-                <input
-                  type="checkbox"
-                  checked={isCombinedApp}
-                  onChange={e => setIsCombinedApp(e.target.checked)}
-                  style={{ marginRight: 6 }}
-                />
-                Combined app -- offer more than one scan option in this app
-              </label>
-              {isCombinedApp && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
-                  {[
-                    {
-                      key: 'vin',
-                      label: 'VIN scan',
-                      hint: 'Standalone button: scan a raw VIN barcode, checked against Master Data, then go straight to the Class Inspection checklist.',
-                    },
-                    {
-                      key: 'engine',
-                      label: 'Engine scan',
-                      hint: 'Standalone button: scan an engine sticker ("PART_NO SERIAL_NO"), checked against Engine Data, then go straight to the Class Inspection checklist.',
-                    },
-                    {
-                      key: 'chakan',
-                      label: 'Chakan Plant scan',
-                      hint: 'Standalone button: scan a Chakan Plant barcode ("VIN_ModelCode_Garbage"), checked against Master Data, then go straight to the Class Inspection checklist.',
-                    },
-                    {
-                      key: 'inspection',
-                      label: 'Class Inspection',
-                      hint: 'Camera button: straight into the checklist without picking a scan format first (useful if this app only ever uses one Scan Type, set in Add Inspection Profile after creating it).',
-                    },
-                  ].map(cap => (
-                    <label key={cap.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 13 }}>
-                      <input
-                        type="checkbox"
-                        checked={combinedCapabilities.includes(cap.key)}
-                        onChange={() => toggleCapability(cap.key)}
-                        style={{ marginTop: 2 }}
-                      />
-                      <span>
-                        <span style={{ fontWeight: 600 }}>{cap.label}</span>
-                        <span style={{ display: 'block', color: 'var(--muted, #888)', fontSize: 11.5, marginTop: 1 }}>
-                          {cap.hint}
-                        </span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              )}
-              <p className="newapp-sidebar-hint" style={{ marginTop: 6 }}>
-                Every scan option above leads into the same Class Inspection checklist you
-                configure once, after creating the app, in "Add Inspection Profile" -- pick
-                classes, mark them Mandatory/Ignore, and turn on "Read Text" on any class that
-                should extract and check text (using whichever OCR recognizer you attach below).
-              </p>
-
-              <label className="section-label" style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 12 }}>
-                <input
-                  type="checkbox"
-                  checked={skipMasterdataValidation}
-                  onChange={e => setSkipMasterdataValidation(e.target.checked)}
-                  style={{ marginTop: 2 }}
-                />
-                <span>
-                  Skip masterdata validation (open scan-and-match)
-                  <span style={{ display: 'block', color: 'var(--muted, #888)', fontSize: 11.5, fontWeight: 400, marginTop: 1 }}>
-                    Off (default): VIN/Engine/Chakan scans are rejected if the code isn't in Master
-                    Data / Engine Data. On: any scanned code is accepted as-is, no lookup, no
-                    rejection -- use this if you don't have that masterdata populated yet. Can also
-                    be changed later per-profile in Add Inspection Profile ("Open Scan").
-                  </span>
-                </span>
-              </label>
-            </div>
+            <p className="newapp-sidebar-hint" style={{ marginBottom: 4 }}>
+              Just add the models this app needs here -- your YOLO detector and, if you're
+              reading text, the OCR recognizer. Everything about how the app behaves (scan
+              format, Combined app / extra scan buttons, masterdata, the class checklist, and
+              per-class OCR) is configured next, in Add Inspection Profile.
+            </p>
 
             <div className="newapp-tabs">
               {['upload', 'existing', 'ocr'].map(t => (
