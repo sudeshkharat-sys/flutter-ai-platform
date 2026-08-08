@@ -532,7 +532,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               children: [
                 Text(
-                  'VIN: ${widget.vin ?? "N/A"}',
+                  '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin ?? "N/A"}',
                   style: const TextStyle(
                     color: Color(0xFFDC143C),
                     fontSize: 16,

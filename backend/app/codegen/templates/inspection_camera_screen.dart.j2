@@ -119,7 +119,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
     _loadCurrentModel();
-    _addLog("Screen initialized for VIN: ${widget.vin}");
+    _addLog("Screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
   void _addLog(String msg) {
@@ -662,7 +662,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                   fontWeight: FontWeight.bold),
                             ),
                             Text(
-                              'VIN: ${widget.vin}',
+                              '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
                               style: const TextStyle(
                                   color: Colors.white70, fontSize: 10),
                             ),
@@ -1244,7 +1244,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
     _loadCurrentModel();
-    _addLog("Screen initialized for VIN: ${widget.vin}");
+    _addLog("Screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
   void _addLog(String msg) {
@@ -1734,7 +1734,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                   fontWeight: FontWeight.bold),
                             ),
                             Text(
-                              'VIN: ${widget.vin}',
+                              '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
                               style: const TextStyle(
                                   color: Colors.white70, fontSize: 10),
                             ),
