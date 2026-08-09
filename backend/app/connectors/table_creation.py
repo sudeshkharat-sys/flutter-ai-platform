@@ -83,6 +83,25 @@ create_dynamic_table(
 )
 
 # =====================================================
+# ENGINE_MODEL_MAPPINGS TABLE
+# =====================================================
+create_dynamic_table(
+    "engine_model_mappings",
+    [
+        Column("id", String, primary_key=True),
+        Column("sheet_name", String, nullable=False),
+        Column("part_no", String, nullable=False, unique=True),
+        Column("model_name", String, nullable=True),
+        Column("description", String, nullable=True),
+        Column("created_at", DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False),
+    ],
+    indexes=[
+        Index("idx_engine_part_no", "part_no"),
+        Index("idx_engine_sheet_name", "sheet_name"),
+    ],
+)
+
+# =====================================================
 # APP_PROJECTS TABLE
 # =====================================================
 create_dynamic_table(

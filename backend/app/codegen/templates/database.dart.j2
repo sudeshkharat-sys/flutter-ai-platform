@@ -23,6 +23,7 @@ class TaskResults extends Table {
   RealColumn get confidence => real()();
   BoolColumn get success => boolean()();
   TextColumn get imagePath => text().nullable()();
+  TextColumn get backupImagePath => text().nullable()();
   TextColumn get detectionsJson => text().nullable()();
   DateTimeColumn get timestamp => dateTime().withDefault(currentDateAndTime)();
 }
@@ -32,7 +33,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration {
@@ -41,6 +42,9 @@ class AppDatabase extends _$AppDatabase {
         if (from < 2) {
           await m.addColumn(taskResults, taskResults.imagePath);
           await m.addColumn(taskResults, taskResults.detectionsJson);
+        }
+        if (from < 3) {
+          await m.addColumn(taskResults, taskResults.backupImagePath);
         }
       },
       beforeOpen: (details) async {

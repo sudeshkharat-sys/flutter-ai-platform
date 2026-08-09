@@ -9,3 +9,8 @@ kotlin.incremental.js=false
 android.useAndroidX=true
 android.enableJetifier=true
 android.ignoreAarMetadataCheck=true
+
+# FIX: Opt out of AGP 9+ new DSL mode — required for Flutter Gradle plugin
+# compatibility. Without this, camera_android_camerax throws NullPointerException
+# during project evaluation and the build fails.
+android.newDsl=false

@@ -1,9 +1,34 @@
+import re
 import zipfile
 import io
+import os
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+_KOTLIN_FALLBACK = "2.1.20"
+
+
+def _detect_kotlin_version() -> str:
+    flutter_roots = [r"C:\flutter", "/flutter", "/usr/local/flutter"]
+    env_root = os.environ.get("FLUTTER_ROOT") or os.environ.get("FLUTTER_HOME")
+    if env_root:
+        flutter_roots.insert(0, env_root)
+
+    for root in flutter_roots:
+        candidates = [
+            Path(root) / "packages" / "flutter_tools" / "gradle" / "src" / "main" / "groovy" / "flutter.groovy",
+            Path(root) / "packages" / "flutter_tools" / "gradle" / "flutter.groovy",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                text = candidate.read_text(errors="replace")
+                m = re.search(r'kotlin[_\-]?version\s*[=:]\s*["\']?([\d.]+)', text, re.IGNORECASE)
+                if m:
+                    return m.group(1)
+
+    return _KOTLIN_FALLBACK
 
 
 def _get_jinja_env() -> Environment:
@@ -11,6 +36,24 @@ def _get_jinja_env() -> Environment:
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         keep_trailing_newline=True,
     )
+
+
+def _dart_slug(name: str) -> str:
+    """Return a valid Dart package identifier derived from name.
+
+    Dart identifiers must match [a-z][a-z0-9_]* -- they can only contain
+    lowercase letters, digits, and underscores, and must start with a
+    letter or underscore (not a digit).  Names like '4x4_logo',
+    'sc/dc_logo 2.0', or 'my-app' would otherwise break flutter pub get.
+    """
+    slug = name.lower().replace(" ", "_").replace("-", "_")
+    slug = re.sub(r"[^a-z0-9_]", "_", slug)   # replace illegal chars (/, ., etc.)
+    slug = re.sub(r"_+", "_", slug).strip("_")  # collapse underscores
+    if not slug:
+        return "app"
+    if slug[0].isdigit():
+        slug = "app_" + slug
+    return slug
 
 
 def generate_flutter_project(app_project, model_asset=None, all_model_assets=None) -> bytes:
@@ -51,6 +94,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             mid = task.get("modelId")
             paths = model_id_to_paths.get(mid, {})
             task_classes = task.get("classes", [])
+            import json as _json
+            if isinstance(task_classes, str):
+                try:
+                    task_classes = _json.loads(task_classes)
+                except Exception:
+                    task_classes = []
 
             # Validate task classes against the model's actual trained classes.
             # If none of the configured classes exist in the model, fall back to
@@ -59,9 +108,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 (ma for ma in models_list if get_attr(ma, "id") == mid), None
             )
             if model_for_task:
-                model_classes = get_attr(model_for_task, "classes", []) or []
+                _raw = get_attr(model_for_task, "classes", []) or []
+                import json as _json
+                model_classes = _json.loads(_raw) if isinstance(_raw, str) else _raw
                 if model_classes:
-                    valid = [c for c in task_classes if c in model_classes]
+                    model_classes_lower_set = {c.lower().strip() for c in model_classes}
+                    valid = [c for c in task_classes if c.lower().strip() in model_classes_lower_set]
                     if not valid:
                         print(
                             f"[generator] WARNING: task '{task.get('taskName')}' "
@@ -70,10 +122,34 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                         )
                         task_classes = model_classes
 
+            mandatory_classes = task.get("mandatoryClasses", [])
+            if isinstance(mandatory_classes, str):
+                try:
+                    mandatory_classes = _json.loads(mandatory_classes)
+                except Exception:
+                    mandatory_classes = []
+            print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_raw={mandatory_classes} allClasses={task_classes}")
+            # Validate mandatory classes against model — skip any not in the model's class list.
+            # model_classes from DB may be a JSON string; parse it first, then compare case-insensitively.
+            if model_for_task and mandatory_classes:
+                _raw = get_attr(model_for_task, "classes", []) or []
+                import json as _json
+                model_classes = _json.loads(_raw) if isinstance(_raw, str) else _raw
+                model_classes_lower = {c.lower().strip() for c in model_classes}
+                # Only filter if model_classes is non-empty — if empty/parse failed keep original selection
+                if model_classes_lower:
+                    filtered = [c for c in mandatory_classes if c.lower().strip() in model_classes_lower]
+                    if filtered:
+                        mandatory_classes = filtered
+                    # else: filtered everything out (class name mismatch) — keep original to avoid all-mandatory fallback
+            print(f"[generator] task='{task.get('taskName')}' mandatoryClasses_final={mandatory_classes}")
+
             ref_img = task.get("referenceImage")
             models_manifest.append({
                 "name": task.get("taskName") or task.get("modelName"),
                 "classes": task_classes,
+                "mandatoryClasses": mandatory_classes,
+                "classOcrConfig": task.get("classOcrConfig", {}),
                 "tflite_path": paths.get("tflite", "assets/models/model_0.tflite"),
                 "labels_path": paths.get("labels", "assets/models/labels_0.txt"),
                 "vehicle_code": task.get("vehicleCode"),
@@ -103,8 +179,9 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             canvas_state = []
 
     ctx = {
+        "kotlin_version": _detect_kotlin_version(),
         "app_name": app_name,
-        "app_name_slug": app_name.lower().replace(" ", "_").replace("-", "_"),
+        "app_name_slug": _dart_slug(app_name),
         "package_name": package_name,
         "classes": get_attr(models_list[0], "classes") if models_list else ["object"],
         "models_manifest": models_manifest,
@@ -124,10 +201,17 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             w.get("type") == "StatsView" for w in canvas_state
         ),
         "app_type": settings.get("app_type", "sequential"),
+        "scan_type": settings.get("scan_type", "model"),
         "app_settings": settings,
+        "ocr_enabled": any(
+            bool((task.get("classOcrConfig") or {}).get(cls, {}).get("ocrEnabled"))
+            for task in (inspection_tasks or [])
+            for cls in (task.get("mandatoryClasses") or [])
+        ) or bool(get_attr(app_project, "ocr_enabled", False)),
+        "ocr_target_text": get_attr(app_project, "ocr_target_text", "") or "",
     }
 
-    # Map of zip path → template name
+    # Map of zip path -> template name
     files = {
         "pubspec.yaml": "pubspec.yaml.j2",
         "lib/main.dart": "main.dart.j2",
@@ -160,14 +244,10 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "android/gradle/wrapper/gradle-wrapper.jar": "gradle-wrapper.jar.raw",
         "android/gradlew": "gradlew.j2",
         "android/gradlew.bat": "gradlew.bat.j2",
-        # buildSrc: compiled before any build script, puts FlutterLocalExtension
-        # on the classpath so Kotlin DSL (.kts) plugin files can resolve
-        # flutter.compileSdkVersion at compile time.
         "android/buildSrc/build.gradle": "buildSrc_build.gradle.j2",
         "android/buildSrc/src/main/groovy/FlutterLocalExtension.groovy": "FlutterLocalExtension.groovy.j2",
         f"android/app/src/main/kotlin/{ctx['package_name'].replace('.', '/')}/MainActivity.kt": "MainActivity.kt.j2",
         "android/app/src/main/res/values/styles.xml": "styles.xml.j2",
-
         "android/app/src/main/res/drawable/launch_background.xml": "launch_background.xml.j2",
     }
 
@@ -189,7 +269,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         db = StateDBConnector()
         master_mappings = db.execute_query(MasterDataQueries.GET_ALL_MAPPINGS)
         for m in master_mappings:
-            # Explicitly extract only string fields to avoid serialization errors (e.g. datetimes)
             master_data_manifest.append({
                 "platform_name": str(m["platform_name"]),
                 "model_code": str(m["model_code"]),
@@ -197,7 +276,21 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             })
     except Exception as e:
         print(f"Warning: Could not fetch master mappings: {e}")
-        # Keep it empty rather than failing the whole build
+
+    from app.queries import EngineDataQueries
+    engine_data_manifest = []
+    try:
+        db = StateDBConnector()
+        engine_mappings = db.execute_query(EngineDataQueries.GET_ALL_MAPPINGS)
+        for m in engine_mappings:
+            engine_data_manifest.append({
+                "sheet_name": str(m["sheet_name"]),
+                "part_no": str(m["part_no"]),
+                "model_name": str(m.get("model_name", "")) if m.get("model_name") else "",
+                "description": str(m.get("description", "")) if m.get("description") else ""
+            })
+    except Exception as e:
+        print(f"Warning: Could not fetch engine mappings: {e}")
 
     buf = io.BytesIO()
     root = ctx["app_name_slug"]
@@ -208,7 +301,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             if template_name is None:
                 zf.writestr(full_path, "")
             elif template_name.endswith(".raw"):
-                # Copy binary file directly
                 raw_path = TEMPLATES_DIR / template_name
                 if raw_path.exists():
                     zf.writestr(full_path, raw_path.read_bytes())
@@ -217,14 +309,11 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 content = tmpl.render(**ctx)
                 zf.writestr(full_path, content)
         
-        # Add models manifest
         import json
         zf.writestr(f"{root}/assets/models_manifest.json", json.dumps(models_manifest, indent=2))
-
-        # Add master data for generic decoding
         zf.writestr(f"{root}/assets/master_data.json", json.dumps(master_data_manifest, indent=2))
+        zf.writestr(f"{root}/assets/engine_data.json", json.dumps(engine_data_manifest, indent=2))
 
-        # Bundle Android launcher icons for each mipmap density
         icon_src = TEMPLATES_DIR / "icons" / "ic_launcher.png"
         if icon_src.exists():
             try:
@@ -243,7 +332,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             except Exception as e:
                 print(f"Warning: Could not process app icon: {e}")
 
-        # Bundle reference images into the app assets
         from app.config import settings as app_settings
         for entry in models_manifest:
             ref = entry.get("reference_image")
