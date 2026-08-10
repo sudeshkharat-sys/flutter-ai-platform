@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:image/image.dart' as img;
 import '../database/database.dart';
 import '../ml/detection_result.dart';
-import '../widgets/detection_overlay.dart';
 import '../services/print_service.dart';
 import '../services/sync_service.dart';
 
@@ -948,7 +947,6 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
     }
 
     final file = File(_resolvedPath!);
-    final Color overlayColor = widget.taskSuccess ? Colors.green : Colors.red;
 
     if (_imageSize == null) {
       return ConstrainedBox(
@@ -971,6 +969,15 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
       );
     }
 
+    // Boxes are already burned into this file's pixels at capture time
+    // (_annotateAndEncode in inspection_camera_screen.dart.j2 now bakes in
+    // every detection, not just the mandatory ones) -- drawing a second,
+    // live DetectionOverlay on top used to double up on every box: the
+    // baked-in per-class colors (mandatory green, everything else red)
+    // showing through around the edges of this overlay's own single
+    // uniform color (all-green or all-red by task pass/fail), which is
+    // what made boxes look like they had both colors at once. The image
+    // alone already shows everything there is to show.
     return ConstrainedBox(
       constraints: const BoxConstraints(maxHeight: 400),
       child: FittedBox(
@@ -978,22 +985,11 @@ class _HistoryImageWithOverlayState extends State<_HistoryImageWithOverlay> {
         child: SizedBox(
           width: _imageSize!.width,
           height: _imageSize!.height,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.file(
-                file,
-                fit: BoxFit.fill,
-                width: _imageSize!.width,
-                height: _imageSize!.height,
-              ),
-              if (widget.detections.isNotEmpty)
-                DetectionOverlay(
-                  results: widget.detections,
-                  previewSize: _imageSize!,
-                  overrideColor: overlayColor,
-                ),
-            ],
+          child: Image.file(
+            file,
+            fit: BoxFit.fill,
+            width: _imageSize!.width,
+            height: _imageSize!.height,
           ),
         ),
       ),
