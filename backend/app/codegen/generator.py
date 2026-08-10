@@ -414,6 +414,17 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         ctx["ocr_class_recognizer_charset"] = _rec_paths.get("charset")
         ctx["ocr_class_recognizer_meta"] = _rec_paths.get("meta")
 
+    # Same "second opinion via ML Kit on a CRNN mismatch" toggle the
+    # standalone OCR app type already has (ocr_ctx above) -- reused here for
+    # per-class OCR in multiclass/combined apps, which never had a way to
+    # turn it off. The ML Kit fallback costs a full extra image-preprocess
+    # pass (sometimes two: normal + inverted) plus a synchronous native
+    # round trip per box, every time the CRNN's read doesn't match the
+    # target -- on an assembly line that's the dominant cost of a capture.
+    # Off by default, same as the standalone app's flag, so existing builds
+    # don't change behavior on a silent rebuild.
+    ctx["ocr_class_use_mlkit_fallback"] = bool(settings.get("ocr_use_mlkit_fallback"))
+
     # Map of zip path -> template name
     files = {
         "pubspec.yaml": "pubspec.yaml.j2",

@@ -523,12 +523,21 @@ class ModelManager {
       if (crnnMatched) {
         return det.copyWith(ocrText: crnnText, isOcrMatch: true, ocrCrnnText: crnnText);
       }
-      // CRNN didn't match the target -- fall through to the ML Kit path
-      // below as a second opinion on this exact crop, same idea as the
-      // standalone OCR app's CRNN-then-ML-Kit fallback. Keep the CRNN read
-      // so the result screen can show what each engine actually produced
-      // rather than only ML Kit's overwrite.
+      // CRNN didn't match the target.
       crnnReadForReport = crnnText;
+{% if not ocr_class_use_mlkit_fallback %}
+      // ML Kit fallback is off for this build -- the CRNN's own read is the
+      // final answer, matched or not. Skipping this avoids the expensive
+      // part of a mismatch: a 3x-upscale + per-tile-threshold + sharpen
+      // image pass (sometimes twice, normal + inverted) plus a synchronous
+      // native ML Kit round trip, on every box that doesn't match on the
+      // first try -- the dominant cost of a capture when it fires often.
+      return det.copyWith(ocrText: crnnText, isOcrMatch: false, ocrCrnnText: crnnText);
+{% else %}
+      // Fall through to the ML Kit path below as a second opinion on this
+      // exact crop, same idea as the standalone OCR app's CRNN-then-ML-Kit
+      // fallback.
+{% endif %}
     }
     if (engine == 'crnn' && target.isEmpty) {
       // CRNN model not loaded/ready and there's no target to fall back
