@@ -580,8 +580,15 @@ class ModelManager {
         : _ocrSimilarity(normExtracted, normTarget) >= 0.9;
     debugPrint('[OCR] final="$extractedText" crnn="${crnnReadForReport ?? "(not run)"}" '
         'normExtracted=$normExtracted normTarget=$normTarget matched=$matched');
+    // crnnReadForReport is only set when the CRNN already ran and didn't
+    // match the target (see the crnn branch above) -- ML Kit is a second
+    // opinion on the same crop, not a more trustworthy engine, so it must
+    // never silently replace what the trained recognizer actually read.
+    // Keep showing the CRNN's text (matching the standalone OCR screen's
+    // behavior) and only use ML Kit's result to flip the pass/fail flag if
+    // it happens to match where the CRNN didn't.
     return det.copyWith(
-      ocrText: extractedText,
+      ocrText: crnnReadForReport ?? extractedText,
       isOcrMatch: matched,
       ocrCrnnText: crnnReadForReport,
       ocrMlKitText: extractedText,
