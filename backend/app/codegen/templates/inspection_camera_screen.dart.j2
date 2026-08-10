@@ -1028,16 +1028,17 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                   const SizedBox(height: 2),
                                                   Text('Read: "$ocrText"', style: const TextStyle(fontSize: 11, color: Colors.white70)),
                                                 ],
-                                                // Per-engine reads, same as the standalone OCR
-                                                // screen shows. Only rendered when that engine
-                                                // actually ran, and only when it differs from the
-                                                // final text -- otherwise it's just the same
-                                                // string three times.
-                                                if (detected && ocrCrnn != null && ocrCrnn.isNotEmpty && ocrCrnn != ocrText) ...[
+                                                // Per-engine reads, always shown when that engine
+                                                // ran -- not just when they differ from the final
+                                                // text. While tuning the CRNN model, seeing every
+                                                // engine's read side by side (even when they agree)
+                                                // is exactly what's needed to tell which engine is
+                                                // wrong and how often.
+                                                if (detected && ocrCrnn != null && ocrCrnn.isNotEmpty) ...[
                                                   const SizedBox(height: 2),
                                                   Text('Trained OCR read: "$ocrCrnn"', style: const TextStyle(fontSize: 10, color: Colors.white54)),
                                                 ],
-                                                if (detected && ocrMlKit != null && ocrMlKit.isNotEmpty && ocrMlKit != ocrText) ...[
+                                                if (detected && ocrMlKit != null && ocrMlKit.isNotEmpty) ...[
                                                   const SizedBox(height: 2),
                                                   Text('ML Kit read: "$ocrMlKit"', style: const TextStyle(fontSize: 10, color: Colors.white54)),
                                                 ],
