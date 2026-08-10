@@ -542,13 +542,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         // _annotateAndEncode for why this must not run here.
         final List<Map<String, dynamic>> boxArgs = [];
         for (final det in allDetections) {
-          // An explicitly ignored class has no effect on the result --
-          // drawing a box for it anyway just clutters the saved photo
-          // with something the inspector doesn't need to look at, and
-          // burning it in red would make a genuinely-OK inspection look
-          // like it failed when reviewed later. Skip it entirely instead
-          // of giving it its own color, keeping the clean green/red look.
-          if (_isIgnored(det.className, ignoredClasses)) continue;
+          // Ignored classes (the single-character OCR boxes, typically) used
+          // to be skipped here entirely, so the saved photo in Pictures/MAI
+          // only ever showed the plate box -- while the History tab's live
+          // overlay draws every saved detection with no such filter, so it
+          // always showed the char boxes. Bake them in here too so the saved
+          // file matches what History already shows -- useful for reviewing
+          // exactly which characters the detector found on a given plate.
           final isMandatory = targetClasses.any(
             (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
           );
