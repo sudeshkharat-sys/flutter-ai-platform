@@ -414,6 +414,37 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const [showEngineDropdown, setShowEngineDropdown] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [engineSearchTerm, setEngineSearchTerm] = useState('');
+  const modelDropdownRef = useRef(null);
+  const engineDropdownRef = useRef(null);
+
+  // Neither dropdown ever closed itself -- picking a code just added a chip
+  // and left the list open, with nothing to click to close it again. Being
+  // absolutely-positioned, a left-open list then painted straight over
+  // whatever came after it in the form (down to the Review Mappings button),
+  // since nothing below it knew to make room. Closing on an outside click
+  // (and on Escape) gives the list an obvious way to go away.
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (showDropdown && modelDropdownRef.current && !modelDropdownRef.current.contains(e.target)) {
+        setShowDropdown(false);
+      }
+      if (showEngineDropdown && engineDropdownRef.current && !engineDropdownRef.current.contains(e.target)) {
+        setShowEngineDropdown(false);
+      }
+    };
+    const handleEscape = (e) => {
+      if (e.key === 'Escape') {
+        setShowDropdown(false);
+        setShowEngineDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [showDropdown, showEngineDropdown]);
 
   const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', mandatoryClasses: [], ignoredClasses: [], classOcrConfig: {}, instruction: '' }]);
 
@@ -464,51 +495,58 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           setDefaultAIConfigs(restored);
         }
 
-        if (existingApp.inspection_tasks && existingApp.inspection_tasks.length > 0) {
-          const tasksByCode = existingApp.inspection_tasks.reduce((acc, t) => {
-            const code = t.vehicleCode || 'Default';
-            if (!acc[code]) acc[code] = [];
-            acc[code].push({
-              modelId: t.modelId,
-              class: t.classes?.[0] || '',
-              mandatoryClasses: t.mandatoryClasses || [],
-              ignoredClasses: t.ignoredClasses || [],
-              classOcrConfig: t.classOcrConfig || {},
-              instruction: t.instruction || t.taskName || '',
-              referenceImage: t.referenceImage || null,
+        // Build the review table from whatever inspection_tasks exist --
+        // empty/missing is valid (e.g. a profile whose tasks were only ever
+        // added through the quick "Add Component Task" path, which never
+        // wrote inspection_tasks on the backend). Gating this whole block on
+        // inspection_tasks.length > 0 used to mean reviewData never got set
+        // at all in that case, and stayed stuck at its [] initial value for
+        // the rest of the modal's life -- Edit All opens straight into
+        // isReviewing=true, so that showed as a permanently blank table
+        // instead of the codes list it should show (each with no tasks yet).
+        const tasksByCode = (existingApp.inspection_tasks || []).reduce((acc, t) => {
+          const code = t.vehicleCode || 'Default';
+          if (!acc[code]) acc[code] = [];
+          acc[code].push({
+            modelId: t.modelId,
+            class: t.classes?.[0] || '',
+            mandatoryClasses: t.mandatoryClasses || [],
+            ignoredClasses: t.ignoredClasses || [],
+            classOcrConfig: t.classOcrConfig || {},
+            instruction: t.instruction || t.taskName || '',
+            referenceImage: t.referenceImage || null,
+          });
+          return acc;
+        }, {});
+
+        // An Open Scan profile saves with no Model/Engine codes selected
+        // at all (that's the whole point), so there's nothing in `codes`
+        // to map over -- its one task group sits under the 'Default' key
+        // instead (see handleEnterReview's openScan branch / vehicleCode:
+        // '' in handleSaveProfile). Rebuild that single row directly
+        // rather than producing an empty (and therefore blank-looking)
+        // review table.
+        const restoredReviewData = existingApp.app_settings?.skip_masterdata_validation
+          ? [{
+              id: 'open-scan',
+              platform_name: 'Any',
+              model_code: '',
+              description: 'Open scan -- applies to any scanned code',
+              selectedAIModels: tasksByCode['Default'] || [],
+            }]
+          : codes.map(code => {
+              const mapping = allMappings.find(m => m.model_code === code) || { model_code: code, platform_name: 'Unknown', description: '' };
+              return {
+                id: mapping.id || Math.random().toString(),
+                platform_name: mapping.platform_name,
+                model_code: mapping.model_code,
+                description: mapping.description,
+                selectedAIModels: tasksByCode[code] || []
+              };
             });
-            return acc;
-          }, {});
 
-          // An Open Scan profile saves with no Model/Engine codes selected
-          // at all (that's the whole point), so there's nothing in `codes`
-          // to map over -- its one task group sits under the 'Default' key
-          // instead (see handleEnterReview's openScan branch / vehicleCode:
-          // '' in handleSaveProfile). Rebuild that single row directly
-          // rather than producing an empty (and therefore blank-looking)
-          // review table.
-          const restoredReviewData = existingApp.app_settings?.skip_masterdata_validation
-            ? [{
-                id: 'open-scan',
-                platform_name: 'Any',
-                model_code: '',
-                description: 'Open scan -- applies to any scanned code',
-                selectedAIModels: tasksByCode['Default'] || [],
-              }]
-            : codes.map(code => {
-                const mapping = allMappings.find(m => m.model_code === code) || { model_code: code, platform_name: 'Unknown', description: '' };
-                return {
-                  id: mapping.id || Math.random().toString(),
-                  platform_name: mapping.platform_name,
-                  model_code: mapping.model_code,
-                  description: mapping.description,
-                  selectedAIModels: tasksByCode[code] || []
-                };
-              });
-
-          setReviewData(restoredReviewData);
-          if (startAtReview) setIsReviewing(true);
-        }
+        setReviewData(restoredReviewData);
+        if (startAtReview) setIsReviewing(true);
       }
     }).catch((err) => {
       if (!mounted) return;
@@ -996,7 +1034,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               </label>
 
               {openScan ? null : scanType !== 'engine' ? (
-                <div style={{ position: 'relative' }}>
+                <div style={{ position: 'relative' }} ref={modelDropdownRef}>
                   <label style={labelStyle}>Vehicle Model Code (Multi-Select)</label>
                   <div
                     onClick={() => setShowDropdown(!showDropdown)}
@@ -1055,7 +1093,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                   )}
                 </div>
               ) : (
-                <div style={{ position: 'relative' }}>
+                <div style={{ position: 'relative' }} ref={engineDropdownRef}>
                   <label style={labelStyle}>Engine Code (Multi-Select)</label>
                   <div
                     onClick={() => setShowEngineDropdown(!showEngineDropdown)}
@@ -1340,7 +1378,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                           {isIgnored && <span style={{ fontSize: 10, color: '#aaa' }}>ignored</span>}
                                         </div>
                                         {isMandatory && !isNotOk && (
-                                          <div style={{ marginLeft: 70, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                          <div style={{ marginLeft: 70, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                                             <input
                                               type="checkbox"
                                               checked={!!ocrCfg.ocrEnabled}
