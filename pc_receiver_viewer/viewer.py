@@ -751,25 +751,12 @@ VIEWER_HTML = """<!doctype html>
      overlay, which has no max-width at all. */
   main { padding: 20px 24px 60px; width: 100%; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
-  .group-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
   #truncatedBanner { background: #fff4e5; border: 1px solid #f0c987; color: #8a5a00; font-size: 12px; font-weight: 600;
                       padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
-  .group-tab-btn { border: none; background: transparent; color: var(--muted); padding: 9px 16px 8px; font-size: 13px; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -1px; }
-  .group-tab-btn:hover { color: var(--text); }
-  .group-tab-btn.active { color: var(--crimson); border-bottom-color: var(--crimson); }
 
-  /* Chip row: replaces the old single <select> for picking which
-     device/app dataset to view -- same underlying choice, but a row of
-     clickable tabs instead of a dropdown, matching receiver.py's own
-     card-based Devices/Apps browsing. */
-  .chip-row { display: flex; flex-wrap: wrap; gap: 8px; flex: 1; }
-  .chip-btn { border: 1px solid var(--border); background: #fff; color: var(--text); padding: 7px 14px;
-              border-radius: 999px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
-  .chip-btn:hover { border-color: var(--crimson); }
-  .chip-btn.active { background: var(--crimson); border-color: var(--crimson); color: #fff; }
-
-  /* Vault tab: read-only size summary, mirrors receiver.py's accordion --
-     no delete action anywhere here, this dashboard only ever views data. */
+  /* Vault: read-only size summary, mirrors receiver.py's accordion -- no
+     delete action anywhere here, this dashboard only ever views data.
+     Not linked from the UI yet (kept dormant for now). */
   .accordion { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
   .accordion .head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px;
                       background: #fff; cursor: pointer; font-weight: 700; }
@@ -864,6 +851,24 @@ VIEWER_HTML = """<!doctype html>
   .lightbox img { max-width: 90vw; max-height: 85vh; border-radius: 8px; }
   .lightbox .lb-close { position: absolute; top: 20px; right: 28px; color: #fff; font-size: 28px;
                           cursor: pointer; background: none; border: none; }
+
+  /* App list -- the landing view, matching receiver.py's own Apps tab:
+     just app name + stats + a "View Data" button, nothing about devices. */
+  .app-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border);
+             border-radius: 8px; margin-bottom: 8px; background: var(--card); }
+  .app-row:last-child { margin-bottom: 0; }
+  .app-row .a-info { flex: 1; min-width: 0; }
+  .app-row .a-name { font-weight: 600; font-size: 13px; }
+  .app-row .a-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .app-row .a-stats { display: flex; gap: 16px; font-size: 11px; color: var(--muted); text-align: center; }
+  .app-row .a-stats b { display: block; font-size: 13px; color: var(--text); }
+
+  /* Data view header -- matches receiver.py's viewer-page header (Back
+     button + title + download actions) instead of a toolbar bolted onto
+     the app-shell layout. */
+  .data-header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+  .data-header h2 { margin: 0; font-size: 17px; }
+  .data-header p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -877,15 +882,20 @@ VIEWER_HTML = """<!doctype html>
   <a href="/logout">Log out</a>
 </header>
 <main>
-  <div class="group-tabs">
-    <button type="button" class="group-tab-btn" data-mode="devices" onclick="setViewTab('devices')">Devices</button>
-    <button type="button" class="group-tab-btn active" data-mode="apps" onclick="setViewTab('apps')">Apps</button>
-    <button type="button" class="group-tab-btn" data-mode="vault" onclick="setViewTab('vault')">Vault</button>
+  <div id="appsListView">
+    <div class="toolbar">
+      <h2 style="margin:0;">Apps</h2>
+    </div>
+    <div id="appsList"><div class="empty">Loading...</div></div>
   </div>
 
-  <div id="dataView">
-  <div class="toolbar">
-    <div class="chip-row" id="chipRow"></div>
+  <div id="dataView" style="display:none;">
+  <div class="data-header">
+    <button class="secondary" onclick="closeDataViewer()">&larr; Back</button>
+    <div>
+      <h2 id="dataViewTitle">App Data</h2>
+      <p id="dataViewSubtitle"></p>
+    </div>
     <span style="flex:1"></span>
     <button class="secondary" id="downloadFullBtn">Download Full Excel</button>
     <button class="primary" id="downloadFilteredBtn">Download Filtered Excel</button>
@@ -956,88 +966,61 @@ VIEWER_HTML = """<!doctype html>
 </div>
 
 <script>
-let groups = [];
 let apps = [];
-let groupMode = 'app'; // 'device' | 'app' -- which chip set backs the Devices/Apps tabs
-let viewTab = 'apps'; // 'devices' | 'apps' | 'vault' -- top-level tab, mirrors receiver.py's nav
-let selectedKey = ''; // currently selected chip, e.g. 'app|Foo' or 'device|Phone1|Foo'
 let viewerRows = [];
 let currentDevice = '', currentAppName = '';
 
-// Top-level tabs replace the old two-mode toggle + <select> dropdown for
-// picking a device/app dataset with receiver.py-style tabs -- a Vault tab
-// (read-only storage sizes, no delete) alongside Devices/Apps.
-function setViewTab(tab) {
-  if (tab === viewTab) return;
-  viewTab = tab;
-  if (tab !== 'vault') groupMode = tab === 'devices' ? 'device' : 'app';
-  document.querySelectorAll('.group-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === tab));
-  document.getElementById('dataView').style.display = tab === 'vault' ? 'none' : '';
-  document.getElementById('vaultView').style.display = tab === 'vault' ? '' : 'none';
-  if (tab === 'vault') {
-    loadStorage();
-  } else {
-    populateChips();
+// Landing view: just the app list (name, device count, sends, size, a "View
+// Data" button) -- same shape as receiver.py's own Apps tab. No device
+// picker, no per-device browsing here; the table's own Device column is
+// what tells you which phone a row came from.
+async function loadApps() {
+  try {
+    const res = await fetch('/api/apps');
+    if (res.status === 401) { window.location = '/login'; return; }
+    apps = await res.json();
+    renderApps();
+  } catch (e) {
+    document.getElementById('appsList').innerHTML = '<div class="empty">Could not load apps.</div>';
   }
 }
 
-async function loadGroups() {
-  const res = await fetch('/api/groups');
-  if (res.status === 401) { window.location = '/login'; return; }
-  groups = await res.json();
-  const appsRes = await fetch('/api/apps');
-  apps = appsRes.status === 401 ? (window.location = '/login', []) : await appsRes.json();
-  populateChips();
-}
-
-// Renders the chip row for whichever of Devices/Apps is active -- each chip
-// is the same device|app / app choice the old dropdown's <option> held, just
-// as a clickable tab instead of a dropdown entry (device name is still in
-// each chip's label since a chip *is* the device/app choice; the table's own
-// Device column is what makes an extra per-row device selector unnecessary).
-function populateChips() {
-  const row = document.getElementById('chipRow');
-  const items = groupMode === 'app'
-    ? apps.map(a => ({ key: `app|${a.appNameSafe}`, label: `${a.appName} — all devices (${a.deviceCount} device${a.deviceCount === 1 ? '' : 's'}, ${a.batchCount} sends)` }))
-    : groups.map(g => ({ key: `device|${g.device}|${g.appName}`, label: `${g.device} / ${g.appName} (${g.batchCount} sends)` }));
-
-  if (!items.length) {
-    row.innerHTML = '';
-    document.getElementById('viewerRows').innerHTML =
-      '<tr><td colspan="12" class="empty">No data received yet.</td></tr>';
+function renderApps() {
+  const el = document.getElementById('appsList');
+  if (!apps.length) {
+    el.innerHTML = '<div class="empty">No data received yet.</div>';
     return;
   }
-  if (!items.some(it => it.key === selectedKey)) selectedKey = items[0].key;
-  row.innerHTML = items.map(it =>
-    `<button type="button" class="chip-btn ${it.key === selectedKey ? 'active' : ''}" data-key="${it.key}" onclick="selectChip('${it.key.replace(/'/g, "\\'")}')">${it.label}</button>`
-  ).join('');
-  loadData();
+  el.innerHTML = apps.map(a => `
+    <div class="app-row">
+      <div class="a-info">
+        <div class="a-name">${a.appName}</div>
+        <div class="a-meta">${a.deviceCount} device${a.deviceCount === 1 ? '' : 's'} paired</div>
+      </div>
+      <div class="a-stats">
+        <div><b>${a.batchCount}</b>sends</div>
+        <div><b>${fmtBytes(a.totalBytes)}</b>size</div>
+      </div>
+      <button class="primary" onclick="openAppDataViewer('${a.appNameSafe.replace(/'/g, "\\'")}', '${a.appName.replace(/'/g, "\\'")}')">View Data</button>
+    </div>
+  `).join('');
 }
 
-function selectChip(key) {
-  if (key === selectedKey) return;
-  selectedKey = key;
-  document.querySelectorAll('.chip-btn').forEach(b => b.classList.toggle('active', b.dataset.key === key));
-  loadData();
-}
-
-async function loadData() {
-  const parts = selectedKey.split('|');
-  let res;
-  if (parts[0] === 'app') {
-    const appNameSafe = parts[1];
-    const appObj = apps.find(a => a.appNameSafe === appNameSafe);
-    currentDevice = 'AllDevices';
-    currentAppName = appObj ? appObj.appName : appNameSafe;
-    res = await fetch('/api/app-data?' + new URLSearchParams({ appName: currentAppName }));
-  } else {
-    const [, device, appName] = parts;
-    currentDevice = device; currentAppName = appName;
-    res = await fetch('/api/data?' + new URLSearchParams({ device, appName }));
-  }
+async function openAppDataViewer(appNameSafe, appNameDisplay) {
+  currentDevice = 'AllDevices';
+  currentAppName = appNameDisplay;
+  pinnedDay = null;
+  document.getElementById('appsListView').style.display = 'none';
+  document.getElementById('dataView').style.display = '';
+  document.getElementById('dataViewTitle').textContent = appNameDisplay;
+  document.getElementById('dataViewSubtitle').textContent = 'Loading...';
+  document.getElementById('viewerRows').innerHTML = '';
+  const res = await fetch('/api/app-data?' + new URLSearchParams({ appName: appNameDisplay }));
   if (res.status === 401) { window.location = '/login'; return; }
   const data = await res.json();
   viewerRows = data.rows;
+  document.getElementById('dataViewSubtitle').textContent =
+    `${viewerRows.length.toLocaleString()} task result(s) merged across every device paired under this app`;
   const banner = document.getElementById('truncatedBanner');
   if (data.truncated) {
     banner.style.display = 'block';
@@ -1046,7 +1029,12 @@ async function loadData() {
     banner.style.display = 'none';
   }
   populateYearOptions();
-  renderTable();
+  clearFilters();
+}
+
+function closeDataViewer() {
+  document.getElementById('dataView').style.display = 'none';
+  document.getElementById('appsListView').style.display = '';
 }
 
 function fmtBytes(n) {
@@ -1469,7 +1457,7 @@ document.getElementById('downloadFilteredBtn').addEventListener('click', () => {
     `${currentDevice}_${currentAppName}_filtered.xlsx`);
 });
 
-loadGroups();
+loadApps();
 </script>
 </body>
 </html>
