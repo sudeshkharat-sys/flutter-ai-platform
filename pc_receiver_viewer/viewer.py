@@ -351,10 +351,12 @@ def _list_groups() -> list[dict]:
                 continue
             batch_dirs = sorted([p for p in app_dir.iterdir() if p.is_dir()])
             xlsx_path = _app_master_dir(app_dir.name) / "data.xlsx"
+            _, total_bytes = _dir_stats(app_dir)
             groups.append({
                 "device": device_dir.name,
                 "appName": app_dir.name,
                 "batchCount": len(batch_dirs),
+                "totalBytes": total_bytes,
                 "lastReceivedAt": batch_dirs[-1].name if batch_dirs else None,
                 "hasExcel": xlsx_path.exists(),
             })
@@ -550,10 +552,11 @@ async def api_apps(_: None = Depends(_require_session)):
         safe = _safe_name(g["appName"])
         bucket = by_app.setdefault(safe, {
             "appName": g["appName"], "appNameSafe": safe,
-            "deviceCount": 0, "batchCount": 0, "lastReceivedAt": None, "hasExcel": g["hasExcel"],
+            "deviceCount": 0, "batchCount": 0, "totalBytes": 0, "lastReceivedAt": None, "hasExcel": g["hasExcel"],
         })
         bucket["deviceCount"] += 1
         bucket["batchCount"] += g["batchCount"]
+        bucket["totalBytes"] += g["totalBytes"]
         bucket["hasExcel"] = bucket["hasExcel"] or g["hasExcel"]
         if g["lastReceivedAt"] and (not bucket["lastReceivedAt"] or g["lastReceivedAt"] > bucket["lastReceivedAt"]):
             bucket["lastReceivedAt"] = g["lastReceivedAt"]
