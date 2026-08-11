@@ -567,9 +567,19 @@ class OcrRecognizer {
       }).toList();
     } else if (regionBoxes.isNotEmpty) {
       regionSource = 'region_class(${regionBoxes.length})';
+      // Unlike the other branches, [p]'s box comes straight from the
+      // detector with no containment/union math to naturally keep it
+      // in-frame -- a box the model places even slightly outside the
+      // source image (common right at the frame edge) previously reached
+      // img.copyCrop() unclamped and threw "Invalid argument(s)" on every
+      // capture where the region class was the one that matched.
       final p = regionBoxes.first;
+      final x1 = p.x.clamp(0, source.width - 1);
+      final y1 = p.y.clamp(0, source.height - 1);
+      final x2 = (p.x + p.w).clamp(1, source.width);
+      final y2 = (p.y + p.h).clamp(1, source.height);
       lineRects = [
-        [p.x, p.y, p.w, p.h]
+        [x1, y1, x2 - x1, y2 - y1]
       ];
     } else if (boxes.isNotEmpty) {
       regionSource = 'any_box_union(${boxes.length})';
