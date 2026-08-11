@@ -308,6 +308,7 @@ EXCEL_COLUMNS = [
     ("VIN", "vin"),
     ("Model Code", "modelCode"),
     ("Model Name", "modelName"),
+    ("Model Variant", "modelVariant"),
     ("Date", "date"),
     ("Time", "time"),
     ("Shift", "shift"),
@@ -336,6 +337,7 @@ def _flatten_manifest_rows(inspections: list, batch_name: str, device_name: str 
                 "vin": insp.get("vin"),
                 "modelCode": insp.get("modelCode"),
                 "modelName": insp.get("modelName"),
+                "modelVariant": insp.get("modelVariant"),
                 "date": insp.get("date"),
                 "time": insp.get("time"),
                 "shift": insp.get("shift"),
@@ -1583,6 +1585,8 @@ DASHBOARD_HTML = """<!doctype html>
     <datalist id="dlModel"></datalist>
     <input id="fModelName" list="dlModelName" placeholder="Filter Model Name…" oninput="renderTable()">
     <datalist id="dlModelName"></datalist>
+    <input id="fModelVariant" list="dlModelVariant" placeholder="Filter Variant…" oninput="renderTable()">
+    <datalist id="dlModelVariant"></datalist>
     <input id="fDate" type="date" title="Filter Date" onchange="renderTable()">
     <select id="fYear" onchange="renderTable()">
       <option value="">All Years</option>
@@ -1622,7 +1626,7 @@ DASHBOARD_HTML = """<!doctype html>
     <table class="data-table">
       <thead>
         <tr>
-          <th></th><th>VIN</th><th>Model Code</th><th>Model Name</th><th>Date</th><th>Time</th>
+          <th></th><th>VIN</th><th>Model Code</th><th>Model Name</th><th>Variant</th><th>Date</th><th>Time</th>
           <th>Shift</th><th>Tasks</th><th>Result</th><th>Batch</th><th>Device</th>
         </tr>
       </thead>
@@ -2137,6 +2141,7 @@ function closeDataViewer() {
 function populateFilterSuggestions() {
   const fields = [
     ['dlVin', 'vin'], ['dlModel', 'modelCode'], ['dlModelName', 'modelName'],
+    ['dlModelVariant', 'modelVariant'],
     ['dlTask', 'taskName'], ['dlClass', 'className'], ['dlBatch', 'batch'],
   ];
   fields.forEach(([listId, key]) => {
@@ -2162,7 +2167,7 @@ function populateFilterSuggestions() {
 }
 
 function clearFilters() {
-  ['fVin', 'fModel', 'fModelName', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
+  ['fVin', 'fModel', 'fModelName', 'fModelVariant', 'fTask', 'fClass', 'fBatch'].forEach(id => document.getElementById(id).value = '');
   ['fDate', 'fYear', 'fMonth', 'fShift', 'fResult', 'fDevice'].forEach(id => document.getElementById(id).value = '');
   pinnedDay = null;
   renderTable();
@@ -2172,6 +2177,7 @@ function getFilteredRows() {
   const vin = document.getElementById('fVin').value.toLowerCase();
   const model = document.getElementById('fModel').value.toLowerCase();
   const modelName = document.getElementById('fModelName').value.toLowerCase();
+  const modelVariant = document.getElementById('fModelVariant').value.toLowerCase();
   const date = document.getElementById('fDate').value;
   const year = document.getElementById('fYear').value;
   const month = document.getElementById('fMonth').value;
@@ -2188,6 +2194,7 @@ function getFilteredRows() {
     return (!vin || (row.vin || '').toLowerCase().includes(vin)) &&
       (!model || (row.modelCode || '').toLowerCase().includes(model)) &&
       (!modelName || (row.modelName || '').toLowerCase().includes(modelName)) &&
+      (!modelVariant || (row.modelVariant || '').toLowerCase().includes(modelVariant)) &&
       (!date || row.date === date) &&
       (!year || rowYear === year) &&
       (!month || rowMonth === month) &&
@@ -2211,7 +2218,7 @@ function groupRowsByInspection(rows) {
     const key = `${r.batch}|${r.inspectionId ?? ''}|${r.vin}|${r.date}|${r.time}`;
     if (!groups[key]) {
       groups[key] = {
-        key, vin: r.vin, modelCode: r.modelCode, modelName: r.modelName,
+        key, vin: r.vin, modelCode: r.modelCode, modelName: r.modelName, modelVariant: r.modelVariant,
         date: r.date, time: r.time, shift: r.shift, batch: r.batch, device: r.deviceName, tasks: [],
       };
       order.push(key);
@@ -2245,7 +2252,7 @@ function renderTable() {
 
   const tbody = document.getElementById('viewerRows');
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:24px;">No rows match these filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:24px;">No rows match these filters.</td></tr>';
     return;
   }
 
@@ -2276,6 +2283,7 @@ function renderTable() {
         <td>${g.vin || ''}</td>
         <td>${g.modelCode || ''}</td>
         <td>${g.modelName || ''}</td>
+        <td>${g.modelVariant || ''}</td>
         <td>${g.date || ''}</td>
         <td>${g.time || ''}</td>
         <td>${g.shift || ''}</td>
@@ -2285,7 +2293,7 @@ function renderTable() {
         <td>${g.device || ''}</td>
       </tr>
       <tr class="detail-row ${expanded ? 'open' : ''}" data-key="${escapeAttr(g.key)}">
-        <td colspan="11">
+        <td colspan="12">
           <table class="mini-table">
             <thead><tr><th>Task</th><th>Detected</th><th>Result</th><th>Image</th></tr></thead>
             <tbody>${detailRows}</tbody>

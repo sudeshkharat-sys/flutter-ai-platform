@@ -290,6 +290,7 @@ EXCEL_COLUMNS = [
     ("VIN", "vin"),
     ("Model Code", "modelCode"),
     ("Model Name", "modelName"),
+    ("Model Variant", "modelVariant"),
     ("Date", "date"),
     ("Time", "time"),
     ("Shift", "shift"),
@@ -416,6 +417,7 @@ def _flatten_rows(device: str, app_name: str) -> list[dict]:
                         "vin": insp.get("vin"),
                         "modelCode": insp.get("modelCode"),
                         "modelName": insp.get("modelName"),
+                        "modelVariant": insp.get("modelVariant"),
                         "date": insp.get("date"),
                         "time": insp.get("time"),
                         "shift": insp.get("shift"),
@@ -558,6 +560,41 @@ async def api_apps(_: None = Depends(_require_session)):
     result = list(by_app.values())
     result.sort(key=lambda a: a["lastReceivedAt"] or "", reverse=True)
     return result
+
+
+def _dir_stats(path: Path):
+    if not path.exists():
+        return 0, 0
+    files = [f for f in path.rglob("*") if f.is_file()]
+    return len(files), sum(f.stat().st_size for f in files)
+
+
+@app.get("/api/storage")
+async def api_storage(_: None = Depends(_require_session)):
+    """Read-only size summary -- how much data each app/device has on disk,
+    mirroring receiver.py's Vault tab but with no delete capability, since
+    this dashboard is view-only."""
+    tree = {}
+    if not DATA_DIR.exists():
+        return tree
+    for device_dir in sorted(DATA_DIR.iterdir()):
+        if not device_dir.is_dir() or device_dir.name == "_master":
+            continue
+        apps = {}
+        for app_dir in sorted(device_dir.iterdir()):
+            if not app_dir.is_dir():
+                continue
+            batches = []
+            for batch_dir in sorted(app_dir.iterdir(), reverse=True):
+                if not batch_dir.is_dir():
+                    continue
+                file_count, size = _dir_stats(batch_dir)
+                batches.append({"batch": batch_dir.name, "fileCount": file_count, "sizeBytes": size})
+            if batches:
+                apps[app_dir.name] = batches
+        if apps:
+            tree[device_dir.name] = apps
+    return tree
 
 
 @app.get("/api/app-data")
@@ -710,7 +747,9 @@ VIEWER_HTML = """<!doctype html>
   header a { color: #cfd3db; font-size: 12px; text-decoration: none; }
   header a:hover { color: #fff; }
 
-  main { padding: 20px 24px 60px; max-width: 1300px; margin: 0 auto; }
+  /* Full width, edge to edge -- matches receiver.py's own data-viewer
+     overlay, which has no max-width at all. */
+  main { padding: 20px 24px 60px; width: 100%; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
   .group-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
   #truncatedBanner { background: #fff4e5; border: 1px solid #f0c987; color: #8a5a00; font-size: 12px; font-weight: 600;
@@ -718,6 +757,28 @@ VIEWER_HTML = """<!doctype html>
   .group-tab-btn { border: none; background: transparent; color: var(--muted); padding: 9px 16px 8px; font-size: 13px; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -1px; }
   .group-tab-btn:hover { color: var(--text); }
   .group-tab-btn.active { color: var(--crimson); border-bottom-color: var(--crimson); }
+
+  /* Chip row: replaces the old single <select> for picking which
+     device/app dataset to view -- same underlying choice, but a row of
+     clickable tabs instead of a dropdown, matching receiver.py's own
+     card-based Devices/Apps browsing. */
+  .chip-row { display: flex; flex-wrap: wrap; gap: 8px; flex: 1; }
+  .chip-btn { border: 1px solid var(--border); background: #fff; color: var(--text); padding: 7px 14px;
+              border-radius: 999px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .chip-btn:hover { border-color: var(--crimson); }
+  .chip-btn.active { background: var(--crimson); border-color: var(--crimson); color: #fff; }
+
+  /* Vault tab: read-only size summary, mirrors receiver.py's accordion --
+     no delete action anywhere here, this dashboard only ever views data. */
+  .accordion { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+  .accordion .head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px;
+                      background: #fff; cursor: pointer; font-weight: 700; }
+  .accordion .body { display: none; padding: 4px 16px 14px; background: #fbfbfd; }
+  .app-group { padding: 8px 0; border-top: 1px solid var(--border); }
+  .app-group:first-child { border-top: none; }
+  .app-name { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+  .batch-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; font-size: 12.5px; color: var(--muted); }
+  .batch-row .b-name { color: var(--text); font-weight: 600; min-width: 140px; }
   select, input[type=text], input[type=date] {
     padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
   }
@@ -817,11 +878,14 @@ VIEWER_HTML = """<!doctype html>
 </header>
 <main>
   <div class="group-tabs">
-    <button type="button" class="group-tab-btn" data-mode="device" onclick="setGroupMode('device')">Devices</button>
-    <button type="button" class="group-tab-btn active" data-mode="app" onclick="setGroupMode('app')">Apps</button>
+    <button type="button" class="group-tab-btn" data-mode="devices" onclick="setViewTab('devices')">Devices</button>
+    <button type="button" class="group-tab-btn active" data-mode="apps" onclick="setViewTab('apps')">Apps</button>
+    <button type="button" class="group-tab-btn" data-mode="vault" onclick="setViewTab('vault')">Vault</button>
   </div>
+
+  <div id="dataView">
   <div class="toolbar">
-    <select id="groupSelect"></select>
+    <div class="chip-row" id="chipRow"></div>
     <span style="flex:1"></span>
     <button class="secondary" id="downloadFullBtn">Download Full Excel</button>
     <button class="primary" id="downloadFilteredBtn">Download Filtered Excel</button>
@@ -832,6 +896,7 @@ VIEWER_HTML = """<!doctype html>
     <input id="fVin" placeholder="Filter VIN..." oninput="renderTable()">
     <input id="fModel" placeholder="Filter Model Code..." oninput="renderTable()">
     <input id="fModelName" placeholder="Filter Model Name..." oninput="renderTable()">
+    <input id="fModelVariant" placeholder="Filter Variant..." oninput="renderTable()">
     <input id="fDate" type="date" title="Filter Date" onchange="renderTable()">
     <select id="fYear" onchange="renderTable()"><option value="">All Years</option></select>
     <select id="fMonth" onchange="renderTable()">
@@ -866,12 +931,22 @@ VIEWER_HTML = """<!doctype html>
     <table class="data-table">
       <thead>
         <tr>
-          <th></th><th>VIN</th><th>Model Code</th><th>Model Name</th><th>Date</th><th>Time</th>
+          <th></th><th>VIN</th><th>Model Code</th><th>Model Name</th><th>Variant</th><th>Date</th><th>Time</th>
           <th>Shift</th><th>Tasks</th><th>Result</th><th>Batch</th><th>Device</th>
         </tr>
       </thead>
       <tbody id="viewerRows"></tbody>
     </table>
+  </div>
+  </div>
+
+  <div id="vaultView" style="display:none;">
+    <div class="toolbar">
+      <h2 style="margin:0;">Vault</h2>
+      <span style="flex:1"></span>
+      <button class="secondary" onclick="loadStorage()">Refresh</button>
+    </div>
+    <div id="storageList"><div class="empty">Loading...</div></div>
   </div>
 </main>
 
@@ -883,15 +958,27 @@ VIEWER_HTML = """<!doctype html>
 <script>
 let groups = [];
 let apps = [];
-let groupMode = 'app'; // 'device' | 'app' -- which tab is active; defaults to Apps (merged view)
+let groupMode = 'app'; // 'device' | 'app' -- which chip set backs the Devices/Apps tabs
+let viewTab = 'apps'; // 'devices' | 'apps' | 'vault' -- top-level tab, mirrors receiver.py's nav
+let selectedKey = ''; // currently selected chip, e.g. 'app|Foo' or 'device|Phone1|Foo'
 let viewerRows = [];
 let currentDevice = '', currentAppName = '';
 
-function setGroupMode(mode) {
-  if (mode === groupMode) return;
-  groupMode = mode;
-  document.querySelectorAll('.group-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
-  populateGroupSelect();
+// Top-level tabs replace the old two-mode toggle + <select> dropdown for
+// picking a device/app dataset with receiver.py-style tabs -- a Vault tab
+// (read-only storage sizes, no delete) alongside Devices/Apps.
+function setViewTab(tab) {
+  if (tab === viewTab) return;
+  viewTab = tab;
+  if (tab !== 'vault') groupMode = tab === 'devices' ? 'device' : 'app';
+  document.querySelectorAll('.group-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === tab));
+  document.getElementById('dataView').style.display = tab === 'vault' ? 'none' : '';
+  document.getElementById('vaultView').style.display = tab === 'vault' ? '' : 'none';
+  if (tab === 'vault') {
+    loadStorage();
+  } else {
+    populateChips();
+  }
 }
 
 async function loadGroups() {
@@ -900,30 +987,42 @@ async function loadGroups() {
   groups = await res.json();
   const appsRes = await fetch('/api/apps');
   apps = appsRes.status === 401 ? (window.location = '/login', []) : await appsRes.json();
-  populateGroupSelect();
+  populateChips();
 }
 
-function populateGroupSelect() {
-  const sel = document.getElementById('groupSelect');
-  if (groupMode === 'app') {
-    sel.innerHTML = apps.map(a =>
-      `<option value="app|${a.appNameSafe}">${a.appName} — all devices (${a.deviceCount} device${a.deviceCount === 1 ? '' : 's'}, ${a.batchCount} sends)</option>`
-    ).join('');
-  } else {
-    sel.innerHTML = groups.map(g =>
-      `<option value="device|${g.device}|${g.appName}">${g.device} / ${g.appName} (${g.batchCount} sends)</option>`
-    ).join('');
-  }
-  if (!sel.options.length) {
+// Renders the chip row for whichever of Devices/Apps is active -- each chip
+// is the same device|app / app choice the old dropdown's <option> held, just
+// as a clickable tab instead of a dropdown entry (device name is still in
+// each chip's label since a chip *is* the device/app choice; the table's own
+// Device column is what makes an extra per-row device selector unnecessary).
+function populateChips() {
+  const row = document.getElementById('chipRow');
+  const items = groupMode === 'app'
+    ? apps.map(a => ({ key: `app|${a.appNameSafe}`, label: `${a.appName} — all devices (${a.deviceCount} device${a.deviceCount === 1 ? '' : 's'}, ${a.batchCount} sends)` }))
+    : groups.map(g => ({ key: `device|${g.device}|${g.appName}`, label: `${g.device} / ${g.appName} (${g.batchCount} sends)` }));
+
+  if (!items.length) {
+    row.innerHTML = '';
     document.getElementById('viewerRows').innerHTML =
-      '<tr><td colspan="10" class="empty">No data received yet.</td></tr>';
+      '<tr><td colspan="12" class="empty">No data received yet.</td></tr>';
     return;
   }
+  if (!items.some(it => it.key === selectedKey)) selectedKey = items[0].key;
+  row.innerHTML = items.map(it =>
+    `<button type="button" class="chip-btn ${it.key === selectedKey ? 'active' : ''}" data-key="${it.key}" onclick="selectChip('${it.key.replace(/'/g, "\\'")}')">${it.label}</button>`
+  ).join('');
+  loadData();
+}
+
+function selectChip(key) {
+  if (key === selectedKey) return;
+  selectedKey = key;
+  document.querySelectorAll('.chip-btn').forEach(b => b.classList.toggle('active', b.dataset.key === key));
   loadData();
 }
 
 async function loadData() {
-  const parts = document.getElementById('groupSelect').value.split('|');
+  const parts = selectedKey.split('|');
   let res;
   if (parts[0] === 'app') {
     const appNameSafe = parts[1];
@@ -950,6 +1049,53 @@ async function loadData() {
   renderTable();
 }
 
+function fmtBytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+// Vault tab: how much is stored per device/app, read-only -- no delete
+// action anywhere here, matching this dashboard being view-only.
+async function loadStorage() {
+  const el = document.getElementById('storageList');
+  try {
+    const r = await fetch('/api/storage');
+    if (r.status === 401) { window.location = '/login'; return; }
+    const tree = await r.json();
+    const deviceNames = Object.keys(tree);
+    if (!deviceNames.length) {
+      el.innerHTML = '<div class="empty">No data received yet.</div>';
+      return;
+    }
+    el.innerHTML = deviceNames.map(dev => `
+      <div class="accordion">
+        <div class="head" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+          <span>${dev}</span>
+          <span style="color:var(--muted);font-weight:400;">${Object.keys(tree[dev]).length} app(s)</span>
+        </div>
+        <div class="body">
+          ${Object.keys(tree[dev]).map(appName => `
+            <div class="app-group">
+              <div class="app-name">${appName}</div>
+              ${tree[dev][appName].map(b => `
+                <div class="batch-row">
+                  <span class="b-name">${b.batch}</span>
+                  <span class="b-meta">${b.fileCount} files - ${fmtBytes(b.sizeBytes)}</span>
+                </div>
+              `).join('')}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Could not load storage.</div>';
+  }
+}
+
 function populateYearOptions() {
   const years = [...new Set(viewerRows.map(r => (r.date || '').slice(0, 4)).filter(Boolean))].sort().reverse();
   const sel = document.getElementById('fYear');
@@ -968,7 +1114,7 @@ function populateYearOptions() {
 }
 
 function clearFilters() {
-  ['fVin','fModel','fModelName','fTask','fClass','fBatch'].forEach(id => document.getElementById(id).value = '');
+  ['fVin','fModel','fModelName','fModelVariant','fTask','fClass','fBatch'].forEach(id => document.getElementById(id).value = '');
   ['fDate','fYear','fMonth','fShift','fResult','fDevice'].forEach(id => document.getElementById(id).value = '');
   pinnedDay = null;
   renderTable();
@@ -980,6 +1126,7 @@ function getFilteredRows() {
   const vin = document.getElementById('fVin').value.toLowerCase();
   const model = document.getElementById('fModel').value.toLowerCase();
   const modelName = document.getElementById('fModelName').value.toLowerCase();
+  const modelVariant = document.getElementById('fModelVariant').value.toLowerCase();
   const date = document.getElementById('fDate').value;
   const year = document.getElementById('fYear').value;
   const month = document.getElementById('fMonth').value;
@@ -996,6 +1143,7 @@ function getFilteredRows() {
     return (!vin || (row.vin || '').toLowerCase().includes(vin)) &&
       (!model || (row.modelCode || '').toLowerCase().includes(model)) &&
       (!modelName || (row.modelName || '').toLowerCase().includes(modelName)) &&
+      (!modelVariant || (row.modelVariant || '').toLowerCase().includes(modelVariant)) &&
       (!date || row.date === date) &&
       (!year || rowYear === year) &&
       (!month || rowMonth === month) &&
@@ -1016,7 +1164,7 @@ function groupRowsByInspection(rows) {
   rows.forEach(r => {
     const key = `${r.batch}|${r.inspectionId ?? ''}|${r.vin}|${r.date}|${r.time}`;
     if (!groups[key]) {
-      groups[key] = { key, vin: r.vin, modelCode: r.modelCode, modelName: r.modelName,
+      groups[key] = { key, vin: r.vin, modelCode: r.modelCode, modelName: r.modelName, modelVariant: r.modelVariant,
                       date: r.date, time: r.time, shift: r.shift, shiftDate: r.shiftDate, batch: r.batch, device: r.device, tasks: [] };
       order.push(key);
     }
@@ -1040,7 +1188,7 @@ function renderTable() {
 
   const tbody = document.getElementById('viewerRows');
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="11" class="empty">No rows match these filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" class="empty">No rows match these filters.</td></tr>';
     return;
   }
 
@@ -1065,7 +1213,7 @@ function renderTable() {
     return `
       <tr class="group-row ${expanded ? 'expanded' : ''}" onclick="toggleGroup('${g.key.replace(/'/g, "\\\\'")}')">
         <td><span class="chevron">&#9656;</span></td>
-        <td>${g.vin || ''}</td><td>${g.modelCode || ''}</td><td>${g.modelName || ''}</td>
+        <td>${g.vin || ''}</td><td>${g.modelCode || ''}</td><td>${g.modelName || ''}</td><td>${g.modelVariant || ''}</td>
         <td>${g.date || ''}</td><td>${g.time || ''}</td><td>${g.shift || ''}</td>
         <td>${taskSummary}</td>
         <td class="${vinResult === 'PASS' ? 'badge-ok' : 'badge-fail'}">${vinResult}</td>
@@ -1073,7 +1221,7 @@ function renderTable() {
         <td>${g.device || ''}</td>
       </tr>
       <tr class="detail-row ${expanded ? 'open' : ''}" data-key="${escapeAttr(g.key)}">
-        <td colspan="11">
+        <td colspan="12">
           <table class="mini-table">
             <thead><tr><th>Task</th><th>Detected</th><th>Result</th><th>Image</th></tr></thead>
             <tbody>${detailRows}</tbody>
@@ -1312,7 +1460,6 @@ async function downloadBlob(url, body, filename) {
   URL.revokeObjectURL(a.href);
 }
 
-document.getElementById('groupSelect').addEventListener('change', loadData);
 document.getElementById('downloadFullBtn').addEventListener('click', () => {
   window.location = '/download/excel?' + new URLSearchParams({ device: currentDevice, appName: currentAppName });
 });

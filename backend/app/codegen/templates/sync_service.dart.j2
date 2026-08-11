@@ -8,6 +8,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 import 'package:multicast_dns/multicast_dns.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../database/database.dart';
 
@@ -294,9 +295,57 @@ class SyncService {
   Future<SyncResult> sendToPc(PairedPc pc) {
     final existing = _inFlightSends[pc.deviceId];
     if (existing != null) return existing;
-    final future = _sendToPcImpl(pc).whenComplete(() => _inFlightSends.remove(pc.deviceId));
+    final future = _sendToPcImpl(pc).whenComplete(() {
+      _inFlightSends.remove(pc.deviceId);
+      // Best-effort housekeeping after every sync attempt (not just
+      // successful ones -- a prior run's synced backlog may already be
+      // over the limit) -- never awaited so it can't slow down reporting
+      // the sync result back to the UI.
+      unawaited(_enforceCacheLimit());
+    });
     _inFlightSends[pc.deviceId] = future;
     return future;
+  }
+
+  // Local image "cache" here is the compressed backup copy kept under
+  // '<app support dir>/inspection_backups/...' as a fallback for the
+  // primary copy in the phone's public Pictures gallery (see
+  // inspection_camera_screen.dart's backup-save step). Once an inspection
+  // is confirmed synced, the PC already has the
+  // full-quality image, so that backup copy is expendable -- deleting the
+  // oldest synced ones first keeps the app's own storage bounded instead
+  // of growing forever over months of scanning.
+  static const int _kMaxCacheBytes = 50 * 1024 * 1024;
+
+  Future<void> _enforceCacheLimit() async {
+    try {
+      final appDir = await getApplicationSupportDirectory();
+      final backupDir = Directory('${appDir.path}/inspection_backups');
+      if (!await backupDir.exists()) return;
+
+      int total = 0;
+      await for (final entity in backupDir.list(recursive: true, followLinks: false)) {
+        if (entity is File) total += await entity.length();
+      }
+      if (total <= _kMaxCacheBytes) return;
+
+      final candidates = await db.getSyncedBackupImages();
+      for (final c in candidates) {
+        if (total <= _kMaxCacheBytes) break;
+        final file = File(c.path);
+        if (await file.exists()) {
+          total -= await file.length();
+          try {
+            await file.delete();
+          } catch (_) {
+            continue; // couldn't delete -- leave its DB path intact and move on
+          }
+        }
+        await db.clearBackupImagePath(c.taskResultId);
+      }
+    } catch (_) {
+      // Best-effort housekeeping -- a failure here must never affect sync.
+    }
   }
 
   Future<SyncResult> _sendToPcImpl(PairedPc pc) async {
@@ -456,12 +505,45 @@ class SyncService {
     }
   }
 
+  // Master data only tags a variant (e.g. "(V1)", "[V2]") inside the free-text
+  // description for some model families -- others (Scorpio, Thar, ...) don't
+  // use this convention at all, so a miss here just means "no variant on
+  // record" rather than a guess.
+  static final RegExp _variantPattern = RegExp(r'[\(\[]\s*(V\d+)\s*[\)\]]', caseSensitive: false);
+
+  String _extractVariant(String description) {
+    final match = _variantPattern.firstMatch(description);
+    return match?.group(1)?.toUpperCase() ?? '';
+  }
+
+  /// Maps model code -> variant extracted from that model's description in
+  /// the same bundled master data, so the PC side can show "which variant"
+  /// alongside the model name without a separate lookup table.
+  Future<Map<String, String>> _loadModelVariantMap() async {
+{% if scan_type == 'engine' %}
+    return {};
+{% else %}
+    try {
+      final raw = await rootBundle.loadString('assets/master_data.json');
+      final List<dynamic> data = jsonDecode(raw);
+      return {
+        for (final e in data)
+          (e['model_code'] as String? ?? '').toUpperCase():
+              _extractVariant(e['description'] as String? ?? ''),
+      };
+    } catch (_) {
+      return {};
+    }
+{% endif %}
+  }
+
   Future<_ExportBundle> _buildExportBundle({int? limit}) async {
     final archive = Archive();
     final unsynced = await db.getUnsyncedInspections(limit: limit);
     final manifest = <Map<String, dynamic>>[];
     final seenImagePaths = <String>{};
     final modelNames = await _loadModelNameMap();
+    final modelVariants = await _loadModelVariantMap();
 
     for (final insp in unsynced) {
       final results = await db.getResultsForInspection(insp.id);
@@ -504,6 +586,7 @@ class SyncService {
         'vin': insp.vin,
         'modelCode': insp.modelCode,
         'modelName': modelNames[insp.modelCode.toUpperCase()] ?? '',
+        'modelVariant': modelVariants[insp.modelCode.toUpperCase()] ?? '',
         'createdAt': dt.toIso8601String(),
         'date': '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}',
         'time': '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}',

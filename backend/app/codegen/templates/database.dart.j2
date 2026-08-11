@@ -28,6 +28,15 @@ class TaskResults extends Table {
   DateTimeColumn get timestamp => dateTime().withDefault(currentDateAndTime)();
 }
 
+/// A backup-copy image tied to an already-synced task result -- returned by
+/// [AppDatabase.getSyncedBackupImages] so the sync service knows both which
+/// file on disk to delete and which DB row to clear the path from.
+class BackupImageRef {
+  final int taskResultId;
+  final String path;
+  const BackupImageRef({required this.taskResultId, required this.path});
+}
+
 @DriftDatabase(tables: [Inspections, TaskResults])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
@@ -110,6 +119,30 @@ class AppDatabase extends _$AppDatabase {
   /// duplicate row there.
   Future<void> resetAllSyncStatus() async {
     await update(inspections).write(const InspectionsCompanion(isSynced: Value(false)));
+  }
+
+  // ── Backup-image cache housekeeping ─────────────────────────────────────
+  // The backup copy under app storage is only ever a fallback for the
+  // primary gallery copy; once its inspection is confirmed synced to the
+  // PC, the backup is expendable. Oldest-first so cache-clearing trims the
+  // stalest data first.
+  Future<List<BackupImageRef>> getSyncedBackupImages() async {
+    final query = select(taskResults).join([
+      innerJoin(inspections, inspections.id.equalsExp(taskResults.inspectionId)),
+    ])
+      ..where(inspections.isSynced.equals(true) & taskResults.backupImagePath.isNotNull())
+      ..orderBy([OrderingTerm.asc(taskResults.timestamp)]);
+    final rows = await query.get();
+    return rows
+        .map((row) => row.readTable(taskResults))
+        .where((tr) => tr.backupImagePath != null)
+        .map((tr) => BackupImageRef(taskResultId: tr.id, path: tr.backupImagePath!))
+        .toList();
+  }
+
+  Future<void> clearBackupImagePath(int taskResultId) async {
+    await (update(taskResults)..where((t) => t.id.equals(taskResultId)))
+        .write(const TaskResultsCompanion(backupImagePath: Value(null)));
   }
 
   // For checking task progress in current session
