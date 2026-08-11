@@ -2172,6 +2172,20 @@ function clearFilters() {
   renderTable();
 }
 
+// Date/Shift Date columns always show the row's real, unmodified date --
+// but for grouping/filtering "by day", Shift C (00:00-07:00) is really the
+// tail end of the previous day's shift (which started with that day's A/B),
+// so it's counted against the previous day here without changing anything
+// that's actually displayed or stored.
+function shiftGroupDate(row) {
+  if (row.shift !== 'C' || !row.date) return row.date;
+  const [y, m, d] = row.date.split('-').map(Number);
+  if (!y || !m || !d) return row.date;
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() - 1);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
 function getFilteredRows() {
   const vin = document.getElementById('fVin').value.toLowerCase();
   const model = document.getElementById('fModel').value.toLowerCase();
@@ -2188,16 +2202,17 @@ function getFilteredRows() {
   const device = document.getElementById('fDevice').value;
 
   return viewerRows.filter(row => {
-    const rowYear = (row.date || '').slice(0, 4);
-    const rowMonth = (row.date || '').slice(5, 7);
+    const rowGroupDate = shiftGroupDate(row) || '';
+    const rowYear = rowGroupDate.slice(0, 4);
+    const rowMonth = rowGroupDate.slice(5, 7);
     return (!vin || (row.vin || '').toLowerCase().includes(vin)) &&
       (!model || (row.modelCode || '').toLowerCase().includes(model)) &&
       (!modelName || (row.modelName || '').toLowerCase().includes(modelName)) &&
       (!modelVariant || (row.modelVariant || '').toLowerCase().includes(modelVariant)) &&
-      (!date || row.date === date) &&
+      (!date || shiftGroupDate(row) === date) &&
       (!year || rowYear === year) &&
       (!month || rowMonth === month) &&
-      (!pinnedDay || (row.shiftDate || row.date) === pinnedDay) &&
+      (!pinnedDay || shiftGroupDate(row) === pinnedDay) &&
       (!shift || row.shift === shift) &&
       (!task || (row.taskName || '').toLowerCase().includes(task)) &&
       (!cls || (row.className || '').toLowerCase().includes(cls)) &&
@@ -2516,7 +2531,7 @@ function renderCharts(filtered) {
 
   // Uses shiftDate so a post-midnight Shift C scan groups with the shift
   // it belongs to, not the raw calendar date it happened to tick over into.
-  const byDay = bucketize(filtered, r => r.shiftDate || r.date);
+  const byDay = bucketize(filtered, shiftGroupDate);
   const dayKeys = Object.keys(byDay).sort();
   if (dayKeys.length && dayKeys.length <= MAX_PIE_BUCKETS) {
     sections.push({ title: 'By Day (shift-day)', cards: dayKeys.map(k => chartCard(k, byDay[k].ok, byDay[k].fail, 'day', k)) });
