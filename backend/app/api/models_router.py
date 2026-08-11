@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from app.connectors.state_db import StateDBConnector
@@ -25,12 +26,19 @@ def list_models(db: StateDBConnector = Depends(get_db_connector)):
     return rows
 
 def extract_classes_from_pt(pt_path: str) -> list[str]:
-    """Helper to load a .pt model and extract class names."""
+    """Helper to load a .pt model and extract class names, in the model's
+    actual output-index order (0, 1, 2, ...). Ultralytics can hand back
+    model.names with either int or str keys depending on version/how the
+    checkpoint was saved -- sorting the keys directly breaks for any model
+    with 10+ classes when they come back as strings ('0','1','10','11',...
+    '2',... sorts lexicographically, not numerically), silently scrambling
+    which label goes with which detection index for every class from index
+    10 onward. Sorting by int(key) keeps it correct either way."""
     from ultralytics import YOLO
     try:
         model = YOLO(pt_path)
         if hasattr(model, 'names') and model.names:
-            return [model.names[i] for i in sorted(model.names.keys())]
+            return [model.names[k] for k in sorted(model.names.keys(), key=lambda k: int(k))]
     except Exception as e:
         print(f"Error extracting classes: {e}")
     return []
@@ -56,20 +64,35 @@ def extract_classes_from_file(file: UploadFile = File(...)):
 
 @router.post("/{model_asset_id}/detect-classes")
 def detect_model_classes(model_asset_id: str, db: StateDBConnector = Depends(get_db_connector)):
+    """Re-reads class names straight from the .pt checkpoint and saves them,
+    in the model's real output-index order -- lets an already-uploaded model
+    be fixed (e.g. after the extract_classes_from_pt ordering bug) without
+    re-uploading the .pt file. Rebuild/regenerate the app afterwards so the
+    corrected labels.txt actually reaches the APK."""
     rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})
     if not rows:
         raise HTTPException(status_code=404, detail="Model asset or .pt file not found")
-    
+
     asset = rows[0]
     if not asset["pt_path"]:
         raise HTTPException(status_code=404, detail="Model asset missing pt_path")
 
     classes = extract_classes_from_pt(asset["pt_path"])
     if classes:
-        # We need an update query for classes if we want to save it, 
-        # but for now we can just return it. To properly save, we'd need an update query.
-        pass
-    
+        db.execute_update(ModelAssetQueries.UPDATE_MODEL_CLASSES, {
+            "id": model_asset_id,
+            "classes": json.dumps(classes),
+        })
+        # If this model already converted, its labels.txt was written from
+        # the (possibly wrongly-ordered) classes at conversion time -- fix it
+        # in place rather than making the user wait through a full .pt ->
+        # tflite re-export just to correct label order.
+        if asset.get("labels_path"):
+            try:
+                Path(asset["labels_path"]).write_text("\n".join(classes))
+            except OSError as e:
+                print(f"Could not rewrite labels.txt for {model_asset_id}: {e}")
+
     return {"classes": classes}
 
 @router.post("/upload", response_model=ModelAssetResponse)

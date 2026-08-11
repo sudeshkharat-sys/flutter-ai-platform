@@ -85,6 +85,11 @@ class ModelAssetQueries:
         SET status = :status, error_message = :error_message, conversion_log = :conversion_log
         WHERE id = :id
     """
+    UPDATE_MODEL_CLASSES = """
+        UPDATE model_assets
+        SET classes = :classes
+        WHERE id = :id
+    """
     DELETE_MODEL = "DELETE FROM model_assets WHERE id = :id"
 
 class QueryValidator:
