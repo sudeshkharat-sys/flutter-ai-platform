@@ -138,10 +138,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return 'C';
   }
 
+  // Every shift -- A, B, and C (00:00-07:00, the next calendar day after
+  // that day's B) -- keeps its own actual date. No rollback onto the
+  // previous day.
   DateTime _getShiftDate(DateTime dt) {
-    if (dt.hour < 7) {
-      return DateTime(dt.year, dt.month, dt.day).subtract(const Duration(days: 1));
-    }
     return DateTime(dt.year, dt.month, dt.day);
   }
 

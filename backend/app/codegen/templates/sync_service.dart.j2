@@ -472,12 +472,12 @@ class SyncService {
     return 'C';
   }
 
-  // Shift C runs past midnight, so a 1am scan belongs to the *previous*
-  // day's shift for reporting purposes -- same rollover rule as the
-  // History screen's shift-day grouping.
+  // Shift Date is always the scan's own plain calendar date -- Shift A and
+  // B on a given day, and Shift C (00:00-07:00, the next calendar day after
+  // that day's B) all keep their own actual date, with no rollback onto the
+  // previous day.
   String _shiftDateFor(DateTime dt) {
-    final d = dt.hour < 7 ? dt.subtract(const Duration(days: 1)) : dt;
-    return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    return '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
   }
 
   /// Maps model/engine code -> human-readable name using the same lookup

@@ -341,11 +341,10 @@ def _flatten_manifest_rows(inspections: list, batch_name: str, device_name: str 
                 "date": insp.get("date"),
                 "time": insp.get("time"),
                 "shift": insp.get("shift"),
-                # Shift C runs past midnight into the next calendar date --
-                # shiftDate is the shift's own "day" (a 1am scan still
-                # belongs to the previous day's shift), falling back to the
-                # raw date for phones running an older build that doesn't
-                # send it yet.
+                # shiftDate is normally identical to date (no rollback --
+                # Shift C keeps its own actual calendar date); falls back to
+                # the raw date for phones running an older build that
+                # doesn't send it yet.
                 "shiftDate": insp.get("shiftDate") or insp.get("date"),
                 "taskName": task.get("taskName"),
                 "className": task.get("className"),
