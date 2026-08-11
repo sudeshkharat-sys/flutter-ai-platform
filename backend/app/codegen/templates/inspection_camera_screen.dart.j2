@@ -613,8 +613,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         };
         _isAnalyzing = false;
       });
-    } catch (e) {
+    } catch (e, st) {
+      // e alone (e.g. "Invalid argument(s): 1") doesn't say which line threw
+      // it -- several unrelated clamp()/range checks in the detection and
+      // OCR path can produce that exact generic message. The first few
+      // stack frames are enough to tell them apart without flooding the
+      // debug console with the full trace.
       _addLog("ERROR: $e");
+      _addLog("  at: ${st.toString().split('\n').take(3).join(' | ')}");
       setState(() => _isAnalyzing = false);
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -1731,8 +1737,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         }
         _isAnalyzing = false;
       });
-    } catch (e) {
+    } catch (e, st) {
+      // e alone (e.g. "Invalid argument(s): 1") doesn't say which line threw
+      // it -- several unrelated clamp()/range checks in the detection and
+      // OCR path can produce that exact generic message. The first few
+      // stack frames are enough to tell them apart without flooding the
+      // debug console with the full trace.
       _addLog("ERROR: $e");
+      _addLog("  at: ${st.toString().split('\n').take(3).join(' | ')}");
       setState(() => _isAnalyzing = false);
       if (mounted) {
         ScaffoldMessenger.of(context)
