@@ -154,6 +154,7 @@ def upload_ocr_model(
     charset_file: UploadFile = File(...),
     model_name: str = Form(...),
     model_kind: str = Form(...),
+    input_size: int = Form(640),
     meta_file: UploadFile = File(None),
     db: StateDBConnector = Depends(get_db_connector),
 ):
@@ -205,7 +206,7 @@ def upload_ocr_model(
         "status": "ready",
         "error_message": None,
         "conversion_log": "Registered pre-built OCR tflite bundle -- no conversion needed.\n",
-        "input_size": 0,
+        "input_size": input_size,
         "vision_platform_url": "",
         "vision_platform_token": "",
     }
