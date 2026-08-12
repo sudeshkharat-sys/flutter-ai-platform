@@ -1274,13 +1274,18 @@ function renderTable() {
       : `<span class="task-count-ok">${okCount} OK</span>${failCount ? ` / <span class="task-count-fail">${failCount} NOT OK</span>` : ''} (${g.tasks.length} tasks)`;
     const vinResult = failCount === 0 ? 'PASS' : 'FAIL';
 
-    const detailRows = g.tasks.map(t => `
+    // Building this markup is the expensive part of a render (it's the
+    // per-task breakdown, so its cost scales with total row count, not
+    // group count) -- on first load and after every filter keystroke,
+    // zero groups start expanded, so computing it for a collapsed group
+    // is pure waste. Skip it until the group is actually opened.
+    const detailRows = expanded ? g.tasks.map(t => `
       <tr>
         <td>${t.taskName || ''}</td>
         <td>${t.className || ''}</td>
         <td class="${t.result === 'OK' ? 'badge-ok' : 'badge-fail'}">${t.result || ''}</td>
         <td>${t.imageUrl ? `<button class="img-link" onclick="openLightbox('${t.imageUrl}')">View</button>` : '<button class="img-link" disabled>-</button>'}</td>
-      </tr>`).join('');
+      </tr>`).join('') : '';
 
     return `
       <tr class="group-row ${expanded ? 'expanded' : ''}" onclick="toggleGroup('${g.key.replace(/'/g, "\\\\'")}')">
