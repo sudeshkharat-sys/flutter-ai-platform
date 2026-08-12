@@ -41,6 +41,7 @@ import secrets
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import mimetypes
@@ -605,9 +606,17 @@ async def api_app_data(appName: str, _: None = Depends(_require_session)):
     """Every row for this app, merged across every device that has data
     for it -- the Apps-tab equivalent of /api/data."""
     app_name_safe = _safe_name(appName)
+    device_dirs = _device_dirs_for_app(app_name_safe)
     rows: list[dict] = []
-    for device_safe in _device_dirs_for_app(app_name_safe):
-        rows.extend(_flatten_rows(device_safe, app_name_safe))
+    # Each device's manifest.json files are read from disk independently, so
+    # fanning the (I/O-bound, uncached-batches-only thanks to _rows_cache)
+    # reads out across a small thread pool cuts wall-clock time roughly
+    # proportional to device count instead of paying for every device's
+    # read serially -- the main source of the "takes too long to load"
+    # first-open delay when an app has many paired devices.
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(device_dirs)))) as pool:
+        for device_rows in pool.map(lambda d: _flatten_rows(d, app_name_safe), device_dirs):
+            rows.extend(device_rows)
     rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
     truncated = len(rows) > MAX_ROWS_RETURNED
     return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
@@ -872,6 +881,22 @@ VIEWER_HTML = """<!doctype html>
   .data-header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
   .data-header h2 { margin: 0; font-size: 17px; }
   .data-header p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+  /* Blinking-eye loader shown while a data fetch is in flight, in place of
+     a generic spinner -- matches the "Digital Eye Vault" logo/branding. */
+  .eye-loader-overlay { display: none; flex-direction: column; align-items: center;
+                         justify-content: center; gap: 14px; padding: 70px 0; }
+  .eye-loader-overlay.show { display: flex; }
+  .eye-loader-overlay .msg { font-size: 12px; color: var(--muted); }
+  .eye-shape { width: 72px; height: 44px; border-radius: 50%; background: var(--crimson);
+               position: relative; overflow: hidden; animation: eyeBlink 1.6s ease-in-out infinite; }
+  .eye-shape::after { content: ''; position: absolute; top: 50%; left: 50%; width: 16px; height: 16px;
+                       background: #fff; border-radius: 50%; transform: translate(-50%, -50%); }
+  @keyframes eyeBlink {
+    0%, 35% { height: 44px; }
+    50% { height: 4px; }
+    65%, 100% { height: 44px; }
+  }
 </style>
 </head>
 <body>
@@ -904,7 +929,9 @@ VIEWER_HTML = """<!doctype html>
     <button class="primary" id="downloadFilteredBtn">Download Filtered Excel</button>
   </div>
   <div id="truncatedBanner" style="display:none;"></div>
+  <div id="eyeLoader" class="eye-loader-overlay"><div class="eye-shape"></div><div class="msg">Loading data...</div></div>
 
+  <div id="dataContent">
   <div class="filters">
     <input id="fVin" placeholder="Filter VIN..." oninput="renderTable()">
     <input id="fModel" placeholder="Filter Model Code..." oninput="renderTable()">
@@ -950,6 +977,7 @@ VIEWER_HTML = """<!doctype html>
       </thead>
       <tbody id="viewerRows"></tbody>
     </table>
+  </div>
   </div>
   </div>
 
@@ -1009,7 +1037,16 @@ function renderApps() {
   `).join('');
 }
 
+// Bumped on every openAppDataViewer call so a slow, superseded fetch can
+// tell it's no longer the latest request and drop its response instead of
+// overwriting the screen with stale data from an app the user already
+// clicked away from (this is what caused the "old data" flashes -- two
+// fetches in flight, and whichever happened to resolve last used to win
+// regardless of which one the user actually asked for last).
+let dataRequestSeq = 0;
+
 async function openAppDataViewer(appNameSafe, appNameDisplay) {
+  const seq = ++dataRequestSeq;
   currentDevice = 'AllDevices';
   currentAppName = appNameDisplay;
   pinnedDay = null;
@@ -1018,9 +1055,19 @@ async function openAppDataViewer(appNameSafe, appNameDisplay) {
   document.getElementById('dataViewTitle').textContent = appNameDisplay;
   document.getElementById('dataViewSubtitle').textContent = 'Loading...';
   document.getElementById('viewerRows').innerHTML = '';
-  const res = await fetch('/api/app-data?' + new URLSearchParams({ appName: appNameDisplay }));
-  if (res.status === 401) { window.location = '/login'; return; }
-  const data = await res.json();
+  document.getElementById('truncatedBanner').style.display = 'none';
+  document.getElementById('dataContent').style.visibility = 'hidden';
+  document.getElementById('eyeLoader').classList.add('show');
+  let res, data;
+  try {
+    res = await fetch('/api/app-data?' + new URLSearchParams({ appName: appNameDisplay }));
+    if (res.status === 401) { window.location = '/login'; return; }
+    data = await res.json();
+  } finally {
+    if (seq === dataRequestSeq) document.getElementById('eyeLoader').classList.remove('show');
+  }
+  if (seq !== dataRequestSeq) return; // a newer app was opened while this fetch was in flight
+  document.getElementById('dataContent').style.visibility = '';
   viewerRows = data.rows;
   document.getElementById('dataViewSubtitle').textContent =
     `${viewerRows.length.toLocaleString()} task result(s) merged across every device paired under this app`;

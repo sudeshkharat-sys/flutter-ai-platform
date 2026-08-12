@@ -1301,6 +1301,13 @@ DASHBOARD_HTML = """<!doctype html>
   button.primary:hover { background: var(--crimson-dark); }
   button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
   button.ghost:hover { border-color: var(--crimson); color: var(--crimson); }
+  /* For a .ghost button sitting on the dark navy header (e.g. the
+     viewer-page's Back button) -- the default .ghost styling (transparent
+     bg, faint border, muted-gray text) was tuned for a light card and all
+     but disappeared on that dark background. This gives it an actual
+     visible pill instead of just barely-there text. */
+  button.ghost-dark { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.35); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  button.ghost-dark:hover { background: rgba(255,255,255,0.18); border-color: #fff; }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   button:disabled:hover { border-color: var(--border); color: var(--muted); }
   button.icon-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); width: 30px; height: 30px; border-radius: 50%; cursor: pointer; font-size: 13px; line-height: 1; }
@@ -1492,7 +1499,7 @@ DASHBOARD_HTML = """<!doctype html>
     <p>Receives inspection data from paired phones on this WiFi/hotspot</p>
   </div>
   <div class="live-indicator" id="liveIndicator"><span class="dot"></span>Receiving…</div>
-  <button class="ghost" style="border-color:#3a4152;color:#c9ccd4;margin-left:10px;" onclick="openSettingsModal()">⚙ Settings</button>
+  <button class="ghost-dark" style="margin-left:10px;" onclick="openSettingsModal()">⚙ Settings</button>
 </header>
 
 <div class="settings-banner" id="settingsBanner" style="display:none;" onclick="openSettingsModal()">
@@ -1568,13 +1575,13 @@ DASHBOARD_HTML = """<!doctype html>
 
 <div class="viewer-page" id="viewerPage">
   <div class="viewer-header">
-    <button class="ghost" style="border-color:#3a4152;color:#c9ccd4;" onclick="closeDataViewer()">← Back</button>
+    <button class="ghost-dark" onclick="closeDataViewer()">← Back</button>
     <div>
       <h2 id="viewerTitle">Device Data</h2>
       <p id="viewerSubtitle"></p>
     </div>
     <div class="spacer"></div>
-    <button class="ghost" style="border-color:#3a4152;color:#c9ccd4;" onclick="downloadFullExcel()">Download Full Excel</button>
+    <button class="ghost-dark" onclick="downloadFullExcel()">Download Full Excel</button>
     <button class="primary" onclick="downloadExcel()">Download Excel (filtered)</button>
   </div>
   <div class="filters">
@@ -2084,8 +2091,14 @@ let viewerRows = [];
 let viewerDeviceLabel = '';
 let currentViewerDeviceId = null;
 let currentViewerAppNameSafe = null;
+// Bumped on every openDataViewer/openAppDataViewer call so a slow,
+// superseded fetch can tell it's no longer the latest request and drop its
+// response instead of overwriting the screen with stale data from a
+// device/app the user already clicked away from.
+let viewerRequestSeq = 0;
 
 async function openDataViewer(deviceId) {
+  const seq = ++viewerRequestSeq;
   currentViewerDeviceId = deviceId;
   currentViewerAppNameSafe = null;
   pinnedDay = null;
@@ -2096,6 +2109,7 @@ async function openDataViewer(deviceId) {
     const r = await fetch('/api/device-data?deviceId=' + encodeURIComponent(deviceId));
     if (!r.ok) throw new Error('fetch failed');
     const d = await r.json();
+    if (seq !== viewerRequestSeq) return;
     viewerRows = d.rows;
     viewerDeviceLabel = `${d.deviceName} — ${d.appName}`;
     document.getElementById('viewerTitle').textContent = viewerDeviceLabel;
@@ -2103,11 +2117,12 @@ async function openDataViewer(deviceId) {
     populateFilterSuggestions();
     clearFilters();
   } catch (e) {
-    document.getElementById('viewerTitle').textContent = 'Could not load data';
+    if (seq === viewerRequestSeq) document.getElementById('viewerTitle').textContent = 'Could not load data';
   }
 }
 
 async function openAppDataViewer(appNameSafe, appNameDisplay) {
+  const seq = ++viewerRequestSeq;
   currentViewerDeviceId = null;
   currentViewerAppNameSafe = appNameSafe;
   pinnedDay = null;
@@ -2118,6 +2133,7 @@ async function openAppDataViewer(appNameSafe, appNameDisplay) {
     const r = await fetch('/api/app-data?appName=' + encodeURIComponent(appNameSafe));
     if (!r.ok) throw new Error('fetch failed');
     const d = await r.json();
+    if (seq !== viewerRequestSeq) return;
     viewerRows = d.rows;
     viewerDeviceLabel = `${appNameDisplay} (all devices)`;
     document.getElementById('viewerTitle').textContent = viewerDeviceLabel;
@@ -2125,7 +2141,7 @@ async function openAppDataViewer(appNameSafe, appNameDisplay) {
     populateFilterSuggestions();
     clearFilters();
   } catch (e) {
-    document.getElementById('viewerTitle').textContent = 'Could not load data';
+    if (seq === viewerRequestSeq) document.getElementById('viewerTitle').textContent = 'Could not load data';
   }
 }
 
