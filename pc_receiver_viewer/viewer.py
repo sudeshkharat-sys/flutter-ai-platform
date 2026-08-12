@@ -882,20 +882,21 @@ VIEWER_HTML = """<!doctype html>
   .data-header h2 { margin: 0; font-size: 17px; }
   .data-header p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
 
-  /* Blinking-eye loader shown while a data fetch is in flight, in place of
-     a generic spinner -- matches the "Digital Eye Vault" logo/branding. */
-  .eye-loader-overlay { display: none; flex-direction: column; align-items: center;
-                         justify-content: center; gap: 14px; padding: 70px 0; }
+  /* Blinking-logo loader shown while a data fetch is in flight, in place of
+     a generic spinner -- the actual app logo (same asset as the header),
+     centered dead-center on screen and "blinking" (open/close eye) while
+     data loads. */
+  .eye-loader-overlay { display: none; position: fixed; inset: 0; align-items: center;
+                         justify-content: center; flex-direction: column; gap: 16px;
+                         background: var(--bg); z-index: 50; }
   .eye-loader-overlay.show { display: flex; }
-  .eye-loader-overlay .msg { font-size: 12px; color: var(--muted); }
-  .eye-shape { width: 72px; height: 44px; border-radius: 50%; background: var(--crimson);
-               position: relative; overflow: hidden; animation: eyeBlink 1.6s ease-in-out infinite; }
-  .eye-shape::after { content: ''; position: absolute; top: 50%; left: 50%; width: 16px; height: 16px;
-                       background: #fff; border-radius: 50%; transform: translate(-50%, -50%); }
+  .eye-loader-overlay .msg { font-size: 13px; color: var(--muted); font-weight: 600; }
+  .eye-loader-overlay img { width: 84px; height: 84px; object-fit: contain;
+                             animation: eyeBlink 1.6s ease-in-out infinite; }
   @keyframes eyeBlink {
-    0%, 35% { height: 44px; }
-    50% { height: 4px; }
-    65%, 100% { height: 44px; }
+    0%, 35% { transform: scaleY(1); }
+    50% { transform: scaleY(0.08); }
+    65%, 100% { transform: scaleY(1); }
   }
 </style>
 </head>
@@ -929,7 +930,7 @@ VIEWER_HTML = """<!doctype html>
     <button class="primary" id="downloadFilteredBtn">Download Filtered Excel</button>
   </div>
   <div id="truncatedBanner" style="display:none;"></div>
-  <div id="eyeLoader" class="eye-loader-overlay"><div class="eye-shape"></div><div class="msg">Loading data...</div></div>
+  <div id="eyeLoader" class="eye-loader-overlay"><img src="data:image/png;base64,__LOGO_B64__" alt="loading"><div class="msg">Loading data...</div></div>
 
   <div id="dataContent">
   <div class="filters">
