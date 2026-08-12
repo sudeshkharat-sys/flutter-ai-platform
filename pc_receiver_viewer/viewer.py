@@ -48,6 +48,7 @@ import mimetypes
 
 import uvicorn
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
@@ -281,6 +282,14 @@ def _require_session(viewer_session: str | None = Cookie(default=None)):
 
 
 app = FastAPI()
+
+# Unlike receiver.py (localhost-only, so no real network bottleneck), this
+# app is fetched over actual WiFi -- /api/app-data's uncompressed JSON can
+# run several MB on a data-heavy app, and that's genuinely bandwidth-bound
+# on WiFi even though it's instant over loopback. JSON compresses extremely
+# well (typically 80-90% smaller), so gzip-ing responses directly cuts the
+# transfer time that's slow on a remote laptop but fine on the server itself.
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
 # ── Data helpers (read-only; mirrors receiver.py's own flattening logic so
