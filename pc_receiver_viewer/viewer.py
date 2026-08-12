@@ -171,16 +171,7 @@ TLS_KEY = os.environ.get("VIEWER_TLS_KEY")
 SESSION_TTL_SECONDS = 12 * 3600  # a logged-in session stays valid 12h
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_SECONDS = 60
-
-# Caps a single "View Data" response. This used to be 30000 -- fine for the
-# browser to render, but a payload that size is what's actually behind the
-# multi-minute loads reported over a real (non-loopback) WiFi link: more
-# rows means more bytes that have to survive that slower path, gzip or not.
-# Cut way down so the common case opens fast; the truncation banner already
-# tells people to narrow filters or use "Download Full Excel" (which reads
-# the pre-built .xlsx directly and isn't subject to this cap at all) to get
-# everything beyond it.
-MAX_ROWS_RETURNED = 4000
+MAX_ROWS_RETURNED = 30000  # keeps very large datasets from freezing the browser
 
 # ── One-time secrets: session-signing key, and the login password hash ─────
 # Both are generated on first run and persisted in viewer_config.json so
