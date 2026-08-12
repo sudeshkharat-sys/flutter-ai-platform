@@ -1306,8 +1306,8 @@ DASHBOARD_HTML = """<!doctype html>
      bg, faint border, muted-gray text) was tuned for a light card and all
      but disappeared on that dark background. This gives it an actual
      visible pill instead of just barely-there text. */
-  button.ghost-dark { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.35); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
-  button.ghost-dark:hover { background: rgba(255,255,255,0.18); border-color: #fff; }
+  button.ghost-dark { background: rgba(220,20,60,0.18); border: 1px solid var(--crimson); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  button.ghost-dark:hover { background: var(--crimson); border-color: var(--crimson); }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   button:disabled:hover { border-color: var(--border); color: var(--muted); }
   button.icon-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); width: 30px; height: 30px; border-radius: 50%; cursor: pointer; font-size: 13px; line-height: 1; }
