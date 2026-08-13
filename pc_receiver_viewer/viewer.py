@@ -808,10 +808,27 @@ VIEWER_HTML = """<!doctype html>
   header a { color: #cfd3db; font-size: 12px; text-decoration: none; }
   header a:hover { color: #fff; }
 
+  nav { display: flex; gap: 4px; padding: 12px 24px 0; background: var(--bg); }
+  nav button { border: none; background: transparent; padding: 10px 18px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 3px solid transparent; }
+  nav button.active { color: var(--crimson); border-bottom-color: var(--crimson); }
+
   /* Full width, edge to edge -- matches receiver.py's own data-viewer
      overlay, which has no max-width at all. */
   main { padding: 20px 24px 60px; width: 100%; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .device-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border);
+                 border-radius: 8px; margin-bottom: 8px; background: var(--card); }
+  .device-card:last-child { margin-bottom: 0; }
+  .device-card .d-info { flex: 1; min-width: 0; }
+  .device-card .d-name { font-weight: 600; font-size: 13px; }
+  .device-card .d-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .device-card .a-stats { display: flex; gap: 16px; font-size: 11px; color: var(--muted); text-align: center; }
+  .device-card .a-stats b { display: block; font-size: 13px; color: var(--text); }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .status-dot.online { background: var(--green); }
+  .status-dot.offline { background: var(--crimson); }
+  .status-label.online { color: var(--green); }
+  .status-label.offline { color: var(--crimson); }
   #truncatedBanner { background: #fff4e5; border: 1px solid #f0c987; color: #8a5a00; font-size: 12px; font-weight: 600;
                       padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
   #rangeBanner { background: #eef4ff; border: 1px solid #c7d9f7; color: #2a4d8f; font-size: 12px; font-weight: 600;
@@ -963,8 +980,23 @@ VIEWER_HTML = """<!doctype html>
   <div class="spacer"></div>
   <a href="/logout">Log out</a>
 </header>
+<nav>
+  <button class="tab-btn active" data-tab="devices" onclick="showTab('devices')">Devices</button>
+  <button class="tab-btn" data-tab="apps" onclick="showTab('apps')">Apps</button>
+  <button class="tab-btn" data-tab="vault" onclick="showTab('vault')">Vault</button>
+</nav>
 <main>
-  <div id="appsListView">
+  <div id="devicesView">
+    <div class="toolbar">
+      <h2 style="margin:0;">Devices</h2>
+      <span style="flex:1"></span>
+      <button class="secondary" onclick="loadDevices()">Refresh</button>
+    </div>
+    <p class="muted" style="margin:-6px 0 14px;">A device is "Offline" once nothing's been received from it for a while -- usually means it's lost WiFi, is powered off, or the app isn't running, not that anything is wrong on this end.</p>
+    <div id="devicesList"><div class="empty">Loading...</div></div>
+  </div>
+
+  <div id="appsListView" style="display:none;">
     <div class="toolbar">
       <h2 style="margin:0;">Apps</h2>
     </div>
@@ -1214,6 +1246,91 @@ function fmtBytes(n) {
   let i = 0;
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+function showTab(tab) {
+  document.querySelectorAll('nav button.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.getElementById('devicesView').style.display = tab === 'devices' ? '' : 'none';
+  document.getElementById('appsListView').style.display = tab === 'apps' ? '' : 'none';
+  document.getElementById('dataView').style.display = 'none'; // switching tabs always backs out of a drill-down
+  document.getElementById('vaultView').style.display = tab === 'vault' ? '' : 'none';
+  if (tab === 'devices') loadDevices();
+  if (tab === 'apps') loadApps();
+  if (tab === 'vault') loadStorage();
+}
+
+// Devices tab: per-device/app "is this phone actually still sending data"
+// status, so a dropped WiFi connection shows up as "Offline" instead of
+// silently looking like no new inspections happened. Based on how long
+// it's been since the device's last batch arrived (this viewer only ever
+// sees data after it's been received -- it has no live connection to the
+// phones themselves, so "online" here means "recently active", not "on
+// the network right now").
+const DEVICE_ONLINE_THRESHOLD_MINUTES = 15;
+let devicesRefreshTimer = null;
+
+// Batch folder names are "YYYYMMDD_HHMMSS" (server local receive time).
+function parseBatchTimestamp(name) {
+  if (!name || name.length < 15) return null;
+  const y = +name.slice(0, 4), mo = +name.slice(4, 6) - 1, d = +name.slice(6, 8);
+  const h = +name.slice(9, 11), mi = +name.slice(11, 13), s = +name.slice(13, 15);
+  const dt = new Date(y, mo, d, h, mi, s);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
+function timeAgo(date) {
+  if (!date) return 'no data received yet';
+  const secs = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (secs < 5) return 'just now';
+  if (secs < 60) return secs + 's ago';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  return Math.floor(hrs / 24) + 'd ago';
+}
+
+async function loadDevices() {
+  const el = document.getElementById('devicesList');
+  try {
+    const r = await fetch('/api/groups');
+    if (r.status === 401) { window.location = '/login'; return; }
+    const groups = await r.json();
+    renderDevices(groups);
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Could not load devices.</div>';
+  }
+  clearTimeout(devicesRefreshTimer);
+  devicesRefreshTimer = setTimeout(() => {
+    if (document.getElementById('devicesView').style.display !== 'none') loadDevices();
+  }, 30000);
+}
+
+function renderDevices(groups) {
+  const el = document.getElementById('devicesList');
+  if (!groups.length) {
+    el.innerHTML = '<div class="empty">No data received yet.</div>';
+    return;
+  }
+  el.innerHTML = groups.map(g => {
+    const lastTs = parseBatchTimestamp(g.lastReceivedAt);
+    const minsAgo = lastTs ? (Date.now() - lastTs.getTime()) / 60000 : Infinity;
+    const online = minsAgo <= DEVICE_ONLINE_THRESHOLD_MINUTES;
+    const statusText = lastTs ? (online ? 'Online' : `Offline • last seen ${timeAgo(lastTs)}`) : 'Offline • no data yet';
+    return `
+      <div class="device-card">
+        <div class="d-info">
+          <div class="d-name">${g.device} <span style="font-weight:400;color:var(--muted);">→ ${g.appName}</span></div>
+          <div class="d-meta"><span class="status-dot ${online ? 'online' : 'offline'}"></span><span class="status-label ${online ? 'online' : 'offline'}">${statusText}</span></div>
+        </div>
+        <div class="a-stats">
+          <div><b>${g.batchCount}</b>sends</div>
+          <div><b>${fmtBytes(g.totalBytes)}</b>size</div>
+        </div>
+        <button class="primary" onclick="showTab('apps'); openAppDataViewer('${g.appName.replace(/'/g, "\\'")}', '${g.appName.replace(/'/g, "\\'")}')" ${g.batchCount === 0 ? 'disabled' : ''}>View Data</button>
+      </div>
+    `;
+  }).join('');
 }
 
 // Vault tab: how much is stored per device/app, read-only -- no delete
@@ -1656,7 +1773,7 @@ document.getElementById('downloadFilteredBtn').addEventListener('click', () => {
     `${currentDevice}_${currentAppName}_filtered.xlsx`);
 });
 
-loadApps();
+loadDevices();
 </script>
 </body>
 </html>
