@@ -1013,7 +1013,7 @@ VIEWER_HTML = """<!doctype html>
       <span style="flex:1"></span>
       <button class="secondary" onclick="loadApps()">Refresh</button>
     </div>
-    <p class="muted" style="margin:-6px 0 14px;">An app shows "Offline" once no device under it has pinged in over 2 minutes (or, for older app builds without this check yet, once nothing's been received for 15+ minutes) -- usually means a phone lost WiFi, is powered off, or the app isn't running, not that anything is wrong on this end.</p>
+    <p class="muted" style="margin:-6px 0 14px;">"Offline" usually just means WiFi dropped, the phone's off, or the app isn't running -- not a problem on this end.</p>
     <div id="appsList" class="apps-grid"><div class="empty">Loading...</div></div>
   </div>
 
