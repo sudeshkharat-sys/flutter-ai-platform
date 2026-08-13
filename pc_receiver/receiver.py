@@ -2034,11 +2034,21 @@ async function openPairModal() {
   try {
     const r = await fetch('/api/pair/start', { method: 'POST' });
     const d = await r.json();
+    if (!r.ok || !d.qrImage) {
+      // A server-side failure here (e.g. a missing dependency) used to
+      // leave the modal stuck on a broken image and an endless "Waiting
+      // for phone to scan..." spinner -- surface it as a real error and
+      // close the modal instead.
+      showToast(d.detail || 'Could not generate a pairing QR code');
+      closePairModal();
+      return;
+    }
     currentToken = d.token;
     document.getElementById('pairQrImg').src = 'data:image/png;base64,' + d.qrImage;
     pollPairStatus();
   } catch (e) {
     showToast('Could not start pairing');
+    closePairModal();
   }
 }
 
