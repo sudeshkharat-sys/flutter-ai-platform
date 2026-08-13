@@ -611,9 +611,15 @@ async def api_storage(_: None = Depends(_require_session)):
 
 
 @app.get("/api/app-data")
-async def api_app_data(appName: str, _: None = Depends(_require_session)):
+async def api_app_data(appName: str, startDate: str = "", endDate: str = "", _: None = Depends(_require_session)):
     """Every row for this app, merged across every device that has data
-    for it -- the Apps-tab equivalent of /api/data."""
+    for it -- the Apps-tab equivalent of /api/data.
+
+    startDate/endDate (both "YYYY-MM-DD", inclusive) let the caller scope
+    this to a date range instead of pulling the app's entire history every
+    time. The landing view asks for just today+yesterday by default (fast
+    regardless of how much history exists); picking an older date in the
+    UI re-requests this with that date as both bounds."""
     app_name_safe = _safe_name(appName)
     device_dirs = _device_dirs_for_app(app_name_safe)
     rows: list[dict] = []
@@ -626,6 +632,12 @@ async def api_app_data(appName: str, _: None = Depends(_require_session)):
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(device_dirs)))) as pool:
         for device_rows in pool.map(lambda d: _flatten_rows(d, app_name_safe), device_dirs):
             rows.extend(device_rows)
+    if startDate or endDate:
+        rows = [
+            r for r in rows
+            if (not startDate or (r["date"] or "") >= startDate)
+            and (not endDate or (r["date"] or "") <= endDate)
+        ]
     rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
     truncated = len(rows) > MAX_ROWS_RETURNED
     return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
@@ -654,6 +666,34 @@ async def download_master_excel(appName: str, device: str = "", _: None = Depend
     if not xlsx_path.exists():
         raise HTTPException(status_code=404, detail="No data received yet")
     return FileResponse(xlsx_path, filename=f"{_safe_name(appName)}.xlsx")
+
+
+@app.get("/download/excel-month")
+async def download_month_excel(appName: str, year: str, month: str, _: None = Depends(_require_session)):
+    """Same rows as /download/excel (the app's whole history) but scoped to
+    one calendar month -- offered alongside the full download so a
+    data-heavy app doesn't force everyone into downloading its entire
+    history just to check one month. Built fresh from the flattened rows
+    (not MAX_ROWS_RETURNED-limited -- this is an explicit narrower export,
+    not the on-screen table) rather than reading data.xlsx, since that file
+    is the unfiltered whole-history export."""
+    if not (len(year) == 4 and year.isdigit() and len(month) == 2 and month.isdigit()):
+        raise HTTPException(status_code=422, detail="year must be YYYY and month must be MM")
+    app_name_safe = _safe_name(appName)
+    device_dirs = _device_dirs_for_app(app_name_safe)
+    prefix = f"{year}-{month}"
+    rows: list[dict] = []
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(device_dirs)))) as pool:
+        for device_rows in pool.map(lambda d: _flatten_rows(d, app_name_safe), device_dirs):
+            rows.extend(r for r in device_rows if (r["date"] or "").startswith(prefix))
+    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    buf = _build_workbook(rows)
+    filename = f"{app_name_safe}_{year}-{month}.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/download/excel-filtered")
@@ -774,6 +814,10 @@ VIEWER_HTML = """<!doctype html>
   .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
   #truncatedBanner { background: #fff4e5; border: 1px solid #f0c987; color: #8a5a00; font-size: 12px; font-weight: 600;
                       padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
+  #rangeBanner { background: #eef4ff; border: 1px solid #c7d9f7; color: #2a4d8f; font-size: 12px; font-weight: 600;
+                 padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
+  #sizeWarnBanner { background: #fff4e5; border: 1px solid #f0c987; color: #8a5a00; font-size: 12px; font-weight: 600;
+                     padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
 
   /* Vault: read-only size summary, mirrors receiver.py's accordion -- no
      delete action anywhere here, this dashboard only ever views data.
@@ -935,10 +979,20 @@ VIEWER_HTML = """<!doctype html>
       <p id="dataViewSubtitle"></p>
     </div>
     <span style="flex:1"></span>
+    <select id="dlYear"></select>
+    <select id="dlMonth">
+      <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option>
+      <option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option>
+      <option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option>
+      <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+    </select>
+    <button class="secondary" id="downloadMonthBtn">Download Month</button>
     <button class="secondary" id="downloadFullBtn">Download Full Excel</button>
     <button class="primary" id="downloadFilteredBtn">Download Filtered Excel</button>
   </div>
+  <div id="sizeWarnBanner" style="display:none;"></div>
   <div id="truncatedBanner" style="display:none;"></div>
+  <div id="rangeBanner" style="display:none;"></div>
   <div id="eyeLoader" class="eye-loader-overlay"><img src="data:image/png;base64,__LOGO_B64__" alt="loading"><div class="msg">Loading data...</div></div>
 
   <div id="dataContent">
@@ -947,7 +1001,8 @@ VIEWER_HTML = """<!doctype html>
     <input id="fModel" placeholder="Filter Model Code..." oninput="renderTable()">
     <input id="fModelName" placeholder="Filter Model Name..." oninput="renderTable()">
     <input id="fModelVariant" placeholder="Filter Variant..." oninput="renderTable()">
-    <input id="fDate" type="date" title="Filter Date" onchange="renderTable()">
+    <input id="fDate" type="date" title="Pick a date to load that day's data (today + yesterday load by default)" onchange="onDateFilterChange()">
+    <button class="secondary" onclick="showRecentData()" title="Back to today + yesterday">Show Recent</button>
     <select id="fYear" onchange="renderTable()"><option value="">All Years</option></select>
     <select id="fMonth" onchange="renderTable()">
       <option value="">All Months</option>
@@ -1010,6 +1065,11 @@ VIEWER_HTML = """<!doctype html>
 let apps = [];
 let viewerRows = [];
 let currentDevice = '', currentAppName = '';
+let currentAppTotalBytes = 0;
+// Past this, "Download Full Excel" gets a heads-up nudging people toward
+// "Download Month" instead -- a data-heavy app's full history export can
+// itself become the same slow-download problem in a different shape.
+const FULL_DOWNLOAD_WARN_BYTES = 50 * 1024 * 1024;
 
 // Landing view: just the app list (name, device count, sends, size, a "View
 // Data" button) -- same shape as receiver.py's own Apps tab. No device
@@ -1055,14 +1115,51 @@ function renderApps() {
 // regardless of which one the user actually asked for last).
 let dataRequestSeq = 0;
 
+// Local (not UTC) YYYY-MM-DD, matching the format row.date already comes
+// in as (see shiftGroupDate below) and what <input type="date"> uses.
+function localISO(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function todayISO() { return localISO(new Date()); }
+function yesterdayISO() { const d = new Date(); d.setDate(d.getDate() - 1); return localISO(d); }
+
+function populateDownloadMonthYears() {
+  const now = new Date();
+  const sel = document.getElementById('dlYear');
+  const thisYear = now.getFullYear();
+  const years = [thisYear, thisYear - 1, thisYear - 2, thisYear - 3, thisYear - 4];
+  sel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
+  sel.value = String(thisYear);
+  document.getElementById('dlMonth').value = String(now.getMonth() + 1).padStart(2, '0');
+}
+
 async function openAppDataViewer(appNameSafe, appNameDisplay) {
-  const seq = ++dataRequestSeq;
   currentDevice = 'AllDevices';
   currentAppName = appNameDisplay;
-  pinnedDay = null;
+  currentAppTotalBytes = (apps.find(a => a.appName === appNameDisplay) || {}).totalBytes || 0;
   document.getElementById('appsListView').style.display = 'none';
   document.getElementById('dataView').style.display = '';
   document.getElementById('dataViewTitle').textContent = appNameDisplay;
+  document.getElementById('fDate').value = '';
+  populateDownloadMonthYears();
+  const warnBanner = document.getElementById('sizeWarnBanner');
+  if (currentAppTotalBytes > FULL_DOWNLOAD_WARN_BYTES) {
+    warnBanner.style.display = 'block';
+    warnBanner.textContent = `This app has ${fmtBytes(currentAppTotalBytes)} of data -- "Download Full Excel" may take a while. Prefer "Download Month" for a specific month where possible.`;
+  } else {
+    warnBanner.style.display = 'none';
+  }
+  // Landing view only pulls today + yesterday -- fast regardless of how
+  // much history the app has piled up. Pick an older date (below) to load
+  // that day specifically; "Show Recent" comes back to this.
+  await loadAppData(yesterdayISO(), todayISO(), 'today and yesterday');
+}
+
+// [startDate, endDate] are "YYYY-MM-DD", inclusive, or '' for "no bound"
+// (used by onDateFilterChange's "load everything up to this date" case is
+// intentionally not offered -- every load here is bounded on both ends so
+// a single date pick can never silently re-trigger a full-history fetch).
+async function loadAppData(startDate, endDate, rangeLabel) {
+  const seq = ++dataRequestSeq;
+  pinnedDay = null;
   document.getElementById('dataViewSubtitle').textContent = 'Loading...';
   document.getElementById('viewerRows').innerHTML = '';
   document.getElementById('truncatedBanner').style.display = 'none';
@@ -1070,26 +1167,40 @@ async function openAppDataViewer(appNameSafe, appNameDisplay) {
   document.getElementById('eyeLoader').classList.add('show');
   let res, data;
   try {
-    res = await fetch('/api/app-data?' + new URLSearchParams({ appName: appNameDisplay }));
+    res = await fetch('/api/app-data?' + new URLSearchParams({ appName: currentAppName, startDate, endDate }));
     if (res.status === 401) { window.location = '/login'; return; }
     data = await res.json();
   } finally {
     if (seq === dataRequestSeq) document.getElementById('eyeLoader').classList.remove('show');
   }
-  if (seq !== dataRequestSeq) return; // a newer app was opened while this fetch was in flight
+  if (seq !== dataRequestSeq) return; // a newer request superseded this one while it was in flight
   document.getElementById('dataContent').style.visibility = '';
   viewerRows = data.rows;
   document.getElementById('dataViewSubtitle').textContent =
     `${viewerRows.length.toLocaleString()} task result(s) merged across every device paired under this app`;
-  const banner = document.getElementById('truncatedBanner');
+  const truncBanner = document.getElementById('truncatedBanner');
   if (data.truncated) {
-    banner.style.display = 'block';
-    banner.textContent = `Showing the newest ${data.rows.length.toLocaleString()} of ${data.totalCount.toLocaleString()} total rows -- narrow the filters, or download the full Excel below to get everything.`;
+    truncBanner.style.display = 'block';
+    truncBanner.textContent = `Showing the newest ${data.rows.length.toLocaleString()} of ${data.totalCount.toLocaleString()} total rows in this range -- narrow the filters, or download the full/monthly Excel below to get everything.`;
   } else {
-    banner.style.display = 'none';
+    truncBanner.style.display = 'none';
   }
+  const rangeBanner = document.getElementById('rangeBanner');
+  rangeBanner.style.display = 'block';
+  rangeBanner.textContent = `Showing ${rangeLabel} (${viewerRows.length.toLocaleString()} row(s)). Pick a date above to load an older day, or "Show Recent" to come back.`;
   populateYearOptions();
   clearFilters();
+}
+
+function onDateFilterChange() {
+  const picked = document.getElementById('fDate').value;
+  if (!picked) { showRecentData(); return; }
+  loadAppData(picked, picked, `${picked}`);
+}
+
+function showRecentData() {
+  document.getElementById('fDate').value = '';
+  loadAppData(yesterdayISO(), todayISO(), 'today and yesterday');
 }
 
 function closeDataViewer() {
@@ -1162,8 +1273,11 @@ function populateYearOptions() {
 }
 
 function clearFilters() {
+  // fDate is deliberately left alone here -- it doubles as "which day is
+  // currently loaded" (see loadAppData/onDateFilterChange), so clearing
+  // filters after a date-scoped load shouldn't blank out what's showing.
   ['fVin','fModel','fModelName','fModelVariant','fTask','fClass','fBatch'].forEach(id => document.getElementById(id).value = '');
-  ['fDate','fYear','fMonth','fShift','fResult','fDevice'].forEach(id => document.getElementById(id).value = '');
+  ['fYear','fMonth','fShift','fResult','fDevice'].forEach(id => document.getElementById(id).value = '');
   pinnedDay = null;
   renderTable();
 }
@@ -1530,6 +1644,11 @@ async function downloadBlob(url, body, filename) {
 
 document.getElementById('downloadFullBtn').addEventListener('click', () => {
   window.location = '/download/excel?' + new URLSearchParams({ device: currentDevice, appName: currentAppName });
+});
+document.getElementById('downloadMonthBtn').addEventListener('click', () => {
+  const year = document.getElementById('dlYear').value;
+  const month = document.getElementById('dlMonth').value;
+  window.location = '/download/excel-month?' + new URLSearchParams({ appName: currentAppName, year, month });
 });
 document.getElementById('downloadFilteredBtn').addEventListener('click', () => {
   const rows = getFilteredRows();
