@@ -818,7 +818,7 @@ VIEWER_HTML = """<!doctype html>
   .status-label { font-size: 12px; font-weight: 700; }
   .status-label.online { color: var(--green); }
   .status-label.offline { color: var(--crimson); }
-  .status-sub { display: block; font-size: 10px; color: var(--muted); font-weight: 400; margin-top: 1px; }
+  .status-sub { font-size: 10px; color: var(--muted); font-weight: 400; }
   #truncatedBanner { background: #fff4e5; border: 1px solid #f0c987; color: #8a5a00; font-size: 12px; font-weight: 600;
                       padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
   #rangeBanner { background: #eef4ff; border: 1px solid #c7d9f7; color: #2a4d8f; font-size: 12px; font-weight: 600;
@@ -920,16 +920,24 @@ VIEWER_HTML = """<!doctype html>
   /* App list -- the only landing view now: status, then app name + stats,
      then a "View Data" button. Nothing about individual devices here --
      the table's own Device column is what tells you which phone a row
-     came from. */
-  .app-row { display: flex; align-items: center; gap: 16px; padding: 10px 12px; border: 1px solid var(--border);
-             border-radius: 8px; margin-bottom: 8px; background: var(--card); }
-  .app-row:last-child { margin-bottom: 0; }
-  .app-row .a-status { display: flex; align-items: center; gap: 6px; width: 150px; flex-shrink: 0; }
-  .app-row .a-info { flex: 1; min-width: 0; }
-  .app-row .a-name { font-weight: 600; font-size: 13px; }
-  .app-row .a-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
-  .app-row .a-stats { display: flex; gap: 16px; font-size: 11px; color: var(--muted); text-align: center; }
-  .app-row .a-stats b { display: block; font-size: 13px; color: var(--text); }
+     came from.
+
+     Fixed-shape cards in a responsive grid rather than full-width rows --
+     a full-width row stretches its few pieces of content across the whole
+     window on a wide screen, leaving large dead gaps between them. A grid
+     of fixed-size cards keeps each card's content close together and just
+     reflows into more/fewer columns as the window resizes. */
+  .apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .app-card { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border);
+              border-radius: 12px; background: var(--card); box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .app-card .a-status { display: flex; align-items: center; gap: 6px; }
+  .app-card .status-sub { margin-left: 4px; }
+  .app-card .a-name { font-weight: 700; font-size: 15px; line-height: 1.25; }
+  .app-card .a-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .app-card .a-stats { display: flex; gap: 22px; font-size: 11px; color: var(--muted);
+                        border-top: 1px solid var(--border); margin-top: 2px; padding-top: 10px; }
+  .app-card .a-stats b { display: block; font-size: 15px; color: var(--text); }
+  .app-card button.primary { width: 100%; }
 
   /* Data view header -- matches receiver.py's viewer-page header (Back
      button + title + download actions) instead of a toolbar bolted onto
@@ -974,7 +982,7 @@ VIEWER_HTML = """<!doctype html>
       <button class="secondary" onclick="loadApps()">Refresh</button>
     </div>
     <p class="muted" style="margin:-6px 0 14px;">An app shows "Offline" once nothing's been received from any device under it for 15+ minutes -- usually means a phone lost WiFi, is powered off, or the app isn't running, not that anything is wrong on this end.</p>
-    <div id="appsList"><div class="empty">Loading...</div></div>
+    <div id="appsList" class="apps-grid"><div class="empty">Loading...</div></div>
   </div>
 
   <div id="dataView" style="display:none;">
@@ -1097,12 +1105,12 @@ function renderApps() {
     const statusText = online ? 'Online' : 'Offline';
     const statusSub = lastTs ? `last send ${timeAgo(lastTs)}` : 'no data yet';
     return `
-    <div class="app-row">
+    <div class="app-card">
       <div class="a-status">
         <span class="status-dot ${online ? 'online' : 'offline'}"></span>
-        <span class="status-label ${online ? 'online' : 'offline'}">${statusText}<span class="status-sub">${statusSub}</span></span>
+        <span class="status-label ${online ? 'online' : 'offline'}">${statusText}</span><span class="status-sub">${statusSub}</span>
       </div>
-      <div class="a-info">
+      <div>
         <div class="a-name">${a.appName}</div>
         <div class="a-meta">${a.deviceCount} device${a.deviceCount === 1 ? '' : 's'} paired</div>
       </div>
