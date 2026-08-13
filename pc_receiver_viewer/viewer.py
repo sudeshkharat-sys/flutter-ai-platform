@@ -969,6 +969,14 @@ VIEWER_HTML = """<!doctype html>
      of fixed-size cards keeps each card's content close together and just
      reflows into more/fewer columns as the window resizes. */
   .apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  /* A quick highlight fade on every refresh (auto or manual) so an update
+     is visibly noticeable instead of numbers silently changing underneath
+     you -- restarted each time by toggling this class off and back on. */
+  .apps-grid.flash-update { animation: appsFlash 0.9s ease-out; }
+  @keyframes appsFlash {
+    0% { background: rgba(220,20,60,0.08); border-radius: 12px; }
+    100% { background: transparent; }
+  }
   .app-card { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border);
               border-radius: 12px; background: var(--card); box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
   .app-card .a-status { display: flex; align-items: center; gap: 6px; }
@@ -1020,6 +1028,7 @@ VIEWER_HTML = """<!doctype html>
     <div class="toolbar">
       <h2 style="margin:0;">Apps</h2>
       <span style="flex:1"></span>
+      <span class="muted" id="appsUpdatedAt" style="font-size:11px;"></span>
       <button class="secondary" onclick="loadApps()">Refresh</button>
     </div>
     <p class="muted" style="margin:-6px 0 14px;">"Offline" usually just means WiFi dropped, the phone's off, or the app isn't running -- not a problem on this end.</p>
@@ -1121,17 +1130,35 @@ const FULL_DOWNLOAD_WARN_BYTES = 50 * 1024 * 1024;
 // Data" button) -- same shape as receiver.py's own Apps tab. No device
 // picker, no per-device browsing here; the table's own Device column is
 // what tells you which phone a row came from.
+let appsLastUpdatedAt = null;
+
 async function loadApps() {
   try {
     const res = await fetch('/api/apps');
     if (res.status === 401) { window.location = '/login'; return; }
     apps = await res.json();
     renderApps();
+    appsLastUpdatedAt = new Date();
+    updateAppsUpdatedLabel();
+    // A brief flash on the grid so a refresh is visibly noticeable instead
+    // of numbers silently changing underneath you -- restart the CSS
+    // animation each time by removing then re-adding the class on the
+    // next frame.
+    const grid = document.getElementById('appsList');
+    grid.classList.remove('flash-update');
+    void grid.offsetWidth; // force reflow so the animation can restart
+    grid.classList.add('flash-update');
   } catch (e) {
     document.getElementById('appsList').innerHTML = '<div class="empty">Could not load apps.</div>';
   }
   scheduleAppsRefresh();
 }
+
+function updateAppsUpdatedLabel() {
+  const el = document.getElementById('appsUpdatedAt');
+  if (el && appsLastUpdatedAt) el.textContent = `Updated ${timeAgo(appsLastUpdatedAt)}`;
+}
+setInterval(updateAppsUpdatedLabel, 5000);
 
 function renderApps() {
   const el = document.getElementById('appsList');
@@ -1306,6 +1333,13 @@ function showRecentData() {
 function closeDataViewer() {
   document.getElementById('dataView').style.display = 'none';
   document.getElementById('appsListView').style.display = '';
+  // The 30s auto-refresh loop pauses itself while this view (or any other
+  // non-Apps view) is showing -- see scheduleAppsRefresh -- and nothing
+  // else restarts it, so without this the Apps list would sit frozen on
+  // whatever it last showed until a full page reload. Refreshing right
+  // away both shows current data immediately and kicks the loop going
+  // again.
+  loadApps();
 }
 
 function fmtBytes(n) {
