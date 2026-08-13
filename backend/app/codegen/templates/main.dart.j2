@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'services/sync_service.dart';
 import 'screens/home_screen.dart';
 {% if is_combined_app %}
 import 'screens/capability_menu_screen.dart';
@@ -14,6 +15,10 @@ List<CameraDescription> cameras = [];
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   cameras = await availableCameras();
+  // Best-effort liveness ping to any paired PC, independent of actual data
+  // uploads -- lets the PC/viewer show "Online" based on real recent
+  // reachability instead of only "when did data last arrive".
+  SyncService.instance.startHeartbeatLoop();
   runApp(const MyApp());
 }
 

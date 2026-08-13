@@ -330,6 +330,33 @@ def _resolve_under_data_dir(rel_path: str) -> Path:
     return target
 
 
+HEARTBEATS_FILE_NAME = "_heartbeats.json"
+
+
+def _load_heartbeats() -> dict[str, int]:
+    """safe device-folder-name -> most recent lastHeartbeatMs seen for it.
+    Written by receiver.py's /heartbeat endpoint under DATA_DIR precisely so
+    this separate, read-only process can see it without ever talking to
+    receiver.py directly (see this module's docstring). A phone pings this
+    every ~45s while its app is open and a PC is paired, independent of
+    actual data uploads -- so "Online" here can reflect real recent
+    reachability instead of only "did data arrive lately"."""
+    path = DATA_DIR / HEARTBEATS_FILE_NAME
+    out: dict[str, int] = {}
+    if not path.exists():
+        return out
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return out
+    for entry in raw.values():
+        name_safe = _safe_name(entry.get("deviceName", ""))
+        ms = entry.get("lastHeartbeatMs", 0)
+        if name_safe and ms > out.get(name_safe, 0):
+            out[name_safe] = ms
+    return out
+
+
 def _app_master_dir(app_name: str) -> Path:
     """Where an app's aggregated master workbook lives -- must match
     receiver.py's _app_master_dir exactly, since this viewer reads the
@@ -353,6 +380,7 @@ def _list_groups() -> list[dict]:
     groups = []
     if not DATA_DIR.exists():
         return groups
+    heartbeats = _load_heartbeats()
     for device_dir in sorted(DATA_DIR.iterdir()):
         if not device_dir.is_dir() or device_dir.name == "_master":
             continue
@@ -368,6 +396,7 @@ def _list_groups() -> list[dict]:
                 "batchCount": len(batch_dirs),
                 "totalBytes": total_bytes,
                 "lastReceivedAt": batch_dirs[-1].name if batch_dirs else None,
+                "lastHeartbeatAtMs": heartbeats.get(device_dir.name),
                 "hasExcel": xlsx_path.exists(),
             })
     groups.sort(key=lambda g: g["lastReceivedAt"] or "", reverse=True)
@@ -562,7 +591,8 @@ async def api_apps(_: None = Depends(_require_session)):
         safe = _safe_name(g["appName"])
         bucket = by_app.setdefault(safe, {
             "appName": g["appName"], "appNameSafe": safe,
-            "deviceCount": 0, "batchCount": 0, "totalBytes": 0, "lastReceivedAt": None, "hasExcel": g["hasExcel"],
+            "deviceCount": 0, "batchCount": 0, "totalBytes": 0, "lastReceivedAt": None,
+            "lastHeartbeatAtMs": None, "hasExcel": g["hasExcel"],
         })
         bucket["deviceCount"] += 1
         bucket["batchCount"] += g["batchCount"]
@@ -570,6 +600,8 @@ async def api_apps(_: None = Depends(_require_session)):
         bucket["hasExcel"] = bucket["hasExcel"] or g["hasExcel"]
         if g["lastReceivedAt"] and (not bucket["lastReceivedAt"] or g["lastReceivedAt"] > bucket["lastReceivedAt"]):
             bucket["lastReceivedAt"] = g["lastReceivedAt"]
+        if g["lastHeartbeatAtMs"] and (not bucket["lastHeartbeatAtMs"] or g["lastHeartbeatAtMs"] > bucket["lastHeartbeatAtMs"]):
+            bucket["lastHeartbeatAtMs"] = g["lastHeartbeatAtMs"]
     result = list(by_app.values())
     result.sort(key=lambda a: a["lastReceivedAt"] or "", reverse=True)
     return result
@@ -981,7 +1013,7 @@ VIEWER_HTML = """<!doctype html>
       <span style="flex:1"></span>
       <button class="secondary" onclick="loadApps()">Refresh</button>
     </div>
-    <p class="muted" style="margin:-6px 0 14px;">An app shows "Offline" once nothing's been received from any device under it for 15+ minutes -- usually means a phone lost WiFi, is powered off, or the app isn't running, not that anything is wrong on this end.</p>
+    <p class="muted" style="margin:-6px 0 14px;">An app shows "Offline" once no device under it has pinged in over 2 minutes (or, for older app builds without this check yet, once nothing's been received for 15+ minutes) -- usually means a phone lost WiFi, is powered off, or the app isn't running, not that anything is wrong on this end.</p>
     <div id="appsList" class="apps-grid"><div class="empty">Loading...</div></div>
   </div>
 
@@ -1099,11 +1131,28 @@ function renderApps() {
     return;
   }
   el.innerHTML = apps.map(a => {
-    const lastTs = parseBatchTimestamp(a.lastReceivedAt);
-    const minsAgo = lastTs ? (Date.now() - lastTs.getTime()) / 60000 : Infinity;
-    const online = minsAgo <= APP_ONLINE_THRESHOLD_MINUTES;
+    let online, statusSub;
+    if (a.lastHeartbeatAtMs) {
+      // A real liveness signal (the phone pings every ~45s while its app
+      // is open, independent of actual data uploads) -- so a much tighter
+      // threshold than the old "last data received" heuristic is safe,
+      // and correctly tells "connected, nothing new to send" apart from
+      // "actually dropped off WiFi a while ago".
+      const hbDate = new Date(a.lastHeartbeatAtMs);
+      const minsAgo = (Date.now() - a.lastHeartbeatAtMs) / 60000;
+      online = minsAgo <= HEARTBEAT_ONLINE_THRESHOLD_MINUTES;
+      statusSub = online ? `active ${timeAgo(hbDate)}` : `last seen ${timeAgo(hbDate)}`;
+    } else {
+      // No heartbeat data yet -- either an older app build that predates
+      // this feature, or it just hasn't pinged since the viewer started.
+      // Fall back to the coarser "last data received" heuristic so status
+      // still degrades gracefully instead of showing nothing.
+      const lastTs = parseBatchTimestamp(a.lastReceivedAt);
+      const minsAgo = lastTs ? (Date.now() - lastTs.getTime()) / 60000 : Infinity;
+      online = minsAgo <= APP_ONLINE_THRESHOLD_MINUTES;
+      statusSub = lastTs ? `last send ${timeAgo(lastTs)}` : 'no data yet';
+    }
     const statusText = online ? 'Online' : 'Offline';
-    const statusSub = lastTs ? `last send ${timeAgo(lastTs)}` : 'no data yet';
     return `
     <div class="app-card">
       <div class="a-status">
@@ -1245,11 +1294,17 @@ function fmtBytes(n) {
 
 // Apps tab: per-app "is any device under it actually still sending data"
 // status, so a dropped WiFi connection shows up as "Offline" instead of
-// silently looking like no new inspections happened. Based on how long
-// it's been since the app's last batch arrived (this viewer only ever
-// sees data after it's been received -- it has no live connection to the
-// phones themselves, so "online" here means "recently active", not "on
-// the network right now").
+// silently looking like no new inspections happened.
+//
+// Preferred signal: the phone's heartbeat ping (every ~45s while its app
+// is open and paired -- see receiver.py's /heartbeat), which is a real
+// liveness check independent of data uploads, so a much tighter threshold
+// is safe -- two missed pings, not "could be up to 15 minutes stale".
+const HEARTBEAT_ONLINE_THRESHOLD_MINUTES = 2;
+// Fallback when no heartbeat data exists yet (an older app build, or it
+// simply hasn't pinged since this viewer started) -- based on how long
+// it's been since the app's last data batch arrived instead, a much
+// coarser signal since a connected phone can go a while between sends.
 const APP_ONLINE_THRESHOLD_MINUTES = 15;
 
 // Batch folder names are "YYYYMMDD_HHMMSS" (server local receive time).

@@ -227,6 +227,64 @@ class SyncService {
   String _fallbackDeviceLabel() =>
       'phone-${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
 
+  // ── Liveness heartbeat ──────────────────────────────────────────────────
+  // A no-data ping sent every [_kHeartbeatInterval] while this app is open
+  // and a PC is paired, completely separate from actual inspection uploads.
+  // Without this, the PC (and the read-only viewer) can only infer "is this
+  // phone still connected" from when data last arrived -- which looks
+  // identical for "connected fine, nothing new to send in the last hour"
+  // and "dropped off WiFi 20 minutes ago". This gives an honest, roughly
+  // real-time signal instead.
+  static const Duration _kHeartbeatInterval = Duration(seconds: 45);
+  Timer? _heartbeatTimer;
+
+  /// Starts the periodic heartbeat loop. Safe to call more than once --
+  /// an existing timer is cancelled first so this never ends up running
+  /// two loops in parallel. Runs for as long as the app process is alive;
+  /// there is deliberately no background-service variant of this (the app
+  /// is expected to stay open on the inspection line), so a heartbeat gap
+  /// while the app is fully backgrounded/killed is expected, not a bug.
+  void startHeartbeatLoop() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(_kHeartbeatInterval, (_) => _pingAllPairedPcs());
+    unawaited(_pingAllPairedPcs()); // don't wait a full interval for the first one
+  }
+
+  void stopHeartbeatLoop() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  Future<void> _pingAllPairedPcs() async {
+    final devices = await getPairedPcs();
+    for (final pc in devices) {
+      // Best-effort and independent per PC -- one unreachable/rejecting PC
+      // must never stop pinging the others, and a failure here must never
+      // surface to the UI (this has nothing to do with whether sending
+      // data itself succeeds).
+      try {
+        await _sendHeartbeat(pc);
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _sendHeartbeat(PairedPc pc) async {
+    final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+    final signaturePayload = '${pc.deviceId}:$timestamp';
+    final signature =
+        Hmac(sha256, utf8.encode(pc.secret)).convert(utf8.encode(signaturePayload)).toString();
+
+    final uri = Uri.parse('http://${pc.ip}:${pc.port}/heartbeat');
+    await http.post(
+      uri,
+      headers: {
+        'X-Device-Id': pc.deviceId,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
+      },
+    ).timeout(const Duration(seconds: 8));
+  }
+
   Future<int> getUnsyncedCount() => db.countUnsyncedInspections();
 
   /// Marks this phone's entire local history unsynced, then sends it all to

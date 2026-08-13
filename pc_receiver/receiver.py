@@ -201,6 +201,8 @@ _pairing_results: dict[str, dict] = {}          # token -> {deviceId, deviceName
 _failed_attempts: dict[str, list[float]] = {}   # client ip -> [failure timestamps]
 _recent_events: list[dict] = []                 # recent uploads, for the dashboard's live activity feed
 _MAX_RECENT_EVENTS = 50
+_last_heartbeat: dict[str, float] = {}          # deviceId -> epoch seconds of its last /heartbeat ping
+HEARTBEATS_FILE_NAME = "_heartbeats.json"
 
 # Incremental cache for the flattened data-viewer rows, keyed by device_dir
 # path. Batch folders are immutable once written (a "send" never gets
@@ -258,6 +260,44 @@ def _save_devices():
             f"this account can write to (e.g. Desktop or Documents), not "
             f"Program Files or a read-only network location. ({e})"
         ) from e
+
+
+# Heartbeats -- a lightweight, no-data liveness ping the phone sends every
+# ~45s while the app is open and a PC is paired (see /heartbeat below),
+# independent of actual inspection uploads. Data-based "last received"
+# alone can't tell "still connected but nothing new to send" apart from
+# "actually dropped off WiFi 20 minutes ago" -- this can. Written under
+# DATA_DIR (not next to the exe, like paired_devices.json) specifically so
+# the separate, read-only pc_receiver_viewer process -- which only ever
+# opens DATA_DIR, never talks to this process directly -- can see it too.
+
+def _heartbeats_file() -> Path:
+    return DATA_DIR / HEARTBEATS_FILE_NAME
+
+
+def _load_heartbeats():
+    global _last_heartbeat
+    try:
+        raw = json.loads(_heartbeats_file().read_text())
+        _last_heartbeat = {did: v["lastHeartbeatMs"] / 1000.0 for did, v in raw.items()}
+    except Exception:
+        _last_heartbeat = {}
+
+
+def _save_heartbeats():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        out = {
+            did: {
+                "deviceName": _paired_devices.get(did, {}).get("deviceName", ""),
+                "appName": _paired_devices.get(did, {}).get("appName", ""),
+                "lastHeartbeatMs": int(ts * 1000),
+            }
+            for did, ts in _last_heartbeat.items()
+        }
+        _heartbeats_file().write_text(json.dumps(out, indent=2))
+    except OSError:
+        pass  # best-effort -- a write hiccup here should never fail the ping response
 
 
 # App aliases -- for when two builds of what's really the same production
@@ -764,6 +804,51 @@ async def upload(
         del _recent_events[:-_MAX_RECENT_EVENTS]
 
     return {"status": "ok", "savedTo": str(extract_dir)}
+
+
+@app.post("/heartbeat")
+async def heartbeat(
+    request: Request,
+    x_device_id: str = Header(...),
+    x_timestamp: str = Header(...),
+    x_signature: str = Header(...),
+):
+    """A no-data liveness ping the phone sends every ~45s while its app is
+    open and this PC is paired -- lets "Online" reflect real, recent
+    reachability instead of only "did data arrive lately" (a phone that's
+    connected fine but has nothing new to send would otherwise look
+    indistinguishable from one that dropped off WiFi 20 minutes ago). Same
+    HMAC scheme as /upload, just signed over deviceId:timestamp since
+    there's no body to hash."""
+    client_ip = request.client.host if request.client else "unknown"
+
+    if _client_locked_out(client_ip):
+        raise HTTPException(status_code=429, detail="Too many failed attempts, try again later")
+
+    device = _paired_devices.get(x_device_id)
+    if not device:
+        _record_failure(client_ip)
+        raise HTTPException(status_code=401, detail="Unknown device -- not paired with this PC")
+
+    try:
+        ts = int(x_timestamp) / 1000.0
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Bad timestamp")
+    if abs(time.time() - ts) > SIGNATURE_WINDOW:
+        _record_failure(client_ip)
+        raise HTTPException(status_code=401, detail="Request expired")
+
+    expected_payload = f"{x_device_id}:{x_timestamp}"
+    expected_sig = hmac.new(device["secret"].encode(), expected_payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_sig, x_signature):
+        _record_failure(client_ip)
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    with _lock:
+        _last_heartbeat[x_device_id] = time.time()
+        _save_heartbeats()
+
+    return {"status": "ok"}
 
 
 # ── Dashboard API (localhost only) ──────────────────────────────────────
@@ -2736,6 +2821,7 @@ def _port_available(port: int) -> bool:
 def main():
     _load_devices()
     _load_app_aliases()
+    _load_heartbeats()
     zeroconf = start_mdns()
 
     ip = _local_ip()
