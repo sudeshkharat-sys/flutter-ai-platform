@@ -1196,6 +1196,12 @@ let dataRequestSeq = 0;
 function localISO(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 function todayISO() { return localISO(new Date()); }
 function yesterdayISO() { const d = new Date(); d.setDate(d.getDate() - 1); return localISO(d); }
+function nextDayISO(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + 1);
+  return localISO(dt);
+}
 
 function populateDownloadMonthYears() {
   const now = new Date();
@@ -1271,7 +1277,16 @@ async function loadAppData(startDate, endDate, rangeLabel) {
 function onDateFilterChange() {
   const picked = document.getElementById('fDate').value;
   if (!picked) { showRecentData(); return; }
-  loadAppData(picked, picked, `${picked}`);
+  // Shift C (00:00-07:00) is the tail end of the shift that started with
+  // the previous day's A/B, but its rows carry *that next* calendar date
+  // (a 2am scan is stored as tomorrow's date) -- fetching only [picked,
+  // picked] would silently exclude that entire shift, since the server
+  // filters on the row's real, unmodified date. Widening the fetch one
+  // day forward gets those rows in; the fDate filter below (which already
+  // matches on shiftGroupDate, not raw date) narrows the *displayed* rows
+  // back down to exactly this shift-day, so Shift C shows up under the
+  // day it belongs to instead of vanishing.
+  loadAppData(picked, nextDayISO(picked), `${picked}`);
 }
 
 function showRecentData() {
