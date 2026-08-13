@@ -808,46 +808,23 @@ VIEWER_HTML = """<!doctype html>
   header a { color: #cfd3db; font-size: 12px; text-decoration: none; }
   header a:hover { color: #fff; }
 
-  nav { display: flex; gap: 4px; padding: 12px 24px 0; background: var(--bg); }
-  nav button { border: none; background: transparent; padding: 10px 18px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 3px solid transparent; }
-  nav button.active { color: var(--crimson); border-bottom-color: var(--crimson); }
-
   /* Full width, edge to edge -- matches receiver.py's own data-viewer
      overlay, which has no max-width at all. */
   main { padding: 20px 24px 60px; width: 100%; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
-  .device-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border);
-                 border-radius: 8px; margin-bottom: 8px; background: var(--card); }
-  .device-card:last-child { margin-bottom: 0; }
-  .device-card .d-info { flex: 1; min-width: 0; }
-  .device-card .d-name { font-weight: 600; font-size: 13px; }
-  .device-card .d-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
-  .device-card .a-stats { display: flex; gap: 16px; font-size: 11px; color: var(--muted); text-align: center; }
-  .device-card .a-stats b { display: block; font-size: 13px; color: var(--text); }
-  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .status-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
   .status-dot.online { background: var(--green); }
   .status-dot.offline { background: var(--crimson); }
+  .status-label { font-size: 12px; font-weight: 700; }
   .status-label.online { color: var(--green); }
   .status-label.offline { color: var(--crimson); }
+  .status-sub { display: block; font-size: 10px; color: var(--muted); font-weight: 400; margin-top: 1px; }
   #truncatedBanner { background: #fff4e5; border: 1px solid #f0c987; color: #8a5a00; font-size: 12px; font-weight: 600;
                       padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
   #rangeBanner { background: #eef4ff; border: 1px solid #c7d9f7; color: #2a4d8f; font-size: 12px; font-weight: 600;
                  padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
   #sizeWarnBanner { background: #fff4e5; border: 1px solid #f0c987; color: #8a5a00; font-size: 12px; font-weight: 600;
                      padding: 8px 14px; border-radius: 8px; margin-bottom: 12px; }
-
-  /* Vault: read-only size summary, mirrors receiver.py's accordion -- no
-     delete action anywhere here, this dashboard only ever views data.
-     Not linked from the UI yet (kept dormant for now). */
-  .accordion { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
-  .accordion .head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px;
-                      background: #fff; cursor: pointer; font-weight: 700; }
-  .accordion .body { display: none; padding: 4px 16px 14px; background: #fbfbfd; }
-  .app-group { padding: 8px 0; border-top: 1px solid var(--border); }
-  .app-group:first-child { border-top: none; }
-  .app-name { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
-  .batch-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; font-size: 12.5px; color: var(--muted); }
-  .batch-row .b-name { color: var(--text); font-weight: 600; min-width: 140px; }
   select, input[type=text], input[type=date] {
     padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
   }
@@ -861,6 +838,12 @@ VIEWER_HTML = """<!doctype html>
   button.secondary { background: #fff; border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px;
                       font-size: 12px; font-weight: 600; cursor: pointer; color: var(--text); }
   button.secondary:hover { background: #fafafc; }
+  /* Back button matches "View Data" (button.primary) rather than the
+     neutral secondary style, so it doesn't read as a disabled/plain
+     white button against the crimson-accented rest of the page. */
+  button.btn-back { background: var(--crimson); color: #fff; border: none; padding: 9px 16px; border-radius: 8px;
+                     font-size: 13px; font-weight: 600; cursor: pointer; }
+  button.btn-back:hover { background: var(--crimson-dark); }
 
   /* Charts panel -- kept as its own small scrollable widget (a fixed max-
      height here is fine, it's a compact area of its own, not the thing
@@ -934,11 +917,14 @@ VIEWER_HTML = """<!doctype html>
   .lightbox .lb-close { position: absolute; top: 20px; right: 28px; color: #fff; font-size: 28px;
                           cursor: pointer; background: none; border: none; }
 
-  /* App list -- the landing view, matching receiver.py's own Apps tab:
-     just app name + stats + a "View Data" button, nothing about devices. */
-  .app-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border);
+  /* App list -- the only landing view now: status, then app name + stats,
+     then a "View Data" button. Nothing about individual devices here --
+     the table's own Device column is what tells you which phone a row
+     came from. */
+  .app-row { display: flex; align-items: center; gap: 16px; padding: 10px 12px; border: 1px solid var(--border);
              border-radius: 8px; margin-bottom: 8px; background: var(--card); }
   .app-row:last-child { margin-bottom: 0; }
+  .app-row .a-status { display: flex; align-items: center; gap: 6px; width: 150px; flex-shrink: 0; }
   .app-row .a-info { flex: 1; min-width: 0; }
   .app-row .a-name { font-weight: 600; font-size: 13px; }
   .app-row .a-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
@@ -980,32 +966,20 @@ VIEWER_HTML = """<!doctype html>
   <div class="spacer"></div>
   <a href="/logout">Log out</a>
 </header>
-<nav>
-  <button class="tab-btn active" data-tab="devices" onclick="showTab('devices')">Devices</button>
-  <button class="tab-btn" data-tab="apps" onclick="showTab('apps')">Apps</button>
-  <button class="tab-btn" data-tab="vault" onclick="showTab('vault')">Vault</button>
-</nav>
 <main>
-  <div id="devicesView">
-    <div class="toolbar">
-      <h2 style="margin:0;">Devices</h2>
-      <span style="flex:1"></span>
-      <button class="secondary" onclick="loadDevices()">Refresh</button>
-    </div>
-    <p class="muted" style="margin:-6px 0 14px;">A device is "Offline" once nothing's been received from it for a while -- usually means it's lost WiFi, is powered off, or the app isn't running, not that anything is wrong on this end.</p>
-    <div id="devicesList"><div class="empty">Loading...</div></div>
-  </div>
-
-  <div id="appsListView" style="display:none;">
+  <div id="appsListView">
     <div class="toolbar">
       <h2 style="margin:0;">Apps</h2>
+      <span style="flex:1"></span>
+      <button class="secondary" onclick="loadApps()">Refresh</button>
     </div>
+    <p class="muted" style="margin:-6px 0 14px;">An app shows "Offline" once nothing's been received from any device under it for 15+ minutes -- usually means a phone lost WiFi, is powered off, or the app isn't running, not that anything is wrong on this end.</p>
     <div id="appsList"><div class="empty">Loading...</div></div>
   </div>
 
   <div id="dataView" style="display:none;">
   <div class="data-header">
-    <button class="secondary" onclick="closeDataViewer()">&larr; Back</button>
+    <button class="btn-back" onclick="closeDataViewer()">&larr; Back</button>
     <div>
       <h2 id="dataViewTitle">App Data</h2>
       <p id="dataViewSubtitle"></p>
@@ -1077,15 +1051,6 @@ VIEWER_HTML = """<!doctype html>
   </div>
   </div>
   </div>
-
-  <div id="vaultView" style="display:none;">
-    <div class="toolbar">
-      <h2 style="margin:0;">Vault</h2>
-      <span style="flex:1"></span>
-      <button class="secondary" onclick="loadStorage()">Refresh</button>
-    </div>
-    <div id="storageList"><div class="empty">Loading...</div></div>
-  </div>
 </main>
 
 <div class="lightbox" id="lightbox" onclick="closeLightbox()">
@@ -1116,6 +1081,7 @@ async function loadApps() {
   } catch (e) {
     document.getElementById('appsList').innerHTML = '<div class="empty">Could not load apps.</div>';
   }
+  scheduleAppsRefresh();
 }
 
 function renderApps() {
@@ -1124,8 +1090,18 @@ function renderApps() {
     el.innerHTML = '<div class="empty">No data received yet.</div>';
     return;
   }
-  el.innerHTML = apps.map(a => `
+  el.innerHTML = apps.map(a => {
+    const lastTs = parseBatchTimestamp(a.lastReceivedAt);
+    const minsAgo = lastTs ? (Date.now() - lastTs.getTime()) / 60000 : Infinity;
+    const online = minsAgo <= APP_ONLINE_THRESHOLD_MINUTES;
+    const statusText = online ? 'Online' : 'Offline';
+    const statusSub = lastTs ? `last send ${timeAgo(lastTs)}` : 'no data yet';
+    return `
     <div class="app-row">
+      <div class="a-status">
+        <span class="status-dot ${online ? 'online' : 'offline'}"></span>
+        <span class="status-label ${online ? 'online' : 'offline'}">${statusText}<span class="status-sub">${statusSub}</span></span>
+      </div>
       <div class="a-info">
         <div class="a-name">${a.appName}</div>
         <div class="a-meta">${a.deviceCount} device${a.deviceCount === 1 ? '' : 's'} paired</div>
@@ -1136,7 +1112,18 @@ function renderApps() {
       </div>
       <button class="primary" onclick="openAppDataViewer('${a.appNameSafe.replace(/'/g, "\\'")}', '${a.appName.replace(/'/g, "\\'")}')">View Data</button>
     </div>
-  `).join('');
+  `;
+  }).join('');
+}
+
+// Auto-refresh so an app's status flips to Offline on its own once 15
+// minutes pass, without requiring a manual "Refresh" click.
+let appsRefreshTimer = null;
+function scheduleAppsRefresh() {
+  clearTimeout(appsRefreshTimer);
+  appsRefreshTimer = setTimeout(() => {
+    if (document.getElementById('appsListView').style.display !== 'none') loadApps();
+  }, 30000);
 }
 
 // Bumped on every openAppDataViewer call so a slow, superseded fetch can
@@ -1248,26 +1235,14 @@ function fmtBytes(n) {
   return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
 }
 
-function showTab(tab) {
-  document.querySelectorAll('nav button.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  document.getElementById('devicesView').style.display = tab === 'devices' ? '' : 'none';
-  document.getElementById('appsListView').style.display = tab === 'apps' ? '' : 'none';
-  document.getElementById('dataView').style.display = 'none'; // switching tabs always backs out of a drill-down
-  document.getElementById('vaultView').style.display = tab === 'vault' ? '' : 'none';
-  if (tab === 'devices') loadDevices();
-  if (tab === 'apps') loadApps();
-  if (tab === 'vault') loadStorage();
-}
-
-// Devices tab: per-device/app "is this phone actually still sending data"
+// Apps tab: per-app "is any device under it actually still sending data"
 // status, so a dropped WiFi connection shows up as "Offline" instead of
 // silently looking like no new inspections happened. Based on how long
-// it's been since the device's last batch arrived (this viewer only ever
+// it's been since the app's last batch arrived (this viewer only ever
 // sees data after it's been received -- it has no live connection to the
 // phones themselves, so "online" here means "recently active", not "on
 // the network right now").
-const DEVICE_ONLINE_THRESHOLD_MINUTES = 15;
-let devicesRefreshTimer = null;
+const APP_ONLINE_THRESHOLD_MINUTES = 15;
 
 // Batch folder names are "YYYYMMDD_HHMMSS" (server local receive time).
 function parseBatchTimestamp(name) {
@@ -1288,88 +1263,6 @@ function timeAgo(date) {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return hrs + 'h ago';
   return Math.floor(hrs / 24) + 'd ago';
-}
-
-async function loadDevices() {
-  const el = document.getElementById('devicesList');
-  try {
-    const r = await fetch('/api/groups');
-    if (r.status === 401) { window.location = '/login'; return; }
-    const groups = await r.json();
-    renderDevices(groups);
-  } catch (e) {
-    el.innerHTML = '<div class="empty">Could not load devices.</div>';
-  }
-  clearTimeout(devicesRefreshTimer);
-  devicesRefreshTimer = setTimeout(() => {
-    if (document.getElementById('devicesView').style.display !== 'none') loadDevices();
-  }, 30000);
-}
-
-function renderDevices(groups) {
-  const el = document.getElementById('devicesList');
-  if (!groups.length) {
-    el.innerHTML = '<div class="empty">No data received yet.</div>';
-    return;
-  }
-  el.innerHTML = groups.map(g => {
-    const lastTs = parseBatchTimestamp(g.lastReceivedAt);
-    const minsAgo = lastTs ? (Date.now() - lastTs.getTime()) / 60000 : Infinity;
-    const online = minsAgo <= DEVICE_ONLINE_THRESHOLD_MINUTES;
-    const statusText = lastTs ? (online ? 'Online' : `Offline • last seen ${timeAgo(lastTs)}`) : 'Offline • no data yet';
-    return `
-      <div class="device-card">
-        <div class="d-info">
-          <div class="d-name">${g.device} <span style="font-weight:400;color:var(--muted);">→ ${g.appName}</span></div>
-          <div class="d-meta"><span class="status-dot ${online ? 'online' : 'offline'}"></span><span class="status-label ${online ? 'online' : 'offline'}">${statusText}</span></div>
-        </div>
-        <div class="a-stats">
-          <div><b>${g.batchCount}</b>sends</div>
-          <div><b>${fmtBytes(g.totalBytes)}</b>size</div>
-        </div>
-        <button class="primary" onclick="showTab('apps'); openAppDataViewer('${g.appName.replace(/'/g, "\\'")}', '${g.appName.replace(/'/g, "\\'")}')" ${g.batchCount === 0 ? 'disabled' : ''}>View Data</button>
-      </div>
-    `;
-  }).join('');
-}
-
-// Vault tab: how much is stored per device/app, read-only -- no delete
-// action anywhere here, matching this dashboard being view-only.
-async function loadStorage() {
-  const el = document.getElementById('storageList');
-  try {
-    const r = await fetch('/api/storage');
-    if (r.status === 401) { window.location = '/login'; return; }
-    const tree = await r.json();
-    const deviceNames = Object.keys(tree);
-    if (!deviceNames.length) {
-      el.innerHTML = '<div class="empty">No data received yet.</div>';
-      return;
-    }
-    el.innerHTML = deviceNames.map(dev => `
-      <div class="accordion">
-        <div class="head" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
-          <span>${dev}</span>
-          <span style="color:var(--muted);font-weight:400;">${Object.keys(tree[dev]).length} app(s)</span>
-        </div>
-        <div class="body">
-          ${Object.keys(tree[dev]).map(appName => `
-            <div class="app-group">
-              <div class="app-name">${appName}</div>
-              ${tree[dev][appName].map(b => `
-                <div class="batch-row">
-                  <span class="b-name">${b.batch}</span>
-                  <span class="b-meta">${b.fileCount} files - ${fmtBytes(b.sizeBytes)}</span>
-                </div>
-              `).join('')}
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `).join('');
-  } catch (e) {
-    el.innerHTML = '<div class="empty">Could not load storage.</div>';
-  }
 }
 
 function populateYearOptions() {
@@ -1773,7 +1666,7 @@ document.getElementById('downloadFilteredBtn').addEventListener('click', () => {
     `${currentDevice}_${currentAppName}_filtered.xlsx`);
 });
 
-loadDevices();
+loadApps();
 </script>
 </body>
 </html>
