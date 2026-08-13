@@ -333,16 +333,25 @@ def _resolve_under_data_dir(rel_path: str) -> Path:
 HEARTBEATS_FILE_NAME = "_heartbeats.json"
 
 
-def _load_heartbeats() -> dict[str, int]:
-    """safe device-folder-name -> most recent lastHeartbeatMs seen for it.
-    Written by receiver.py's /heartbeat endpoint under DATA_DIR precisely so
-    this separate, read-only process can see it without ever talking to
-    receiver.py directly (see this module's docstring). A phone pings this
-    every ~45s while its app is open and a PC is paired, independent of
-    actual data uploads -- so "Online" here can reflect real recent
-    reachability instead of only "did data arrive lately"."""
+def _load_heartbeats() -> dict[tuple[str, str], int]:
+    """(safe device-folder-name, safe app-folder-name) -> most recent
+    lastHeartbeatMs seen for that exact pairing. Written by receiver.py's
+    /heartbeat endpoint under DATA_DIR precisely so this separate,
+    read-only process can see it without ever talking to receiver.py
+    directly (see this module's docstring). A phone pings this every ~45s
+    while its app is open and a PC is paired, independent of actual data
+    uploads -- so "Online" here can reflect real recent reachability
+    instead of only "did data arrive lately".
+
+    Keyed by the (device, app) pair, not device name alone -- one phone
+    can be paired to more than one app, and receiver.py only disambiguates
+    duplicate typed device names *within the same app*, so two unrelated
+    pairings can legitimately share a device name across different apps.
+    Keying by device name alone would let one app's heartbeat mark a
+    completely different app "Online" just because they happen to share
+    a device folder."""
     path = DATA_DIR / HEARTBEATS_FILE_NAME
-    out: dict[str, int] = {}
+    out: dict[tuple[str, str], int] = {}
     if not path.exists():
         return out
     try:
@@ -350,10 +359,10 @@ def _load_heartbeats() -> dict[str, int]:
     except Exception:
         return out
     for entry in raw.values():
-        name_safe = _safe_name(entry.get("deviceName", ""))
+        key = (_safe_name(entry.get("deviceName", "")), _safe_name(entry.get("appName", "")))
         ms = entry.get("lastHeartbeatMs", 0)
-        if name_safe and ms > out.get(name_safe, 0):
-            out[name_safe] = ms
+        if key[0] and ms > out.get(key, 0):
+            out[key] = ms
     return out
 
 
@@ -396,7 +405,7 @@ def _list_groups() -> list[dict]:
                 "batchCount": len(batch_dirs),
                 "totalBytes": total_bytes,
                 "lastReceivedAt": batch_dirs[-1].name if batch_dirs else None,
-                "lastHeartbeatAtMs": heartbeats.get(device_dir.name),
+                "lastHeartbeatAtMs": heartbeats.get((device_dir.name, app_dir.name)),
                 "hasExcel": xlsx_path.exists(),
             })
     groups.sort(key=lambda g: g["lastReceivedAt"] or "", reverse=True)
