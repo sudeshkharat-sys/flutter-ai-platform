@@ -154,6 +154,21 @@ set "PYI_DIST=D:\FlutterAI-App"
 set "PYI_OUT=%PYI_DIST%\FlutterAI"
 set "DATA_BACKUP=D:\FlutterAI-App\__data_preserve__"
 
+:: When run directly (not via rebuild_and_run.bat, which already sets this),
+:: ask whether to keep existing data or wipe everything.
+if "%FLUTTERAI_FULL_REBUILD%"=="" (
+    if exist "%PYI_OUT%\data" (
+        echo.
+        echo  [1] Update ^& Keep Data  - keep your database/models  ^(recommended^)
+        echo  [2] Full Rebuild         - wipe EVERYTHING and start fresh
+        echo.
+        choice /c 12 /n /m "Choose an option (1 or 2): "
+        if errorlevel 2 (set "FLUTTERAI_FULL_REBUILD=1") else (set "FLUTTERAI_FULL_REBUILD=0")
+    ) else (
+        set "FLUTTERAI_FULL_REBUILD=0"
+    )
+)
+
 if exist "%PYI_OUT%" (
     :: PYI_OUT\data holds the Postgres cluster, uploaded models and
     :: reference images -- everything the app's users actually entered.
@@ -162,10 +177,14 @@ if exist "%PYI_OUT%" (
     :: PyInstaller-produced app bundle (exe + libs) is meant to be replaced
     :: here; the long-path robocopy trick is only needed for old Gradle/APK
     :: build junk that may be sitting elsewhere in PYI_OUT.
-    if exist "%PYI_OUT%\data" (
-        echo      Preserving existing data folder...
-        if exist "%DATA_BACKUP%" rmdir /s /q "%DATA_BACKUP%" >nul 2>&1
-        move "%PYI_OUT%\data" "%DATA_BACKUP%" >nul 2>&1
+    if "%FLUTTERAI_FULL_REBUILD%"=="1" (
+        if exist "%PYI_OUT%\data" echo      Full rebuild - data folder will NOT be preserved.
+    ) else (
+        if exist "%PYI_OUT%\data" (
+            echo      Preserving existing data folder...
+            if exist "%DATA_BACKUP%" rmdir /s /q "%DATA_BACKUP%" >nul 2>&1
+            move "%PYI_OUT%\data" "%DATA_BACKUP%" >nul 2>&1
+        )
     )
     echo      Removing previous build output (using robocopy for long paths^)...
     mkdir "%TEMP%\__pyi_empty__" >nul 2>&1

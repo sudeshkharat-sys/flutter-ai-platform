@@ -1,7 +1,26 @@
 @echo off
+setlocal EnableDelayedExpansion
 echo ============================================================
-echo  Flutter AI Studio - Clean Rebuild and Run
+echo  Flutter AI Studio - Rebuild and Run
 echo ============================================================
+
+:: --------------------------------------------------------------------------
+:: Mode select: pass it as an argument (rebuild_and_run.bat full / keep) to
+:: skip the prompt, e.g. for unattended/scripted use.
+::   full - wipe EVERYTHING (database, models, exports) and start fresh
+::   keep - update the app only; database/models/exports are untouched
+:: --------------------------------------------------------------------------
+set "MODE=%~1"
+if "%MODE%"=="" (
+    echo.
+    echo  [1] Update ^& Keep Data  - rebuild the app, keep your database/models  ^(recommended^)
+    echo  [2] Full Rebuild         - wipe EVERYTHING and start fresh
+    echo.
+    choice /c 12 /n /m "Choose an option (1 or 2): "
+    if errorlevel 2 (set "MODE=full") else (set "MODE=keep")
+)
+if /i "%MODE%"=="full" (set "MODE=full") else (set "MODE=keep")
+echo     Mode: %MODE%
 
 :: Kill any running instances of THIS app only. Plain "taskkill /im
 :: postgres.exe" / "redis-server.exe" matches by process name only, with no
@@ -19,26 +38,37 @@ powershell -NoProfile -Command ^
     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 echo     Done.
 
-:: Clear ONLY the Flutter/Gradle APK build scratch space (data\exports),
-:: which is what actually needs the robocopy trick -- Gradle's nested build
-:: output paths exceed Windows' normal path length limit, so a plain
-:: "rmdir /s" fails on them. It gets recreated fresh on next use regardless.
-::
-:: Deliberately NOT touching the rest of data\ (data\data\pgdata is the
-:: Postgres cluster -- Master Data/Engine Data/app_projects/model_assets
-:: all live there; data\models and data\reference_images are uploaded
-:: assets). Wiping the whole data\ folder on every rebuild used to delete
-:: the database itself along with the build junk, so a new EXE always came
-:: up empty even though nothing about the data actually needed to change.
-echo [2] Cleaning previous APK build output (exports only)...
-if exist "D:\FlutterAI-App\FlutterAI\data\exports" (
-    mkdir "%TEMP%\__pyi_empty__" >nul 2>&1
-    robocopy "%TEMP%\__pyi_empty__" "D:\FlutterAI-App\FlutterAI\data\exports" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP >nul 2>&1
-    rmdir /s /q "D:\FlutterAI-App\FlutterAI\data\exports" >nul 2>&1
-    rmdir /s /q "%TEMP%\__pyi_empty__" >nul 2>&1
-    echo     Build exports cleared. Database and models kept.
+if /i "%MODE%"=="full" (
+    echo [2] Full Rebuild - wiping all data ^(database, models, exports^)...
+    if exist "D:\FlutterAI-App\FlutterAI\data" (
+        mkdir "%TEMP%\__pyi_empty__" >nul 2>&1
+        robocopy "%TEMP%\__pyi_empty__" "D:\FlutterAI-App\FlutterAI\data" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP >nul 2>&1
+        rmdir /s /q "D:\FlutterAI-App\FlutterAI\data" >nul 2>&1
+        rmdir /s /q "%TEMP%\__pyi_empty__" >nul 2>&1
+        echo     All data cleared.
+    ) else (
+        echo     Nothing to clear.
+    )
+    set "FLUTTERAI_FULL_REBUILD=1"
 ) else (
-    echo     Nothing to clear.
+    :: Clear ONLY the Flutter/Gradle APK build scratch space (data\exports),
+    :: which is what actually needs the robocopy trick -- Gradle's nested
+    :: build output paths exceed Windows' normal path length limit, so a
+    :: plain "rmdir /s" fails on them. It gets recreated fresh on next use
+    :: regardless. Deliberately NOT touching the rest of data\ (pgdata is
+    :: the Postgres cluster -- Master/Engine Data, app_projects, model
+    :: assets all live there; models/reference_images are uploaded assets).
+    echo [2] Update mode - clearing APK build output only (exports)...
+    if exist "D:\FlutterAI-App\FlutterAI\data\exports" (
+        mkdir "%TEMP%\__pyi_empty__" >nul 2>&1
+        robocopy "%TEMP%\__pyi_empty__" "D:\FlutterAI-App\FlutterAI\data\exports" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP >nul 2>&1
+        rmdir /s /q "D:\FlutterAI-App\FlutterAI\data\exports" >nul 2>&1
+        rmdir /s /q "%TEMP%\__pyi_empty__" >nul 2>&1
+        echo     Build exports cleared. Database and models kept.
+    ) else (
+        echo     Nothing to clear.
+    )
+    set "FLUTTERAI_FULL_REBUILD=0"
 )
 
 :: Pull latest code (whichever branch is currently checked out)
@@ -50,7 +80,8 @@ git pull origin %CURRENT_BRANCH%
 if errorlevel 1 ( echo [ERROR] git pull failed - resolve conflicts manually, then re-run. & popd & exit /b 1 )
 popd
 
-:: Rebuild EXE
+:: Rebuild EXE. FLUTTERAI_FULL_REBUILD tells build.bat whether to preserve
+:: data\ around the PyInstaller output wipe (0) or not (1) -- see build.bat.
 echo [4] Rebuilding EXE...
 call conda activate flutter-ai
 cd /d "%~dp0"
