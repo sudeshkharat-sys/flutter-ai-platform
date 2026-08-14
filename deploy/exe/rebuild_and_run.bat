@@ -22,10 +22,13 @@ if exist "D:\FlutterAI-App\FlutterAI\data" (
     echo     Nothing to clear.
 )
 
-:: Pull latest code
+:: Pull latest code (whichever branch is currently checked out)
 echo [3] Pulling latest code...
 pushd "%~dp0..\.."
-git pull origin exe/v2-clean-build
+for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD') do set "CURRENT_BRANCH=%%b"
+echo     Branch: %CURRENT_BRANCH%
+git pull origin %CURRENT_BRANCH%
+if errorlevel 1 ( echo [ERROR] git pull failed - resolve conflicts manually, then re-run. & popd & exit /b 1 )
 popd
 
 :: Rebuild EXE
