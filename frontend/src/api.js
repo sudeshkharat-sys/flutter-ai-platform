@@ -1,6 +1,14 @@
 import axios from 'axios';
 
-const api = axios.create({ baseURL: 'http://localhost:8001/api/v1' });
+// build.bat sets REACT_APP_API_URL=http://localhost:8002 when building the
+// EXE, since its bundled backend runs on 8002, not the 8001 used by local
+// `npm start` dev (paired with a separately-run `uvicorn --port 8001`).
+// This was previously hardcoded to :8001, so the built EXE's frontend
+// (served from :8002) called an API that was never running -- every
+// request failed as a generic browser "Network Error" with no server-side
+// trace at all, since it never left the browser.
+const API_BASE = (process.env.REACT_APP_API_URL || 'http://localhost:8001') + '/api/v1';
+const api = axios.create({ baseURL: API_BASE });
 
 /**
  * Upload a .pt model file with its class list.
