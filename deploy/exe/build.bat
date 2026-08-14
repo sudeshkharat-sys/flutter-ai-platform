@@ -152,8 +152,21 @@ echo [6/6] Cleaning previous output and running PyInstaller...
 set "PYI_WORK=D:\flutterai-build-temp\work"
 set "PYI_DIST=D:\FlutterAI-App"
 set "PYI_OUT=%PYI_DIST%\FlutterAI"
+set "DATA_BACKUP=D:\FlutterAI-App\__data_preserve__"
 
 if exist "%PYI_OUT%" (
+    :: PYI_OUT\data holds the Postgres cluster, uploaded models and
+    :: reference images -- everything the app's users actually entered.
+    :: Move it out of the way before wiping PYI_OUT and move it back after,
+    :: so rebuilding the app doesn't also delete the database. Only the
+    :: PyInstaller-produced app bundle (exe + libs) is meant to be replaced
+    :: here; the long-path robocopy trick is only needed for old Gradle/APK
+    :: build junk that may be sitting elsewhere in PYI_OUT.
+    if exist "%PYI_OUT%\data" (
+        echo      Preserving existing data folder...
+        if exist "%DATA_BACKUP%" rmdir /s /q "%DATA_BACKUP%" >nul 2>&1
+        move "%PYI_OUT%\data" "%DATA_BACKUP%" >nul 2>&1
+    )
     echo      Removing previous build output (using robocopy for long paths^)...
     mkdir "%TEMP%\__pyi_empty__" >nul 2>&1
     robocopy "%TEMP%\__pyi_empty__" "%PYI_OUT%" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP >nul 2>&1
@@ -170,6 +183,11 @@ python -m PyInstaller launcher.spec --noconfirm ^
     --workpath "%PYI_WORK%" ^
     --distpath "%PYI_DIST%"
 if errorlevel 1 ( echo [ERROR] PyInstaller failed. & exit /b 1 )
+
+if exist "%DATA_BACKUP%" (
+    echo      Restoring preserved data folder...
+    move "%DATA_BACKUP%" "%PYI_OUT%\data" >nul 2>&1
+)
 
 :: --------------------------------------------------------------------------
 :: Done

@@ -19,14 +19,24 @@ powershell -NoProfile -Command ^
     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 echo     Done.
 
-:: Delete runtime data using robocopy to handle long paths from APK/Gradle builds
-echo [2] Cleaning previous data...
-if exist "D:\FlutterAI-App\FlutterAI\data" (
+:: Clear ONLY the Flutter/Gradle APK build scratch space (data\exports),
+:: which is what actually needs the robocopy trick -- Gradle's nested build
+:: output paths exceed Windows' normal path length limit, so a plain
+:: "rmdir /s" fails on them. It gets recreated fresh on next use regardless.
+::
+:: Deliberately NOT touching the rest of data\ (data\data\pgdata is the
+:: Postgres cluster -- Master Data/Engine Data/app_projects/model_assets
+:: all live there; data\models and data\reference_images are uploaded
+:: assets). Wiping the whole data\ folder on every rebuild used to delete
+:: the database itself along with the build junk, so a new EXE always came
+:: up empty even though nothing about the data actually needed to change.
+echo [2] Cleaning previous APK build output (exports only)...
+if exist "D:\FlutterAI-App\FlutterAI\data\exports" (
     mkdir "%TEMP%\__pyi_empty__" >nul 2>&1
-    robocopy "%TEMP%\__pyi_empty__" "D:\FlutterAI-App\FlutterAI\data" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP >nul 2>&1
-    rmdir /s /q "D:\FlutterAI-App\FlutterAI\data" >nul 2>&1
+    robocopy "%TEMP%\__pyi_empty__" "D:\FlutterAI-App\FlutterAI\data\exports" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP >nul 2>&1
+    rmdir /s /q "D:\FlutterAI-App\FlutterAI\data\exports" >nul 2>&1
     rmdir /s /q "%TEMP%\__pyi_empty__" >nul 2>&1
-    echo     Data cleared.
+    echo     Build exports cleared. Database and models kept.
 ) else (
     echo     Nothing to clear.
 )
