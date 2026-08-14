@@ -30,13 +30,24 @@ if _platstdlib_dir and os.path.isdir(_platstdlib_dir) and _platstdlib_dir != _st
     datas += [(_platstdlib_dir, "lib-platstdlib")]
 
 # ---------------------------------------------------------------------------
-# SSL DLL fix — bundle libssl / libcrypto from conda env so _ssl.pyd loads
+# SSL DLL fix — bundle libssl / libcrypto from conda env so _ssl.pyd loads.
+# On Windows, conda ships these under <env>\Library\bin, NOT next to
+# python.exe itself — searching only Path(sys.executable).parent silently
+# finds nothing (or an unrelated stale copy) there, and PyInstaller's own
+# dependency scan then wins with whatever mismatched libssl-3.dll/
+# libcrypto-3.dll it picks up from elsewhere, producing "ImportError: DLL
+# load failed while importing _ssl: The specified procedure could not be
+# found" at runtime. build.bat force-copies the correct pair over the
+# build output after PyInstaller runs as the authoritative fix; this list
+# just makes the spec's own search correct too.
 # ---------------------------------------------------------------------------
 binaries = []
 _conda_bin = Path(sys.executable).parent
-for _dll in ["libssl-3-x64.dll", "libcrypto-3-x64.dll",
-             "libssl-1_1-x64.dll", "libcrypto-1_1-x64.dll"]:
-    _dll_path = _conda_bin / _dll
+_conda_lib_bin = _conda_bin / "Library" / "bin"
+for _search_dir in (_conda_lib_bin, _conda_bin):
+  for _dll in ["libssl-3-x64.dll", "libcrypto-3-x64.dll",
+               "libssl-1_1-x64.dll", "libcrypto-1_1-x64.dll"]:
+    _dll_path = _search_dir / _dll
     if _dll_path.exists():
         binaries += [( str(_dll_path), "." )]
         print(f"[spec] Bundling SSL DLL: {_dll_path}")

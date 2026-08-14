@@ -200,6 +200,29 @@ python -m PyInstaller launcher.spec --noconfirm ^
     --distpath "%PYI_DIST%"
 if errorlevel 1 ( echo [ERROR] PyInstaller failed. & exit /b 1 )
 
+:: PyInstaller's own dependency scan can pull in a DIFFERENT libssl-3.dll/
+:: libcrypto-3.dll pair than the one this conda env actually uses (e.g. one
+:: dragged in by another bundled package), which produces "ImportError: DLL
+:: load failed while importing _ssl: The specified procedure could not be
+:: found" at runtime -- the DLL loads but its exports don't match what
+:: _ssl.pyd expects. Force-copy this env's real, matching pair over
+:: whatever ended up there, under BOTH the plain name (what _ssl.pyd
+:: actually imports on Windows) and the -x64 name, so there is only one
+:: possible DLL any of it can resolve to.
+set "CONDA_SSL_DIR=%CONDA_PREFIX%\Library\bin"
+if exist "%CONDA_SSL_DIR%\libssl-3-x64.dll" (
+    echo      Forcing matching SSL DLLs from %CONDA_SSL_DIR% ...
+    copy /y "%CONDA_SSL_DIR%\libssl-3-x64.dll"    "%PYI_OUT%\_internal\libssl-3-x64.dll"    >nul
+    copy /y "%CONDA_SSL_DIR%\libssl-3-x64.dll"    "%PYI_OUT%\_internal\libssl-3.dll"         >nul
+    copy /y "%CONDA_SSL_DIR%\libcrypto-3-x64.dll" "%PYI_OUT%\_internal\libcrypto-3-x64.dll"  >nul
+    copy /y "%CONDA_SSL_DIR%\libcrypto-3-x64.dll" "%PYI_OUT%\_internal\libcrypto-3.dll"      >nul
+    echo      Done.
+) else (
+    echo      [WARN] %CONDA_SSL_DIR%\libssl-3-x64.dll not found -- SSL DLL override skipped.
+    echo             If the app fails with "_ssl" DLL errors, activate the
+    echo             correct conda env before running build.bat.
+)
+
 if exist "%DATA_BACKUP%" (
     echo      Restoring preserved data folder...
     move "%DATA_BACKUP%" "%PYI_OUT%\data" >nul 2>&1
