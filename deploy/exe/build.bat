@@ -156,43 +156,40 @@ set "DATA_BACKUP=D:\FlutterAI-App\__data_preserve__"
 
 :: When run directly (not via rebuild_and_run.bat, which already sets this),
 :: ask whether to keep existing data or wipe everything.
-if "%FLUTTERAI_FULL_REBUILD%"=="" (
-    if exist "%PYI_OUT%\data" (
-        echo.
-        echo  [1] Update ^& Keep Data  - keep your database/models  ^(recommended^)
-        echo  [2] Full Rebuild         - wipe EVERYTHING and start fresh
-        echo.
-        choice /c 12 /n /m "Choose an option (1 or 2): "
-        if errorlevel 2 (set "FLUTTERAI_FULL_REBUILD=1") else (set "FLUTTERAI_FULL_REBUILD=0")
-    ) else (
-        set "FLUTTERAI_FULL_REBUILD=0"
-    )
+if not "%FLUTTERAI_FULL_REBUILD%"=="" goto :skip_prompt
+if not exist "%PYI_OUT%\data" (
+    set "FLUTTERAI_FULL_REBUILD=0"
+    goto :skip_prompt
 )
+echo.
+echo  [1] Update ^& Keep Data  - keep your database/models  ^(recommended^)
+echo  [2] Full Rebuild         - wipe EVERYTHING and start fresh
+echo.
+choice /c 12 /n /m "Choose an option: "
+if errorlevel 2 (set "FLUTTERAI_FULL_REBUILD=1") else (set "FLUTTERAI_FULL_REBUILD=0")
+:skip_prompt
 
-if exist "%PYI_OUT%" (
-    :: PYI_OUT\data holds the Postgres cluster, uploaded models and
-    :: reference images -- everything the app's users actually entered.
-    :: Move it out of the way before wiping PYI_OUT and move it back after,
-    :: so rebuilding the app doesn't also delete the database. Only the
-    :: PyInstaller-produced app bundle (exe + libs) is meant to be replaced
-    :: here; the long-path robocopy trick is only needed for old Gradle/APK
-    :: build junk that may be sitting elsewhere in PYI_OUT.
-    if "%FLUTTERAI_FULL_REBUILD%"=="1" (
-        if exist "%PYI_OUT%\data" echo      Full rebuild - data folder will NOT be preserved.
-    ) else (
-        if exist "%PYI_OUT%\data" (
-            echo      Preserving existing data folder...
-            if exist "%DATA_BACKUP%" rmdir /s /q "%DATA_BACKUP%" >nul 2>&1
-            move "%PYI_OUT%\data" "%DATA_BACKUP%" >nul 2>&1
-        )
-    )
-    echo      Removing previous build output (using robocopy for long paths^)...
-    mkdir "%TEMP%\__pyi_empty__" >nul 2>&1
-    robocopy "%TEMP%\__pyi_empty__" "%PYI_OUT%" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP >nul 2>&1
-    rmdir /s /q "%PYI_OUT%" >nul 2>&1
-    rmdir /s /q "%TEMP%\__pyi_empty__" >nul 2>&1
-    echo      Previous output cleared.
-)
+:: PYI_OUT\data holds the Postgres cluster, uploaded models and reference
+:: images -- everything the app's users actually entered. On a keep-data
+:: rebuild, move it out of the way before wiping PYI_OUT and move it back
+:: after, so rebuilding the app bundle doesn't also delete the database.
+:: The long-path robocopy trick below is only needed for old Gradle/APK
+:: build junk that may be sitting elsewhere in PYI_OUT.
+if not exist "%PYI_OUT%" goto :after_clean
+if "%FLUTTERAI_FULL_REBUILD%"=="1" goto :do_clean
+if not exist "%PYI_OUT%\data" goto :do_clean
+echo      Preserving existing data folder...
+if exist "%DATA_BACKUP%" rmdir /s /q "%DATA_BACKUP%" >nul 2>&1
+move "%PYI_OUT%\data" "%DATA_BACKUP%" >nul 2>&1
+
+:do_clean
+echo      Removing previous build output (using robocopy for long paths^)...
+mkdir "%TEMP%\__pyi_empty__" >nul 2>&1
+robocopy "%TEMP%\__pyi_empty__" "%PYI_OUT%" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP >nul 2>&1
+rmdir /s /q "%PYI_OUT%" >nul 2>&1
+rmdir /s /q "%TEMP%\__pyi_empty__" >nul 2>&1
+echo      Previous output cleared.
+:after_clean
 
 cd /d "%DEPLOY_DIR%"
 echo      PyInstaller temp : %PYI_WORK%
