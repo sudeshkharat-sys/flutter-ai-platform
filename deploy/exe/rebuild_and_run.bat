@@ -3,11 +3,20 @@ echo ============================================================
 echo  Flutter AI Studio - Clean Rebuild and Run
 echo ============================================================
 
-:: Kill any running instances
+:: Kill any running instances of THIS app only. Plain "taskkill /im
+:: postgres.exe" / "redis-server.exe" matches by process name only, with no
+:: regard for which install started it -- on a machine that also runs a
+:: system/other-project Postgres (e.g. another backend on port 5432), that
+:: silently kills it too and looks like "my other project's DB just died"
+:: with no obvious link back to this script. Only kill postgres.exe /
+:: redis-server.exe whose executable actually lives under our own
+:: FlutterAI-App output folder.
 echo [1] Killing any running processes...
 taskkill /f /im flutterai.exe >nul 2>&1
-taskkill /f /im postgres.exe >nul 2>&1
-taskkill /f /im redis-server.exe >nul 2>&1
+powershell -NoProfile -Command ^
+    "Get-CimInstance Win32_Process -Filter \"Name='postgres.exe' OR Name='redis-server.exe'\" | " ^
+    "Where-Object { $_.ExecutablePath -like '*FlutterAI-App*' } | " ^
+    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 echo     Done.
 
 :: Delete runtime data using robocopy to handle long paths from APK/Gradle builds
