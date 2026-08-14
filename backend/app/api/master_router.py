@@ -69,3 +69,23 @@ def delete_master_mapping(mapping_id: str, db: StateDBConnector = Depends(get_db
     if deleted == 0:
         raise HTTPException(status_code=404, detail="Mapping not found")
     return {"deleted": True}
+
+@router.post("/import")
+def import_master_mappings(data: list[MasterMappingCreate], db: StateDBConnector = Depends(get_db_connector)):
+    imported = 0
+    errors = []
+    for row in data:
+        if not row.model_code or not row.model_code.strip():
+            continue
+        params = {
+            "id": str(uuid.uuid4()),
+            "platform_name": row.platform_name.strip().upper(),
+            "model_code": row.model_code.strip(),
+            "description": row.description,
+        }
+        try:
+            db.execute_insert(MasterDataQueries.UPSERT_MAPPING, params)
+            imported += 1
+        except Exception as e:
+            errors.append({"model_code": row.model_code, "error": str(e)})
+    return {"imported": imported, "errors": errors}

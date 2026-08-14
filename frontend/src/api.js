@@ -102,5 +102,8 @@ export const getEngineMappings = () => api.get('/engine-data');
 export const createEngineMapping = (data) => api.post('/engine-data', data);
 export const updateEngineMapping = (id, data) => api.put(`/engine-data/${id}`, data);
 export const deleteEngineMapping = (id) => api.delete(`/engine-data/${id}`);
+export const importEngineMappings = (rows) => api.post('/engine-data/import', rows);
+
+export const importMasterMappings = (rows) => api.post('/master-data/import', rows);
 
 export default api;

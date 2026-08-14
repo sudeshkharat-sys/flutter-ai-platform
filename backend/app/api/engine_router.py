@@ -63,3 +63,24 @@ def delete_engine_mapping(mapping_id: str, db: StateDBConnector = Depends(get_db
     if deleted == 0:
         raise HTTPException(status_code=404, detail="Mapping not found")
     return {"deleted": True}
+
+@router.post("/import")
+def import_engine_mappings(data: list[EngineMappingCreate], db: StateDBConnector = Depends(get_db_connector)):
+    imported = 0
+    errors = []
+    for row in data:
+        if not row.part_no or not row.part_no.strip():
+            continue
+        params = {
+            "id": str(uuid.uuid4()),
+            "sheet_name": row.sheet_name.strip().upper(),
+            "part_no": row.part_no.strip(),
+            "model_name": row.model_name.strip() if row.model_name else None,
+            "description": row.description.strip() if row.description else None,
+        }
+        try:
+            db.execute_insert(EngineDataQueries.UPSERT_MAPPING, params)
+            imported += 1
+        except Exception as e:
+            errors.append({"part_no": row.part_no, "error": str(e)})
+    return {"imported": imported, "errors": errors}

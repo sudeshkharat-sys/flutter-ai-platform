@@ -43,6 +43,12 @@ class MasterDataQueries:
         WHERE id = :id
     """
     DELETE_MAPPING = "DELETE FROM master_model_mappings WHERE id = :id"
+    UPSERT_MAPPING = """
+        INSERT INTO master_model_mappings (id, platform_name, model_code, description, created_at)
+        VALUES (:id, :platform_name, :model_code, :description, CURRENT_TIMESTAMP)
+        ON CONFLICT (model_code) DO UPDATE
+        SET platform_name = EXCLUDED.platform_name, description = EXCLUDED.description
+    """
 
 class EngineDataQueries:
     GET_ALL_MAPPINGS = "SELECT * FROM engine_model_mappings ORDER BY created_at DESC"
@@ -58,6 +64,12 @@ class EngineDataQueries:
         WHERE id = :id
     """
     DELETE_MAPPING = "DELETE FROM engine_model_mappings WHERE id = :id"
+    UPSERT_MAPPING = """
+        INSERT INTO engine_model_mappings (id, sheet_name, part_no, model_name, description, created_at)
+        VALUES (:id, :sheet_name, :part_no, :model_name, :description, CURRENT_TIMESTAMP)
+        ON CONFLICT (part_no) DO UPDATE
+        SET sheet_name = EXCLUDED.sheet_name, model_name = EXCLUDED.model_name, description = EXCLUDED.description
+    """
 
 class ResultQueries:
     INSERT_RESULT = """

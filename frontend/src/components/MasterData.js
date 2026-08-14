@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
-  getMasterMappings, createMasterMapping, updateMasterMapping, deleteMasterMapping,
-  getEngineMappings, createEngineMapping, updateEngineMapping, deleteEngineMapping,
+  getMasterMappings, createMasterMapping, updateMasterMapping, deleteMasterMapping, importMasterMappings,
+  getEngineMappings, createEngineMapping, updateEngineMapping, deleteEngineMapping, importEngineMappings,
 } from '../api';
-import { Search, Pencil, Trash2 } from 'lucide-react';
+import { Search, Pencil, Trash2, Download, Upload } from 'lucide-react';
 import ConfirmModal from './ConfirmModal';
 import '../styles/MasterData.css';
 
@@ -37,6 +37,32 @@ function ModelCodesTab() {
       console.error('Failed to load master data', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDownload = () => {
+    const rows = mappings.map(m => ({ platform_name: m.platform_name, model_code: m.model_code, description: m.description || '' }));
+    const blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `master-data-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleUploadFile = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const rows = JSON.parse(await file.text());
+      if (!Array.isArray(rows)) throw new Error('File must contain a JSON array of mappings');
+      const res = await importMasterMappings(rows);
+      alert(`Imported ${res.data.imported} mapping(s)${res.data.errors.length ? `, ${res.data.errors.length} failed` : ''}`);
+      loadData();
+    } catch (err) {
+      alert(err.response?.data?.detail || err.message || 'Failed to import file');
     }
   };
 
@@ -211,6 +237,15 @@ function ModelCodesTab() {
                 Delete Selected ({selectedIds.size})
               </button>
             )}
+            <button className="btn-secondary" onClick={handleDownload} title="Download all mappings as JSON">
+              <Download size={14} />
+              Download
+            </button>
+            <label className="btn-secondary" style={{ cursor: 'pointer', margin: 0 }} title="Upload a mappings JSON file">
+              <Upload size={14} />
+              Upload
+              <input type="file" accept="application/json" onChange={handleUploadFile} style={{ display: 'none' }} />
+            </label>
             <div className="master-search-wrap">
               <Search size={15} className="master-search-icon" />
               <input
@@ -344,6 +379,32 @@ function EngineCodesTab() {
       console.error('Failed to load engine data', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDownload = () => {
+    const rows = mappings.map(m => ({ sheet_name: m.sheet_name, part_no: m.part_no, model_name: m.model_name || '', description: m.description || '' }));
+    const blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `engine-data-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleUploadFile = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const rows = JSON.parse(await file.text());
+      if (!Array.isArray(rows)) throw new Error('File must contain a JSON array of mappings');
+      const res = await importEngineMappings(rows);
+      alert(`Imported ${res.data.imported} mapping(s)${res.data.errors.length ? `, ${res.data.errors.length} failed` : ''}`);
+      loadData();
+    } catch (err) {
+      alert(err.response?.data?.detail || err.message || 'Failed to import file');
     }
   };
 
@@ -532,6 +593,15 @@ function EngineCodesTab() {
                 Delete Selected ({selectedIds.size})
               </button>
             )}
+            <button className="btn-secondary" onClick={handleDownload} title="Download all mappings as JSON">
+              <Download size={14} />
+              Download
+            </button>
+            <label className="btn-secondary" style={{ cursor: 'pointer', margin: 0 }} title="Upload a mappings JSON file">
+              <Upload size={14} />
+              Upload
+              <input type="file" accept="application/json" onChange={handleUploadFile} style={{ display: 'none' }} />
+            </label>
             <div className="master-search-wrap">
               <Search size={15} className="master-search-icon" />
               <input
