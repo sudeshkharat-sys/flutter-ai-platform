@@ -1,3 +1,5 @@
+import sys
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -75,3 +77,39 @@ app.include_router(engine_router.router, prefix="/api/v1")
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "flutter-ai-studio"}
+
+
+def _mount_spa(application: FastAPI) -> None:
+    """Serve the React build as a SPA from FastAPI (used in EXE mode).
+
+    When running under PyInstaller the frontend build is extracted to
+    _MEIPASS/frontend_build. In a plain dev checkout it lives at
+    <repo>/frontend/build. If neither directory exists (e.g. the frontend
+    hasn't been built, or this is the dev backend fronted by `npm start`
+    on its own port) this does nothing and API routes still work as
+    normal -- it only adds a catch-all fallback for everything else.
+    """
+    if hasattr(sys, "_MEIPASS"):
+        build_dir = Path(sys._MEIPASS) / "frontend_build"
+    else:
+        build_dir = Path(__file__).parent.parent.parent / "frontend" / "build"
+
+    if not build_dir.exists():
+        return
+
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+
+    static_dir = build_dir / "static"
+    if static_dir.exists():
+        application.mount("/static", StaticFiles(directory=str(static_dir)), name="spa-static")
+
+    @application.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str):
+        candidate = build_dir / full_path
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(build_dir / "index.html"))
+
+
+_mount_spa(app)
