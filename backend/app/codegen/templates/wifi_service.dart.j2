@@ -23,6 +23,16 @@ class AllowedWifi {
   const AllowedWifi({required this.ssid, this.password = ''});
 }
 
+/// One entry from a nearby-network scan, for the "pick your network instead
+/// of typing it" setup UI (Sync screen) -- SSID typos there would otherwise
+/// mean auto-connect silently never matches anything.
+class ScannedNetwork {
+  final String ssid;
+  final int level; // signal strength in dBm, roughly -30 (excellent) to -90 (unusable)
+  final bool secured;
+  const ScannedNetwork({required this.ssid, required this.level, required this.secured});
+}
+
 class WifiService {
   static final WifiService instance = WifiService._();
   WifiService._();
@@ -133,6 +143,42 @@ class WifiService {
       // submission nag (see registerSubmissionAndShouldNag) is the fallback
       // that gets a human to tap through it manually when this fails.
     }
+  }
+
+  /// Scans for nearby WiFi networks so the setup dialog can offer a tap-to-
+  /// pick list instead of a free-text SSID field (same idea as the native
+  /// Android WiFi picker -- pick the network, only the password gets
+  /// typed). Uses wifi_iot's own scan API rather than pulling in a second
+  /// WiFi plugin just for this; it's marked deprecated upstream in favor of
+  /// a separate `wifi_scan` package, but it's still functional and this
+  /// avoids doubling up on native WiFi dependencies in one build.
+  ///
+  /// Can return an empty list (not an error) if location services are off
+  /// at the OS level -- Android silently returns no scan results in that
+  /// case, permission grant or not -- so callers should offer "enter
+  /// manually" alongside this rather than treating empty as fatal.
+  Future<List<ScannedNetwork>> scanNearbyNetworks() async {
+    await _ensureLocationPermission();
+    // ignore: deprecated_member_use
+    final results = await WiFiForIoTPlugin.loadWifiList();
+    final bySsid = <String, ScannedNetwork>{};
+    for (final n in results) {
+      final ssid = n.ssid?.trim() ?? '';
+      if (ssid.isEmpty) continue; // hidden/blank SSID -- nothing to tap on
+      final level = n.level ?? -100;
+      // Capabilities looks like "[WPA2-PSK-CCMP][ESS]" for a secured network
+      // or just "[ESS]" for open -- presence of any cipher/auth token means
+      // a password is required.
+      final secured = (n.capabilities ?? '').contains(RegExp(r'WEP|WPA|PSK|EAP'));
+      final existing = bySsid[ssid];
+      // Same SSID can show up once per radio/band (2.4GHz + 5GHz access
+      // points broadcasting the same network name) -- keep the stronger one.
+      if (existing == null || level > existing.level) {
+        bySsid[ssid] = ScannedNetwork(ssid: ssid, level: level, secured: secured);
+      }
+    }
+    final list = bySsid.values.toList()..sort((a, b) => b.level.compareTo(a.level));
+    return list;
   }
 
   /// Opens the system WiFi panel so the inspector can connect by hand --
