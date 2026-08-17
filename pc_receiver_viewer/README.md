@@ -141,8 +141,14 @@ Same approach as `pc_receiver/`:
 
 ```powershell
 pip install -r requirements.txt pyinstaller
-pyinstaller --onefile --console --name DigitalEyeViewer --icon ..\pc_receiver\icon.ico viewer.py
+pyinstaller --onefile --console --name DigitalEyeViewer --icon icon.ico viewer.py
 ```
+
+The `--icon icon.ico` gives the exe an orange "V" file/taskbar icon (matching
+the Viewer plate color in the app itself) instead of the default Python
+icon. `icon.ico` is already in this folder — just run PyInstaller from
+inside `pc_receiver_viewer/` as shown so it finds it, or pass a full path
+otherwise.
 
 The output is `dist\DigitalEyeViewer.exe` — no Python install required on
 the target machine.
