@@ -1000,21 +1000,19 @@ VIEWER_HTML = """<!doctype html>
   .data-header h2 { margin: 0; font-size: 17px; }
   .data-header p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
 
-  /* Blinking-logo loader shown while a data fetch is in flight, in place of
-     a generic spinner -- the actual app logo (same asset as the header),
-     centered dead-center on screen and "blinking" (open/close eye) while
-     data loads. */
+  /* Logo loader shown while a data fetch is in flight, in place of a
+     generic spinner -- the actual app logo (same asset as the header),
+     centered dead-center on screen and pulsing gently while data loads. */
   .eye-loader-overlay { display: none; position: fixed; inset: 0; align-items: center;
                          justify-content: center; flex-direction: column; gap: 16px;
                          background: var(--bg); z-index: 50; }
   .eye-loader-overlay.show { display: flex; }
   .eye-loader-overlay .msg { font-size: 13px; color: var(--muted); font-weight: 600; }
-  .eye-loader-overlay img { width: 84px; height: 84px; object-fit: contain;
-                             animation: eyeBlink 1.6s ease-in-out infinite; }
-  @keyframes eyeBlink {
-    0%, 35% { transform: scaleY(1); }
-    50% { transform: scaleY(0.08); }
-    65%, 100% { transform: scaleY(1); }
+  .eye-loader-overlay img { width: 240px; height: auto; display: block;
+                             animation: logoPulse 1.7s ease-in-out infinite; }
+  @keyframes logoPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.97); }
   }
 </style>
 </head>
