@@ -126,20 +126,29 @@ class WifiService {
         await WiFiForIoTPlugin.setEnabled(true, shouldOpenSettings: true);
       }
       if (await isConnectedToAllowedWifi()) return;
-      final joined = await WiFiForIoTPlugin.connect(
-        allowed.ssid,
-        password: allowed.password.isEmpty ? null : allowed.password,
-        security: allowed.password.isEmpty ? NetworkSecurity.NONE : NetworkSecurity.WPA,
-        joinOnce: false,
-        // true: the shop WiFi normally does have a real internet path, and
-        // requesting an internet-validated network is also what makes
-        // Android treat this as a genuine connection (shows the normal
-        // WiFi icon, etc.) instead of the "local only, no internet" join
-        // this used to ask for -- which is likely why the connection
-        // never looked "real" to the phone before.
-        withInternet: true,
-        timeoutInSeconds: 20,
-      ).timeout(const Duration(seconds: 25), onTimeout: () => false);
+
+      Future<bool> tryJoin({required bool withInternet}) => WiFiForIoTPlugin.connect(
+            allowed.ssid,
+            password: allowed.password.isEmpty ? null : allowed.password,
+            security: allowed.password.isEmpty ? NetworkSecurity.NONE : NetworkSecurity.WPA,
+            joinOnce: false,
+            withInternet: withInternet,
+            timeoutInSeconds: 12,
+          ).timeout(const Duration(seconds: 15), onTimeout: () => false);
+
+      // Try an internet-validated join first -- on a shop WiFi that does
+      // have a real gateway, this is what makes Android treat it as a
+      // genuine connection (shows the normal WiFi icon) instead of a
+      // scoped local-only one. But plenty of shop networks are LAN-only
+      // with no internet path at all, and Android *rejects* an
+      // internet-validated request outright on those -- connect() would
+      // just fail every time. Falling back to a local-only request keeps
+      // this working either way; pairing/sync only ever need to reach the
+      // PC on the same LAN; they never need real internet themselves.
+      var joined = await tryJoin(withInternet: true);
+      if (!joined) {
+        joined = await tryJoin(withInternet: false);
+      }
 
       // On Android 10+, connect() above only associates the radio with the
       // AP -- it does NOT make this app's own network calls (pairing,
@@ -147,7 +156,10 @@ class WifiService {
       // step, everything the app sends keeps using whatever the phone's
       // normal default route is (nothing, if this WiFi isn't it), which is
       // exactly what caused pairing to fail with "Network unreachable"
-      // even right after a connection that looked successful.
+      // even right after a connection that looked successful. This is
+      // what actually matters for pairing/sync to work -- unlike
+      // withInternet above, it applies the same way regardless of which
+      // of the two joins above succeeded.
       if (joined) {
         await WiFiForIoTPlugin.forceWifiUsage(true);
       }
