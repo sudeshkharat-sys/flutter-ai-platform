@@ -439,6 +439,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "lib/screens/sync_screen.dart": "sync_screen.dart.j2",
         "lib/services/print_service.dart": "print_service.dart.j2",
         "lib/services/sync_service.dart": "sync_service.dart.j2",
+        "lib/services/wifi_service.dart": "wifi_service.dart.j2",
         "lib/database/database.dart": "database.dart.j2",
         "lib/ml/detector.dart": "detector.dart.j2",
         "lib/ml/detection_result.dart": "detection_result.dart.j2",

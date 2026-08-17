@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/sync_service.dart';
+import '../services/wifi_service.dart';
 
 const _crimson = Color(0xFFDC143C);
 const _gold = Color(0xFFD4AF37);
@@ -20,6 +22,9 @@ class _SyncScreenState extends State<SyncScreen> {
   String? _busyDeviceId;
   String? _deviceLabel;
   int _unsyncedCount = 0;
+  AllowedWifi? _allowedWifi;
+  bool? _onAllowedWifi; // null while checking
+  bool _checkingWifi = false;
 
   @override
   void initState() {
@@ -27,6 +32,72 @@ class _SyncScreenState extends State<SyncScreen> {
     _loadPaired();
     _loadDeviceLabel();
     _loadUnsyncedCount();
+    _loadWifiStatus();
+  }
+
+  Future<void> _loadWifiStatus() async {
+    setState(() => _checkingWifi = true);
+    final allowed = await WifiService.instance.getAllowedWifi();
+    final connected = await WifiService.instance.isConnectedToAllowedWifi();
+    if (mounted) setState(() {
+      _allowedWifi = allowed;
+      _onAllowedWifi = connected;
+      _checkingWifi = false;
+    });
+  }
+
+  Future<void> _configureWifi() async {
+    final ssidController = TextEditingController(text: _allowedWifi?.ssid ?? '');
+    final passwordController = TextEditingController(text: _allowedWifi?.password ?? '');
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Shop WiFi'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This phone will try to join this network automatically every time the app opens, and remind you to reconnect if it drops. Leave the password blank for an open network.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ssidController,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'Network name (SSID)', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Password (optional)', border: OutlineInputBorder()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: _crimson, foregroundColor: Colors.white),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (saved != true) return;
+    final ssid = ssidController.text.trim();
+    if (ssid.isEmpty) return;
+    await WifiService.instance.setAllowedWifi(ssid, passwordController.text);
+    if (!mounted) return;
+    await _loadWifiStatus();
+    unawaited(WifiService.instance.ensureConnected().then((_) => mounted ? _loadWifiStatus() : null));
+  }
+
+  Future<void> _connectWifiNow() async {
+    setState(() => _checkingWifi = true);
+    await WifiService.instance.ensureConnected();
+    await _loadWifiStatus();
   }
 
   Future<void> _loadPaired() async {
@@ -292,6 +363,99 @@ class _SyncScreenState extends State<SyncScreen> {
                   ],
                 ),
               ),
+            Container(
+              padding: const EdgeInsets.all(14),
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE8E8E8)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Shop WiFi',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: _crimson)),
+                  const SizedBox(height: 4),
+                  Text(
+                    'The network this phone auto-joins on open, so inspection data always has a path to the paired PC.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                  ),
+                  const SizedBox(height: 12),
+                  if (_allowedWifi == null)
+                    Row(
+                      children: [
+                        const Icon(Icons.wifi_off, color: Colors.grey, size: 18),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text('No WiFi configured yet', style: TextStyle(fontSize: 13, color: Colors.grey)),
+                        ),
+                      ],
+                    )
+                  else
+                    Row(
+                      children: [
+                        Icon(
+                          _checkingWifi
+                              ? Icons.wifi_find
+                              : (_onAllowedWifi == true ? Icons.wifi : Icons.wifi_off),
+                          color: _checkingWifi
+                              ? Colors.grey
+                              : (_onAllowedWifi == true ? Colors.green[700] : Colors.orange),
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _checkingWifi
+                                ? 'Checking connection...'
+                                : (_onAllowedWifi == true
+                                    ? 'Connected to "${_allowedWifi!.ssid}"'
+                                    : 'Not connected to "${_allowedWifi!.ssid}"'),
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: (_checkingWifi || _onAllowedWifi == true) ? Colors.black87 : Colors.orange[800],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _configureWifi,
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: _crimson),
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          child: Text(_allowedWifi == null ? 'Set Up' : 'Change',
+                              style: const TextStyle(color: _crimson, fontSize: 12)),
+                        ),
+                      ),
+                      if (_allowedWifi != null) ...[
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: _checkingWifi ? null : _connectWifiNow,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _crimson,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            child: const Text('Connect Now', style: TextStyle(fontSize: 12)),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
