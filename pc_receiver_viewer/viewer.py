@@ -818,6 +818,11 @@ VIEWER_HTML = """<!doctype html>
   :root {
     --crimson: #DC143C; --crimson-dark: #B01030; --navy: #151923; --navy-light: #1f2430;
     --bg: #f7f7fa; --card: #ffffff; --border: #e6e6ec; --text: #1c1f26; --muted: #6b7280; --green: #1f9d55;
+    /* EYE lettering in the logo: E1 red, Y reddish-orange, E2 gold -- the
+       app-name plate next to the logo reuses these so each app carries the
+       same color as its letter (Receiver = E1, Viewer = Y, next app built
+       = E2, reserved). */
+    --eye-red: #f30222; --eye-orange: #f85813; --eye-gold: #fdaf04;
   }
   * { box-sizing: border-box; }
   /* Deliberately NOT a fixed-height/flex "app shell" layout -- this page
@@ -831,23 +836,23 @@ VIEWER_HTML = """<!doctype html>
      staying stuck to the top while you scroll (an acceptable trade). */
   html, body { margin: 0; }
   body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
-  header { background: var(--navy); color: #fff; padding: 6px 24px; display: flex; align-items: center; gap: 14px;
-           box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+  header { background: var(--card); color: var(--text); padding: 6px 24px; display: flex; align-items: center; gap: 14px;
+           border-bottom: 1px solid var(--border); }
   header img { height: 68px; }
-  /* Bright chrome/silver text -- sharp white-to-white bands with a single
-     dark "reflection" line through the middle, not a flat grey wash, so it
-     actually reads as shiny metal instead of dull grey on the dark bar. */
-  header .titles h1 {
-    margin: 0; font-size: 18px; font-weight: 800;
-    background: linear-gradient(180deg, #ffffff 0%, #ffffff 32%, #9a9a9a 47%, #6b6b6b 52%, #d0d0d0 62%, #ffffff 78%, #ffffff 100%);
-    -webkit-background-clip: text; background-clip: text;
-    -webkit-text-fill-color: transparent; color: transparent;
-    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+  header .titles { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  header .titles p { margin: 0; font-size: 11px; color: var(--muted); max-width: 380px; }
+  .app-plate {
+    display: inline-flex; align-items: center;
+    padding: 4px 12px; border-radius: 5px;
+    font-size: 12px; font-weight: 800; letter-spacing: 0.8px;
+    color: #fff; white-space: nowrap;
   }
-  header .titles p { margin: 2px 0 0; font-size: 11px; color: #9aa0ad; }
+  .plate-recv { background: var(--eye-red); }
+  .plate-view { background: var(--eye-orange); }
+  .plate-future { background: var(--eye-gold); }
   header .spacer { flex: 1; }
-  header a { color: #cfd3db; font-size: 12px; text-decoration: none; }
-  header a:hover { color: #fff; }
+  header a { color: var(--muted); font-size: 12px; text-decoration: none; }
+  header a:hover { color: var(--crimson); }
 
   /* Full width, edge to edge -- matches receiver.py's own data-viewer
      overlay, which has no max-width at all. */
@@ -1017,7 +1022,7 @@ VIEWER_HTML = """<!doctype html>
 <header>
   <img src="data:image/png;base64,__LOGO_B64__" alt="logo">
   <div class="titles">
-    <h1>Digital Eye Vault -- Viewer</h1>
+    <span class="app-plate plate-view">Viewer</span>
     <p>Read-only. View inspections and download Excel.</p>
   </div>
   <div class="spacer"></div>
@@ -1031,7 +1036,7 @@ VIEWER_HTML = """<!doctype html>
       <span class="muted" id="appsUpdatedAt" style="font-size:11px;"></span>
       <button class="secondary" onclick="loadApps()">Refresh</button>
     </div>
-    <p class="muted" style="margin:-6px 0 14px;">"Offline" usually just means WiFi dropped, the phone's off, or the app isn't running -- not a problem on this end.</p>
+    <p class="muted" id="offlineNote" style="margin:-6px 0 14px; display:none;">Offline: WiFi dropped, phone's off, or the app isn't open — nothing wrong on the receiving PC.</p>
     <div id="appsList" class="apps-grid"><div class="empty">Loading...</div></div>
   </div>
 
@@ -1162,11 +1167,16 @@ setInterval(updateAppsUpdatedLabel, 5000);
 
 function renderApps() {
   const el = document.getElementById('appsList');
+  const offlineNote = document.getElementById('offlineNote');
   if (!apps.length) {
     el.innerHTML = '<div class="empty">No data received yet.</div>';
+    offlineNote.style.display = 'none';
     return;
   }
-  el.innerHTML = apps.map(a => {
+  // Resolve online/offline once per app up front (instead of inline inside
+  // the render map) so the "what does Offline mean" note below can check
+  // whether it's actually relevant right now, instead of always showing.
+  const withStatus = apps.map(a => {
     let online, statusSub;
     if (a.lastHeartbeatAtMs) {
       // A real liveness signal (the phone pings every ~45s while its app
@@ -1188,6 +1198,12 @@ function renderApps() {
       online = minsAgo <= APP_ONLINE_THRESHOLD_MINUTES;
       statusSub = lastTs ? `last send ${timeAgo(lastTs)}` : 'no data yet';
     }
+    return { app: a, online, statusSub };
+  });
+
+  offlineNote.style.display = withStatus.some(s => !s.online) ? 'block' : 'none';
+
+  el.innerHTML = withStatus.map(({ app: a, online, statusSub }) => {
     const statusText = online ? 'Online' : 'Offline';
     return `
     <div class="app-card">

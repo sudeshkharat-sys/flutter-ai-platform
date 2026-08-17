@@ -1355,22 +1355,29 @@ DASHBOARD_HTML = """<!doctype html>
     --muted: #6b7280;
     --orange: #e0821e;
     --green: #1f9d55;
+    /* EYE lettering in the logo: E1 red, Y reddish-orange, E2 gold -- the
+       app-name plate next to the logo reuses these so each app carries the
+       same color as its letter (Receiver = E1, Viewer = Y, next app built
+       = E2, reserved). */
+    --eye-red: #f30222;
+    --eye-orange: #f85813;
+    --eye-gold: #fdaf04;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
-  header { background: var(--navy); color: #fff; padding: 6px 24px; display: flex; align-items: center; gap: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+  header { background: var(--card); color: var(--text); padding: 6px 24px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--border); }
   header img { height: 88px; }
-  /* Bright chrome/silver text -- sharp white-to-white bands with a single
-     dark "reflection" line through the middle, not a flat grey wash, so it
-     actually reads as shiny metal instead of dull grey on the dark bar. */
-  header .titles h1 {
-    margin: 0; font-size: 18px; letter-spacing: 0.5px; font-weight: 800;
-    background: linear-gradient(180deg, #ffffff 0%, #ffffff 32%, #9a9a9a 47%, #6b6b6b 52%, #d0d0d0 62%, #ffffff 78%, #ffffff 100%);
-    -webkit-background-clip: text; background-clip: text;
-    -webkit-text-fill-color: transparent; color: transparent;
-    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+  header .titles { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  header .titles p { margin: 0; font-size: 11px; color: var(--muted); max-width: 380px; }
+  .app-plate {
+    display: inline-flex; align-items: center;
+    padding: 4px 12px; border-radius: 5px;
+    font-size: 12px; font-weight: 800; letter-spacing: 0.8px;
+    color: #fff; white-space: nowrap;
   }
-  header .titles p { margin: 2px 0 0; font-size: 11px; color: #9aa0ad; }
+  .plate-recv { background: var(--eye-red); }
+  .plate-view { background: var(--eye-orange); }
+  .plate-future { background: var(--eye-gold); }
 
   nav { display: flex; gap: 4px; padding: 12px 24px 0; background: var(--bg); }
   nav button { border: none; background: transparent; padding: 10px 18px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 3px solid transparent; }
@@ -1526,9 +1533,9 @@ DASHBOARD_HTML = """<!doctype html>
   .breadcrumb .crumb-current { color: var(--text); font-weight: 600; }
 
   /* Header "receiving" pulse, flashed briefly on new uploads */
-  .live-indicator { display: none; align-items: center; gap: 6px; font-size: 11px; color: #ffb4c2; margin-left: auto; }
+  .live-indicator { display: none; align-items: center; gap: 6px; font-size: 11px; color: var(--crimson-dark); margin-left: auto; }
   .live-indicator.show { display: flex; }
-  .live-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: #ff4d6d; animation: dotPulse 1s infinite; }
+  .live-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--crimson); animation: dotPulse 1s infinite; }
   @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.4); } }
 
   .accordion { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
@@ -1580,11 +1587,11 @@ DASHBOARD_HTML = """<!doctype html>
 <header>
   <img src="data:image/png;base64,__LOGO_B64__" alt="Mahindra Digital Eye Vault">
   <div class="titles">
-    <h1>MAHINDRA DIGITAL EYE VAULT</h1>
+    <span class="app-plate plate-recv">Receiver</span>
     <p>Receives inspection data from paired phones on this WiFi/hotspot</p>
   </div>
   <div class="live-indicator" id="liveIndicator"><span class="dot"></span>Receiving…</div>
-  <button class="ghost-dark" style="margin-left:10px;" onclick="openSettingsModal()">⚙ Settings</button>
+  <button class="ghost" style="margin-left:10px;" onclick="openSettingsModal()">⚙ Settings</button>
 </header>
 
 <div class="settings-banner" id="settingsBanner" style="display:none;" onclick="openSettingsModal()">
