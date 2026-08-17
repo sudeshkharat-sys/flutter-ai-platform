@@ -126,18 +126,31 @@ class WifiService {
         await WiFiForIoTPlugin.setEnabled(true, shouldOpenSettings: true);
       }
       if (await isConnectedToAllowedWifi()) return;
-      await WiFiForIoTPlugin.connect(
+      final joined = await WiFiForIoTPlugin.connect(
         allowed.ssid,
         password: allowed.password.isEmpty ? null : allowed.password,
         security: allowed.password.isEmpty ? NetworkSecurity.NONE : NetworkSecurity.WPA,
         joinOnce: false,
-        // false: this only needs to reach the PC receiver on the same LAN,
-        // not the open internet -- requiring an internet-validated network
-        // would reject a perfectly good shop network whose gateway has no
-        // (or a captive-portal) internet path.
-        withInternet: false,
+        // true: the shop WiFi normally does have a real internet path, and
+        // requesting an internet-validated network is also what makes
+        // Android treat this as a genuine connection (shows the normal
+        // WiFi icon, etc.) instead of the "local only, no internet" join
+        // this used to ask for -- which is likely why the connection
+        // never looked "real" to the phone before.
+        withInternet: true,
         timeoutInSeconds: 20,
       ).timeout(const Duration(seconds: 25), onTimeout: () => false);
+
+      // On Android 10+, connect() above only associates the radio with the
+      // AP -- it does NOT make this app's own network calls (pairing,
+      // sync) actually go out over that connection. Without this explicit
+      // step, everything the app sends keeps using whatever the phone's
+      // normal default route is (nothing, if this WiFi isn't it), which is
+      // exactly what caused pairing to fail with "Network unreachable"
+      // even right after a connection that looked successful.
+      if (joined) {
+        await WiFiForIoTPlugin.forceWifiUsage(true);
+      }
     } catch (_) {
       // Not guaranteed on every Android version/OEM -- the every-Nth-
       // submission nag (see registerSubmissionAndShouldNag) is the fallback
