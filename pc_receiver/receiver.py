@@ -1171,6 +1171,42 @@ async def api_admin_set_master_data(request: Request, _: None = Depends(_require
     return {"status": "ok", "modelsLoaded": len(_master_data), **result}
 
 
+@app.post("/api/admin/master-data/row")
+async def api_admin_upsert_master_data_row(request: Request, _: None = Depends(_require_local)):
+    """Adds or edits one master-data row from the Admin Edit table -- the
+    single-row equivalent of the bulk paste/upload above. Matched (and
+    replaced) by Model Code, case-insensitively, so editing an existing
+    model updates it in place instead of adding a duplicate."""
+    body = await request.json()
+    row = _normalize_master_data([body])
+    if not row:
+        raise HTTPException(status_code=400, detail="modelCode and description are required")
+    row = row[0]
+
+    global _master_data
+    with _lock:
+        _master_data = [r for r in _master_data if r["modelCode"].upper() != row["modelCode"].upper()]
+        _master_data.append(row)
+        _master_data.sort(key=lambda r: r["modelCode"])
+        _save_master_data()
+        result = _reconcile_master_data()
+
+    return {"status": "ok", "row": row, "modelsLoaded": len(_master_data), **result}
+
+
+@app.delete("/api/admin/master-data/row")
+async def api_admin_delete_master_data_row(modelCode: str, _: None = Depends(_require_local)):
+    global _master_data
+    with _lock:
+        before = len(_master_data)
+        _master_data = [r for r in _master_data if r["modelCode"].upper() != modelCode.upper()]
+        if len(_master_data) == before:
+            raise HTTPException(status_code=404, detail="No master data row with that Model Code")
+        _save_master_data()
+
+    return {"status": "ok", "modelsLoaded": len(_master_data)}
+
+
 @app.get("/api/storage")
 async def api_storage(_: None = Depends(_require_local)):
     tree = {}
@@ -1859,17 +1895,34 @@ DASHBOARD_HTML = """<!doctype html>
     <div class="card" style="display:block;padding:16px;margin-bottom:18px;">
       <h3 style="margin:0 0 6px;">Master Data (Model Code → Variant)</h3>
       <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
-        Paste or upload the same master data JSON used when building the app
-        (a list of <code>{ platform_name, model_code, description }</code>).
-        Matching rows already received get their Model Variant filled in --
-        or overwritten, if it differs -- from the description column here.
+        The same master data the app is built with -- one row per Model
+        Code. Matching rows already received get their Model Variant filled
+        in, or overwritten if it differs, from the Description column here.
       </p>
-      <div id="masterDataStatus" style="font-size:12px;color:var(--muted);margin-bottom:10px;">Loading…</div>
-      <textarea id="masterDataInput" rows="8" style="width:100%;max-width:640px;font-family:monospace;font-size:12px;" placeholder='[{"platform_name":"...","model_code":"MC1","description":"..."}]'></textarea>
-      <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
-        <input type="file" id="masterDataFile" accept="application/json" onchange="loadMasterDataFile(event)">
-        <button class="primary" onclick="applyMasterData()">Apply Master Data</button>
-      </div>
+
+      <table class="data-table" id="masterDataTable" style="max-width:820px;">
+        <thead><tr><th>Model Code</th><th>Platform Name</th><th>Description</th><th></th></tr></thead>
+        <tbody id="masterDataRows"><tr><td colspan="4">Loading…</td></tr></tbody>
+        <tfoot>
+          <tr>
+            <td><input id="mdNewCode" placeholder="e.g. MC1"></td>
+            <td><input id="mdNewPlatform" placeholder="e.g. Bolero"></td>
+            <td><input id="mdNewDescription" placeholder="e.g. Bolero Neo (V1)"></td>
+            <td><button class="primary" onclick="addMasterDataRow()">Add</button></td>
+          </tr>
+        </tfoot>
+      </table>
+
+      <details style="margin-top:14px;max-width:640px;">
+        <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Bulk paste/upload JSON instead</summary>
+        <div style="margin-top:10px;">
+          <textarea id="masterDataInput" rows="8" style="width:100%;font-family:monospace;font-size:12px;" placeholder='[{"platform_name":"...","model_code":"MC1","description":"..."}]'></textarea>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
+            <input type="file" id="masterDataFile" accept="application/json" onchange="loadMasterDataFile(event)">
+            <button class="primary" onclick="applyMasterData()">Replace All From JSON</button>
+          </div>
+        </div>
+      </details>
     </div>
 
     <div class="card" style="display:block;padding:16px;">
@@ -2251,17 +2304,64 @@ async function removeDevice(id, name) {
 }
 
 async function loadMasterDataStatus() {
-  const el = document.getElementById('masterDataStatus');
+  const tbody = document.getElementById('masterDataRows');
   try {
     const r = await fetch('/api/admin/master-data');
     const d = await r.json();
     const data = d.masterData || [];
-    el.textContent = data.length ? `${data.length} model(s) currently loaded.` : 'No master data loaded yet.';
-    if (data.length && !document.getElementById('masterDataInput').value) {
-      document.getElementById('masterDataInput').value = JSON.stringify(data, null, 2);
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty" style="padding:10px 0;">No master data yet -- add a row below.</td></tr>';
+      return;
     }
+    tbody.innerHTML = data.map(row => `
+      <tr>
+        <td>${row.modelCode}</td>
+        <td>${row.platformName || ''}</td>
+        <td>${row.description}</td>
+        <td><button class="icon-btn" title="Delete" onclick="deleteMasterDataRow('${row.modelCode.replace(/'/g, "\\'")}')">✕</button></td>
+      </tr>
+    `).join('');
   } catch (e) {
-    el.textContent = 'Could not load master data status.';
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">Could not load master data.</td></tr>';
+  }
+}
+
+async function addMasterDataRow() {
+  const modelCode = document.getElementById('mdNewCode').value.trim();
+  const platformName = document.getElementById('mdNewPlatform').value.trim();
+  const description = document.getElementById('mdNewDescription').value.trim();
+  if (!modelCode || !description) {
+    alert('Model Code and Description are required.');
+    return;
+  }
+  try {
+    const r = await fetch('/api/admin/master-data/row', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelCode, platformName, description }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    document.getElementById('mdNewCode').value = '';
+    document.getElementById('mdNewPlatform').value = '';
+    document.getElementById('mdNewDescription').value = '';
+    showToast(`Saved ${modelCode} -- ${d.rowsUpdated} received row(s) updated.`);
+    loadMasterDataStatus();
+  } catch (e) {
+    alert('Could not save row: ' + e.message);
+  }
+}
+
+async function deleteMasterDataRow(modelCode) {
+  if (!confirm(`Remove master data for Model Code "${modelCode}"? This only removes it from the master list -- data already received keeps whatever Model Variant it currently has.`)) return;
+  try {
+    const r = await fetch('/api/admin/master-data/row?modelCode=' + encodeURIComponent(modelCode), { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast('Removed ' + modelCode);
+    loadMasterDataStatus();
+  } catch (e) {
+    alert('Could not delete row: ' + e.message);
   }
 }
 
