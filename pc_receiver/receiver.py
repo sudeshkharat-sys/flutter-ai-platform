@@ -42,6 +42,7 @@ from datetime import datetime
 from pathlib import Path
 
 import mimetypes
+import shutil
 
 import qrcode
 import uvicorn
@@ -99,6 +100,7 @@ APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path
 CONFIG_FILE = APP_DIR / "config.json"
 DEVICES_FILE = APP_DIR / "paired_devices.json"
 APP_ALIASES_FILE = APP_DIR / "app_aliases.json"
+MASTER_DATA_FILE = APP_DIR / "master_data.json"
 
 
 def _load_config() -> dict:
@@ -337,6 +339,123 @@ def _resolve_app_alias(app_name_safe: str) -> str:
         seen.add(current)
         current = target
     return current
+
+
+# Master data -- the same VIN/model-code -> description mapping the app
+# bundles into each APK at build time (assets/master_data.json, see
+# backend/app/codegen). The APK-side "Model Variant" is only whatever token
+# it could regex out of that description at build time (e.g. "(V1)"), which
+# is empty for model families that don't tag a variant that way -- so an
+# admin can paste/upload that same master data here and have it filled in
+# (or corrected) directly on the PC side, matched by Model Code, using the
+# raw description as the variant value.
+# list of {"modelCode": str, "description": str, "platformName": str}
+_master_data: list[dict] = []
+
+
+def _load_master_data():
+    global _master_data
+    if MASTER_DATA_FILE.exists():
+        try:
+            _master_data = json.loads(MASTER_DATA_FILE.read_text())
+        except Exception:
+            _master_data = []
+
+
+def _save_master_data():
+    MASTER_DATA_FILE.write_text(json.dumps(_master_data, indent=2))
+
+
+def _normalize_master_data(raw: list) -> list[dict]:
+    """Accepts the same shape the app build pipeline exports/imports
+    (platform_name/model_code/description, or modelCode/description) and
+    normalizes it to one shape. Rows missing a model code or description
+    are dropped -- there's nothing to match or fill in from them."""
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        model_code = str(item.get("modelCode") or item.get("model_code") or "").strip()
+        description = str(item.get("description") or "").strip()
+        platform_name = str(item.get("platformName") or item.get("platform_name") or "").strip()
+        if not model_code or not description:
+            continue
+        out.append({"modelCode": model_code, "description": description, "platformName": platform_name})
+    return out
+
+
+def _master_data_variant_map() -> dict[str, str]:
+    return {row["modelCode"].upper(): row["description"] for row in _master_data}
+
+
+def _reconcile_master_data() -> dict:
+    """Applies the current master data to every inspection already on disk:
+    for any row whose Model Code matches, the Model Variant is set to the
+    master data's description -- overwriting whatever's there if it
+    differs. Rewrites manifest.json files (the data-viewer table's source
+    of truth) and the per-app master Excel workbooks, then drops the
+    in-memory rows cache so the dashboard reflects the correction
+    immediately instead of on next restart."""
+    variant_map = _master_data_variant_map()
+    manifests_updated = 0
+    rows_updated = 0
+
+    if variant_map and DATA_DIR.exists():
+        for device_dir in DATA_DIR.iterdir():
+            if not device_dir.is_dir() or device_dir.name.startswith("_"):
+                continue
+            for app_dir in device_dir.iterdir():
+                if not app_dir.is_dir():
+                    continue
+                for batch_dir in app_dir.iterdir():
+                    if not batch_dir.is_dir():
+                        continue
+                    manifest_path = batch_dir / "manifest.json"
+                    if not manifest_path.exists():
+                        continue
+                    try:
+                        inspections = json.loads(manifest_path.read_text())
+                    except Exception:
+                        continue
+                    dirty = False
+                    for insp in inspections:
+                        code = str(insp.get("modelCode") or "").upper()
+                        new_variant = variant_map.get(code)
+                        if new_variant is not None and insp.get("modelVariant") != new_variant:
+                            insp["modelVariant"] = new_variant
+                            dirty = True
+                            rows_updated += 1
+                    if dirty:
+                        manifest_path.write_text(json.dumps(inspections, indent=2))
+                        manifests_updated += 1
+
+        master_root = DATA_DIR / "_master"
+        if master_root.exists():
+            variant_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "modelVariant")
+            code_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "modelCode")
+            for app_dir in master_root.iterdir():
+                xlsx_path = app_dir / "data.xlsx"
+                if not xlsx_path.exists():
+                    continue
+                try:
+                    wb = load_workbook(xlsx_path)
+                    ws = wb.active
+                    changed = False
+                    for row in ws.iter_rows(min_row=2):
+                        code = str(row[code_col].value or "").upper()
+                        new_variant = variant_map.get(code)
+                        if new_variant is not None and row[variant_col].value != new_variant:
+                            row[variant_col].value = new_variant
+                            changed = True
+                    if changed:
+                        wb.save(xlsx_path)
+                except Exception as e:
+                    print(f"[warn] could not reconcile master data into {xlsx_path}: {e}")
+
+    with _rows_cache_lock:
+        _rows_cache.clear()
+
+    return {"manifestsUpdated": manifests_updated, "rowsUpdated": rows_updated, "modelsLoaded": len(variant_map)}
 
 
 # Columns for both the persistent per-app master workbook and the
@@ -952,6 +1071,101 @@ async def api_remove_device(device_id: str, _: None = Depends(_require_local)):
     return {"status": "ok"}
 
 
+@app.delete("/api/admin/device-data")
+async def api_admin_wipe_device_data(deviceName: str, appName: str, _: None = Depends(_require_local)):
+    """Permanently deletes everything received from [deviceName]/[appName]:
+    the on-disk batches/images, its rows in that app's master Excel, and
+    its pairing (if still paired). Unlike DELETE /api/devices/{id} (which
+    only removes the pairing so the phone can re-pair), this is what
+    actually makes a device's data stop showing up in this dashboard *and*
+    the read-only Vault viewer, which both read straight off disk."""
+    safe_device = _safe_name(deviceName)
+    safe_app = _safe_name(appName)
+    if not safe_device or not safe_app:
+        raise HTTPException(status_code=400, detail="deviceName and appName are required")
+
+    device_dir = DATA_DIR / safe_device / safe_app
+    if not device_dir.exists():
+        raise HTTPException(status_code=404, detail="No data on disk for this device/app")
+
+    with _lock:
+        _merge_devices_from_disk()
+        removed_ids = [did for did, d in list(_paired_devices.items())
+                       if _safe_name(d["deviceName"]) == safe_device and _safe_name(d.get("appName", "app")) == safe_app]
+        for did in removed_ids:
+            del _paired_devices[did]
+            _last_heartbeat.pop(did, None)
+        if removed_ids:
+            try:
+                _save_devices()
+            except RuntimeError as e:
+                raise HTTPException(status_code=500, detail=str(e))
+        try:
+            _save_heartbeats()
+        except Exception:
+            pass
+
+    shutil.rmtree(device_dir, ignore_errors=True)
+    parent = device_dir.parent
+    if parent.exists() and not any(parent.iterdir()):
+        shutil.rmtree(parent, ignore_errors=True)
+
+    # Strip this device's rows out of the shared per-app master Excel too --
+    # otherwise the deleted device's data would still show up in the app's
+    # aggregated workbook and Apps-tab totals even though the raw batches
+    # are gone.
+    app_name_safe = _resolve_app_alias(safe_app)
+    xlsx_path = _app_master_dir(app_name_safe) / "data.xlsx"
+    if xlsx_path.exists():
+        try:
+            device_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "deviceName")
+            wb = load_workbook(xlsx_path)
+            ws = wb.active
+            rows_to_delete = [r for r in range(ws.max_row, 1, -1) if ws.cell(row=r, column=device_col + 1).value == deviceName]
+            for r in rows_to_delete:
+                ws.delete_rows(r)
+            if rows_to_delete:
+                wb.save(xlsx_path)
+        except Exception as e:
+            print(f"[warn] could not strip {deviceName} rows from {xlsx_path}: {e}")
+
+    with _rows_cache_lock:
+        _rows_cache.pop(str(device_dir), None)
+
+    return {"status": "ok", "removedPairings": len(removed_ids)}
+
+
+@app.get("/api/admin/master-data")
+async def api_admin_get_master_data(_: None = Depends(_require_local)):
+    return {"masterData": _master_data}
+
+
+@app.post("/api/admin/master-data")
+async def api_admin_set_master_data(request: Request, _: None = Depends(_require_local)):
+    """Accepts the same master-data JSON the app bundles into the APK at
+    build time (a list of {platform_name, model_code, description} --
+    pasted or uploaded here), and immediately re-applies it to every
+    inspection already on disk, so Model Variant is filled in/corrected
+    from the description column wherever the Model Code matches -- see
+    _reconcile_master_data."""
+    body = await request.json()
+    raw = body.get("masterData")
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="Expected {\"masterData\": [...]}")
+
+    global _master_data
+    normalized = _normalize_master_data(raw)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="No valid rows found (each needs at least modelCode/model_code and description)")
+
+    with _lock:
+        _master_data = normalized
+        _save_master_data()
+        result = _reconcile_master_data()
+
+    return {"status": "ok", "modelsLoaded": len(_master_data), **result}
+
+
 @app.get("/api/storage")
 async def api_storage(_: None = Depends(_require_local)):
     tree = {}
@@ -1365,8 +1579,8 @@ DASHBOARD_HTML = """<!doctype html>
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
-  header { background: var(--card); color: var(--text); padding: 6px 24px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--border); }
-  header img { height: 88px; }
+  header { background: var(--card); color: var(--text); padding: 14px 24px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--border); }
+  header img { height: 88px; margin: 6px 0; }
   header .titles { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   header .titles p { margin: 0; font-size: 11px; color: var(--muted); max-width: 380px; }
   .app-plate {
@@ -1602,6 +1816,7 @@ DASHBOARD_HTML = """<!doctype html>
   <button class="tab-btn" data-tab="devices">Devices</button>
   <button class="tab-btn active" data-tab="apps">Apps</button>
   <button class="tab-btn" data-tab="storage">Vault</button>
+  <button class="tab-btn" data-tab="admin">Admin Edit</button>
 </nav>
 
 <main>
@@ -1629,6 +1844,39 @@ DASHBOARD_HTML = """<!doctype html>
       <button class="ghost" onclick="loadStorage()">Refresh</button>
     </div>
     <div id="storageList"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section id="tab-admin" class="tab">
+    <div class="toolbar">
+      <h2>Admin Edit</h2>
+    </div>
+
+    <div class="card" style="display:block;padding:16px;margin-bottom:18px;">
+      <h3 style="margin:0 0 6px;">Master Data (Model Code → Variant)</h3>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
+        Paste or upload the same master data JSON used when building the app
+        (a list of <code>{ platform_name, model_code, description }</code>).
+        Matching rows already received get their Model Variant filled in --
+        or overwritten, if it differs -- from the description column here.
+      </p>
+      <div id="masterDataStatus" style="font-size:12px;color:var(--muted);margin-bottom:10px;">Loading…</div>
+      <textarea id="masterDataInput" rows="8" style="width:100%;max-width:640px;font-family:monospace;font-size:12px;" placeholder='[{"platform_name":"...","model_code":"MC1","description":"..."}]'></textarea>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
+        <input type="file" id="masterDataFile" accept="application/json" onchange="loadMasterDataFile(event)">
+        <button class="primary" onclick="applyMasterData()">Apply Master Data</button>
+      </div>
+    </div>
+
+    <div class="card" style="display:block;padding:16px;">
+      <h3 style="margin:0 0 6px;">Delete Device Data</h3>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
+        Permanently deletes everything received from a phone/app -- batches,
+        images, and its rows in the master Excel -- not just the pairing.
+        Use this to actually clear a test device out of both this dashboard
+        and the Vault viewer.
+      </p>
+      <div id="adminDeviceList"><div class="empty">Loading…</div></div>
+    </div>
   </section>
 </main>
 
@@ -1759,6 +2007,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'storage') loadStorage();
     if (btn.dataset.tab === 'apps') loadApps();
+    if (btn.dataset.tab === 'admin') { loadMasterDataStatus(); loadAdminDeviceList(); }
   });
 });
 
@@ -1994,6 +2243,93 @@ async function removeDevice(id, name) {
   await fetch('/api/devices/' + id, { method: 'DELETE' });
   showToast('Removed ' + name);
   loadDevices();
+}
+
+async function loadMasterDataStatus() {
+  const el = document.getElementById('masterDataStatus');
+  try {
+    const r = await fetch('/api/admin/master-data');
+    const d = await r.json();
+    const data = d.masterData || [];
+    el.textContent = data.length ? `${data.length} model(s) currently loaded.` : 'No master data loaded yet.';
+    if (data.length && !document.getElementById('masterDataInput').value) {
+      document.getElementById('masterDataInput').value = JSON.stringify(data, null, 2);
+    }
+  } catch (e) {
+    el.textContent = 'Could not load master data status.';
+  }
+}
+
+function loadMasterDataFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('masterDataInput').value = reader.result; };
+  reader.readAsText(file);
+}
+
+async function applyMasterData() {
+  let parsed;
+  try {
+    parsed = JSON.parse(document.getElementById('masterDataInput').value);
+  } catch (e) {
+    alert('Not valid JSON: ' + e.message);
+    return;
+  }
+  if (!Array.isArray(parsed)) {
+    alert('Expected a JSON array of { platform_name, model_code, description }.');
+    return;
+  }
+  try {
+    const r = await fetch('/api/admin/master-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ masterData: parsed }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast(`Applied ${d.modelsLoaded} model(s) -- ${d.rowsUpdated} row(s) updated.`);
+    loadMasterDataStatus();
+  } catch (e) {
+    alert('Could not apply master data: ' + e.message);
+  }
+}
+
+async function loadAdminDeviceList() {
+  const el = document.getElementById('adminDeviceList');
+  try {
+    const r = await fetch('/api/devices');
+    const devices = await r.json();
+    if (!devices.length) {
+      el.innerHTML = '<div class="empty">No paired devices.</div>';
+      return;
+    }
+    el.innerHTML = devices.map(d => `
+      <div class="app-row">
+        <div class="a-info">
+          <div class="a-name">${d.deviceName} — ${d.appName}</div>
+          <div class="a-meta">${d.batchCount} send(s) • ${fmtBytes(d.totalBytes)}</div>
+        </div>
+        <button class="icon-btn" title="Delete all data for this device" onclick="wipeDeviceData('${d.deviceName.replace(/'/g, "\\'")}', '${d.appName.replace(/'/g, "\\'")}')">🗑 Delete Data</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Could not load devices.</div>';
+  }
+}
+
+async function wipeDeviceData(deviceName, appName) {
+  if (!confirm(`Permanently delete ALL data received from "${deviceName} — ${appName}"? This deletes batches, images, and its rows in the master Excel. This cannot be undone.`)) return;
+  try {
+    const r = await fetch(`/api/admin/device-data?deviceName=${encodeURIComponent(deviceName)}&appName=${encodeURIComponent(appName)}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast('Deleted data for ' + deviceName);
+    loadAdminDeviceList();
+    loadDevices();
+  } catch (e) {
+    alert('Could not delete device data: ' + e.message);
+  }
 }
 
 async function loadStorage() {
@@ -2838,6 +3174,7 @@ def _port_available(port: int) -> bool:
 def main():
     _load_devices()
     _load_app_aliases()
+    _load_master_data()
     _load_heartbeats()
     zeroconf = start_mdns()
 
