@@ -996,7 +996,13 @@ VIEWER_HTML = """<!doctype html>
   .chart-hidden-bar b { color: var(--text); }
 
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-  table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  /* The data table has grown a Variant column alongside VIN/Model Code/
+     Model Name -- too many nowrap columns for most screens to show at once
+     even before that. .card's own overflow:hidden clips the rest of the
+     row instead of scrolling it, so the table gets its own scroll
+     container here rather than relying on the card's. */
+  .table-scroll { overflow-x: auto; }
+  table.data-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 13px; }
   table.data-table thead th { background: #fafafc; border-bottom: 2px solid var(--border);
                                padding: 10px; text-align: left; white-space: nowrap; }
   table.data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -1163,6 +1169,7 @@ VIEWER_HTML = """<!doctype html>
   <div class="charts-panel" id="chartsPanel"></div>
 
   <div class="card">
+    <div class="table-scroll">
     <table class="data-table">
       <thead>
         <tr>
@@ -1172,6 +1179,7 @@ VIEWER_HTML = """<!doctype html>
       </thead>
       <tbody id="viewerRows"></tbody>
     </table>
+    </div>
   </div>
   </div>
   </div>
