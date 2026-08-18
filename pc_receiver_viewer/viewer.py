@@ -899,9 +899,9 @@ VIEWER_HTML = """<!doctype html>
      staying stuck to the top while you scroll (an acceptable trade). */
   html, body { margin: 0; }
   body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
-  header { background: var(--card); color: var(--text); padding: 6px 24px; display: flex; align-items: center; gap: 14px;
+  header { background: var(--card); color: var(--text); padding: 14px 24px; display: flex; align-items: center; gap: 14px;
            border-bottom: 1px solid var(--border); }
-  header img { height: 68px; }
+  header img { height: 68px; margin: 6px 0; }
   header .titles { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   header .titles p { margin: 0; font-size: 11px; color: var(--muted); max-width: 380px; }
   .app-plate {

@@ -100,6 +100,7 @@ CONFIG_FILE = APP_DIR / "config.json"
 DEVICES_FILE = APP_DIR / "paired_devices.json"
 APP_ALIASES_FILE = APP_DIR / "app_aliases.json"
 MASTER_DATA_FILE = APP_DIR / "master_data.json"
+ENGINE_DATA_FILE = APP_DIR / "engine_data.json"
 
 
 def _load_config() -> dict:
@@ -514,6 +515,137 @@ def _reconcile_master_data() -> dict:
         _rows_cache.clear()
 
     return {"manifestsUpdated": manifests_updated, "rowsUpdated": rows_updated, "modelsLoaded": len(variant_map)}
+
+
+# Engine data -- the app's *other* master list (assets/engine_data.json,
+# built from EngineDataQueries the same way master_data.json is built from
+# MasterDataQueries). It's a completely separate lookup used by engine/OCR
+# scan apps: for those, the inspection's "Model Code" field actually holds
+# the engine's scanned Part No, and sync_service.dart.j2 fills "Model Name"
+# (not "Model Variant") from this table's Part No -> Model Name mapping --
+# see scan_screen.dart.j2 (modelCode: partNo) and sync_service.dart.j2's
+# _loadModelNameMap(). Kept and reconciled the same way as master data, just
+# matched by Part No and writing Model Name instead of Model Variant.
+# list of {"partNo": str, "modelName": str, "description": str}
+_engine_data: list[dict] = []
+
+
+def _load_engine_data():
+    global _engine_data
+    if ENGINE_DATA_FILE.exists():
+        try:
+            _engine_data = json.loads(ENGINE_DATA_FILE.read_text())
+        except Exception:
+            _engine_data = []
+
+
+def _save_engine_data():
+    ENGINE_DATA_FILE.write_text(json.dumps(_engine_data, indent=2))
+
+
+def _normalize_engine_data(raw: list) -> list[dict]:
+    """Same idea as _normalize_master_data, for the app build pipeline's
+    engine_data.json shape (sheet_name/part_no/model_name/description)."""
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        part_no = str(item.get("partNo") or item.get("part_no") or "").strip()
+        model_name = str(item.get("modelName") or item.get("model_name") or "").strip()
+        description = str(item.get("description") or "").strip()
+        if not part_no or not model_name:
+            continue
+        out.append({"partNo": part_no, "modelName": model_name, "description": description})
+    return out
+
+
+def _engine_data_model_name_map() -> dict[str, str]:
+    return {row["partNo"].upper(): row["modelName"] for row in _engine_data}
+
+
+def _apply_engine_data_to_inspections(inspections: list, manifest_path: Path):
+    """Engine-scan equivalent of _apply_master_data_to_inspections -- runs
+    on every fresh upload so an engine app's Model Name is corrected from
+    this Part No table immediately, not just on the next manual Apply."""
+    name_map = _engine_data_model_name_map()
+    if not name_map:
+        return
+    dirty = False
+    for insp in inspections:
+        code = str(insp.get("modelCode") or "").upper()
+        new_name = name_map.get(code)
+        if new_name is not None and insp.get("modelName") != new_name:
+            insp["modelName"] = new_name
+            dirty = True
+    if dirty:
+        manifest_path.write_text(json.dumps(inspections, indent=2))
+
+
+def _reconcile_engine_data() -> dict:
+    """Engine-scan equivalent of _reconcile_master_data -- applies the
+    current engine data to every inspection already on disk, matched by
+    Part No (the Model Code column, for an engine app), overwriting Model
+    Name wherever it differs."""
+    name_map = _engine_data_model_name_map()
+    manifests_updated = 0
+    rows_updated = 0
+
+    if name_map and DATA_DIR.exists():
+        for device_dir in DATA_DIR.iterdir():
+            if not device_dir.is_dir() or device_dir.name.startswith("_"):
+                continue
+            for app_dir in device_dir.iterdir():
+                if not app_dir.is_dir():
+                    continue
+                for batch_dir in app_dir.iterdir():
+                    if not batch_dir.is_dir():
+                        continue
+                    manifest_path = batch_dir / "manifest.json"
+                    if not manifest_path.exists():
+                        continue
+                    try:
+                        inspections = json.loads(manifest_path.read_text())
+                    except Exception:
+                        continue
+                    dirty = False
+                    for insp in inspections:
+                        code = str(insp.get("modelCode") or "").upper()
+                        new_name = name_map.get(code)
+                        if new_name is not None and insp.get("modelName") != new_name:
+                            insp["modelName"] = new_name
+                            dirty = True
+                            rows_updated += 1
+                    if dirty:
+                        manifest_path.write_text(json.dumps(inspections, indent=2))
+                        manifests_updated += 1
+
+        master_root = DATA_DIR / "_master"
+        if master_root.exists():
+            name_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "modelName")
+            code_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "modelCode")
+            for app_dir in master_root.iterdir():
+                xlsx_path = app_dir / "data.xlsx"
+                if not xlsx_path.exists():
+                    continue
+                try:
+                    wb = load_workbook(xlsx_path)
+                    ws = wb.active
+                    changed = False
+                    for row in ws.iter_rows(min_row=2):
+                        code = str(row[code_col].value or "").upper()
+                        new_name = name_map.get(code)
+                        if new_name is not None and row[name_col].value != new_name:
+                            row[name_col].value = new_name
+                            changed = True
+                    if changed:
+                        wb.save(xlsx_path)
+                except Exception as e:
+                    print(f"[warn] could not reconcile engine data into {xlsx_path}: {e}")
+
+    with _rows_cache_lock:
+        _rows_cache.clear()
+
+    return {"manifestsUpdated": manifests_updated, "rowsUpdated": rows_updated, "modelsLoaded": len(name_map)}
 
 
 # Columns for both the persistent per-app master workbook and the
@@ -966,6 +1098,7 @@ async def upload(
         try:
             inspections = json.loads(manifest_path.read_text())
             _apply_master_data_to_inspections(inspections, manifest_path)
+            _apply_engine_data_to_inspections(inspections, manifest_path)
             rows = _flatten_manifest_rows(inspections, stamp, device_name=device["deviceName"])
             _append_to_master_excel(_app_master_dir(app_name), rows)
         except Exception as e:
@@ -1229,6 +1362,67 @@ async def api_admin_delete_master_data_row(modelCode: str, _: None = Depends(_re
         _save_master_data()
 
     return {"status": "ok", "modelsLoaded": len(_master_data)}
+
+
+@app.get("/api/admin/engine-data")
+async def api_admin_get_engine_data(_: None = Depends(_require_local)):
+    return {"engineData": _engine_data}
+
+
+@app.post("/api/admin/engine-data")
+async def api_admin_set_engine_data(request: Request, _: None = Depends(_require_local)):
+    """Bulk paste/upload replace for engine data -- see
+    api_admin_set_master_data, same idea but for the Part No -> Model Name
+    table (engine/OCR scan apps) instead of the VIN Model Code -> Variant
+    table."""
+    body = await request.json()
+    raw = body.get("engineData")
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="Expected {\"engineData\": [...]}")
+
+    global _engine_data
+    normalized = _normalize_engine_data(raw)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="No valid rows found (each needs at least partNo/part_no and modelName/model_name)")
+
+    with _lock:
+        _engine_data = normalized
+        _save_engine_data()
+        result = _reconcile_engine_data()
+
+    return {"status": "ok", "modelsLoaded": len(_engine_data), **result}
+
+
+@app.post("/api/admin/engine-data/row")
+async def api_admin_upsert_engine_data_row(request: Request, _: None = Depends(_require_local)):
+    body = await request.json()
+    row = _normalize_engine_data([body])
+    if not row:
+        raise HTTPException(status_code=400, detail="partNo and modelName are required")
+    row = row[0]
+
+    global _engine_data
+    with _lock:
+        _engine_data = [r for r in _engine_data if r["partNo"].upper() != row["partNo"].upper()]
+        _engine_data.append(row)
+        _engine_data.sort(key=lambda r: r["partNo"])
+        _save_engine_data()
+        result = _reconcile_engine_data()
+
+    return {"status": "ok", "row": row, "modelsLoaded": len(_engine_data), **result}
+
+
+@app.delete("/api/admin/engine-data/row")
+async def api_admin_delete_engine_data_row(partNo: str, _: None = Depends(_require_local)):
+    global _engine_data
+    with _lock:
+        before = len(_engine_data)
+        _engine_data = [r for r in _engine_data if r["partNo"].upper() != partNo.upper()]
+        if len(_engine_data) == before:
+            raise HTTPException(status_code=404, detail="No engine data row with that Part No")
+        _save_engine_data()
+
+    return {"status": "ok", "modelsLoaded": len(_engine_data)}
 
 
 @app.get("/api/storage")
@@ -1917,36 +2111,78 @@ DASHBOARD_HTML = """<!doctype html>
     </div>
 
     <div class="card" style="display:block;padding:16px;margin-bottom:18px;">
-      <h3 style="margin:0 0 6px;">Master Data (Model Code → Variant)</h3>
-      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
-        The same master data the app is built with -- one row per Model
-        Code. Matching rows already received get their Model Variant filled
-        in, or overwritten if it differs, from the Description column here.
-      </p>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <h3 style="margin:0;">Master Data</h3>
+        <select id="mdDataType" onchange="switchMasterDataType()" style="margin-left:auto;">
+          <option value="vin">VIN Data (Model Code → Variant)</option>
+          <option value="engine">Engine Data (Part No → Model Name)</option>
+        </select>
+      </div>
 
-      <table class="data-table" id="masterDataTable" style="max-width:820px;">
-        <thead><tr><th>Model Code</th><th>Platform Name</th><th>Description</th><th></th></tr></thead>
-        <tbody id="masterDataRows"><tr><td colspan="4">Loading…</td></tr></tbody>
-        <tfoot>
-          <tr>
-            <td><input id="mdNewCode" placeholder="e.g. MC1"></td>
-            <td><input id="mdNewPlatform" placeholder="e.g. Bolero"></td>
-            <td><input id="mdNewDescription" placeholder="e.g. Bolero Neo (V1)"></td>
-            <td><button class="primary" onclick="addMasterDataRow()">Add</button></td>
-          </tr>
-        </tfoot>
-      </table>
+      <div id="mdPanelVin">
+        <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
+          The same master data the app is built with -- one row per Model
+          Code. Matching rows already received get their Model Variant filled
+          in, or overwritten if it differs, from the Description column here.
+        </p>
 
-      <details style="margin-top:14px;max-width:640px;">
-        <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Bulk paste/upload JSON instead</summary>
-        <div style="margin-top:10px;">
-          <textarea id="masterDataInput" rows="8" style="width:100%;font-family:monospace;font-size:12px;" placeholder='[{"platform_name":"...","model_code":"MC1","description":"..."}]'></textarea>
-          <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
-            <input type="file" id="masterDataFile" accept="application/json" onchange="loadMasterDataFile(event)">
-            <button class="primary" onclick="applyMasterData()">Replace All From JSON</button>
+        <table class="data-table" id="masterDataTable" style="max-width:820px;">
+          <thead><tr><th>Model Code</th><th>Platform Name</th><th>Description</th><th></th></tr></thead>
+          <tbody id="masterDataRows"><tr><td colspan="4">Loading…</td></tr></tbody>
+          <tfoot>
+            <tr>
+              <td><input id="mdNewCode" placeholder="e.g. MC1"></td>
+              <td><input id="mdNewPlatform" placeholder="e.g. Bolero"></td>
+              <td><input id="mdNewDescription" placeholder="e.g. Bolero Neo (V1)"></td>
+              <td><button class="primary" onclick="addMasterDataRow()">Add</button></td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <details id="masterDataBulk" style="margin-top:14px;max-width:640px;">
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Bulk paste/upload JSON instead</summary>
+          <div style="margin-top:10px;">
+            <textarea id="masterDataInput" rows="8" style="width:100%;font-family:monospace;font-size:12px;" placeholder='[{"platform_name":"...","model_code":"MC1","description":"..."}]'></textarea>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
+              <input type="file" id="masterDataFile" accept="application/json" onchange="loadMasterDataFile(event)">
+              <button class="primary" onclick="applyMasterData()">Replace All From JSON</button>
+            </div>
           </div>
-        </div>
-      </details>
+        </details>
+      </div>
+
+      <div id="mdPanelEngine" style="display:none;">
+        <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
+          The app's engine_data.json -- one row per Part No. For an engine/OCR
+          scan app, the scanned Part No lands in the same Model Code field a
+          VIN app uses, so matching rows already received get their Model
+          Name filled in, or overwritten if it differs, from here.
+        </p>
+
+        <table class="data-table" id="engineDataTable" style="max-width:820px;">
+          <thead><tr><th>Part No</th><th>Model Name</th><th>Description</th><th></th></tr></thead>
+          <tbody id="engineDataRows"><tr><td colspan="4">Loading…</td></tr></tbody>
+          <tfoot>
+            <tr>
+              <td><input id="edNewPartNo" placeholder="e.g. PN123"></td>
+              <td><input id="edNewModelName" placeholder="e.g. mHawk 130"></td>
+              <td><input id="edNewDescription" placeholder="optional"></td>
+              <td><button class="primary" onclick="addEngineDataRow()">Add</button></td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <details id="engineDataBulk" style="margin-top:14px;max-width:640px;">
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Bulk paste/upload JSON instead</summary>
+          <div style="margin-top:10px;">
+            <textarea id="engineDataInput" rows="8" style="width:100%;font-family:monospace;font-size:12px;" placeholder='[{"part_no":"PN123","model_name":"...","description":"..."}]'></textarea>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
+              <input type="file" id="engineDataFile" accept="application/json" onchange="loadEngineDataFile(event)">
+              <button class="primary" onclick="applyEngineData()">Replace All From JSON</button>
+            </div>
+          </div>
+        </details>
+      </div>
     </div>
 
     <div class="card" style="display:block;padding:16px;">
@@ -2089,7 +2325,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'storage') loadStorage();
     if (btn.dataset.tab === 'apps') loadApps();
-    if (btn.dataset.tab === 'admin') { loadMasterDataStatus(); loadAdminDeviceList(); }
+    if (btn.dataset.tab === 'admin') { loadMasterDataStatus(); loadEngineDataStatus(); loadAdminDeviceList(); }
   });
 });
 
@@ -2418,9 +2654,124 @@ async function applyMasterData() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.status);
     showToast(`Applied ${d.modelsLoaded} model(s) -- ${d.rowsUpdated} row(s) updated.`);
+    // Clear the paste box and file picker, and collapse the section back
+    // down, so it's obvious the replace already went through -- leaving
+    // the same JSON sitting there invited clicking "Replace All" again on
+    // data that was already applied.
+    document.getElementById('masterDataInput').value = '';
+    document.getElementById('masterDataFile').value = '';
+    const details = document.getElementById('masterDataBulk');
+    if (details) details.open = false;
     loadMasterDataStatus();
   } catch (e) {
     alert('Could not apply master data: ' + e.message);
+  }
+}
+
+function switchMasterDataType() {
+  const engine = document.getElementById('mdDataType').value === 'engine';
+  document.getElementById('mdPanelVin').style.display = engine ? 'none' : '';
+  document.getElementById('mdPanelEngine').style.display = engine ? '' : 'none';
+}
+
+async function loadEngineDataStatus() {
+  const tbody = document.getElementById('engineDataRows');
+  try {
+    const r = await fetch('/api/admin/engine-data');
+    const d = await r.json();
+    const data = d.engineData || [];
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty" style="padding:10px 0;">No engine data yet -- add a row below.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(row => `
+      <tr>
+        <td>${row.partNo}</td>
+        <td>${row.modelName}</td>
+        <td>${row.description || ''}</td>
+        <td><button class="icon-btn" title="Delete" onclick="deleteEngineDataRow('${row.partNo.replace(/'/g, "\\'")}')">✕</button></td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">Could not load engine data.</td></tr>';
+  }
+}
+
+async function addEngineDataRow() {
+  const partNo = document.getElementById('edNewPartNo').value.trim();
+  const modelName = document.getElementById('edNewModelName').value.trim();
+  const description = document.getElementById('edNewDescription').value.trim();
+  if (!partNo || !modelName) {
+    alert('Part No and Model Name are required.');
+    return;
+  }
+  try {
+    const r = await fetch('/api/admin/engine-data/row', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ partNo, modelName, description }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    document.getElementById('edNewPartNo').value = '';
+    document.getElementById('edNewModelName').value = '';
+    document.getElementById('edNewDescription').value = '';
+    showToast(`Saved ${partNo} -- ${d.rowsUpdated} received row(s) updated.`);
+    loadEngineDataStatus();
+  } catch (e) {
+    alert('Could not save row: ' + e.message);
+  }
+}
+
+async function deleteEngineDataRow(partNo) {
+  if (!confirm(`Remove engine data for Part No "${partNo}"? This only removes it from the master list -- data already received keeps whatever Model Name it currently has.`)) return;
+  try {
+    const r = await fetch('/api/admin/engine-data/row?partNo=' + encodeURIComponent(partNo), { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast('Removed ' + partNo);
+    loadEngineDataStatus();
+  } catch (e) {
+    alert('Could not delete row: ' + e.message);
+  }
+}
+
+function loadEngineDataFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('engineDataInput').value = reader.result; };
+  reader.readAsText(file);
+}
+
+async function applyEngineData() {
+  let parsed;
+  try {
+    parsed = JSON.parse(document.getElementById('engineDataInput').value);
+  } catch (e) {
+    alert('Not valid JSON: ' + e.message);
+    return;
+  }
+  if (!Array.isArray(parsed)) {
+    alert('Expected a JSON array of { part_no, model_name, description }.');
+    return;
+  }
+  try {
+    const r = await fetch('/api/admin/engine-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engineData: parsed }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast(`Applied ${d.modelsLoaded} part(s) -- ${d.rowsUpdated} row(s) updated.`);
+    document.getElementById('engineDataInput').value = '';
+    document.getElementById('engineDataFile').value = '';
+    const details = document.getElementById('engineDataBulk');
+    if (details) details.open = false;
+    loadEngineDataStatus();
+  } catch (e) {
+    alert('Could not apply engine data: ' + e.message);
   }
 }
 
@@ -3306,6 +3657,7 @@ def main():
     _load_devices()
     _load_app_aliases()
     _load_master_data()
+    _load_engine_data()
     _load_heartbeats()
     _load_hidden_devices()
     zeroconf = start_mdns()
