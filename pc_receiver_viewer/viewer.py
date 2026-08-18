@@ -366,6 +366,32 @@ def _load_heartbeats() -> dict[tuple[str, str], int]:
     return out
 
 
+HIDDEN_DEVICES_FILE_NAME = "_hidden_devices.json"
+
+
+def _load_hidden() -> set[tuple[str, str]]:
+    """Device/app pairs an admin has hidden from this viewer via
+    receiver.py's Admin Edit tab -- written under DATA_DIR (same trick as
+    heartbeats) so this read-only process can see it without ever talking
+    to receiver.py directly. Re-read on every call (cheap, small file) so
+    a hide/unhide takes effect immediately without restarting this
+    process."""
+    path = DATA_DIR / HIDDEN_DEVICES_FILE_NAME
+    if not path.exists():
+        return set()
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return set()
+    out = set()
+    for key, hidden in raw.items():
+        if not hidden or "|" not in key:
+            continue
+        device_safe, app_safe = key.split("|", 1)
+        out.add((device_safe, app_safe))
+    return out
+
+
 def _app_master_dir(app_name: str) -> Path:
     """Where an app's aggregated master workbook lives -- must match
     receiver.py's _app_master_dir exactly, since this viewer reads the
@@ -390,11 +416,14 @@ def _list_groups() -> list[dict]:
     if not DATA_DIR.exists():
         return groups
     heartbeats = _load_heartbeats()
+    hidden = _load_hidden()
     for device_dir in sorted(DATA_DIR.iterdir()):
         if not device_dir.is_dir() or device_dir.name == "_master":
             continue
         for app_dir in sorted(device_dir.iterdir()):
             if not app_dir.is_dir():
+                continue
+            if (device_dir.name, app_dir.name) in hidden:
                 continue
             batch_dirs = sorted([p for p in app_dir.iterdir() if p.is_dir()])
             xlsx_path = _app_master_dir(app_dir.name) / "data.xlsx"
@@ -568,6 +597,8 @@ async def api_data(device: str, appName: str, _: None = Depends(_require_session
     receiver.py's own dashboard uses (fetch once per device, then filter,
     chart, and group entirely client-side), so filtering/charting/expand-
     collapse all react instantly without a round trip per keystroke."""
+    if (_safe_name(device), _safe_name(appName)) in _load_hidden():
+        raise HTTPException(status_code=404, detail="Not found")
     rows = _flatten_rows(device, appName)
     truncated = len(rows) > MAX_ROWS_RETURNED
     return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
@@ -582,8 +613,11 @@ def _device_dirs_for_app(app_name_safe: str) -> list[str]:
     devices = []
     if not DATA_DIR.exists():
         return devices
+    hidden = _load_hidden()
     for device_dir in DATA_DIR.iterdir():
         if not device_dir.is_dir() or device_dir.name == "_master":
+            continue
+        if (device_dir.name, app_name_safe) in hidden:
             continue
         if (device_dir / app_name_safe).exists():
             devices.append(device_dir.name)
@@ -631,12 +665,15 @@ async def api_storage(_: None = Depends(_require_session)):
     tree = {}
     if not DATA_DIR.exists():
         return tree
+    hidden = _load_hidden()
     for device_dir in sorted(DATA_DIR.iterdir()):
         if not device_dir.is_dir() or device_dir.name == "_master":
             continue
         apps = {}
         for app_dir in sorted(device_dir.iterdir()):
             if not app_dir.is_dir():
+                continue
+            if (device_dir.name, app_dir.name) in hidden:
                 continue
             batches = []
             for batch_dir in sorted(app_dir.iterdir(), reverse=True):
@@ -686,6 +723,8 @@ async def api_app_data(appName: str, startDate: str = "", endDate: str = "", _: 
 
 @app.get("/api/image")
 async def api_image(device: str, appName: str, batch: str, rel: str, _: None = Depends(_require_session)):
+    if (_safe_name(device), _safe_name(appName)) in _load_hidden():
+        raise HTTPException(status_code=404, detail="Not found")
     rel_path = f"{_safe_name(device)}/{_safe_name(appName)}/{batch}/{rel}"
     target = _resolve_under_data_dir(rel_path)
     if not target.is_file():
@@ -702,11 +741,35 @@ async def download_master_excel(appName: str, device: str = "", _: None = Depend
     the existing per-device "Download Excel" links/buttons keep working
     without needing their own change -- see receiver.py's equivalent
     /api/export/master-excel route for why this is now app-wide rather
-    than per-device."""
+    than per-device.
+
+    That raw workbook aggregates every device paired under the app,
+    including ones hidden from this viewer -- so if any device for this
+    app is currently hidden, a filtered copy is built from the same
+    (already hidden-aware) per-device rows /api/app-data uses instead of
+    serving the file as-is."""
+    app_name_safe = _safe_name(appName)
     xlsx_path = _app_master_dir(appName) / "data.xlsx"
     if not xlsx_path.exists():
         raise HTTPException(status_code=404, detail="No data received yet")
-    return FileResponse(xlsx_path, filename=f"{_safe_name(appName)}.xlsx")
+
+    hidden = _load_hidden()
+    app_has_hidden_device = any(app == app_name_safe for _dev, app in hidden)
+    if not app_has_hidden_device:
+        return FileResponse(xlsx_path, filename=f"{app_name_safe}.xlsx")
+
+    device_dirs = _device_dirs_for_app(app_name_safe)
+    rows: list[dict] = []
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(device_dirs)))) as pool:
+        for device_rows in pool.map(lambda d: _flatten_rows(d, app_name_safe), device_dirs):
+            rows.extend(device_rows)
+    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    buf = _build_workbook(rows)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{app_name_safe}.xlsx"'},
+    )
 
 
 @app.get("/download/excel-month")

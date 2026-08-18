@@ -42,7 +42,6 @@ from datetime import datetime
 from pathlib import Path
 
 import mimetypes
-import shutil
 
 import qrcode
 import uvicorn
@@ -300,6 +299,42 @@ def _save_heartbeats():
         _heartbeats_file().write_text(json.dumps(out, indent=2))
     except OSError:
         pass  # best-effort -- a write hiccup here should never fail the ping response
+
+
+HIDDEN_DEVICES_FILE_NAME = "_hidden_devices.json"
+
+# Devices/apps an admin has hidden from the read-only Vault viewer -- e.g. a
+# test phone whose data shouldn't be permanently deleted (it may still be
+# useful on this PC), but also shouldn't be visible to whoever's looking at
+# the Vault viewer. Written under DATA_DIR (not next to the exe, like
+# paired_devices.json) for the same reason heartbeats are: the separate
+# pc_receiver_viewer process only ever reads DATA_DIR, so this is how it
+# learns what to filter out. {"deviceSafe|appSafe": true, ...}
+_hidden_devices: dict[str, bool] = {}
+
+
+def _hidden_devices_file() -> Path:
+    return DATA_DIR / HIDDEN_DEVICES_FILE_NAME
+
+
+def _hidden_key(device_name_safe: str, app_name_safe: str) -> str:
+    return f"{device_name_safe}|{app_name_safe}"
+
+
+def _load_hidden_devices():
+    global _hidden_devices
+    try:
+        _hidden_devices = json.loads(_hidden_devices_file().read_text())
+    except Exception:
+        _hidden_devices = {}
+
+
+def _save_hidden_devices():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _hidden_devices_file().write_text(json.dumps(_hidden_devices, indent=2))
+    except OSError as e:
+        raise RuntimeError(f"Could not write {_hidden_devices_file()}: {e}") from e
 
 
 # App aliases -- for when two builds of what's really the same production
@@ -1041,7 +1076,9 @@ async def api_devices(_: None = Depends(_require_local)):
     with _lock:
         items = list(_paired_devices.items())
     for device_id, d in items:
-        device_dir = DATA_DIR / _safe_name(d["deviceName"]) / _safe_name(d.get("appName", "app"))
+        device_name_safe = _safe_name(d["deviceName"])
+        app_name_safe = _safe_name(d.get("appName", "app"))
+        device_dir = DATA_DIR / device_name_safe / app_name_safe
         batch_dirs = sorted([p for p in device_dir.iterdir() if p.is_dir()]) if device_dir.exists() else []
         file_count, total_bytes = _dir_stats(device_dir)
         result.append({
@@ -1053,6 +1090,7 @@ async def api_devices(_: None = Depends(_require_local)):
             "fileCount": file_count,
             "totalBytes": total_bytes,
             "lastReceivedAt": batch_dirs[-1].name if batch_dirs else None,
+            "hidden": _hidden_devices.get(_hidden_key(device_name_safe, app_name_safe), False),
         })
     result.sort(key=lambda d: d["pairedAt"], reverse=True)
     return result
@@ -1071,68 +1109,35 @@ async def api_remove_device(device_id: str, _: None = Depends(_require_local)):
     return {"status": "ok"}
 
 
-@app.delete("/api/admin/device-data")
-async def api_admin_wipe_device_data(deviceName: str, appName: str, _: None = Depends(_require_local)):
-    """Permanently deletes everything received from [deviceName]/[appName]:
-    the on-disk batches/images, its rows in that app's master Excel, and
-    its pairing (if still paired). Unlike DELETE /api/devices/{id} (which
-    only removes the pairing so the phone can re-pair), this is what
-    actually makes a device's data stop showing up in this dashboard *and*
-    the read-only Vault viewer, which both read straight off disk."""
-    safe_device = _safe_name(deviceName)
-    safe_app = _safe_name(appName)
+@app.post("/api/admin/device-data/hide")
+async def api_admin_hide_device_data(request: Request, _: None = Depends(_require_local)):
+    """Toggles whether [deviceName]/[appName] is hidden from the read-only
+    Vault viewer (pc_receiver_viewer). Nothing on disk is touched or
+    deleted -- this dashboard (and the Devices/Apps tabs) still shows it
+    as normal; only the separate viewer process, which reads the hidden
+    list out of DATA_DIR, filters it out. Safer than a hard delete for a
+    test device you might still want the data for later."""
+    body = await request.json()
+    device_name = str(body.get("deviceName", ""))
+    app_name = str(body.get("appName", ""))
+    hidden = bool(body.get("hidden", True))
+    safe_device = _safe_name(device_name)
+    safe_app = _safe_name(app_name)
     if not safe_device or not safe_app:
         raise HTTPException(status_code=400, detail="deviceName and appName are required")
 
-    device_dir = DATA_DIR / safe_device / safe_app
-    if not device_dir.exists():
-        raise HTTPException(status_code=404, detail="No data on disk for this device/app")
-
+    key = _hidden_key(safe_device, safe_app)
     with _lock:
-        _merge_devices_from_disk()
-        removed_ids = [did for did, d in list(_paired_devices.items())
-                       if _safe_name(d["deviceName"]) == safe_device and _safe_name(d.get("appName", "app")) == safe_app]
-        for did in removed_ids:
-            del _paired_devices[did]
-            _last_heartbeat.pop(did, None)
-        if removed_ids:
-            try:
-                _save_devices()
-            except RuntimeError as e:
-                raise HTTPException(status_code=500, detail=str(e))
+        if hidden:
+            _hidden_devices[key] = True
+        else:
+            _hidden_devices.pop(key, None)
         try:
-            _save_heartbeats()
-        except Exception:
-            pass
+            _save_hidden_devices()
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
-    shutil.rmtree(device_dir, ignore_errors=True)
-    parent = device_dir.parent
-    if parent.exists() and not any(parent.iterdir()):
-        shutil.rmtree(parent, ignore_errors=True)
-
-    # Strip this device's rows out of the shared per-app master Excel too --
-    # otherwise the deleted device's data would still show up in the app's
-    # aggregated workbook and Apps-tab totals even though the raw batches
-    # are gone.
-    app_name_safe = _resolve_app_alias(safe_app)
-    xlsx_path = _app_master_dir(app_name_safe) / "data.xlsx"
-    if xlsx_path.exists():
-        try:
-            device_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "deviceName")
-            wb = load_workbook(xlsx_path)
-            ws = wb.active
-            rows_to_delete = [r for r in range(ws.max_row, 1, -1) if ws.cell(row=r, column=device_col + 1).value == deviceName]
-            for r in rows_to_delete:
-                ws.delete_rows(r)
-            if rows_to_delete:
-                wb.save(xlsx_path)
-        except Exception as e:
-            print(f"[warn] could not strip {deviceName} rows from {xlsx_path}: {e}")
-
-    with _rows_cache_lock:
-        _rows_cache.pop(str(device_dir), None)
-
-    return {"status": "ok", "removedPairings": len(removed_ids)}
+    return {"status": "ok", "deviceName": device_name, "appName": app_name, "hidden": hidden}
 
 
 @app.get("/api/admin/master-data")
@@ -1868,12 +1873,12 @@ DASHBOARD_HTML = """<!doctype html>
     </div>
 
     <div class="card" style="display:block;padding:16px;">
-      <h3 style="margin:0 0 6px;">Delete Device Data</h3>
+      <h3 style="margin:0 0 6px;">Hide Device Data</h3>
       <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
-        Permanently deletes everything received from a phone/app -- batches,
-        images, and its rows in the master Excel -- not just the pairing.
-        Use this to actually clear a test device out of both this dashboard
-        and the Vault viewer.
+        Hides a phone/app's data from the read-only Vault viewer -- e.g. a
+        test device whose data isn't meant for whoever's looking at the
+        Vault. Nothing is deleted: it stays here in this dashboard as
+        normal, and can be unhidden any time.
       </p>
       <div id="adminDeviceList"><div class="empty">Loading…</div></div>
     </div>
@@ -2307,10 +2312,10 @@ async function loadAdminDeviceList() {
     el.innerHTML = devices.map(d => `
       <div class="app-row">
         <div class="a-info">
-          <div class="a-name">${d.deviceName} — ${d.appName}</div>
+          <div class="a-name">${d.deviceName} — ${d.appName} ${d.hidden ? '<span style="color:var(--muted);font-weight:normal;">(hidden from Vault viewer)</span>' : ''}</div>
           <div class="a-meta">${d.batchCount} send(s) • ${fmtBytes(d.totalBytes)}</div>
         </div>
-        <button class="icon-btn" title="Delete all data for this device" onclick="wipeDeviceData('${d.deviceName.replace(/'/g, "\\'")}', '${d.appName.replace(/'/g, "\\'")}')">🗑 Delete Data</button>
+        <button class="ghost" onclick="toggleHideDeviceData('${d.deviceName.replace(/'/g, "\\'")}', '${d.appName.replace(/'/g, "\\'")}', ${!d.hidden})">${d.hidden ? '👁 Unhide' : '🙈 Hide from Viewer'}</button>
       </div>
     `).join('');
   } catch (e) {
@@ -2318,17 +2323,19 @@ async function loadAdminDeviceList() {
   }
 }
 
-async function wipeDeviceData(deviceName, appName) {
-  if (!confirm(`Permanently delete ALL data received from "${deviceName} — ${appName}"? This deletes batches, images, and its rows in the master Excel. This cannot be undone.`)) return;
+async function toggleHideDeviceData(deviceName, appName, hidden) {
   try {
-    const r = await fetch(`/api/admin/device-data?deviceName=${encodeURIComponent(deviceName)}&appName=${encodeURIComponent(appName)}`, { method: 'DELETE' });
+    const r = await fetch('/api/admin/device-data/hide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceName, appName, hidden }),
+    });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.status);
-    showToast('Deleted data for ' + deviceName);
+    showToast((hidden ? 'Hidden ' : 'Unhidden ') + deviceName + ' from the Vault viewer');
     loadAdminDeviceList();
-    loadDevices();
   } catch (e) {
-    alert('Could not delete device data: ' + e.message);
+    alert('Could not update: ' + e.message);
   }
 }
 
@@ -3176,6 +3183,7 @@ def main():
     _load_app_aliases()
     _load_master_data()
     _load_heartbeats()
+    _load_hidden_devices()
     zeroconf = start_mdns()
 
     ip = _local_ip()
