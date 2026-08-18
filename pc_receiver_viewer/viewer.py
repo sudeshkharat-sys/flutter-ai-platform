@@ -1000,11 +1000,20 @@ VIEWER_HTML = """<!doctype html>
      Model Name -- too many nowrap columns for most screens to show at once
      even before that. .card's own overflow:hidden clips the rest of the
      row instead of scrolling it, so the table gets its own scroll
-     container here rather than relying on the card's. */
-  .table-scroll { overflow-x: auto; }
+     container here rather than relying on the card's.
+
+     Capped at a viewport-relative height (with its own vertical scroll)
+     rather than left to grow with however many rows there are -- an
+     uncapped table put its horizontal scrollbar at the very bottom of
+     potentially hundreds of rows, so reaching it meant scrolling all the
+     way down first. This keeps the horizontal scrollbar always within
+     reach near the top of the page, and the header sticky so column
+     names stay visible while scrolling down through rows. */
+  .table-scroll { overflow: auto; max-height: calc(100vh - 260px); }
   table.data-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 13px; }
   table.data-table thead th { background: #fafafc; border-bottom: 2px solid var(--border);
-                               padding: 10px; text-align: left; white-space: nowrap; }
+                               padding: 10px; text-align: left; white-space: nowrap;
+                               position: sticky; top: 0; z-index: 1; }
   table.data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   tr.group-row { cursor: pointer; }
   tr.group-row:hover { background: #fbfbfd; }
