@@ -423,6 +423,29 @@ def _master_data_variant_map() -> dict[str, str]:
     return {row["modelCode"].upper(): row["description"] for row in _master_data}
 
 
+def _apply_master_data_to_inspections(inspections: list, manifest_path: Path):
+    """Called on every fresh upload (see /upload) so newly-received data
+    gets the same correction _reconcile_master_data applies to history --
+    the phone's own bundled Model Variant (whatever it could regex out of
+    its description at APK build time, often blank) is overwritten with
+    the receiver's master data description wherever the Model Code
+    matches, *before* it's flattened into the table/master Excel. If
+    there's no master data loaded yet, or nothing matches, this is a
+    no-op and the phone's original value is kept as-is."""
+    variant_map = _master_data_variant_map()
+    if not variant_map:
+        return
+    dirty = False
+    for insp in inspections:
+        code = str(insp.get("modelCode") or "").upper()
+        new_variant = variant_map.get(code)
+        if new_variant is not None and insp.get("modelVariant") != new_variant:
+            insp["modelVariant"] = new_variant
+            dirty = True
+    if dirty:
+        manifest_path.write_text(json.dumps(inspections, indent=2))
+
+
 def _reconcile_master_data() -> dict:
     """Applies the current master data to every inspection already on disk:
     for any row whose Model Code matches, the Model Variant is set to the
@@ -942,6 +965,7 @@ async def upload(
     if manifest_path.exists():
         try:
             inspections = json.loads(manifest_path.read_text())
+            _apply_master_data_to_inspections(inspections, manifest_path)
             rows = _flatten_manifest_rows(inspections, stamp, device_name=device["deviceName"])
             _append_to_master_excel(_app_master_dir(app_name), rows)
         except Exception as e:
