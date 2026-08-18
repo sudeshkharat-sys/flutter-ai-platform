@@ -843,6 +843,7 @@ def _append_to_master_excel(app_dir: Path, rows: list[dict]):
     if not rows:
         return
     xlsx_path = app_dir / "data.xlsx"
+    xlsx_path.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
         _seed_master_from_legacy_device_excels(app_dir.name, xlsx_path)
         wb, ws = _open_or_migrate_master_workbook(xlsx_path)
