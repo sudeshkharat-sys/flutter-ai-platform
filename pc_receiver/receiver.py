@@ -2312,10 +2312,10 @@ async function loadAdminDeviceList() {
     el.innerHTML = devices.map(d => `
       <div class="app-row">
         <div class="a-info">
-          <div class="a-name">${d.deviceName} — ${d.appName} ${d.hidden ? '<span style="color:var(--muted);font-weight:normal;">(hidden from Vault viewer)</span>' : ''}</div>
-          <div class="a-meta">${d.batchCount} send(s) • ${fmtBytes(d.totalBytes)}</div>
+          <div class="a-name">${d.deviceName} — ${d.appName}</div>
+          <div class="a-meta">${d.batchCount} send(s) • ${fmtBytes(d.totalBytes)}${d.hidden ? ' • Hidden from Vault viewer' : ''}</div>
         </div>
-        <button class="ghost" onclick="toggleHideDeviceData('${d.deviceName.replace(/'/g, "\\'")}', '${d.appName.replace(/'/g, "\\'")}', ${!d.hidden})">${d.hidden ? '👁 Unhide' : '🙈 Hide from Viewer'}</button>
+        <button class="ghost" onclick="toggleHideDeviceData('${d.deviceName.replace(/'/g, "\\'")}', '${d.appName.replace(/'/g, "\\'")}', ${!d.hidden})">${d.hidden ? 'Unhide' : 'Hide from Viewer'}</button>
       </div>
     `).join('');
   } catch (e) {
