@@ -1,0 +1,119 @@
+import 'package:flutter/material.dart';
+import 'region_sequence.dart';
+
+/// Draws every [SequenceRegion] over the camera preview, color-coded by its
+/// state relative to [tracker]: already-crossed (green), the one region the
+/// tracker is waiting for next (amber, thicker stroke), and everything else
+/// still ahead (white/translucent). Also draws the live tracked point, when
+/// known, as a small dot so it's obvious what the tracker is reading.
+class RegionSequenceOverlay extends StatelessWidget {
+  final RegionSequenceTracker tracker;
+  final Offset? trackedPoint;
+
+  const RegionSequenceOverlay({
+    super.key,
+    required this.tracker,
+    this.trackedPoint,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _RegionPainter(tracker: tracker, trackedPoint: trackedPoint),
+      child: Container(),
+    );
+  }
+}
+
+class _RegionPainter extends CustomPainter {
+  final RegionSequenceTracker tracker;
+  final Offset? trackedPoint;
+
+  _RegionPainter({required this.tracker, required this.trackedPoint});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final crossedIds = tracker.crossedLog.toSet();
+    final expectedId = tracker.expectedRegionId;
+
+    for (final region in tracker.regions) {
+      final isCrossed = crossedIds.contains(region.id);
+      final isExpected = region.id == expectedId;
+
+      final color = isCrossed
+          ? Colors.greenAccent
+          : isExpected
+              ? Colors.amberAccent
+              : Colors.white70;
+      final strokeWidth = isExpected ? 4.0 : 2.0;
+
+      final paint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth;
+
+      final labelOffset = _drawRegion(canvas, size, region, paint);
+      _drawLabel(canvas, labelOffset, region.label, color);
+    }
+
+    if (trackedPoint != null) {
+      final dotPaint = Paint()..color = Colors.redAccent;
+      canvas.drawCircle(
+        Offset(trackedPoint!.dx * size.width, trackedPoint!.dy * size.height),
+        6.0,
+        dotPaint,
+      );
+    }
+  }
+
+  Offset _drawRegion(
+    Canvas canvas,
+    Size size,
+    SequenceRegion region,
+    Paint paint,
+  ) {
+    if (region.shape == RegionShape.box) {
+      final rect = Rect.fromLTRB(
+        region.box!.left * size.width,
+        region.box!.top * size.height,
+        region.box!.right * size.width,
+        region.box!.bottom * size.height,
+      );
+      canvas.drawRect(rect, paint);
+      return rect.topLeft;
+    } else {
+      final start = Offset(
+        region.lineStart!.dx * size.width,
+        region.lineStart!.dy * size.height,
+      );
+      final end = Offset(
+        region.lineEnd!.dx * size.width,
+        region.lineEnd!.dy * size.height,
+      );
+      canvas.drawLine(start, end, paint);
+      return start;
+    }
+  }
+
+  void _drawLabel(Canvas canvas, Offset anchor, String label, Color color) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: TextStyle(
+          color: color,
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+          shadows: const [Shadow(blurRadius: 3, color: Colors.black)],
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    painter.paint(canvas, anchor + const Offset(2, -20));
+  }
+
+  @override
+  bool shouldRepaint(covariant _RegionPainter oldDelegate) {
+    return oldDelegate.tracker.matchedCount != tracker.matchedCount ||
+        oldDelegate.trackedPoint != trackedPoint;
+  }
+}

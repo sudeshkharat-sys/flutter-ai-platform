@@ -323,6 +323,24 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         **ocr_ctx,
     }
 
+    # Region-sequence tracking (opt-in, additive): draw boxes/lines over the
+    # preview, each mapped to a step id, and require the tracked point (e.g.
+    # a detected hand/finger box's center) to cross them in a configured
+    # order before the sequence counts as complete -- e.g. tracing out the
+    # letters of a target word one region at a time. Off unless a project
+    # explicitly configures region_sequence in app_settings, so no existing
+    # app type or generated output changes.
+    region_sequence_cfg = settings.get("region_sequence") or {}
+    if isinstance(region_sequence_cfg, str):
+        try:
+            region_sequence_cfg = json.loads(region_sequence_cfg)
+        except Exception:
+            region_sequence_cfg = {}
+    ctx["region_sequence_enabled"] = bool(
+        region_sequence_cfg.get("regions") and region_sequence_cfg.get("targetSequence")
+    )
+    ctx["region_sequence_config"] = region_sequence_cfg
+
     # OCR codegen is only enabled in multi-class mode AND when at least one
     # mandatory class has OCR reading turned on. Target text is now OPTIONAL
     # (empty = just read and record the text, no pass/fail) -- it used to be
@@ -501,6 +519,12 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         files["lib/ml/line_normalizer.dart"] = "line_normalizer.dart.j2"
         files["lib/ml/ctc_decoder.dart"] = "ctc_decoder.dart.j2"
 
+    if ctx["region_sequence_enabled"]:
+        files.update({
+            "lib/ml/region_sequence.dart": "region_sequence.dart.j2",
+            "lib/widgets/region_sequence_overlay.dart": "region_sequence_overlay.dart.j2",
+        })
+
     if is_combined_app:
         # A combined app needs the barcode-scan logic rendered up to THREE
         # times under different class names -- VIN format, Chakan/engine
@@ -593,6 +617,11 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
 
         import json
         zf.writestr(f"{root}/assets/models_manifest.json", json.dumps(models_manifest, indent=2))
+        if ctx["region_sequence_enabled"]:
+            zf.writestr(
+                f"{root}/assets/region_sequence.json",
+                json.dumps(region_sequence_cfg, indent=2),
+            )
         zf.writestr(f"{root}/assets/master_data.json", json.dumps(master_data_manifest, indent=2))
         zf.writestr(f"{root}/assets/engine_data.json", json.dumps(engine_data_manifest, indent=2))
 

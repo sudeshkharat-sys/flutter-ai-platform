@@ -1,0 +1,132 @@
+import 'dart:ui';
+
+/// A region drawn on the camera overlay: either a box (finger must be
+/// inside it) or a line (finger must cross it). Coordinates are normalized
+/// 0.0-1.0, same convention as [DetectionResult.bbox], so a region lines up
+/// with the preview regardless of the device's actual resolution.
+enum RegionShape { box, line }
+
+class SequenceRegion {
+  final String id;
+  final String label;
+  final RegionShape shape;
+  final Rect? box;
+  final Offset? lineStart;
+  final Offset? lineEnd;
+  // How close (normalized distance) the tracked point must get to the line
+  // to count as "crossing" it -- a zero-width line is never actually hit.
+  final double lineTolerance;
+
+  const SequenceRegion.box({
+    required this.id,
+    required this.label,
+    required Rect rect,
+  })  : shape = RegionShape.box,
+        box = rect,
+        lineStart = null,
+        lineEnd = null,
+        lineTolerance = 0.0;
+
+  const SequenceRegion.line({
+    required this.id,
+    required this.label,
+    required Offset start,
+    required Offset end,
+    this.lineTolerance = 0.04,
+  })  : shape = RegionShape.line,
+        box = null,
+        lineStart = start,
+        lineEnd = end;
+
+  bool hitTest(Offset point) {
+    switch (shape) {
+      case RegionShape.box:
+        return box!.contains(point);
+      case RegionShape.line:
+        return _distanceToSegment(point, lineStart!, lineEnd!) <= lineTolerance;
+    }
+  }
+
+  static double _distanceToSegment(Offset p, Offset a, Offset b) {
+    final ab = b - a;
+    final abLenSq = ab.dx * ab.dx + ab.dy * ab.dy;
+    if (abLenSq == 0) return (p - a).distance;
+    final t = (((p - a).dx * ab.dx) + ((p - a).dy * ab.dy)) / abLenSq;
+    final tClamped = t.clamp(0.0, 1.0);
+    final closest = Offset(a.dx + ab.dx * tClamped, a.dy + ab.dy * tClamped);
+    return (p - closest).distance;
+  }
+}
+
+/// Tracks a moving point (e.g. a fingertip, taken as the center of a
+/// detected "hand"/"finger" bounding box) against an ordered list of
+/// [SequenceRegion] ids -- the target "word". Advances one step each time
+/// the tracked point enters the next expected region in order; entering any
+/// other region resets progress. Designed to be fed one point per frame via
+/// [update].
+class RegionSequenceTracker {
+  final List<SequenceRegion> regions;
+  final List<String> targetSequence;
+
+  int _matchedIndex = 0;
+  String? _lastRegionId;
+  final List<String> crossedLog = [];
+
+  RegionSequenceTracker({
+    required this.regions,
+    required this.targetSequence,
+  }) : assert(targetSequence.isNotEmpty, 'targetSequence must not be empty');
+
+  bool get isComplete => _matchedIndex >= targetSequence.length;
+
+  /// The region id the tracker is currently waiting for, or null once the
+  /// full sequence has already been completed.
+  String? get expectedRegionId =>
+      isComplete ? null : targetSequence[_matchedIndex];
+
+  int get matchedCount => _matchedIndex;
+
+  void reset() {
+    _matchedIndex = 0;
+    _lastRegionId = null;
+    crossedLog.clear();
+  }
+
+  /// Call once per video frame with the tracked point in normalized 0-1
+  /// coordinates, or null when nothing was detected that frame.
+  void update(Offset? point) {
+    if (isComplete || point == null) return;
+
+    SequenceRegion? hitRegion;
+    for (final region in regions) {
+      if (region.hitTest(point)) {
+        hitRegion = region;
+        break;
+      }
+    }
+
+    if (hitRegion == null) {
+      // Point left every region -- the next hit (whatever region it lands
+      // in) will be evaluated fresh, so re-entering the same region again
+      // counts as a new crossing instead of being swallowed as "still here".
+      _lastRegionId = null;
+      return;
+    }
+
+    if (hitRegion.id == _lastRegionId) {
+      // Still lingering inside the same region as last frame -- don't
+      // double-count a single dwell as repeated crossings.
+      return;
+    }
+    _lastRegionId = hitRegion.id;
+
+    if (hitRegion.id == targetSequence[_matchedIndex]) {
+      _matchedIndex++;
+      crossedLog.add(hitRegion.id);
+    } else {
+      // Wrong region for this step: strict mode, the whole attempt resets.
+      _matchedIndex = 0;
+      crossedLog.clear();
+    }
+  }
+}
