@@ -177,7 +177,24 @@ class OcrRecognizer {
     String? mlKitText;
 
 {% if ocr_use_mlkit_fallback %}
-    if (!matched && result.cropImageBytes != null) {
+    // ML Kit is only ever compiled into this app when `ocr_use_mlkit_fallback`
+    // was enabled at generation time (that's what keeps the plugin's native
+    // deps and APK-size cost out of every release build by default). Even
+    // when a build enables the flag, `kDebugMode` is checked again here so
+    // ML Kit inference never actually runs in a release binary -- debug
+    // builds run it in PARALLEL with CRNN (not just on mismatch) so the two
+    // reads can be compared side-by-side; release builds keep the original
+    // opt-in behavior of only calling it as a fallback when the CRNN read
+    // doesn't match a known truth value (e.g. from a QR scan).
+    if (kDebugMode) {
+      if (result.cropImageBytes != null) {
+        mlKitText = await _tryMlKit(result.cropImageBytes!);
+        if (!matched && mlKitText != null && _normalizeForMatch(mlKitText) == normTruth) {
+          matched = true;
+          matchedEngine = 'mlkit';
+        }
+      }
+    } else if (!matched && result.cropImageBytes != null) {
       mlKitText = await _tryMlKit(result.cropImageBytes!);
       if (mlKitText != null && _normalizeForMatch(mlKitText) == normTruth) {
         matched = true;

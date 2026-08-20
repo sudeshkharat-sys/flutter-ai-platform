@@ -171,6 +171,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   bool _isLoadingModel = true;
   String? _error;
 
+  // Flash defaults OFF: direct on-axis camera flash on engraved/embossed
+  // metal plates tends to cause glare/hotspots and washes out the shadow
+  // contrast the embossed relief depends on for OCR (CRNN and ML Kit
+  // both read worse under direct flash than under ambient/raking light).
+  // If capture quality needs improving, prefer diffused or off-axis
+  // (raking) light over on-axis flash -- and/or grayscale+CLAHE
+  // preprocessing on the crop -- rather than defaulting this to true.
   List<String> _debugLogs = [];
   bool _showDebugConsole = false;
   bool _isFlashOn = false;
@@ -1346,6 +1353,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   bool _isLoadingModel = true;
   String? _error;
 
+  // Flash defaults OFF: direct on-axis camera flash on engraved/embossed
+  // metal plates tends to cause glare/hotspots and washes out the shadow
+  // contrast the embossed relief depends on for OCR (CRNN and ML Kit
+  // both read worse under direct flash than under ambient/raking light).
+  // If capture quality needs improving, prefer diffused or off-axis
+  // (raking) light over on-axis flash -- and/or grayscale+CLAHE
+  // preprocessing on the crop -- rather than defaulting this to true.
   List<String> _debugLogs = [];
   bool _showDebugConsole = false;
   bool _isFlashOn = false;
