@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 
@@ -24,7 +25,13 @@ class LineNormalizer {
     final gray = img.grayscale(source);
     final enhanced = _equalizeHistogram(gray);
     final polarityFixed = _fixPolarity(enhanced);
-    final letterboxed = _resizeAndLetterbox(polarityFixed);
+    // Fuse dot-matrix dots into continuous strokes while the crop is still
+    // large, porting `_normalize_line`'s dot-fusion morphological closing
+    // from ai-vision-platform's crnn_training.py -- without this, dot-peen
+    // engraved plates are a train/inference mismatch (model trained on
+    // fused strokes, fed raw un-fused dots at inference).
+    final closed = _closeDots(polarityFixed, imgH);
+    final letterboxed = _resizeAndLetterbox(closed);
     return _toFloat32(letterboxed);
   }
 
@@ -122,6 +129,78 @@ class LineNormalizer {
         ..r = v
         ..g = v
         ..b = v;
+    }
+    return out;
+  }
+
+  /// Ports the dot-fusion morphological closing from `_normalize_line`:
+  /// `g = 255 - morphologyEx(255 - g, MORPH_CLOSE, ellipseKernel)`. Only
+  /// runs while the crop is still well above model scale (matching the
+  /// Python height gate) since that's the whole point of doing this before
+  /// the downscale, not after. Closing is done on the inverted ("ink")
+  /// channel so dark strokes get closed and the light background doesn't,
+  /// then the result is inverted back. The `image` package has no
+  /// dilate/erode/structuring-element API, so this hand-rolls grayscale
+  /// closing (erode(dilate(x))) with a disc-shaped kernel mask -- round
+  /// like OpenCV's ellipse kernel, to avoid bridging adjacent characters
+  /// horizontally more than vertically.
+  static img.Image _closeDots(img.Image src, int imgH) {
+    if (src.height <= imgH * 2) return src;
+    final k = math.max(3, (src.height ~/ 12) | 1);
+    final radius = k ~/ 2;
+    final offsets = <List<int>>[];
+    for (var dy = -radius; dy <= radius; dy++) {
+      for (var dx = -radius; dx <= radius; dx++) {
+        if (dx * dx + dy * dy <= radius * radius) offsets.add([dx, dy]);
+      }
+    }
+    final w = src.width;
+    final h = src.height;
+    final inv = List<int>.filled(w * h, 0);
+    var idx = 0;
+    for (final p in src) {
+      inv[idx++] = 255 - p.r.toInt().clamp(0, 255);
+    }
+    final dilated = _morphPass(inv, w, h, offsets, true);
+    final eroded = _morphPass(dilated, w, h, offsets, false);
+    final out = img.Image.from(src);
+    idx = 0;
+    for (final p in out) {
+      final v = 255 - eroded[idx++];
+      p
+        ..r = v
+        ..g = v
+        ..b = v;
+    }
+    return out;
+  }
+
+  /// One grayscale morphology pass (dilate when [isMax], erode otherwise)
+  /// over a flat row-major buffer using the given kernel offsets.
+  static List<int> _morphPass(
+    List<int> buf,
+    int w,
+    int h,
+    List<List<int>> offsets,
+    bool isMax,
+  ) {
+    final out = List<int>.filled(w * h, 0);
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var best = isMax ? 0 : 255;
+        for (final o in offsets) {
+          final nx = x + o[0];
+          final ny = y + o[1];
+          if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+          final v = buf[ny * w + nx];
+          if (isMax) {
+            if (v > best) best = v;
+          } else {
+            if (v < best) best = v;
+          }
+        }
+        out[y * w + x] = best;
+      }
     }
     return out;
   }
