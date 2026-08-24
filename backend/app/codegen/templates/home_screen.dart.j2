@@ -11,6 +11,7 @@ import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
 import '../services/print_service.dart';
 import '../services/sync_service.dart';
+import '../services/wifi_service.dart';
 import '../database/database.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -314,7 +315,47 @@ class _HomeScreenState extends State<HomeScreen> {
       ));
     }
 
+    // Every few submissions made while off the configured shop WiFi, ask
+    // the inspector to reconnect -- catches the case where auto-connect at
+    // startup (see main.dart) didn't work or the connection has since
+    // dropped. Awaited (unlike sync/print above) since this is a rare,
+    // deliberately interruptive nudge, not something on the hot path of
+    // every submit.
+    if (await WifiService.instance.registerSubmissionAndShouldNag()) {
+      final allowed = await WifiService.instance.getAllowedWifi();
+      if (mounted && allowed != null) await _showWifiReminderDialog(allowed.ssid);
+    }
+
     if (mounted) Navigator.pop(context);
+  }
+
+  /// Only ever called after [WifiService.registerSubmissionAndShouldNag]
+  /// returns true, which itself only happens once a WiFi network has been
+  /// configured (see WifiService.getAllowedWifi) -- so [allowedSsid] here
+  /// is always the real configured SSID, never "nothing set up yet".
+  Future<void> _showWifiReminderDialog(String allowedSsid) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Please connect to WiFi'),
+        content: Text(
+          'This phone isn\'t connected to "$allowedSsid", so inspection data can\'t reach the PC. '
+          'Please reconnect for data transmission to keep working.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Later')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              WifiService.instance.openWifiSettings();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFDC143C), foregroundColor: Colors.white),
+            child: const Text('Connect'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Runs the actual print after [_submitInspection] has already moved on

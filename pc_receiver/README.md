@@ -50,10 +50,10 @@ pip install -r requirements.txt pyinstaller
 pyinstaller --onefile --console --name PCReceiver --icon icon.ico receiver.py
 ```
 
-The `--icon icon.ico` gives the exe the Digital Eye logo as its file/taskbar
-icon instead of the default Python icon, so it looks like a real app rather
-than a script. `icon.ico` is already in this folder (generated from the logo
-you gave us) — just run PyInstaller from inside `pc_receiver/` as shown so it
+The `--icon icon.ico` gives the exe a red "R" file/taskbar icon (matching the
+Receiver plate color in the app itself) instead of the default Python icon,
+so it looks like a real app rather than a script. `icon.ico` is already in
+this folder — just run PyInstaller from inside `pc_receiver/` as shown so it
 finds it, or pass a full path otherwise.
 
 The output is `dist\PCReceiver.exe` — a single file with no Python

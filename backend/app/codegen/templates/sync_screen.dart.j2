@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/sync_service.dart';
+import '../services/wifi_service.dart';
 
 const _crimson = Color(0xFFDC143C);
 const _gold = Color(0xFFD4AF37);
@@ -20,6 +22,9 @@ class _SyncScreenState extends State<SyncScreen> {
   String? _busyDeviceId;
   String? _deviceLabel;
   int _unsyncedCount = 0;
+  AllowedWifi? _allowedWifi;
+  bool? _onAllowedWifi; // null while checking
+  bool _checkingWifi = false;
 
   @override
   void initState() {
@@ -27,6 +32,40 @@ class _SyncScreenState extends State<SyncScreen> {
     _loadPaired();
     _loadDeviceLabel();
     _loadUnsyncedCount();
+    _loadWifiStatus();
+  }
+
+  Future<void> _loadWifiStatus() async {
+    setState(() => _checkingWifi = true);
+    final allowed = await WifiService.instance.getAllowedWifi();
+    final connected = await WifiService.instance.isConnectedToAllowedWifi();
+    if (mounted) setState(() {
+      _allowedWifi = allowed;
+      _onAllowedWifi = connected;
+      _checkingWifi = false;
+    });
+  }
+
+  Future<void> _configureWifi() async {
+    final result = await showDialog<(String, String)>(
+      context: context,
+      builder: (_) => _WifiSetupDialog(
+        initialSsid: _allowedWifi?.ssid,
+        initialPassword: _allowedWifi?.password,
+      ),
+    );
+    if (result == null) return;
+    final (ssid, password) = result;
+    await WifiService.instance.setAllowedWifi(ssid, password);
+    if (!mounted) return;
+    await _loadWifiStatus();
+    unawaited(WifiService.instance.ensureConnected().then((_) => mounted ? _loadWifiStatus() : null));
+  }
+
+  Future<void> _connectWifiNow() async {
+    setState(() => _checkingWifi = true);
+    await WifiService.instance.ensureConnected();
+    await _loadWifiStatus();
   }
 
   Future<void> _loadPaired() async {
@@ -294,6 +333,99 @@ class _SyncScreenState extends State<SyncScreen> {
               ),
             Container(
               padding: const EdgeInsets.all(14),
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE8E8E8)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Shop WiFi',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: _crimson)),
+                  const SizedBox(height: 4),
+                  Text(
+                    'The network this phone auto-joins on open, so inspection data always has a path to the paired PC.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                  ),
+                  const SizedBox(height: 12),
+                  if (_allowedWifi == null)
+                    Row(
+                      children: [
+                        const Icon(Icons.wifi_off, color: Colors.grey, size: 18),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text('No WiFi configured yet', style: TextStyle(fontSize: 13, color: Colors.grey)),
+                        ),
+                      ],
+                    )
+                  else
+                    Row(
+                      children: [
+                        Icon(
+                          _checkingWifi
+                              ? Icons.wifi_find
+                              : (_onAllowedWifi == true ? Icons.wifi : Icons.wifi_off),
+                          color: _checkingWifi
+                              ? Colors.grey
+                              : (_onAllowedWifi == true ? Colors.green[700] : Colors.orange),
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _checkingWifi
+                                ? 'Checking connection...'
+                                : (_onAllowedWifi == true
+                                    ? 'Connected to "${_allowedWifi!.ssid}"'
+                                    : 'Not connected to "${_allowedWifi!.ssid}"'),
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: (_checkingWifi || _onAllowedWifi == true) ? Colors.black87 : Colors.orange[800],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _configureWifi,
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: _crimson),
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          child: Text(_allowedWifi == null ? 'Set Up' : 'Change',
+                              style: const TextStyle(color: _crimson, fontSize: 12)),
+                        ),
+                      ),
+                      if (_allowedWifi != null) ...[
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: _checkingWifi ? null : _connectWifiNow,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _crimson,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            child: const Text('Connect Now', style: TextStyle(fontSize: 12)),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(12),
@@ -449,6 +581,201 @@ class _SyncScreenState extends State<SyncScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Scan-and-pick WiFi setup, same idea as the native Android WiFi picker --
+/// tap a nearby network instead of typing its SSID by hand (typos there
+/// would mean auto-connect silently never matches anything). Falls back to
+/// manual entry for a hidden network or if the scan comes back empty (e.g.
+/// device location services are off at the OS level, which silently empties
+/// Android's scan results regardless of app permission).
+class _WifiSetupDialog extends StatefulWidget {
+  final String? initialSsid;
+  final String? initialPassword;
+  const _WifiSetupDialog({this.initialSsid, this.initialPassword});
+
+  @override
+  State<_WifiSetupDialog> createState() => _WifiSetupDialogState();
+}
+
+class _WifiSetupDialogState extends State<_WifiSetupDialog> {
+  bool _scanning = true;
+  String? _scanError;
+  List<ScannedNetwork> _networks = [];
+  String? _selectedSsid;
+  bool _manualEntry = false;
+  late final TextEditingController _ssidController;
+  late final TextEditingController _passwordController;
+
+  @override
+  void initState() {
+    super.initState();
+    _ssidController = TextEditingController(text: widget.initialSsid ?? '');
+    _passwordController = TextEditingController(text: widget.initialPassword ?? '');
+    _selectedSsid = widget.initialSsid;
+    _scan();
+  }
+
+  @override
+  void dispose() {
+    _ssidController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _scan() async {
+    setState(() {
+      _scanning = true;
+      _scanError = null;
+    });
+    try {
+      final results = await WifiService.instance.scanNearbyNetworks();
+      if (!mounted) return;
+      setState(() {
+        _networks = results;
+        _scanning = false;
+        // Nothing found -- go straight to manual entry instead of showing
+        // an empty list with no obvious next step.
+        _manualEntry = results.isEmpty;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _scanError = 'Could not scan for networks.';
+        _scanning = false;
+        _manualEntry = true;
+      });
+    }
+  }
+
+  void _selectNetwork(ScannedNetwork network) {
+    setState(() {
+      _selectedSsid = network.ssid;
+      _ssidController.text = network.ssid;
+      _manualEntry = false;
+      // An open network in range needs no password -- clear any leftover
+      // text from a previously-configured secured network.
+      if (!network.secured) _passwordController.clear();
+    });
+  }
+
+  IconData _signalIcon(int level) {
+    if (level >= -60) return Icons.wifi;
+    if (level >= -75) return Icons.wifi_2_bar;
+    return Icons.wifi_1_bar;
+  }
+
+  bool get _selectedIsSecured {
+    if (_manualEntry) return true; // unknown -- always offer the password field
+    final match = _networks.where((n) => n.ssid == _selectedSsid);
+    return match.isEmpty ? true : match.first.secured;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ssid = _manualEntry ? _ssidController.text.trim() : (_selectedSsid ?? '');
+    return AlertDialog(
+      title: const Text('Shop WiFi'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This phone will try to join this network automatically every time the app opens, and remind you to reconnect if it drops.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 12),
+            if (_scanning)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 20),
+                child: Center(child: CircularProgressIndicator(color: _crimson)),
+              )
+            else if (!_manualEntry) ...[
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: Scrollbar(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _networks.length,
+                    itemBuilder: (_, i) {
+                      final n = _networks[i];
+                      final selected = n.ssid == _selectedSsid;
+                      return ListTile(
+                        dense: true,
+                        selected: selected,
+                        selectedTileColor: const Color(0xFFFFF5F5),
+                        leading: Icon(_signalIcon(n.level), size: 20, color: selected ? _crimson : Colors.grey[600]),
+                        title: Text(n.ssid, style: const TextStyle(fontSize: 13)),
+                        trailing: n.secured ? const Icon(Icons.lock, size: 14, color: Colors.grey) : null,
+                        onTap: () => _selectNetwork(n),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => setState(() => _manualEntry = true),
+                  child: const Text("Can't see it? Enter manually", style: TextStyle(fontSize: 12, color: _crimson)),
+                ),
+              ),
+            ] else ...[
+              if (_scanError != null) ...[
+                Text(_scanError!, style: const TextStyle(fontSize: 12, color: Colors.orange)),
+                const SizedBox(height: 8),
+              ],
+              TextField(
+                controller: _ssidController,
+                autofocus: true,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(labelText: 'Network name (SSID)', border: OutlineInputBorder()),
+              ),
+              if (_networks.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    onPressed: () => setState(() => _manualEntry = false),
+                    child: const Text('Back to nearby networks', style: TextStyle(fontSize: 12, color: _crimson)),
+                  ),
+                ),
+              ],
+            ],
+            if (!_scanning) ...[
+              const SizedBox(height: 10),
+              TextField(
+                controller: _passwordController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: _selectedIsSecured ? 'Password' : 'Password (leave blank -- open network)',
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        if (!_scanning && !_manualEntry)
+          IconButton(
+            tooltip: 'Scan again',
+            icon: const Icon(Icons.refresh, color: _crimson),
+            onPressed: _scan,
+          ),
+        ElevatedButton(
+          onPressed: ssid.isEmpty
+              ? null
+              : () => Navigator.of(context).pop((ssid, _passwordController.text)),
+          style: ElevatedButton.styleFrom(backgroundColor: _crimson, foregroundColor: Colors.white),
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }

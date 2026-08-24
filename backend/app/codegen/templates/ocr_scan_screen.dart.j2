@@ -361,12 +361,17 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
                 style: const TextStyle(color: Colors.white70),
               ),
             ),
-          if (result.mlKitText != null)
+          // Debug-only side-by-side comparison panel: CRNN is always the
+          // production read; ML Kit is only ever populated in a debug build
+          // (see OcrRecognizer.recognize -- `kDebugMode` gate) so this row
+          // is naturally absent from every release APK.
+          if (kDebugMode && result.mlKitText != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                'ML Kit read: ${result.mlKitText} (matched: ${result.matchedEngine == 'mlkit'})',
-                style: const TextStyle(color: Colors.white70, fontSize: 13),
+                'CRNN: ${result.text} | MLKit: ${result.mlKitText}'
+                '${result.matchedEngine == 'mlkit' ? ' (MLKit matched truth)' : ''}',
+                style: const TextStyle(color: Colors.amberAccent, fontSize: 13),
               ),
             ),
           Padding(

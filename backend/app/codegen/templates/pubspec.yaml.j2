@@ -25,6 +25,10 @@ dependencies:
   archive: ^3.6.1
   http: ^1.2.2
   crypto: ^3.0.5
+  # Auto-connect to the shop's configured WiFi (Android only -- see
+  # wifi_service.dart) so inspection data reaches the paired PC without the
+  # inspector having to remember to join the network by hand.
+  wifi_iot: ^0.3.19
 {% if ocr_enabled or ocr_use_mlkit_fallback %}
   google_mlkit_text_recognition: ^0.13.0
 {% endif %}

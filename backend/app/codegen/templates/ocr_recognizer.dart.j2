@@ -8,6 +8,7 @@ import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 {% if ocr_use_mlkit_fallback %}
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:path_provider/path_provider.dart';
 {% endif %}
 import 'line_normalizer.dart';
 import 'ctc_decoder.dart';
@@ -98,6 +99,19 @@ class OcrRecognizer {
   List<String> _charset = [];
   int _blankIndex = -1;
   bool _ready = false;
+{% if ocr_use_mlkit_fallback %}
+  // Reused across every `recognize()` call instead of creating+closing a new
+  // TextRecognizer per call -- construction has real native/platform-channel
+  // setup cost, and there's nothing per-call about it (the script/config
+  // never changes between calls).
+  TextRecognizer? _mlKitRecognizer;
+  TextRecognizer get _mlKit => _mlKitRecognizer ??= TextRecognizer(script: TextRecognitionScript.latin);
+  // Stable path reused across calls so each capture only overwrites one
+  // file instead of paying for a fresh temp-directory create + delete every
+  // time. See `_tryMlKit` for why this stays a file round-trip rather than
+  // `InputImage.fromBytes`.
+  String? _mlKitScratchPath;
+{% endif %}
 
   bool get isReady => _ready;
 
@@ -142,6 +156,10 @@ class OcrRecognizer {
   void dispose() {
     _detector?.close();
     _recognizer?.close();
+{% if ocr_use_mlkit_fallback %}
+    _mlKitRecognizer?.close();
+    _mlKitRecognizer = null;
+{% endif %}
     _ready = false;
   }
 
@@ -155,6 +173,20 @@ class OcrRecognizer {
   /// without extra root-isolate-token plumbing this doesn't set up.
   Future<OcrResult> recognize(Uint8List jpegBytes, {double detectorThreshold = 0.25, String? truthValue}) async {
     if (!_ready) return const OcrResult(text: '', confidence: null, engine: 'none');
+
+{% if ocr_use_mlkit_fallback %}
+    // ML Kit only ever matters for the CRNN engine -- the CNN (per-character)
+    // path never populates `cropImageBytes` (there's no single line crop),
+    // so the fallback below is always a no-op for it. Route CRNN through the
+    // split detect/recognize pipeline so ML Kit can run concurrently with
+    // the CRNN recognizer instead of strictly after it; the CNN path (and
+    // any build with the fallback compiled out) keeps the single combined
+    // isolate call, since there's nothing for it to overlap with.
+    if (engine == 'crnn') {
+      return _recognizeCrnnWithMlKit(jpegBytes, detectorThreshold: detectorThreshold, truthValue: truthValue);
+    }
+{% endif %}
+
     final result = await compute(_runRecognize, {
       'bytes': jpegBytes,
       'detector_address': _detector!.address,
@@ -172,20 +204,7 @@ class OcrRecognizer {
     }
 
     final normTruth = _normalizeForMatch(truthValue);
-    var matched = _normalizeForMatch(result.text) == normTruth;
-    var matchedEngine = matched ? 'crnn' : 'none';
-    String? mlKitText;
-
-{% if ocr_use_mlkit_fallback %}
-    if (!matched && result.cropImageBytes != null) {
-      mlKitText = await _tryMlKit(result.cropImageBytes!);
-      if (mlKitText != null && _normalizeForMatch(mlKitText) == normTruth) {
-        matched = true;
-        matchedEngine = 'mlkit';
-      }
-    }
-{% endif %}
-
+    final matched = _normalizeForMatch(result.text) == normTruth;
     return OcrResult(
       text: result.text,
       confidence: result.confidence,
@@ -197,28 +216,157 @@ class OcrRecognizer {
       cropImageBytes: result.cropImageBytes,
       truthValue: truthValue,
       matched: matched,
-      matchedEngine: matchedEngine,
-      mlKitText: mlKitText,
+      matchedEngine: matched ? 'crnn' : 'none',
     );
   }
 
   static String _normalizeForMatch(String s) => s.toUpperCase().replaceAll(RegExp(r'\s+'), '');
 
 {% if ocr_use_mlkit_fallback %}
-  static Future<String?> _tryMlKit(Uint8List cropJpeg) async {
+  /// CRNN-only path that overlaps ML Kit with the CRNN recognizer's NN
+  /// forward pass instead of running them one after the other. Detection +
+  /// crop extraction (`_prepareCrnnInputs`) has to happen first either way
+  /// -- it's what produces the crop both engines need -- but once that's
+  /// done, the CRNN recognizer pass and ML Kit's read of the same crop are
+  /// independent and don't need to wait on each other.
+  Future<OcrResult> _recognizeCrnnWithMlKit(
+    Uint8List jpegBytes, {
+    required double detectorThreshold,
+    String? truthValue,
+  }) async {
+    final prep = await compute(_prepareCrnnInputs, {
+      'bytes': jpegBytes,
+      'detector_address': _detector!.address,
+      'detectorLabels': _detectorLabels,
+      'detectorInputSize': detectorInputSize,
+      'detectorThreshold': detectorThreshold,
+    });
+    if (prep['error'] != null) {
+      return const OcrResult(text: '', confidence: null, engine: 'crnn');
+    }
+
+    final normalizedInputs = prep['normalizedInputs'] as List<Float32List>;
+    final imgH = prep['imgH'] as int;
+    final imgW = prep['imgW'] as int;
+    final firstCropJpeg = prep['firstCropJpeg'] as Uint8List?;
+    final regionSource = prep['regionSource'] as String;
+    final totalBoxesFound = prep['totalBoxesFound'] as int;
+    final detectorDebug = prep['detectorDebug'] as String;
+    final sourceWidth = prep['sourceWidth'] as int;
+    final sourceHeight = prep['sourceHeight'] as int;
+    final boxesRaw = List<Map<String, dynamic>>.from(prep['boxesRaw'] as List);
+    final boxes = boxesRaw
+        .map((b) => DetectionResult(
+              className: b['className'] as String,
+              confidence: b['confidence'] as double,
+              bbox: Rect.fromLTWH(
+                (b['x'] as int) / sourceWidth,
+                (b['y'] as int) / sourceHeight,
+                (b['w'] as int) / sourceWidth,
+                (b['h'] as int) / sourceHeight,
+              ),
+            ))
+        .toList();
+
+    final noTruth = truthValue == null || truthValue.trim().isEmpty;
+    final normTruth = noTruth ? null : _normalizeForMatch(truthValue!);
+
+    // Whether ML Kit is worth running at all this capture: always in debug
+    // (for the side-by-side comparison), or whenever there's a truth value
+    // to check in release. Kicked off here, concurrently with the CRNN
+    // recognizer's NN forward pass below, rather than after CRNN's answer is
+    // known -- wall-clock time becomes max(CRNN, MLKit) instead of their
+    // sum. The tradeoff: in release, whether CRNN will actually mismatch the
+    // truth value is only knowable once CRNN finishes, so running ML Kit
+    // concurrently means it now runs speculatively on every truth-checked
+    // capture rather than strictly on mismatches -- a bit more ML Kit
+    // invocation for the latency win. Its answer is still only ever
+    // surfaced in the returned OcrResult when CRNN actually mismatched (or
+    // in debug), so the outward fallback behavior is unchanged.
+    final wantMlKit = (kDebugMode || !noTruth) && firstCropJpeg != null;
+
+    final crnnFuture = compute(_runCrnnFromInputs, {
+      'normalizedInputs': normalizedInputs,
+      'recognizer_address': _recognizer!.address,
+      'charset': _charset,
+      'blankIndex': _blankIndex,
+      'imgH': imgH,
+      'imgW': imgW,
+    });
+    final mlKitFuture = wantMlKit ? _tryMlKit(firstCropJpeg!) : Future<String?>.value(null);
+
+    final results = await Future.wait([crnnFuture, mlKitFuture]);
+    final crnnOut = results[0] as Map<String, dynamic>;
+    final mlKitText = results[1] as String?;
+
+    final text = crnnOut['text'] as String;
+    final confidence = crnnOut['confidence'] as double?;
+
+    if (noTruth) {
+      return OcrResult(
+        text: text,
+        confidence: confidence,
+        engine: 'crnn',
+        regionSource: regionSource,
+        totalBoxesFound: totalBoxesFound,
+        detectorDebug: detectorDebug,
+        boxes: boxes,
+        cropImageBytes: firstCropJpeg,
+        // No truth value to match against, but debug still ran ML Kit above
+        // for the side-by-side comparison -- surface it.
+        mlKitText: kDebugMode ? mlKitText : null,
+      );
+    }
+
+    var matched = _normalizeForMatch(text) == normTruth;
+    var matchedEngine = matched ? 'crnn' : 'none';
+    if (!matched && mlKitText != null && _normalizeForMatch(mlKitText) == normTruth) {
+      matched = true;
+      matchedEngine = 'mlkit';
+    }
+
+    return OcrResult(
+      text: text,
+      confidence: confidence,
+      engine: 'crnn',
+      regionSource: regionSource,
+      totalBoxesFound: totalBoxesFound,
+      detectorDebug: detectorDebug,
+      boxes: boxes,
+      cropImageBytes: firstCropJpeg,
+      truthValue: truthValue,
+      matched: matched,
+      matchedEngine: matchedEngine,
+      // Only surface ML Kit's answer when it's actually meaningful to show
+      // -- the debug always-compare display, or when it genuinely resolved
+      // a mismatch -- even though internally (see `wantMlKit` above) it may
+      // have run speculatively on every capture in release.
+      mlKitText: (kDebugMode || matchedEngine == 'mlkit') ? mlKitText : null,
+    );
+  }
+
+  /// Runs Google ML Kit on the same crop the CRNN recognizer read, as a
+  /// second opinion. `InputImage.fromBytes` needs raw, uncompressed pixel
+  /// data in a format ML Kit accepts (nv21/bgra8888/yuv420 planes, with
+  /// explicit width/height/rotation/bytesPerRow metadata) -- but the crop
+  /// here only exists as JPEG-encoded bytes (`img.encodeJpg`, shared with
+  /// history/UI display), so decoding it to raw pixels just to hand it back
+  /// to ML Kit would cost more than the file round-trip it's meant to avoid.
+  /// `InputImage.fromFilePath` is kept for that reason, but the per-call
+  /// temp-directory create/delete is dropped: this reuses one stable file
+  /// under the app's own temp directory across every call, just overwriting
+  /// it each time.
+  Future<String?> _tryMlKit(Uint8List cropJpeg) async {
     try {
-      final tempDir = await Directory.systemTemp.createTemp('ocr_mlkit_');
-      final tempFile = File('${tempDir.path}/crop.jpg');
-      await tempFile.writeAsBytes(cropJpeg);
-      try {
-        final inputImage = InputImage.fromFilePath(tempFile.path);
-        final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-        final mlResult = await recognizer.processImage(inputImage);
-        recognizer.close();
-        return mlResult.text.replaceAll(RegExp(r'\s+'), '');
-      } finally {
-        await tempDir.delete(recursive: true);
+      if (_mlKitScratchPath == null) {
+        final dir = await getTemporaryDirectory();
+        _mlKitScratchPath = '${dir.path}/ocr_mlkit_crop.jpg';
       }
+      final scratchFile = File(_mlKitScratchPath!);
+      await scratchFile.writeAsBytes(cropJpeg, flush: true);
+      final inputImage = InputImage.fromFilePath(scratchFile.path);
+      final mlResult = await _mlKit.processImage(inputImage);
+      return mlResult.text.replaceAll(RegExp(r'\s+'), '');
     } catch (e) {
       debugPrint('[OCR] ML Kit fallback error: $e');
       return null;
@@ -529,14 +677,13 @@ class OcrRecognizer {
   //      nothing at all, which is worth checking the confidence threshold
   //      and detector training for, not something a smarter fallback here
   //      can fix.
-  static OcrResult _recognizeWithCrnn(
-    img.Image source,
-    List<_LabeledBox> boxes,
-    Interpreter recognizer,
-    List<String> charset,
-    int blankIndex,
-    String detectorDebug,
-  ) {
+  /// Picks the line crop rectangle(s) to feed the CRNN recognizer, plus a
+  /// human-readable label for which detector-output branch produced them.
+  /// Extracted out of `_recognizeWithCrnn` so the split detect/recognize
+  /// pipeline (`_prepareCrnnInputs`, used when the ML Kit fallback needs to
+  /// run concurrently with the recognizer) can share this exact logic
+  /// instead of re-implementing it.
+  static (List<List<int>>, String) _selectCrnnLineRects(List<_LabeledBox> boxes, img.Image source) {
     // Region box first -- character boxes get filtered through it below,
     // so it has to be known before charBoxes is finalized.
     // Prefer the explicitly-configured region class (set in the app
@@ -599,6 +746,105 @@ class OcrRecognizer {
     debugPrint('[OCR] detector found ${boxes.length} total boxes '
         '(${charBoxes.length} char, ${regionBoxes.length} region) -> $regionSource, '
         'crop rects: $lineRects');
+    return (lineRects, regionSource);
+  }
+
+{% if ocr_use_mlkit_fallback %}
+  /// Stage 1 of the split CRNN pipeline: decode + detect + pick line
+  /// rect(s) + crop + normalize -- everything needed before the recognizer
+  /// can run, and everything ML Kit needs (the crop) too. Runs in a
+  /// background isolate like `_runRecognize`. Returns plain, isolate-safe
+  /// data (no `img.Image`/`_LabeledBox` instances) so it can cross back to
+  /// the calling isolate.
+  static Map<String, dynamic> _prepareCrnnInputs(Map<String, dynamic> args) {
+    final bytes = args['bytes'] as Uint8List;
+    final detector = Interpreter.fromAddress(args['detector_address'] as int);
+    final labels = List<String>.from(args['detectorLabels'] as List);
+    final inputSize = args['detectorInputSize'] as int;
+    final threshold = args['detectorThreshold'] as double;
+
+    img.Image? decoded = img.decodeImage(bytes);
+    if (decoded == null) return {'error': 'decode_failed'};
+    decoded = img.bakeOrientation(decoded);
+
+    final (boxes, detectorDebug) = _detectBoxes(decoded, detector, labels, inputSize, threshold);
+    final (lineRects, regionSource) = _selectCrnnLineRects(boxes, decoded);
+
+    const normalizer = LineNormalizer();
+    final normalizedInputs = <Float32List>[];
+    Uint8List? firstCropJpeg;
+    for (final rect in lineRects) {
+      if (rect[2] <= 0 || rect[3] <= 0) continue;
+      final crop = img.copyCrop(decoded, x: rect[0], y: rect[1], width: rect[2], height: rect[3]);
+      firstCropJpeg ??= Uint8List.fromList(img.encodeJpg(crop, quality: 85));
+      normalizedInputs.add(normalizer.normalize(crop));
+    }
+
+    return {
+      'normalizedInputs': normalizedInputs,
+      'imgH': normalizer.imgH,
+      'imgW': normalizer.imgW,
+      'firstCropJpeg': firstCropJpeg,
+      'regionSource': regionSource,
+      'totalBoxesFound': boxes.length,
+      'detectorDebug': detectorDebug,
+      'sourceWidth': decoded.width,
+      'sourceHeight': decoded.height,
+      'boxesRaw': boxes
+          .map((b) => {
+                'x': b.x,
+                'y': b.y,
+                'w': b.w,
+                'h': b.h,
+                'confidence': b.confidence,
+                'className': b.className,
+              })
+          .toList(),
+    };
+  }
+
+  /// Stage 2 of the split CRNN pipeline: just the recognizer NN forward
+  /// pass + CTC decode over inputs `_prepareCrnnInputs` already normalized.
+  /// Runs in a background isolate, concurrently with `_tryMlKit` on the
+  /// calling isolate -- see `_recognizeCrnnWithMlKit`.
+  static Map<String, dynamic> _runCrnnFromInputs(Map<String, dynamic> args) {
+    final normalizedInputs = args['normalizedInputs'] as List<Float32List>;
+    final recognizer = Interpreter.fromAddress(args['recognizer_address'] as int);
+    final charset = List<String>.from(args['charset'] as List);
+    final blankIndex = args['blankIndex'] as int;
+    final imgH = args['imgH'] as int;
+    final imgW = args['imgW'] as int;
+
+    final decoder = CtcDecoder(charset: charset, blankIndex: blankIndex);
+    final lines = <String>[];
+    final confs = <double>[];
+    for (final normalized in normalizedInputs) {
+      final shape = recognizer.getOutputTensor(0).shape; // [1, T, C]
+      if (shape.length != 3) continue;
+      final input = normalized.reshape([1, imgH, imgW, 1]);
+      final output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+      recognizer.run(input, output);
+      final probs = output[0];
+
+      final text = decoder.decode(probs);
+      if (text.isNotEmpty) lines.add(text);
+      final conf = decoder.meanConfidence(probs);
+      if (conf != null) confs.add(conf);
+    }
+    final avgConf = confs.isEmpty ? null : confs.reduce((a, b) => a + b) / confs.length;
+    return {'text': lines.join(), 'confidence': avgConf};
+  }
+{% endif %}
+
+  static OcrResult _recognizeWithCrnn(
+    img.Image source,
+    List<_LabeledBox> boxes,
+    Interpreter recognizer,
+    List<String> charset,
+    int blankIndex,
+    String detectorDebug,
+  ) {
+    final (lineRects, regionSource) = _selectCrnnLineRects(boxes, source);
 
     const normalizer = LineNormalizer();
     final decoder = CtcDecoder(charset: charset, blankIndex: blankIndex);

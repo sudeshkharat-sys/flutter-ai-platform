@@ -99,6 +99,8 @@ APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path
 CONFIG_FILE = APP_DIR / "config.json"
 DEVICES_FILE = APP_DIR / "paired_devices.json"
 APP_ALIASES_FILE = APP_DIR / "app_aliases.json"
+MASTER_DATA_FILE = APP_DIR / "master_data.json"
+ENGINE_DATA_FILE = APP_DIR / "engine_data.json"
 
 
 def _load_config() -> dict:
@@ -300,6 +302,42 @@ def _save_heartbeats():
         pass  # best-effort -- a write hiccup here should never fail the ping response
 
 
+HIDDEN_DEVICES_FILE_NAME = "_hidden_devices.json"
+
+# Devices/apps an admin has hidden from the read-only Vault viewer -- e.g. a
+# test phone whose data shouldn't be permanently deleted (it may still be
+# useful on this PC), but also shouldn't be visible to whoever's looking at
+# the Vault viewer. Written under DATA_DIR (not next to the exe, like
+# paired_devices.json) for the same reason heartbeats are: the separate
+# pc_receiver_viewer process only ever reads DATA_DIR, so this is how it
+# learns what to filter out. {"deviceSafe|appSafe": true, ...}
+_hidden_devices: dict[str, bool] = {}
+
+
+def _hidden_devices_file() -> Path:
+    return DATA_DIR / HIDDEN_DEVICES_FILE_NAME
+
+
+def _hidden_key(device_name_safe: str, app_name_safe: str) -> str:
+    return f"{device_name_safe}|{app_name_safe}"
+
+
+def _load_hidden_devices():
+    global _hidden_devices
+    try:
+        _hidden_devices = json.loads(_hidden_devices_file().read_text())
+    except Exception:
+        _hidden_devices = {}
+
+
+def _save_hidden_devices():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _hidden_devices_file().write_text(json.dumps(_hidden_devices, indent=2))
+    except OSError as e:
+        raise RuntimeError(f"Could not write {_hidden_devices_file()}: {e}") from e
+
+
 # App aliases -- for when two builds of what's really the same production
 # app ended up with different names (a rename, a typo, a leftover "(Copy)"
 # from Duplicate), which otherwise fragments their data into two unrelated
@@ -337,6 +375,277 @@ def _resolve_app_alias(app_name_safe: str) -> str:
         seen.add(current)
         current = target
     return current
+
+
+# Master data -- the same VIN/model-code -> description mapping the app
+# bundles into each APK at build time (assets/master_data.json, see
+# backend/app/codegen). The APK-side "Model Variant" is only whatever token
+# it could regex out of that description at build time (e.g. "(V1)"), which
+# is empty for model families that don't tag a variant that way -- so an
+# admin can paste/upload that same master data here and have it filled in
+# (or corrected) directly on the PC side, matched by Model Code, using the
+# raw description as the variant value.
+# list of {"modelCode": str, "description": str, "platformName": str}
+_master_data: list[dict] = []
+
+
+def _load_master_data():
+    global _master_data
+    if MASTER_DATA_FILE.exists():
+        try:
+            _master_data = json.loads(MASTER_DATA_FILE.read_text())
+        except Exception:
+            _master_data = []
+
+
+def _save_master_data():
+    MASTER_DATA_FILE.write_text(json.dumps(_master_data, indent=2))
+
+
+def _normalize_master_data(raw: list) -> list[dict]:
+    """Accepts the same shape the app build pipeline exports/imports
+    (platform_name/model_code/description, or modelCode/description) and
+    normalizes it to one shape. Rows missing a model code or description
+    are dropped -- there's nothing to match or fill in from them."""
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        model_code = str(item.get("modelCode") or item.get("model_code") or "").strip()
+        description = str(item.get("description") or "").strip()
+        platform_name = str(item.get("platformName") or item.get("platform_name") or "").strip()
+        if not model_code or not description:
+            continue
+        out.append({"modelCode": model_code, "description": description, "platformName": platform_name})
+    return out
+
+
+def _master_data_variant_map() -> dict[str, str]:
+    return {row["modelCode"].upper(): row["description"] for row in _master_data}
+
+
+def _apply_master_data_to_inspections(inspections: list, manifest_path: Path):
+    """Called on every fresh upload (see /upload) so newly-received data
+    gets the same correction _reconcile_master_data applies to history --
+    the phone's own bundled Model Variant (whatever it could regex out of
+    its description at APK build time, often blank) is overwritten with
+    the receiver's master data description wherever the Model Code
+    matches, *before* it's flattened into the table/master Excel. If
+    there's no master data loaded yet, or nothing matches, this is a
+    no-op and the phone's original value is kept as-is."""
+    variant_map = _master_data_variant_map()
+    if not variant_map:
+        return
+    dirty = False
+    for insp in inspections:
+        code = str(insp.get("modelCode") or "").upper()
+        new_variant = variant_map.get(code)
+        if new_variant is not None and insp.get("modelVariant") != new_variant:
+            insp["modelVariant"] = new_variant
+            dirty = True
+    if dirty:
+        manifest_path.write_text(json.dumps(inspections, indent=2))
+
+
+def _reconcile_master_data() -> dict:
+    """Applies the current master data to every inspection already on disk:
+    for any row whose Model Code matches, the Model Variant is set to the
+    master data's description -- overwriting whatever's there if it
+    differs. Rewrites manifest.json files (the data-viewer table's source
+    of truth) and the per-app master Excel workbooks, then drops the
+    in-memory rows cache so the dashboard reflects the correction
+    immediately instead of on next restart."""
+    variant_map = _master_data_variant_map()
+    manifests_updated = 0
+    rows_updated = 0
+
+    if variant_map and DATA_DIR.exists():
+        for device_dir in DATA_DIR.iterdir():
+            if not device_dir.is_dir() or device_dir.name.startswith("_"):
+                continue
+            for app_dir in device_dir.iterdir():
+                if not app_dir.is_dir():
+                    continue
+                for batch_dir in app_dir.iterdir():
+                    if not batch_dir.is_dir():
+                        continue
+                    manifest_path = batch_dir / "manifest.json"
+                    if not manifest_path.exists():
+                        continue
+                    try:
+                        inspections = json.loads(manifest_path.read_text())
+                    except Exception:
+                        continue
+                    dirty = False
+                    for insp in inspections:
+                        code = str(insp.get("modelCode") or "").upper()
+                        new_variant = variant_map.get(code)
+                        if new_variant is not None and insp.get("modelVariant") != new_variant:
+                            insp["modelVariant"] = new_variant
+                            dirty = True
+                            rows_updated += 1
+                    if dirty:
+                        manifest_path.write_text(json.dumps(inspections, indent=2))
+                        manifests_updated += 1
+
+        master_root = DATA_DIR / "_master"
+        if master_root.exists():
+            variant_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "modelVariant")
+            code_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "modelCode")
+            for app_dir in master_root.iterdir():
+                xlsx_path = app_dir / "data.xlsx"
+                if not xlsx_path.exists():
+                    continue
+                try:
+                    wb = load_workbook(xlsx_path)
+                    ws = wb.active
+                    changed = False
+                    for row in ws.iter_rows(min_row=2):
+                        code = str(row[code_col].value or "").upper()
+                        new_variant = variant_map.get(code)
+                        if new_variant is not None and row[variant_col].value != new_variant:
+                            row[variant_col].value = new_variant
+                            changed = True
+                    if changed:
+                        wb.save(xlsx_path)
+                except Exception as e:
+                    print(f"[warn] could not reconcile master data into {xlsx_path}: {e}")
+
+    with _rows_cache_lock:
+        _rows_cache.clear()
+
+    return {"manifestsUpdated": manifests_updated, "rowsUpdated": rows_updated, "modelsLoaded": len(variant_map)}
+
+
+# Engine data -- the app's *other* master list (assets/engine_data.json,
+# built from EngineDataQueries the same way master_data.json is built from
+# MasterDataQueries). It's a completely separate lookup used by engine/OCR
+# scan apps: for those, the inspection's "Model Code" field actually holds
+# the engine's scanned Part No, and sync_service.dart.j2 fills "Model Name"
+# (not "Model Variant") from this table's Part No -> Model Name mapping --
+# see scan_screen.dart.j2 (modelCode: partNo) and sync_service.dart.j2's
+# _loadModelNameMap(). Kept and reconciled the same way as master data, just
+# matched by Part No and writing Model Name instead of Model Variant.
+# list of {"partNo": str, "modelName": str, "description": str}
+_engine_data: list[dict] = []
+
+
+def _load_engine_data():
+    global _engine_data
+    if ENGINE_DATA_FILE.exists():
+        try:
+            _engine_data = json.loads(ENGINE_DATA_FILE.read_text())
+        except Exception:
+            _engine_data = []
+
+
+def _save_engine_data():
+    ENGINE_DATA_FILE.write_text(json.dumps(_engine_data, indent=2))
+
+
+def _normalize_engine_data(raw: list) -> list[dict]:
+    """Same idea as _normalize_master_data, for the app build pipeline's
+    engine_data.json shape (sheet_name/part_no/model_name/description)."""
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        part_no = str(item.get("partNo") or item.get("part_no") or "").strip()
+        model_name = str(item.get("modelName") or item.get("model_name") or "").strip()
+        description = str(item.get("description") or "").strip()
+        if not part_no or not model_name:
+            continue
+        out.append({"partNo": part_no, "modelName": model_name, "description": description})
+    return out
+
+
+def _engine_data_model_name_map() -> dict[str, str]:
+    return {row["partNo"].upper(): row["modelName"] for row in _engine_data}
+
+
+def _apply_engine_data_to_inspections(inspections: list, manifest_path: Path):
+    """Engine-scan equivalent of _apply_master_data_to_inspections -- runs
+    on every fresh upload so an engine app's Model Name is corrected from
+    this Part No table immediately, not just on the next manual Apply."""
+    name_map = _engine_data_model_name_map()
+    if not name_map:
+        return
+    dirty = False
+    for insp in inspections:
+        code = str(insp.get("modelCode") or "").upper()
+        new_name = name_map.get(code)
+        if new_name is not None and insp.get("modelName") != new_name:
+            insp["modelName"] = new_name
+            dirty = True
+    if dirty:
+        manifest_path.write_text(json.dumps(inspections, indent=2))
+
+
+def _reconcile_engine_data() -> dict:
+    """Engine-scan equivalent of _reconcile_master_data -- applies the
+    current engine data to every inspection already on disk, matched by
+    Part No (the Model Code column, for an engine app), overwriting Model
+    Name wherever it differs."""
+    name_map = _engine_data_model_name_map()
+    manifests_updated = 0
+    rows_updated = 0
+
+    if name_map and DATA_DIR.exists():
+        for device_dir in DATA_DIR.iterdir():
+            if not device_dir.is_dir() or device_dir.name.startswith("_"):
+                continue
+            for app_dir in device_dir.iterdir():
+                if not app_dir.is_dir():
+                    continue
+                for batch_dir in app_dir.iterdir():
+                    if not batch_dir.is_dir():
+                        continue
+                    manifest_path = batch_dir / "manifest.json"
+                    if not manifest_path.exists():
+                        continue
+                    try:
+                        inspections = json.loads(manifest_path.read_text())
+                    except Exception:
+                        continue
+                    dirty = False
+                    for insp in inspections:
+                        code = str(insp.get("modelCode") or "").upper()
+                        new_name = name_map.get(code)
+                        if new_name is not None and insp.get("modelName") != new_name:
+                            insp["modelName"] = new_name
+                            dirty = True
+                            rows_updated += 1
+                    if dirty:
+                        manifest_path.write_text(json.dumps(inspections, indent=2))
+                        manifests_updated += 1
+
+        master_root = DATA_DIR / "_master"
+        if master_root.exists():
+            name_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "modelName")
+            code_col = next(i for i, (_l, k) in enumerate(EXCEL_COLUMNS) if k == "modelCode")
+            for app_dir in master_root.iterdir():
+                xlsx_path = app_dir / "data.xlsx"
+                if not xlsx_path.exists():
+                    continue
+                try:
+                    wb = load_workbook(xlsx_path)
+                    ws = wb.active
+                    changed = False
+                    for row in ws.iter_rows(min_row=2):
+                        code = str(row[code_col].value or "").upper()
+                        new_name = name_map.get(code)
+                        if new_name is not None and row[name_col].value != new_name:
+                            row[name_col].value = new_name
+                            changed = True
+                    if changed:
+                        wb.save(xlsx_path)
+                except Exception as e:
+                    print(f"[warn] could not reconcile engine data into {xlsx_path}: {e}")
+
+    with _rows_cache_lock:
+        _rows_cache.clear()
+
+    return {"manifestsUpdated": manifests_updated, "rowsUpdated": rows_updated, "modelsLoaded": len(name_map)}
 
 
 # Columns for both the persistent per-app master workbook and the
@@ -534,6 +843,7 @@ def _append_to_master_excel(app_dir: Path, rows: list[dict]):
     if not rows:
         return
     xlsx_path = app_dir / "data.xlsx"
+    xlsx_path.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
         _seed_master_from_legacy_device_excels(app_dir.name, xlsx_path)
         wb, ws = _open_or_migrate_master_workbook(xlsx_path)
@@ -788,6 +1098,8 @@ async def upload(
     if manifest_path.exists():
         try:
             inspections = json.loads(manifest_path.read_text())
+            _apply_master_data_to_inspections(inspections, manifest_path)
+            _apply_engine_data_to_inspections(inspections, manifest_path)
             rows = _flatten_manifest_rows(inspections, stamp, device_name=device["deviceName"])
             _append_to_master_excel(_app_master_dir(app_name), rows)
         except Exception as e:
@@ -922,7 +1234,9 @@ async def api_devices(_: None = Depends(_require_local)):
     with _lock:
         items = list(_paired_devices.items())
     for device_id, d in items:
-        device_dir = DATA_DIR / _safe_name(d["deviceName"]) / _safe_name(d.get("appName", "app"))
+        device_name_safe = _safe_name(d["deviceName"])
+        app_name_safe = _safe_name(d.get("appName", "app"))
+        device_dir = DATA_DIR / device_name_safe / app_name_safe
         batch_dirs = sorted([p for p in device_dir.iterdir() if p.is_dir()]) if device_dir.exists() else []
         file_count, total_bytes = _dir_stats(device_dir)
         result.append({
@@ -934,6 +1248,7 @@ async def api_devices(_: None = Depends(_require_local)):
             "fileCount": file_count,
             "totalBytes": total_bytes,
             "lastReceivedAt": batch_dirs[-1].name if batch_dirs else None,
+            "hidden": _hidden_devices.get(_hidden_key(device_name_safe, app_name_safe), False),
         })
     result.sort(key=lambda d: d["pairedAt"], reverse=True)
     return result
@@ -950,6 +1265,165 @@ async def api_remove_device(device_id: str, _: None = Depends(_require_local)):
             except RuntimeError as e:
                 raise HTTPException(status_code=500, detail=str(e))
     return {"status": "ok"}
+
+
+@app.post("/api/admin/device-data/hide")
+async def api_admin_hide_device_data(request: Request, _: None = Depends(_require_local)):
+    """Toggles whether [deviceName]/[appName] is hidden from the read-only
+    Vault viewer (pc_receiver_viewer). Nothing on disk is touched or
+    deleted -- this dashboard (and the Devices/Apps tabs) still shows it
+    as normal; only the separate viewer process, which reads the hidden
+    list out of DATA_DIR, filters it out. Safer than a hard delete for a
+    test device you might still want the data for later."""
+    body = await request.json()
+    device_name = str(body.get("deviceName", ""))
+    app_name = str(body.get("appName", ""))
+    hidden = bool(body.get("hidden", True))
+    safe_device = _safe_name(device_name)
+    safe_app = _safe_name(app_name)
+    if not safe_device or not safe_app:
+        raise HTTPException(status_code=400, detail="deviceName and appName are required")
+
+    key = _hidden_key(safe_device, safe_app)
+    with _lock:
+        if hidden:
+            _hidden_devices[key] = True
+        else:
+            _hidden_devices.pop(key, None)
+        try:
+            _save_hidden_devices()
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return {"status": "ok", "deviceName": device_name, "appName": app_name, "hidden": hidden}
+
+
+@app.get("/api/admin/master-data")
+async def api_admin_get_master_data(_: None = Depends(_require_local)):
+    return {"masterData": _master_data}
+
+
+@app.post("/api/admin/master-data")
+async def api_admin_set_master_data(request: Request, _: None = Depends(_require_local)):
+    """Accepts the same master-data JSON the app bundles into the APK at
+    build time (a list of {platform_name, model_code, description} --
+    pasted or uploaded here), and immediately re-applies it to every
+    inspection already on disk, so Model Variant is filled in/corrected
+    from the description column wherever the Model Code matches -- see
+    _reconcile_master_data."""
+    body = await request.json()
+    raw = body.get("masterData")
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="Expected {\"masterData\": [...]}")
+
+    global _master_data
+    normalized = _normalize_master_data(raw)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="No valid rows found (each needs at least modelCode/model_code and description)")
+
+    with _lock:
+        _master_data = normalized
+        _save_master_data()
+        result = _reconcile_master_data()
+
+    return {"status": "ok", "modelsLoaded": len(_master_data), **result}
+
+
+@app.post("/api/admin/master-data/row")
+async def api_admin_upsert_master_data_row(request: Request, _: None = Depends(_require_local)):
+    """Adds or edits one master-data row from the Admin Edit table -- the
+    single-row equivalent of the bulk paste/upload above. Matched (and
+    replaced) by Model Code, case-insensitively, so editing an existing
+    model updates it in place instead of adding a duplicate."""
+    body = await request.json()
+    row = _normalize_master_data([body])
+    if not row:
+        raise HTTPException(status_code=400, detail="modelCode and description are required")
+    row = row[0]
+
+    global _master_data
+    with _lock:
+        _master_data = [r for r in _master_data if r["modelCode"].upper() != row["modelCode"].upper()]
+        _master_data.append(row)
+        _master_data.sort(key=lambda r: r["modelCode"])
+        _save_master_data()
+        result = _reconcile_master_data()
+
+    return {"status": "ok", "row": row, "modelsLoaded": len(_master_data), **result}
+
+
+@app.delete("/api/admin/master-data/row")
+async def api_admin_delete_master_data_row(modelCode: str, _: None = Depends(_require_local)):
+    global _master_data
+    with _lock:
+        before = len(_master_data)
+        _master_data = [r for r in _master_data if r["modelCode"].upper() != modelCode.upper()]
+        if len(_master_data) == before:
+            raise HTTPException(status_code=404, detail="No master data row with that Model Code")
+        _save_master_data()
+
+    return {"status": "ok", "modelsLoaded": len(_master_data)}
+
+
+@app.get("/api/admin/engine-data")
+async def api_admin_get_engine_data(_: None = Depends(_require_local)):
+    return {"engineData": _engine_data}
+
+
+@app.post("/api/admin/engine-data")
+async def api_admin_set_engine_data(request: Request, _: None = Depends(_require_local)):
+    """Bulk paste/upload replace for engine data -- see
+    api_admin_set_master_data, same idea but for the Part No -> Model Name
+    table (engine/OCR scan apps) instead of the VIN Model Code -> Variant
+    table."""
+    body = await request.json()
+    raw = body.get("engineData")
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="Expected {\"engineData\": [...]}")
+
+    global _engine_data
+    normalized = _normalize_engine_data(raw)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="No valid rows found (each needs at least partNo/part_no and modelName/model_name)")
+
+    with _lock:
+        _engine_data = normalized
+        _save_engine_data()
+        result = _reconcile_engine_data()
+
+    return {"status": "ok", "modelsLoaded": len(_engine_data), **result}
+
+
+@app.post("/api/admin/engine-data/row")
+async def api_admin_upsert_engine_data_row(request: Request, _: None = Depends(_require_local)):
+    body = await request.json()
+    row = _normalize_engine_data([body])
+    if not row:
+        raise HTTPException(status_code=400, detail="partNo and modelName are required")
+    row = row[0]
+
+    global _engine_data
+    with _lock:
+        _engine_data = [r for r in _engine_data if r["partNo"].upper() != row["partNo"].upper()]
+        _engine_data.append(row)
+        _engine_data.sort(key=lambda r: r["partNo"])
+        _save_engine_data()
+        result = _reconcile_engine_data()
+
+    return {"status": "ok", "row": row, "modelsLoaded": len(_engine_data), **result}
+
+
+@app.delete("/api/admin/engine-data/row")
+async def api_admin_delete_engine_data_row(partNo: str, _: None = Depends(_require_local)):
+    global _engine_data
+    with _lock:
+        before = len(_engine_data)
+        _engine_data = [r for r in _engine_data if r["partNo"].upper() != partNo.upper()]
+        if len(_engine_data) == before:
+            raise HTTPException(status_code=404, detail="No engine data row with that Part No")
+        _save_engine_data()
+
+    return {"status": "ok", "modelsLoaded": len(_engine_data)}
 
 
 @app.get("/api/storage")
@@ -1355,22 +1829,29 @@ DASHBOARD_HTML = """<!doctype html>
     --muted: #6b7280;
     --orange: #e0821e;
     --green: #1f9d55;
+    /* EYE lettering in the logo: E1 red, Y reddish-orange, E2 gold -- the
+       app-name plate next to the logo reuses these so each app carries the
+       same color as its letter (Receiver = E1, Viewer = Y, next app built
+       = E2, reserved). */
+    --eye-red: #f30222;
+    --eye-orange: #f85813;
+    --eye-gold: #fdaf04;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
-  header { background: var(--navy); color: #fff; padding: 6px 24px; display: flex; align-items: center; gap: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
-  header img { height: 88px; }
-  /* Bright chrome/silver text -- sharp white-to-white bands with a single
-     dark "reflection" line through the middle, not a flat grey wash, so it
-     actually reads as shiny metal instead of dull grey on the dark bar. */
-  header .titles h1 {
-    margin: 0; font-size: 18px; letter-spacing: 0.5px; font-weight: 800;
-    background: linear-gradient(180deg, #ffffff 0%, #ffffff 32%, #9a9a9a 47%, #6b6b6b 52%, #d0d0d0 62%, #ffffff 78%, #ffffff 100%);
-    -webkit-background-clip: text; background-clip: text;
-    -webkit-text-fill-color: transparent; color: transparent;
-    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+  header { background: var(--card); color: var(--text); padding: 14px 24px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--border); }
+  header img { height: 88px; margin: 6px 0; }
+  header .titles { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  header .titles p { margin: 0; font-size: 11px; color: var(--muted); max-width: 380px; }
+  .app-plate {
+    display: inline-flex; align-items: center;
+    padding: 4px 12px; border-radius: 5px;
+    font-size: 12px; font-weight: 800; letter-spacing: 0.8px;
+    color: #fff; white-space: nowrap;
   }
-  header .titles p { margin: 2px 0 0; font-size: 11px; color: #9aa0ad; }
+  .plate-recv { background: var(--eye-red); }
+  .plate-view { background: var(--eye-orange); }
+  .plate-future { background: var(--eye-gold); }
 
   nav { display: flex; gap: 4px; padding: 12px 24px 0; background: var(--bg); }
   nav button { border: none; background: transparent; padding: 10px 18px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 3px solid transparent; }
@@ -1526,9 +2007,9 @@ DASHBOARD_HTML = """<!doctype html>
   .breadcrumb .crumb-current { color: var(--text); font-weight: 600; }
 
   /* Header "receiving" pulse, flashed briefly on new uploads */
-  .live-indicator { display: none; align-items: center; gap: 6px; font-size: 11px; color: #ffb4c2; margin-left: auto; }
+  .live-indicator { display: none; align-items: center; gap: 6px; font-size: 11px; color: var(--crimson-dark); margin-left: auto; }
   .live-indicator.show { display: flex; }
-  .live-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: #ff4d6d; animation: dotPulse 1s infinite; }
+  .live-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--crimson); animation: dotPulse 1s infinite; }
   @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.4); } }
 
   .accordion { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
@@ -1580,11 +2061,11 @@ DASHBOARD_HTML = """<!doctype html>
 <header>
   <img src="data:image/png;base64,__LOGO_B64__" alt="Mahindra Digital Eye Vault">
   <div class="titles">
-    <h1>MAHINDRA DIGITAL EYE VAULT</h1>
+    <span class="app-plate plate-recv">Receiver</span>
     <p>Receives inspection data from paired phones on this WiFi/hotspot</p>
   </div>
   <div class="live-indicator" id="liveIndicator"><span class="dot"></span>Receiving…</div>
-  <button class="ghost-dark" style="margin-left:10px;" onclick="openSettingsModal()">⚙ Settings</button>
+  <button class="ghost" style="margin-left:10px;" onclick="openSettingsModal()">⚙ Settings</button>
 </header>
 
 <div class="settings-banner" id="settingsBanner" style="display:none;" onclick="openSettingsModal()">
@@ -1595,6 +2076,7 @@ DASHBOARD_HTML = """<!doctype html>
   <button class="tab-btn" data-tab="devices">Devices</button>
   <button class="tab-btn active" data-tab="apps">Apps</button>
   <button class="tab-btn" data-tab="storage">Vault</button>
+  <button class="tab-btn" data-tab="admin">Admin Edit</button>
 </nav>
 
 <main>
@@ -1622,6 +2104,98 @@ DASHBOARD_HTML = """<!doctype html>
       <button class="ghost" onclick="loadStorage()">Refresh</button>
     </div>
     <div id="storageList"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section id="tab-admin" class="tab">
+    <div class="toolbar">
+      <h2>Admin Edit</h2>
+    </div>
+
+    <div class="card" style="display:block;padding:16px;margin-bottom:18px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <h3 style="margin:0;">Master Data</h3>
+        <select id="mdDataType" onchange="switchMasterDataType()" style="margin-left:auto;">
+          <option value="vin">VIN Data (Model Code → Variant)</option>
+          <option value="engine">Engine Data (Part No → Model Name)</option>
+        </select>
+      </div>
+
+      <div id="mdPanelVin">
+        <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
+          The same master data the app is built with -- one row per Model
+          Code. Matching rows already received get their Model Variant filled
+          in, or overwritten if it differs, from the Description column here.
+        </p>
+
+        <table class="data-table" id="masterDataTable" style="max-width:820px;">
+          <thead><tr><th>Model Code</th><th>Platform Name</th><th>Description</th><th></th></tr></thead>
+          <tbody id="masterDataRows"><tr><td colspan="4">Loading…</td></tr></tbody>
+          <tfoot>
+            <tr>
+              <td><input id="mdNewCode" placeholder="e.g. MC1"></td>
+              <td><input id="mdNewPlatform" placeholder="e.g. Bolero"></td>
+              <td><input id="mdNewDescription" placeholder="e.g. Bolero Neo (V1)"></td>
+              <td><button class="primary" onclick="addMasterDataRow()">Add</button></td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <details id="masterDataBulk" style="margin-top:14px;max-width:640px;">
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Bulk paste/upload JSON instead</summary>
+          <div style="margin-top:10px;">
+            <textarea id="masterDataInput" rows="8" style="width:100%;font-family:monospace;font-size:12px;" placeholder='[{"platform_name":"...","model_code":"MC1","description":"..."}]'></textarea>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
+              <input type="file" id="masterDataFile" accept="application/json" onchange="loadMasterDataFile(event)">
+              <button class="primary" onclick="applyMasterData()">Replace All From JSON</button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div id="mdPanelEngine" style="display:none;">
+        <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
+          The app's engine_data.json -- one row per Part No. For an engine/OCR
+          scan app, the scanned Part No lands in the same Model Code field a
+          VIN app uses, so matching rows already received get their Model
+          Name filled in, or overwritten if it differs, from here.
+        </p>
+
+        <table class="data-table" id="engineDataTable" style="max-width:820px;">
+          <thead><tr><th>Part No</th><th>Model Name</th><th>Description</th><th></th></tr></thead>
+          <tbody id="engineDataRows"><tr><td colspan="4">Loading…</td></tr></tbody>
+          <tfoot>
+            <tr>
+              <td><input id="edNewPartNo" placeholder="e.g. PN123"></td>
+              <td><input id="edNewModelName" placeholder="e.g. mHawk 130"></td>
+              <td><input id="edNewDescription" placeholder="optional"></td>
+              <td><button class="primary" onclick="addEngineDataRow()">Add</button></td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <details id="engineDataBulk" style="margin-top:14px;max-width:640px;">
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Bulk paste/upload JSON instead</summary>
+          <div style="margin-top:10px;">
+            <textarea id="engineDataInput" rows="8" style="width:100%;font-family:monospace;font-size:12px;" placeholder='[{"part_no":"PN123","model_name":"...","description":"..."}]'></textarea>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:10px;">
+              <input type="file" id="engineDataFile" accept="application/json" onchange="loadEngineDataFile(event)">
+              <button class="primary" onclick="applyEngineData()">Replace All From JSON</button>
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div class="card" style="display:block;padding:16px;">
+      <h3 style="margin:0 0 6px;">Hide Device Data</h3>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
+        Hides a phone/app's data from the read-only Vault viewer -- e.g. a
+        test device whose data isn't meant for whoever's looking at the
+        Vault. Nothing is deleted: it stays here in this dashboard as
+        normal, and can be unhidden any time.
+      </p>
+      <div id="adminDeviceList"><div class="empty">Loading…</div></div>
+    </div>
   </section>
 </main>
 
@@ -1752,6 +2326,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'storage') loadStorage();
     if (btn.dataset.tab === 'apps') loadApps();
+    if (btn.dataset.tab === 'admin') { loadMasterDataStatus(); loadEngineDataStatus(); loadAdminDeviceList(); }
   });
 });
 
@@ -1987,6 +2562,257 @@ async function removeDevice(id, name) {
   await fetch('/api/devices/' + id, { method: 'DELETE' });
   showToast('Removed ' + name);
   loadDevices();
+}
+
+async function loadMasterDataStatus() {
+  const tbody = document.getElementById('masterDataRows');
+  try {
+    const r = await fetch('/api/admin/master-data');
+    const d = await r.json();
+    const data = d.masterData || [];
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty" style="padding:10px 0;">No master data yet -- add a row below.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(row => `
+      <tr>
+        <td>${row.modelCode}</td>
+        <td>${row.platformName || ''}</td>
+        <td>${row.description}</td>
+        <td><button class="icon-btn" title="Delete" onclick="deleteMasterDataRow('${row.modelCode.replace(/'/g, "\\'")}')">✕</button></td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">Could not load master data.</td></tr>';
+  }
+}
+
+async function addMasterDataRow() {
+  const modelCode = document.getElementById('mdNewCode').value.trim();
+  const platformName = document.getElementById('mdNewPlatform').value.trim();
+  const description = document.getElementById('mdNewDescription').value.trim();
+  if (!modelCode || !description) {
+    alert('Model Code and Description are required.');
+    return;
+  }
+  try {
+    const r = await fetch('/api/admin/master-data/row', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelCode, platformName, description }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    document.getElementById('mdNewCode').value = '';
+    document.getElementById('mdNewPlatform').value = '';
+    document.getElementById('mdNewDescription').value = '';
+    showToast(`Saved ${modelCode} -- ${d.rowsUpdated} received row(s) updated.`);
+    loadMasterDataStatus();
+  } catch (e) {
+    alert('Could not save row: ' + e.message);
+  }
+}
+
+async function deleteMasterDataRow(modelCode) {
+  if (!confirm(`Remove master data for Model Code "${modelCode}"? This only removes it from the master list -- data already received keeps whatever Model Variant it currently has.`)) return;
+  try {
+    const r = await fetch('/api/admin/master-data/row?modelCode=' + encodeURIComponent(modelCode), { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast('Removed ' + modelCode);
+    loadMasterDataStatus();
+  } catch (e) {
+    alert('Could not delete row: ' + e.message);
+  }
+}
+
+function loadMasterDataFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('masterDataInput').value = reader.result; };
+  reader.readAsText(file);
+}
+
+async function applyMasterData() {
+  let parsed;
+  try {
+    parsed = JSON.parse(document.getElementById('masterDataInput').value);
+  } catch (e) {
+    alert('Not valid JSON: ' + e.message);
+    return;
+  }
+  if (!Array.isArray(parsed)) {
+    alert('Expected a JSON array of { platform_name, model_code, description }.');
+    return;
+  }
+  try {
+    const r = await fetch('/api/admin/master-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ masterData: parsed }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast(`Applied ${d.modelsLoaded} model(s) -- ${d.rowsUpdated} row(s) updated.`);
+    // Clear the paste box and file picker, and collapse the section back
+    // down, so it's obvious the replace already went through -- leaving
+    // the same JSON sitting there invited clicking "Replace All" again on
+    // data that was already applied.
+    document.getElementById('masterDataInput').value = '';
+    document.getElementById('masterDataFile').value = '';
+    const details = document.getElementById('masterDataBulk');
+    if (details) details.open = false;
+    loadMasterDataStatus();
+  } catch (e) {
+    alert('Could not apply master data: ' + e.message);
+  }
+}
+
+function switchMasterDataType() {
+  const engine = document.getElementById('mdDataType').value === 'engine';
+  document.getElementById('mdPanelVin').style.display = engine ? 'none' : '';
+  document.getElementById('mdPanelEngine').style.display = engine ? '' : 'none';
+}
+
+async function loadEngineDataStatus() {
+  const tbody = document.getElementById('engineDataRows');
+  try {
+    const r = await fetch('/api/admin/engine-data');
+    const d = await r.json();
+    const data = d.engineData || [];
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty" style="padding:10px 0;">No engine data yet -- add a row below.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(row => `
+      <tr>
+        <td>${row.partNo}</td>
+        <td>${row.modelName}</td>
+        <td>${row.description || ''}</td>
+        <td><button class="icon-btn" title="Delete" onclick="deleteEngineDataRow('${row.partNo.replace(/'/g, "\\'")}')">✕</button></td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">Could not load engine data.</td></tr>';
+  }
+}
+
+async function addEngineDataRow() {
+  const partNo = document.getElementById('edNewPartNo').value.trim();
+  const modelName = document.getElementById('edNewModelName').value.trim();
+  const description = document.getElementById('edNewDescription').value.trim();
+  if (!partNo || !modelName) {
+    alert('Part No and Model Name are required.');
+    return;
+  }
+  try {
+    const r = await fetch('/api/admin/engine-data/row', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ partNo, modelName, description }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    document.getElementById('edNewPartNo').value = '';
+    document.getElementById('edNewModelName').value = '';
+    document.getElementById('edNewDescription').value = '';
+    showToast(`Saved ${partNo} -- ${d.rowsUpdated} received row(s) updated.`);
+    loadEngineDataStatus();
+  } catch (e) {
+    alert('Could not save row: ' + e.message);
+  }
+}
+
+async function deleteEngineDataRow(partNo) {
+  if (!confirm(`Remove engine data for Part No "${partNo}"? This only removes it from the master list -- data already received keeps whatever Model Name it currently has.`)) return;
+  try {
+    const r = await fetch('/api/admin/engine-data/row?partNo=' + encodeURIComponent(partNo), { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast('Removed ' + partNo);
+    loadEngineDataStatus();
+  } catch (e) {
+    alert('Could not delete row: ' + e.message);
+  }
+}
+
+function loadEngineDataFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('engineDataInput').value = reader.result; };
+  reader.readAsText(file);
+}
+
+async function applyEngineData() {
+  let parsed;
+  try {
+    parsed = JSON.parse(document.getElementById('engineDataInput').value);
+  } catch (e) {
+    alert('Not valid JSON: ' + e.message);
+    return;
+  }
+  if (!Array.isArray(parsed)) {
+    alert('Expected a JSON array of { part_no, model_name, description }.');
+    return;
+  }
+  try {
+    const r = await fetch('/api/admin/engine-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engineData: parsed }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast(`Applied ${d.modelsLoaded} part(s) -- ${d.rowsUpdated} row(s) updated.`);
+    document.getElementById('engineDataInput').value = '';
+    document.getElementById('engineDataFile').value = '';
+    const details = document.getElementById('engineDataBulk');
+    if (details) details.open = false;
+    loadEngineDataStatus();
+  } catch (e) {
+    alert('Could not apply engine data: ' + e.message);
+  }
+}
+
+async function loadAdminDeviceList() {
+  const el = document.getElementById('adminDeviceList');
+  try {
+    const r = await fetch('/api/devices');
+    const devices = await r.json();
+    if (!devices.length) {
+      el.innerHTML = '<div class="empty">No paired devices.</div>';
+      return;
+    }
+    el.innerHTML = devices.map(d => `
+      <div class="app-row">
+        <div class="a-info">
+          <div class="a-name">${d.deviceName} — ${d.appName}</div>
+          <div class="a-meta">${d.batchCount} send(s) • ${fmtBytes(d.totalBytes)}${d.hidden ? ' • Hidden from Vault viewer' : ''}</div>
+        </div>
+        <button class="ghost" onclick="toggleHideDeviceData('${d.deviceName.replace(/'/g, "\\'")}', '${d.appName.replace(/'/g, "\\'")}', ${!d.hidden})">${d.hidden ? 'Unhide' : 'Hide from Viewer'}</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Could not load devices.</div>';
+  }
+}
+
+async function toggleHideDeviceData(deviceName, appName, hidden) {
+  try {
+    const r = await fetch('/api/admin/device-data/hide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceName, appName, hidden }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast((hidden ? 'Hidden ' : 'Unhidden ') + deviceName + ' from the Vault viewer');
+    loadAdminDeviceList();
+  } catch (e) {
+    alert('Could not update: ' + e.message);
+  }
 }
 
 async function loadStorage() {
@@ -2831,7 +3657,10 @@ def _port_available(port: int) -> bool:
 def main():
     _load_devices()
     _load_app_aliases()
+    _load_master_data()
+    _load_engine_data()
     _load_heartbeats()
+    _load_hidden_devices()
     zeroconf = start_mdns()
 
     ip = _local_ip()

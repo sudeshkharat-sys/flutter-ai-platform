@@ -1,0 +1,241 @@
+import 'dart:async';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wifi_iot/wifi_iot.dart';
+
+/// The shop-floor WiFi that carries every inspection to the paired PC (see
+/// sync_service.dart) -- a phone that's quietly drifted onto a different
+/// network, or never connected to begin with, silently stops delivering
+/// data with no obvious symptom until someone notices it's missing on the
+/// PC. This keeps the phone on the configured network without relying on
+/// the inspector to notice and reconnect by hand, the same way the printer
+/// setup (print_service.dart) keeps a remembered Bluetooth printer instead
+/// of asking every time.
+///
+/// The SSID/password here are configured once per phone (Sync screen),
+/// not baked in at app-build time -- like the paired-PC list, the correct
+/// network is a property of *where this phone is deployed*, not of the
+/// app build, and one APK is often installed on phones at more than one
+/// site.
+class AllowedWifi {
+  final String ssid;
+  final String password; // empty = open network, no password
+  const AllowedWifi({required this.ssid, this.password = ''});
+}
+
+/// One entry from a nearby-network scan, for the "pick your network instead
+/// of typing it" setup UI (Sync screen) -- SSID typos there would otherwise
+/// mean auto-connect silently never matches anything.
+class ScannedNetwork {
+  final String ssid;
+  final int level; // signal strength in dBm, roughly -30 (excellent) to -90 (unusable)
+  final bool secured;
+  const ScannedNetwork({required this.ssid, required this.level, required this.secured});
+}
+
+class WifiService {
+  static final WifiService instance = WifiService._();
+  WifiService._();
+
+  static const _kSsidKey = 'allowed_wifi_ssid';
+  static const _kPasswordKey = 'allowed_wifi_password';
+  static const _kSubmitCounterKey = 'wifi_nag_submit_counter';
+
+  // Re-prompt every Nth inspection submitted while off the configured
+  // network, not every single one -- a genuinely offline stretch (WiFi
+  // router down, not the inspector's fault) would otherwise turn into a
+  // popup on every scan instead of a periodic reminder.
+  static const int _kNagEvery = 5;
+
+  Future<AllowedWifi?> getAllowedWifi() async {
+    final prefs = await SharedPreferences.getInstance();
+    final ssid = prefs.getString(_kSsidKey);
+    if (ssid == null || ssid.trim().isEmpty) return null;
+    return AllowedWifi(ssid: ssid, password: prefs.getString(_kPasswordKey) ?? '');
+  }
+
+  Future<void> setAllowedWifi(String ssid, String password) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kSsidKey, ssid.trim());
+    await prefs.setString(_kPasswordKey, password);
+    await prefs.setInt(_kSubmitCounterKey, 0);
+  }
+
+  Future<void> clearAllowedWifi() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kSsidKey);
+    await prefs.remove(_kPasswordKey);
+    await prefs.remove(_kSubmitCounterKey);
+  }
+
+  // Android reports the current SSID wrapped in quotes (e.g. '"Shop-Wifi"')
+  // -- comparisons need both sides stripped of quotes/whitespace and
+  // case-normalized, since SSIDs are matched case-insensitively by users
+  // typing them in even though the radio itself treats them as exact bytes.
+  String _normalize(String? ssid) => (ssid ?? '').replaceAll('"', '').trim().toLowerCase();
+
+  /// Reading the live SSID needs location permission granted at runtime on
+  /// Android (on top of the ACCESS_FINE_LOCATION manifest entry) -- without
+  /// it, getSSID() silently returns a placeholder like "<unknown ssid>"
+  /// instead of failing loudly, which would otherwise look identical to
+  /// "connected to the wrong network".
+  Future<void> _ensureLocationPermission() async {
+    final status = await Permission.locationWhenInUse.status;
+    if (!status.isGranted) {
+      await Permission.locationWhenInUse.request();
+    }
+  }
+
+  /// True if nothing is configured yet (nothing to enforce) or the phone is
+  /// currently on the configured network. False only means "configured,
+  /// but currently on some other network or no network at all".
+  Future<bool> isConnectedToAllowedWifi() async {
+    final allowed = await getAllowedWifi();
+    if (allowed == null) return true;
+    try {
+      await _ensureLocationPermission();
+      if (!await WiFiForIoTPlugin.isConnected()) return false;
+      final current = await WiFiForIoTPlugin.getSSID();
+      return _normalize(current) == _normalize(allowed.ssid);
+    } catch (_) {
+      // Can't read WiFi state (permission denied, OEM quirk) -- assume
+      // connected rather than nagging over something that can't be verified.
+      return true;
+    }
+  }
+
+  /// Best-effort: if a network is configured and the phone isn't on it
+  /// already, tries to join automatically. Never throws and never awaits
+  /// anything slow indefinitely -- called from app startup, where a WiFi
+  /// hiccup must not block getting to the scan screen.
+  ///
+  /// Android 10+ forbids apps from silently toggling WiFi or joining a
+  /// network with zero user interaction (Play policy, not a bug here), so
+  /// on those versions this surfaces the system's own "connect to this
+  /// network?" dialog (one tap, no typing) rather than truly connecting
+  /// with no prompt at all -- as close to automatic as the platform
+  /// allows. On older Android this can complete with no prompt at all.
+  Future<void> ensureConnected() async {
+    final allowed = await getAllowedWifi();
+    if (allowed == null) return;
+    try {
+      if (!await WiFiForIoTPlugin.isEnabled()) {
+        // shouldOpenSettings: true is the fallback for Android 10+, where
+        // toggling WiFi directly always fails -- it opens the system WiFi
+        // panel instead of leaving the radio off with no path forward.
+        await WiFiForIoTPlugin.setEnabled(true, shouldOpenSettings: true);
+      }
+      if (await isConnectedToAllowedWifi()) return;
+
+      Future<bool> tryJoin({required bool withInternet}) => WiFiForIoTPlugin.connect(
+            allowed.ssid,
+            password: allowed.password.isEmpty ? null : allowed.password,
+            security: allowed.password.isEmpty ? NetworkSecurity.NONE : NetworkSecurity.WPA,
+            joinOnce: false,
+            withInternet: withInternet,
+            timeoutInSeconds: 12,
+          ).timeout(const Duration(seconds: 15), onTimeout: () => false);
+
+      // Try an internet-validated join first -- on a shop WiFi that does
+      // have a real gateway, this is what makes Android treat it as a
+      // genuine connection (shows the normal WiFi icon) instead of a
+      // scoped local-only one. But plenty of shop networks are LAN-only
+      // with no internet path at all, and Android *rejects* an
+      // internet-validated request outright on those -- connect() would
+      // just fail every time. Falling back to a local-only request keeps
+      // this working either way; pairing/sync only ever need to reach the
+      // PC on the same LAN; they never need real internet themselves.
+      var joined = await tryJoin(withInternet: true);
+      if (!joined) {
+        joined = await tryJoin(withInternet: false);
+      }
+
+      // On Android 10+, connect() above only associates the radio with the
+      // AP -- it does NOT make this app's own network calls (pairing,
+      // sync) actually go out over that connection. Without this explicit
+      // step, everything the app sends keeps using whatever the phone's
+      // normal default route is (nothing, if this WiFi isn't it), which is
+      // exactly what caused pairing to fail with "Network unreachable"
+      // even right after a connection that looked successful. This is
+      // what actually matters for pairing/sync to work -- unlike
+      // withInternet above, it applies the same way regardless of which
+      // of the two joins above succeeded.
+      if (joined) {
+        await WiFiForIoTPlugin.forceWifiUsage(true);
+      }
+    } catch (_) {
+      // Not guaranteed on every Android version/OEM -- the every-Nth-
+      // submission nag (see registerSubmissionAndShouldNag) is the fallback
+      // that gets a human to tap through it manually when this fails.
+    }
+  }
+
+  /// Scans for nearby WiFi networks so the setup dialog can offer a tap-to-
+  /// pick list instead of a free-text SSID field (same idea as the native
+  /// Android WiFi picker -- pick the network, only the password gets
+  /// typed). Uses wifi_iot's own scan API rather than pulling in a second
+  /// WiFi plugin just for this; it's marked deprecated upstream in favor of
+  /// a separate `wifi_scan` package, but it's still functional and this
+  /// avoids doubling up on native WiFi dependencies in one build.
+  ///
+  /// Can return an empty list (not an error) if location services are off
+  /// at the OS level -- Android silently returns no scan results in that
+  /// case, permission grant or not -- so callers should offer "enter
+  /// manually" alongside this rather than treating empty as fatal.
+  Future<List<ScannedNetwork>> scanNearbyNetworks() async {
+    await _ensureLocationPermission();
+    // ignore: deprecated_member_use
+    final results = await WiFiForIoTPlugin.loadWifiList();
+    final bySsid = <String, ScannedNetwork>{};
+    for (final n in results) {
+      final ssid = n.ssid?.trim() ?? '';
+      if (ssid.isEmpty) continue; // hidden/blank SSID -- nothing to tap on
+      final level = n.level ?? -100;
+      // Capabilities looks like "[WPA2-PSK-CCMP][ESS]" for a secured network
+      // or just "[ESS]" for open -- presence of any cipher/auth token means
+      // a password is required.
+      final secured = (n.capabilities ?? '').contains(RegExp(r'WEP|WPA|PSK|EAP'));
+      final existing = bySsid[ssid];
+      // Same SSID can show up once per radio/band (2.4GHz + 5GHz access
+      // points broadcasting the same network name) -- keep the stronger one.
+      if (existing == null || level > existing.level) {
+        bySsid[ssid] = ScannedNetwork(ssid: ssid, level: level, secured: secured);
+      }
+    }
+    final list = bySsid.values.toList()..sort((a, b) => b.level.compareTo(a.level));
+    return list;
+  }
+
+  /// Opens the system WiFi panel so the inspector can connect by hand --
+  /// the fallback offered by the reminder popup when auto-connect hasn't
+  /// worked.
+  Future<void> openWifiSettings() async {
+    try {
+      await WiFiForIoTPlugin.setEnabled(true, shouldOpenSettings: true);
+    } catch (_) {}
+  }
+
+  /// Call once per completed inspection submission. Returns true exactly
+  /// when the caller should show the "please connect to WiFi" popup --
+  /// every [_kNagEvery]th submission made while off the configured network.
+  /// Returns false (and resets the streak) the moment the phone is back on
+  /// the right network, or if nothing is configured at all.
+  Future<bool> registerSubmissionAndShouldNag() async {
+    final allowed = await getAllowedWifi();
+    if (allowed == null) return false;
+
+    final prefs = await SharedPreferences.getInstance();
+    if (await isConnectedToAllowedWifi()) {
+      await prefs.setInt(_kSubmitCounterKey, 0);
+      return false;
+    }
+
+    final count = (prefs.getInt(_kSubmitCounterKey) ?? 0) + 1;
+    if (count >= _kNagEvery) {
+      await prefs.setInt(_kSubmitCounterKey, 0);
+      return true;
+    }
+    await prefs.setInt(_kSubmitCounterKey, count);
+    return false;
+  }
+}

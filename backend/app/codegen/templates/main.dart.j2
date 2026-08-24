@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'services/sync_service.dart';
+import 'services/wifi_service.dart';
 import 'screens/home_screen.dart';
 {% if is_combined_app %}
 import 'screens/capability_menu_screen.dart';
@@ -19,6 +21,11 @@ Future<void> main() async {
   // uploads -- lets the PC/viewer show "Online" based on real recent
   // reachability instead of only "when did data last arrive".
   SyncService.instance.startHeartbeatLoop();
+  // Best-effort: join the configured shop WiFi automatically every time the
+  // app opens, same as this device would auto-reconnect a paired Bluetooth
+  // printer. Never awaited -- must not delay getting to the scan screen if
+  // WiFi is slow, off, or out of range.
+  unawaited(WifiService.instance.ensureConnected());
   runApp(const MyApp());
 }
 

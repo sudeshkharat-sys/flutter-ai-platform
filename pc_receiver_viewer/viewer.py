@@ -366,6 +366,32 @@ def _load_heartbeats() -> dict[tuple[str, str], int]:
     return out
 
 
+HIDDEN_DEVICES_FILE_NAME = "_hidden_devices.json"
+
+
+def _load_hidden() -> set[tuple[str, str]]:
+    """Device/app pairs an admin has hidden from this viewer via
+    receiver.py's Admin Edit tab -- written under DATA_DIR (same trick as
+    heartbeats) so this read-only process can see it without ever talking
+    to receiver.py directly. Re-read on every call (cheap, small file) so
+    a hide/unhide takes effect immediately without restarting this
+    process."""
+    path = DATA_DIR / HIDDEN_DEVICES_FILE_NAME
+    if not path.exists():
+        return set()
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return set()
+    out = set()
+    for key, hidden in raw.items():
+        if not hidden or "|" not in key:
+            continue
+        device_safe, app_safe = key.split("|", 1)
+        out.add((device_safe, app_safe))
+    return out
+
+
 def _app_master_dir(app_name: str) -> Path:
     """Where an app's aggregated master workbook lives -- must match
     receiver.py's _app_master_dir exactly, since this viewer reads the
@@ -390,11 +416,14 @@ def _list_groups() -> list[dict]:
     if not DATA_DIR.exists():
         return groups
     heartbeats = _load_heartbeats()
+    hidden = _load_hidden()
     for device_dir in sorted(DATA_DIR.iterdir()):
         if not device_dir.is_dir() or device_dir.name == "_master":
             continue
         for app_dir in sorted(device_dir.iterdir()):
             if not app_dir.is_dir():
+                continue
+            if (device_dir.name, app_dir.name) in hidden:
                 continue
             batch_dirs = sorted([p for p in app_dir.iterdir() if p.is_dir()])
             xlsx_path = _app_master_dir(app_dir.name) / "data.xlsx"
@@ -568,6 +597,8 @@ async def api_data(device: str, appName: str, _: None = Depends(_require_session
     receiver.py's own dashboard uses (fetch once per device, then filter,
     chart, and group entirely client-side), so filtering/charting/expand-
     collapse all react instantly without a round trip per keystroke."""
+    if (_safe_name(device), _safe_name(appName)) in _load_hidden():
+        raise HTTPException(status_code=404, detail="Not found")
     rows = _flatten_rows(device, appName)
     truncated = len(rows) > MAX_ROWS_RETURNED
     return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
@@ -582,8 +613,11 @@ def _device_dirs_for_app(app_name_safe: str) -> list[str]:
     devices = []
     if not DATA_DIR.exists():
         return devices
+    hidden = _load_hidden()
     for device_dir in DATA_DIR.iterdir():
         if not device_dir.is_dir() or device_dir.name == "_master":
+            continue
+        if (device_dir.name, app_name_safe) in hidden:
             continue
         if (device_dir / app_name_safe).exists():
             devices.append(device_dir.name)
@@ -631,12 +665,15 @@ async def api_storage(_: None = Depends(_require_session)):
     tree = {}
     if not DATA_DIR.exists():
         return tree
+    hidden = _load_hidden()
     for device_dir in sorted(DATA_DIR.iterdir()):
         if not device_dir.is_dir() or device_dir.name == "_master":
             continue
         apps = {}
         for app_dir in sorted(device_dir.iterdir()):
             if not app_dir.is_dir():
+                continue
+            if (device_dir.name, app_dir.name) in hidden:
                 continue
             batches = []
             for batch_dir in sorted(app_dir.iterdir(), reverse=True):
@@ -686,6 +723,8 @@ async def api_app_data(appName: str, startDate: str = "", endDate: str = "", _: 
 
 @app.get("/api/image")
 async def api_image(device: str, appName: str, batch: str, rel: str, _: None = Depends(_require_session)):
+    if (_safe_name(device), _safe_name(appName)) in _load_hidden():
+        raise HTTPException(status_code=404, detail="Not found")
     rel_path = f"{_safe_name(device)}/{_safe_name(appName)}/{batch}/{rel}"
     target = _resolve_under_data_dir(rel_path)
     if not target.is_file():
@@ -702,11 +741,35 @@ async def download_master_excel(appName: str, device: str = "", _: None = Depend
     the existing per-device "Download Excel" links/buttons keep working
     without needing their own change -- see receiver.py's equivalent
     /api/export/master-excel route for why this is now app-wide rather
-    than per-device."""
+    than per-device.
+
+    That raw workbook aggregates every device paired under the app,
+    including ones hidden from this viewer -- so if any device for this
+    app is currently hidden, a filtered copy is built from the same
+    (already hidden-aware) per-device rows /api/app-data uses instead of
+    serving the file as-is."""
+    app_name_safe = _safe_name(appName)
     xlsx_path = _app_master_dir(appName) / "data.xlsx"
     if not xlsx_path.exists():
         raise HTTPException(status_code=404, detail="No data received yet")
-    return FileResponse(xlsx_path, filename=f"{_safe_name(appName)}.xlsx")
+
+    hidden = _load_hidden()
+    app_has_hidden_device = any(app == app_name_safe for _dev, app in hidden)
+    if not app_has_hidden_device:
+        return FileResponse(xlsx_path, filename=f"{app_name_safe}.xlsx")
+
+    device_dirs = _device_dirs_for_app(app_name_safe)
+    rows: list[dict] = []
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(device_dirs)))) as pool:
+        for device_rows in pool.map(lambda d: _flatten_rows(d, app_name_safe), device_dirs):
+            rows.extend(device_rows)
+    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    buf = _build_workbook(rows)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{app_name_safe}.xlsx"'},
+    )
 
 
 @app.get("/download/excel-month")
@@ -818,6 +881,11 @@ VIEWER_HTML = """<!doctype html>
   :root {
     --crimson: #DC143C; --crimson-dark: #B01030; --navy: #151923; --navy-light: #1f2430;
     --bg: #f7f7fa; --card: #ffffff; --border: #e6e6ec; --text: #1c1f26; --muted: #6b7280; --green: #1f9d55;
+    /* EYE lettering in the logo: E1 red, Y reddish-orange, E2 gold -- the
+       app-name plate next to the logo reuses these so each app carries the
+       same color as its letter (Receiver = E1, Viewer = Y, next app built
+       = E2, reserved). */
+    --eye-red: #f30222; --eye-orange: #f85813; --eye-gold: #fdaf04;
   }
   * { box-sizing: border-box; }
   /* Deliberately NOT a fixed-height/flex "app shell" layout -- this page
@@ -831,23 +899,23 @@ VIEWER_HTML = """<!doctype html>
      staying stuck to the top while you scroll (an acceptable trade). */
   html, body { margin: 0; }
   body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
-  header { background: var(--navy); color: #fff; padding: 6px 24px; display: flex; align-items: center; gap: 14px;
-           box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
-  header img { height: 68px; }
-  /* Bright chrome/silver text -- sharp white-to-white bands with a single
-     dark "reflection" line through the middle, not a flat grey wash, so it
-     actually reads as shiny metal instead of dull grey on the dark bar. */
-  header .titles h1 {
-    margin: 0; font-size: 18px; font-weight: 800;
-    background: linear-gradient(180deg, #ffffff 0%, #ffffff 32%, #9a9a9a 47%, #6b6b6b 52%, #d0d0d0 62%, #ffffff 78%, #ffffff 100%);
-    -webkit-background-clip: text; background-clip: text;
-    -webkit-text-fill-color: transparent; color: transparent;
-    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+  header { background: var(--card); color: var(--text); padding: 14px 24px; display: flex; align-items: center; gap: 14px;
+           border-bottom: 1px solid var(--border); }
+  header img { height: 68px; margin: 6px 0; }
+  header .titles { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  header .titles p { margin: 0; font-size: 11px; color: var(--muted); max-width: 380px; }
+  .app-plate {
+    display: inline-flex; align-items: center;
+    padding: 4px 12px; border-radius: 5px;
+    font-size: 12px; font-weight: 800; letter-spacing: 0.8px;
+    color: #fff; white-space: nowrap;
   }
-  header .titles p { margin: 2px 0 0; font-size: 11px; color: #9aa0ad; }
+  .plate-recv { background: var(--eye-red); }
+  .plate-view { background: var(--eye-orange); }
+  .plate-future { background: var(--eye-gold); }
   header .spacer { flex: 1; }
-  header a { color: #cfd3db; font-size: 12px; text-decoration: none; }
-  header a:hover { color: #fff; }
+  header a { color: var(--muted); font-size: 12px; text-decoration: none; }
+  header a:hover { color: var(--crimson); }
 
   /* Full width, edge to edge -- matches receiver.py's own data-viewer
      overlay, which has no max-width at all. */
@@ -928,9 +996,24 @@ VIEWER_HTML = """<!doctype html>
   .chart-hidden-bar b { color: var(--text); }
 
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-  table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  /* The data table has grown a Variant column alongside VIN/Model Code/
+     Model Name -- too many nowrap columns for most screens to show at once
+     even before that. .card's own overflow:hidden clips the rest of the
+     row instead of scrolling it, so the table gets its own scroll
+     container here rather than relying on the card's.
+
+     Capped at a viewport-relative height (with its own vertical scroll)
+     rather than left to grow with however many rows there are -- an
+     uncapped table put its horizontal scrollbar at the very bottom of
+     potentially hundreds of rows, so reaching it meant scrolling all the
+     way down first. This keeps the horizontal scrollbar always within
+     reach near the top of the page, and the header sticky so column
+     names stay visible while scrolling down through rows. */
+  .table-scroll { overflow: auto; max-height: calc(100vh - 260px); }
+  table.data-table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 13px; }
   table.data-table thead th { background: #fafafc; border-bottom: 2px solid var(--border);
-                               padding: 10px; text-align: left; white-space: nowrap; }
+                               padding: 10px; text-align: left; white-space: nowrap;
+                               position: sticky; top: 0; z-index: 1; }
   table.data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   tr.group-row { cursor: pointer; }
   tr.group-row:hover { background: #fbfbfd; }
@@ -995,21 +1078,19 @@ VIEWER_HTML = """<!doctype html>
   .data-header h2 { margin: 0; font-size: 17px; }
   .data-header p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
 
-  /* Blinking-logo loader shown while a data fetch is in flight, in place of
-     a generic spinner -- the actual app logo (same asset as the header),
-     centered dead-center on screen and "blinking" (open/close eye) while
-     data loads. */
+  /* Logo loader shown while a data fetch is in flight, in place of a
+     generic spinner -- the actual app logo (same asset as the header),
+     centered dead-center on screen and pulsing gently while data loads. */
   .eye-loader-overlay { display: none; position: fixed; inset: 0; align-items: center;
                          justify-content: center; flex-direction: column; gap: 16px;
                          background: var(--bg); z-index: 50; }
   .eye-loader-overlay.show { display: flex; }
   .eye-loader-overlay .msg { font-size: 13px; color: var(--muted); font-weight: 600; }
-  .eye-loader-overlay img { width: 84px; height: 84px; object-fit: contain;
-                             animation: eyeBlink 1.6s ease-in-out infinite; }
-  @keyframes eyeBlink {
-    0%, 35% { transform: scaleY(1); }
-    50% { transform: scaleY(0.08); }
-    65%, 100% { transform: scaleY(1); }
+  .eye-loader-overlay img { width: 240px; height: auto; display: block;
+                             animation: logoPulse 1.7s ease-in-out infinite; }
+  @keyframes logoPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.97); }
   }
 </style>
 </head>
@@ -1017,7 +1098,7 @@ VIEWER_HTML = """<!doctype html>
 <header>
   <img src="data:image/png;base64,__LOGO_B64__" alt="logo">
   <div class="titles">
-    <h1>Digital Eye Vault -- Viewer</h1>
+    <span class="app-plate plate-view">Viewer</span>
     <p>Read-only. View inspections and download Excel.</p>
   </div>
   <div class="spacer"></div>
@@ -1031,7 +1112,7 @@ VIEWER_HTML = """<!doctype html>
       <span class="muted" id="appsUpdatedAt" style="font-size:11px;"></span>
       <button class="secondary" onclick="loadApps()">Refresh</button>
     </div>
-    <p class="muted" style="margin:-6px 0 14px;">"Offline" usually just means WiFi dropped, the phone's off, or the app isn't running -- not a problem on this end.</p>
+    <p class="muted" id="offlineNote" style="margin:-6px 0 14px; display:none;">Offline: WiFi dropped, phone's off, or the app isn't open — nothing wrong on the receiving PC.</p>
     <div id="appsList" class="apps-grid"><div class="empty">Loading...</div></div>
   </div>
 
@@ -1097,6 +1178,7 @@ VIEWER_HTML = """<!doctype html>
   <div class="charts-panel" id="chartsPanel"></div>
 
   <div class="card">
+    <div class="table-scroll">
     <table class="data-table">
       <thead>
         <tr>
@@ -1106,6 +1188,7 @@ VIEWER_HTML = """<!doctype html>
       </thead>
       <tbody id="viewerRows"></tbody>
     </table>
+    </div>
   </div>
   </div>
   </div>
@@ -1162,11 +1245,16 @@ setInterval(updateAppsUpdatedLabel, 5000);
 
 function renderApps() {
   const el = document.getElementById('appsList');
+  const offlineNote = document.getElementById('offlineNote');
   if (!apps.length) {
     el.innerHTML = '<div class="empty">No data received yet.</div>';
+    offlineNote.style.display = 'none';
     return;
   }
-  el.innerHTML = apps.map(a => {
+  // Resolve online/offline once per app up front (instead of inline inside
+  // the render map) so the "what does Offline mean" note below can check
+  // whether it's actually relevant right now, instead of always showing.
+  const withStatus = apps.map(a => {
     let online, statusSub;
     if (a.lastHeartbeatAtMs) {
       // A real liveness signal (the phone pings every ~45s while its app
@@ -1188,6 +1276,12 @@ function renderApps() {
       online = minsAgo <= APP_ONLINE_THRESHOLD_MINUTES;
       statusSub = lastTs ? `last send ${timeAgo(lastTs)}` : 'no data yet';
     }
+    return { app: a, online, statusSub };
+  });
+
+  offlineNote.style.display = withStatus.some(s => !s.online) ? 'block' : 'none';
+
+  el.innerHTML = withStatus.map(({ app: a, online, statusSub }) => {
     const statusText = online ? 'Online' : 'Offline';
     return `
     <div class="app-card">
