@@ -905,8 +905,15 @@ class ModelManager {
       double maxClassScore = -1.0;
       int classId = -1;
 
-      // Class scores start at index 4
-      for (int j = 4; j < numElements; j++) {
+      // Class scores start at index 4. A detect-task export has exactly
+      // numElements == 4 + labels.length, so this bound is a no-op there.
+      // A segment-task export has numElements == 4 + labels.length + 32
+      // (trailing mask coefficients, not class scores) -- capping the loop
+      // at labels.length keeps those 32 extra channels from being read as
+      // bogus classes, so a seg-trained detector produces correct boxes
+      // instead of garbage confidences / out-of-range class ids.
+      final int numClasses = 4 + labels.length < numElements ? 4 + labels.length : numElements;
+      for (int j = 4; j < numClasses; j++) {
         double score = isTransposed ? output[j][i] : output[i][j];
         if (score > maxClassScore) {
           maxClassScore = score;
