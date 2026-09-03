@@ -3654,7 +3654,25 @@ def _port_available(port: int) -> bool:
         probe.close()
 
 
+def _use_selector_event_loop_on_windows():
+    """asyncio's default ProactorEventLoop on Windows has a known failure
+    mode: if a client's half-open TCP connection gets reset while accept()
+    is in flight (exactly what happens when a phone's WiFi drops and
+    reconnects mid-handshake), the IOCP accept loop on the *listening*
+    socket itself can die with WinError 64 ("network name no longer
+    available") -- not just that one connection attempt. Once that
+    happens the server keeps running (this window stays open) but can
+    never accept another connection again, so uploads silently stop
+    until the exe is restarted. The SelectorEventLoop doesn't use IOCP
+    for accept() and isn't subject to this -- switching to it before
+    uvicorn starts its loop avoids the whole failure mode. Must be set
+    before any asyncio loop is created, so this runs first in main()."""
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
 def main():
+    _use_selector_event_loop_on_windows()
     _load_devices()
     _load_app_aliases()
     _load_master_data()
