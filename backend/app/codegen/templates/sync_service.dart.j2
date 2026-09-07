@@ -5,7 +5,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show rootBundle, MethodChannel;
 import 'package:http/http.dart' as http;
 import 'package:multicast_dns/multicast_dns.dart';
 import 'package:path_provider/path_provider.dart';
@@ -129,11 +129,26 @@ class SyncService {
     await prefs.setString(_kDeviceLabelKey, label.trim());
   }
 
+  // Some Android OEMs (and stock Android with the screen off / radio idle)
+  // drop incoming WiFi multicast packets -- including mDNS responses --
+  // unless something on the device is holding a multicast lock. Without it,
+  // discovery below can silently come back empty on some phones and not
+  // others purely based on screen/power state at that moment, which looks
+  // exactly like "some phones' APKs are fine, some aren't" when it's
+  // actually the same code failing to even hear the PC's reply.
+  static const _multicastChannel = MethodChannel('{{ package_name }}/multicast_lock');
+
   /// Discover PC receivers advertising on the local network via mDNS.
   Future<List<DiscoveredPc>> discoverPcs({Duration timeout = const Duration(seconds: 4)}) async {
     final client = MDnsClient();
     final found = <String, DiscoveredPc>{};
     try {
+      try {
+        await _multicastChannel.invokeMethod('acquire');
+      } catch (_) {
+        // Non-Android platform, or the native side isn't wired up for some
+        // reason -- discovery just runs with whatever the OS defaults to.
+      }
       await client.start();
       await for (final ptr in client
           .lookup<PtrResourceRecord>(ResourceRecordQuery.serverPointer('$kSyncServiceType.local'))
@@ -154,6 +169,9 @@ class SyncService {
       // last known IP for already-paired PCs, or manual QR pairing.
     } finally {
       client.stop();
+      try {
+        await _multicastChannel.invokeMethod('release');
+      } catch (_) {}
     }
     return found.values.toList();
   }
