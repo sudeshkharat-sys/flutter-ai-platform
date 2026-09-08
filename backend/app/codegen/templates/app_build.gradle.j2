@@ -21,8 +21,12 @@ android {
         applicationId "{{ package_name }}"
         minSdk rootProject.ext.flutterMinSdkVersion
         targetSdk rootProject.ext.flutterTargetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // Bumped on every build (see generator.py/build_apk_task) so a
+        // freshly built APK always installs as an in-place update instead
+        // of Android forcing an uninstall first -- which would wipe that
+        // phone's paired-PC setup and any unsynced local data.
+        versionCode {{ version_code }}
+        versionName "{{ version_name }}"
     }
 
     compileOptions {

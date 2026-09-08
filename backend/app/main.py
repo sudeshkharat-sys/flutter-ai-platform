@@ -55,6 +55,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Schema repair skip/error: {e}")
 
+    # Check for missing build_number column (schema auto-repair). Every
+    # generated APK previously hard-coded versionCode 1, so a freshly built
+    # APK could never be installed as an "update" over an older one -- same/
+    # non-increasing versionCode makes Android force an uninstall first,
+    # which wipes that phone's paired-PC setup and unsynced local data.
+    try:
+        from sqlalchemy import text
+        engine = db_manager._get_engine(settings.POSTGRES_DB)
+        with engine.connect() as conn:
+            check_sql = "SELECT column_name FROM information_schema.columns WHERE table_name='app_projects' AND column_name='build_number'"
+            res = conn.execute(text(check_sql)).fetchone()
+            if not res:
+                print("Repairing schema: Adding missing build_number column to app_projects")
+                conn.execute(text("ALTER TABLE app_projects ADD COLUMN build_number INTEGER NOT NULL DEFAULT 0"))
+        engine.dispose()
+    except Exception as e:
+        print(f"Schema repair skip/error: {e}")
+
     yield
 
 app = FastAPI(title="Flutter AI Studio", version="1.0.0", lifespan=lifespan)

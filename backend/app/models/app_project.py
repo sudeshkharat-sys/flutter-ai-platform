@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, JSON, DateTime, ForeignKey
+from sqlalchemy import String, JSON, DateTime, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
@@ -33,3 +33,9 @@ class AppProject(Base):
     build_log: Mapped[str] = mapped_column(String, nullable=True)
     apk_path: Mapped[str] = mapped_column(String, nullable=True)
     build_error: Mapped[str] = mapped_column(String, nullable=True)
+
+    # Bumped on every APK build and used as the generated app's versionCode
+    # (see app_build.gradle.j2), so each build is provably newer than the
+    # last and Android can update an install in place instead of forcing an
+    # uninstall (which would wipe that phone's paired-PC setup).
+    build_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

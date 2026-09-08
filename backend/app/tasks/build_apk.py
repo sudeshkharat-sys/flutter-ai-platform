@@ -204,6 +204,13 @@ def build_apk_task(self, app_id: str):
             params = {f"id{i}": mid for i, mid in enumerate(model_asset_ids)}
             all_model_assets = db.execute_query(query, params)
 
+        # Bump build_number so this build's versionCode is strictly higher
+        # than the last -- otherwise Android can't tell the new APK is an
+        # update and forces an uninstall (wiping the phone's paired-PC
+        # setup) instead of updating in place.
+        build_number_rows = db.execute_query(ProjectQueries.INCREMENT_BUILD_NUMBER, {"id": app_id})
+        app["build_number"] = build_number_rows[0]["build_number"]
+
         zip_bytes = generate_flutter_project(app, all_model_assets=all_model_assets)
         
         # 2. Extract to export directory

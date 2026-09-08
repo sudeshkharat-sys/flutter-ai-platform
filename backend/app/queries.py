@@ -28,6 +28,12 @@ class ProjectQueries:
         WHERE id = :id
     """
     DELETE_PROJECT = "DELETE FROM app_projects WHERE id = :id"
+    INCREMENT_BUILD_NUMBER = """
+        UPDATE app_projects
+        SET build_number = build_number + 1
+        WHERE id = :id
+        RETURNING build_number
+    """
 
 class MasterDataQueries:
     GET_ALL_MAPPINGS = "SELECT * FROM master_model_mappings ORDER BY created_at DESC"

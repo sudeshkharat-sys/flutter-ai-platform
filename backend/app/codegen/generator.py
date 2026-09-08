@@ -274,11 +274,20 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         except:
             canvas_state = []
 
+    # Falls back to 1 for callers that don't increment/pass a build number
+    # (e.g. the plain code export, which isn't installed as an APK update).
+    # build_apk_task bumps app_projects.build_number in the DB and passes
+    # the new value in here so every built APK gets a strictly-increasing
+    # versionCode -- see app_build.gradle.j2 for why that matters.
+    version_code = get_attr(app_project, "build_number") or 1
+
     ctx = {
         "kotlin_version": _detect_kotlin_version(),
         "app_name": app_name,
         "app_name_slug": _dart_slug(app_name),
         "package_name": package_name,
+        "version_code": version_code,
+        "version_name": f"1.0.{version_code}",
         "classes": get_attr(models_list[0], "classes") if models_list else ["object"],
         "models_manifest": models_manifest,
         "canvas_widgets": canvas_state,
