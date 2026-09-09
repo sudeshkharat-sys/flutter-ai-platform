@@ -125,7 +125,19 @@ class WifiService {
         // panel instead of leaving the radio off with no path forward.
         await WiFiForIoTPlugin.setEnabled(true, shouldOpenSettings: true);
       }
-      if (await isConnectedToAllowedWifi()) return;
+      if (await isConnectedToAllowedWifi()) {
+        // Already associated with the right SSID, but that alone doesn't
+        // guarantee this app's own traffic is actually routed over it on
+        // Android 10+ (e.g. if the phone also has mobile data on and the
+        // shop WiFi has no internet gateway, Android can keep sending app
+        // traffic over cellular, which can't reach the PC's LAN IP). Force
+        // it every time we confirm the network, not just right after a
+        // fresh join.
+        try {
+          await WiFiForIoTPlugin.forceWifiUsage(true);
+        } catch (_) {}
+        return;
+      }
 
       Future<bool> tryJoin({required bool withInternet}) => WiFiForIoTPlugin.connect(
             allowed.ssid,
