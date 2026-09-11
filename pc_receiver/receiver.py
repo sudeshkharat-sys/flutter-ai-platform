@@ -1232,8 +1232,7 @@ def _dir_stats(path: Path):
     return len(files), sum(f.stat().st_size for f in files)
 
 
-@app.get("/api/devices")
-async def api_devices(_: None = Depends(_require_local)):
+def _build_devices_list() -> list[dict]:
     result = []
     with _lock:
         items = list(_paired_devices.items())
@@ -1256,6 +1255,15 @@ async def api_devices(_: None = Depends(_require_local)):
         })
     result.sort(key=lambda d: d["pairedAt"], reverse=True)
     return result
+
+
+@app.get("/api/devices")
+async def api_devices(_: None = Depends(_require_local)):
+    # Walks every paired device's folder on disk (rglob + stat per file), which
+    # can be slow on a large or network/SAN-backed data folder. Run it off the
+    # event loop so a slow scan doesn't stall the whole server (dashboard,
+    # pairing, uploads) while it's in progress.
+    return await run_in_threadpool(_build_devices_list)
 
 
 @app.delete("/api/devices/{device_id}")
@@ -1509,13 +1517,7 @@ async def api_device_data(deviceId: str, _: None = Depends(_require_local)):
     return {"deviceName": device["deviceName"], "appName": device.get("appName", "app"), "rows": rows}
 
 
-@app.get("/api/apps")
-async def api_apps(_: None = Depends(_require_local)):
-    """Same idea as /api/devices, but grouped by app instead of by phone --
-    every generated app that at least one currently-paired phone belongs
-    to, with stats merged across every device paired under it. Apps
-    aliased to each other (see _app_aliases) collapse into a single row,
-    labeled with whichever app name was paired most recently."""
+def _build_apps_list() -> list[dict]:
     with _lock:
         items = list(_paired_devices.values())
 
@@ -1553,6 +1555,20 @@ async def api_apps(_: None = Depends(_require_local)):
         })
     result.sort(key=lambda a: a["pairedAt"], reverse=True)
     return result
+
+
+@app.get("/api/apps")
+async def api_apps(_: None = Depends(_require_local)):
+    """Same idea as /api/devices, but grouped by app instead of by phone --
+    every generated app that at least one currently-paired phone belongs
+    to, with stats merged across every device paired under it. Apps
+    aliased to each other (see _app_aliases) collapse into a single row,
+    labeled with whichever app name was paired most recently.
+
+    Walks disk per app (batch dirs + file stats), so it's run off the event
+    loop like /api/devices to avoid stalling the server on a large or
+    network/SAN-backed data folder."""
+    return await run_in_threadpool(_build_apps_list)
 
 
 @app.post("/api/apps/alias")
