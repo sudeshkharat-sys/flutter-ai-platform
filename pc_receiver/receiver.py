@@ -46,6 +46,7 @@ import mimetypes
 import qrcode
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from openpyxl import Workbook, load_workbook
@@ -879,6 +880,7 @@ def _safe_name(name: str) -> str:
 def _local_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        s.settimeout(1.5)
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
     except Exception:
@@ -914,8 +916,10 @@ async def api_pair_start(_: None = Depends(_require_local)):
     expires_at = time.time() + PAIRING_TOKEN_TTL
     with _lock:
         _pending_token = {"token": token, "expiresAt": expires_at}
-    payload = {"name": PC_NAME, "ip": _local_ip(), "port": PORT, "token": token}
-    return {"token": token, "qrImage": _make_qr_base64(payload), "expiresAt": expires_at}
+    ip = await run_in_threadpool(_local_ip)
+    payload = {"name": PC_NAME, "ip": ip, "port": PORT, "token": token}
+    qr_image = await run_in_threadpool(_make_qr_base64, payload)
+    return {"token": token, "qrImage": qr_image, "expiresAt": expires_at}
 
 
 @app.get("/api/pair/status")
@@ -2852,7 +2856,13 @@ async function loadStorage() {
   }
 }
 
+let pairRequestSeq = 0;
+let pairRequestInFlight = false;
+
 async function openPairModal() {
+  if (pairRequestInFlight) return; // ignore double-clicks while a pair-start call is in flight
+  pairRequestInFlight = true;
+  const mySeq = ++pairRequestSeq;
   document.getElementById('pairOverlay').classList.add('open');
   document.getElementById('pairWaiting').style.display = 'flex';
   document.getElementById('pairSuccess').style.display = 'none';
@@ -2860,6 +2870,7 @@ async function openPairModal() {
   try {
     const r = await fetch('/api/pair/start', { method: 'POST' });
     const d = await r.json();
+    if (mySeq !== pairRequestSeq) return; // a newer pair-start call has superseded this one
     if (!r.ok || !d.qrImage) {
       // A server-side failure here (e.g. a missing dependency) used to
       // leave the modal stuck on a broken image and an endless "Waiting
@@ -2873,8 +2884,12 @@ async function openPairModal() {
     document.getElementById('pairQrImg').src = 'data:image/png;base64,' + d.qrImage;
     pollPairStatus();
   } catch (e) {
-    showToast('Could not start pairing');
-    closePairModal();
+    if (mySeq === pairRequestSeq) {
+      showToast('Could not start pairing');
+      closePairModal();
+    }
+  } finally {
+    pairRequestInFlight = false;
   }
 }
 
