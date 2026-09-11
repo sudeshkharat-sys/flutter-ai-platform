@@ -665,8 +665,30 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     setDefaultAIConfigs(newConfigs);
   };
 
+  // Identifies a task/AI-model entry for de-duplication when merging the
+  // "default configs" form back onto an existing row's task list, so
+  // re-entering Review after adding one new task doesn't also re-append
+  // tasks that were already saved on that row.
+  const aiModelSignature = (v) => JSON.stringify([
+    v.modelId, v.class || '', (v.mandatoryClasses || []).slice().sort(),
+  ]);
+
+  // Merges the current "default configs" form (validAI) onto a row's
+  // already-saved task list instead of replacing it -- adding one new
+  // task/AI model must not wipe every previously configured mapping for
+  // that VIN/model code.
+  const mergeAIModels = (existing, validAI) => {
+    const existingSignatures = new Set((existing || []).map(aiModelSignature));
+    const newOnes = validAI.filter(v => !existingSignatures.has(aiModelSignature(v))).map(v => ({ ...v }));
+    return [...(existing || []), ...newOnes];
+  };
+
   const handleEnterReview = () => {
     const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0) : c.class));
+    const existingByCode = reviewData.reduce((acc, row) => {
+      acc[row.model_code] = row.selectedAIModels;
+      return acc;
+    }, {});
 
     if (openScan) {
       // No code restriction -- one universal task group (blank model_code)
@@ -676,7 +698,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         platform_name: 'Any',
         model_code: '',
         description: 'Open scan -- applies to any scanned code',
-        selectedAIModels: validAI.map(v => ({ ...v })),
+        selectedAIModels: mergeAIModels(existingByCode[''], validAI),
       }]);
       setIsReviewing(true);
       return;
@@ -694,7 +716,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           platform_name: mapping.sheet_name,
           model_code: mapping.part_no,
           description: mapping.description,
-          selectedAIModels: validAI.map(v => ({ ...v }))
+          selectedAIModels: mergeAIModels(existingByCode[mapping.part_no], validAI)
         };
       });
       setReviewData(newReviewData);
@@ -710,7 +732,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           platform_name: mapping.platform_name,
           model_code: mapping.model_code,
           description: mapping.description,
-          selectedAIModels: validAI.map(v => ({ ...v }))
+          selectedAIModels: mergeAIModels(existingByCode[code], validAI)
         };
       });
       setReviewData(newReviewData);
