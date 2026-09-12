@@ -665,22 +665,15 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     setDefaultAIConfigs(newConfigs);
   };
 
-  // Identifies a task/AI-model entry for de-duplication when merging the
-  // "default configs" form back onto an existing row's task list, so
-  // re-entering Review after adding one new task doesn't also re-append
-  // tasks that were already saved on that row.
-  const aiModelSignature = (v) => JSON.stringify([
-    v.modelId, v.class || '', (v.mandatoryClasses || []).slice().sort(),
-  ]);
-
-  // Merges the current "default configs" form (validAI) onto a row's
-  // already-saved task list instead of replacing it -- adding one new
-  // task/AI model must not wipe every previously configured mapping for
-  // that VIN/model code.
+  // The "default configs" form (defaultAIConfigs/validAI) is only meant to
+  // seed a code/VIN that's being added for the first time -- it must not
+  // touch rows that already have their own saved task list, or re-entering
+  // Review after adding a new VIN re-appends that new task onto every
+  // previously configured VIN/model code as well. So: brand-new rows get
+  // validAI, rows that already exist keep exactly what they had.
   const mergeAIModels = (existing, validAI) => {
-    const existingSignatures = new Set((existing || []).map(aiModelSignature));
-    const newOnes = validAI.filter(v => !existingSignatures.has(aiModelSignature(v))).map(v => ({ ...v }));
-    return [...(existing || []), ...newOnes];
+    if (existing !== undefined) return existing;
+    return validAI.map(v => ({ ...v }));
   };
 
   const handleEnterReview = () => {
