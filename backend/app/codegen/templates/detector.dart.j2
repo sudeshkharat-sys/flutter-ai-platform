@@ -399,6 +399,97 @@ class ModelManager {
     return crops;
   }
 
+{% if ocr_class_engine == 'cnn' %}
+  /// Per-character classification read for a CNN (non-sequence) recognizer
+  /// -- one argmax over the charset per character crop, as opposed to the
+  /// CRNN's whole-line CTC decode above. Ports _recognizeWithCnn's inner
+  /// loop from ocr_recognizer.dart so both pipelines classify identically.
+  static Future<String?> _readWithCnn(Interpreter interpreter, List<String> charset, img.Image crop) async {
+    final cropPngBytes = Uint8List.fromList(img.encodePng(crop));
+    try {
+      return await compute(_runCnnInference, {
+        'cropPngBytes': cropPngBytes,
+        'interpreter_address': interpreter.address,
+        'charset': charset,
+      });
+    } catch (e) {
+      debugPrint('[OCR][CNN] inference failed: $e');
+      return null;
+    }
+  }
+
+  /// Isolate entry-point for one character's CNN classification. Ports
+  /// ocr_training.py's _extract_char_crop (margin, contrast enhancement,
+  /// aspect-preserving resize onto a square canvas padded with the crop's
+  /// own edge-median value) so the crop matches what the classifier was
+  /// trained on, then argmaxes the softmax output against the charset.
+  static String? _runCnnInference(Map<String, dynamic> args) {
+    final Uint8List cropPngBytes = args['cropPngBytes'] as Uint8List;
+    final int interpreterAddress = args['interpreter_address'] as int;
+    final List<String> charset = List<String>.from(args['charset'] as List);
+
+    final crop = img.decodePng(cropPngBytes);
+    if (crop == null) return null;
+
+    final interpreter = Interpreter.fromAddress(interpreterAddress);
+    final inputShape = interpreter.getInputTensor(0).shape; // [1, size, size, 1]
+    if (inputShape.length != 4) {
+      debugPrint('[OCR][CNN] unexpected input shape $inputShape -- skipping read.');
+      return null;
+    }
+    final size = inputShape[1];
+
+    final gray = img.grayscale(crop);
+    final enhanced = LineNormalizer.equalizeHistogram(gray);
+    final ch = enhanced.height, cw = enhanced.width;
+    final scale = size / (ch > cw ? ch : cw);
+    final nw = (cw * scale).round().clamp(1, size);
+    final nh = (ch * scale).round().clamp(1, size);
+    final resized = img.copyResize(enhanced, width: nw, height: nh, interpolation: img.Interpolation.average);
+
+    final edge = <int>[];
+    for (var x = 0; x < nw; x++) {
+      edge.add(resized.getPixel(x, 0).r.toInt());
+      edge.add(resized.getPixel(x, nh - 1).r.toInt());
+    }
+    for (var y = 0; y < nh; y++) {
+      edge.add(resized.getPixel(0, y).r.toInt());
+      edge.add(resized.getPixel(nw - 1, y).r.toInt());
+    }
+    edge.sort();
+    final padVal = edge.isEmpty ? 255 : edge[edge.length ~/ 2];
+
+    final canvas = img.Image(width: size, height: size);
+    img.fill(canvas, color: img.ColorRgb8(padVal, padVal, padVal));
+    final y0 = (size - nh) ~/ 2;
+    final x0 = (size - nw) ~/ 2;
+    img.compositeImage(canvas, resized, dstX: x0, dstY: y0);
+
+    final inputData = Float32List(size * size);
+    var idx = 0;
+    for (var y = 0; y < size; y++) {
+      for (var x = 0; x < size; x++) {
+        inputData[idx++] = canvas.getPixel(x, y).r.toDouble() / 255.0;
+      }
+    }
+    final input = inputData.reshape([1, size, size, 1]);
+    final numClasses = interpreter.getOutputTensor(0).shape.last;
+    final output = List.generate(1, (_) => List<double>.filled(numClasses, 0.0));
+    interpreter.run(input, output);
+    final probs = output[0];
+
+    var best = 0;
+    var bestScore = probs[0];
+    for (var c = 1; c < probs.length; c++) {
+      if (probs[c] > bestScore) {
+        bestScore = probs[c];
+        best = c;
+      }
+    }
+    return (best >= 0 && best < charset.length) ? charset[best] : null;
+  }
+{% endif %}
+
   /// Fraction of [inner]'s own area that falls inside [outer]. Unlike IoU,
   /// this doesn't penalize the size gap between a small character box and a
   /// much larger region box -- "is this character inside the plate" is
@@ -449,6 +540,44 @@ class ModelManager {
     rows.sort((a, b) => rowCy(a).compareTo(rowCy(b)));
     return rows;
   }
+
+{% if ocr_class_engine == 'cnn' %}
+  /// Character boxes inside [region], grouped into reading rows (top to
+  /// bottom, each row left to right) -- same containment filter and row
+  /// grouping as [_lineCropsInsideRegion], but keeping each character's own
+  /// crop instead of merging a row into one line image, since the CNN
+  /// classifier reads one character at a time rather than a whole line.
+  static List<List<img.Image>> _charCropRowsInsideRegion(
+    DetectionResult region,
+    List<DetectionResult> all,
+    img.Image source,
+  ) {
+    final chars = all
+        .where((d) =>
+            d.className.trim().length == 1 && _containmentNorm(d, region) >= 0.5)
+        .toList();
+    if (chars.isEmpty) return const [];
+
+    final rows = <List<img.Image>>[];
+    for (final row in _groupIntoCharRows(chars)) {
+      final crops = <img.Image>[];
+      for (final b in row) {
+        // Same 12% margin ocr_training.py's _extract_char_crop adds, so
+        // strokes touching the box edge aren't cut off.
+        final mx = (b.bbox.width * source.width * 0.12).round();
+        final my = (b.bbox.height * source.height * 0.12).round();
+        final x1 = ((b.bbox.left * source.width).round() - mx).clamp(0, source.width - 1);
+        final y1 = ((b.bbox.top * source.height).round() - my).clamp(0, source.height - 1);
+        final x2 = ((b.bbox.right * source.width).round() + mx).clamp(1, source.width);
+        final y2 = ((b.bbox.bottom * source.height).round() + my).clamp(1, source.height);
+        if (x2 - x1 < 2 || y2 - y1 < 2) continue;
+        crops.add(img.copyCrop(source, x: x1, y: y1, width: x2 - x1, height: y2 - y1));
+      }
+      if (crops.isNotEmpty) rows.add(crops);
+    }
+    return rows;
+  }
+{% endif %}
 {% endif %}
 
   /// Crops bbox, reads it, and returns an updated DetectionResult.
@@ -483,6 +612,31 @@ class ModelManager {
 
 {% if ocr_uses_crnn %}
     if (engine == 'crnn' && _ocrModelLoaded && _ocrInterpreter != null) {
+{% if ocr_class_engine == 'cnn' %}
+      // Per-character CNN classifier: each detected character box inside
+      // this region is classified independently (argmax over the charset),
+      // instead of the CRNN's whole-line CTC decode below. This is the
+      // engine actually attached for this app (ocr_class_engine == 'cnn',
+      // resolved in generator.py from the attached model's model_kind), but
+      // the UI's engine dropdown always writes 'crnn' for ANY trained
+      // model -- so this branch, not the CTC one, is what must run for a
+      // model exported by ocr_training.py (the per-character classifier),
+      // as opposed to crnn_training.py (the line reader).
+      final charRows = _charCropRowsInsideRegion(det, allDetections, source);
+      final List<String> lineReads = [];
+      for (final row in charRows) {
+        final buffer = StringBuffer();
+        for (final charCrop in row) {
+          final ch = await _readWithCnn(_ocrInterpreter!, _ocrCharset, charCrop);
+          if (ch != null) buffer.write(ch);
+        }
+        if (buffer.isNotEmpty) lineReads.add(buffer.toString());
+      }
+      final String crnnText = lineReads.join(' ');
+      debugPrint('[OCR][CNN] region="${det.className}" '
+          'source=${charRows.isNotEmpty ? "char_boxes(${charRows.fold(0, (n, r) => n + r.length)})" : "no_char_boxes"} '
+          'read="$crnnText"');
+{% else %}
       // Two-stage read, matching the standalone OCR pipeline
       // (ocr_recognizer.dart's _recognizeWithCrnn) rather than feeding the
       // recognizer the raw region box. The CRNN is trained on TIGHT SINGLE
@@ -510,6 +664,7 @@ class ModelManager {
       debugPrint('[OCR][CRNN] region="${det.className}" '
           'source=${lineCrops.isNotEmpty ? "char_boxes(${lineCrops.length} line(s))" : "region_crop"} '
           'read="$crnnText"');
+{% endif %}
       if (target.isEmpty) {
         // No target configured -- just record what was read, no pass/fail.
         return det.copyWith(ocrText: crnnText, ocrCrnnText: crnnText);
