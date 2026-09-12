@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +9,7 @@ import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
 import '../services/sync_service.dart';
+import '../database/database.dart';
 {% if is_ocr_app %}
 import 'ocr_scan_screen.dart';
 {% endif %}
@@ -42,6 +44,12 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
   bool _manualMode = false;
   int _unsyncedCount = 0;
 
+  // Last completed scan (any VIN/model code), shown as a small non-blocking
+  // hint so the operator can tell at a glance whether they already scanned
+  // this vehicle -- without interrupting the current scan flow.
+  Inspection? _lastInspection;
+  Timer? _lastScanTicker;
+
   // Whether the user wants the flash to stay on -- once turned on it stays
   // on across scans/mode switches (each of which briefly stops+starts the
   // camera), instead of silently resetting off like a single-shot toggle.
@@ -66,11 +74,30 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _loadScanData();
     _refreshUnsyncedBadge();
+    // The "X min ago" text on the last-scan hint needs to keep advancing
+    // even while nothing new is scanned, so tick it forward periodically
+    // rather than only recomputing it when a new scan comes in.
+    _lastScanTicker = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   Future<void> _refreshUnsyncedBadge() async {
     final count = await SyncService.instance.getUnsyncedCount();
-    if (mounted) setState(() => _unsyncedCount = count);
+    final last = await db.getMostRecentInspection();
+    if (mounted) setState(() {
+      _unsyncedCount = count;
+      _lastInspection = last;
+    });
+  }
+
+  /// Short "just now" / "3m ago" / "2h ago" label for the last-scan hint.
+  String _timeAgo(DateTime when) {
+    final diff = DateTime.now().difference(when);
+    if (diff.inSeconds < 60) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
   }
 
   /// Single tap: plain on/off for this session only. Turning it off this
@@ -178,6 +205,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _lastScanTicker?.cancel();
     _scannerController.dispose();
     super.dispose();
   }
@@ -770,6 +798,25 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
                 ],
               ),
             ),
+            if (_lastInspection != null)
+              Container(
+                width: double.infinity,
+                color: const Color(0xFFFFF3CD),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline, size: 14, color: Color(0xFF8A6D3B)),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Last scan: ${_lastInspection!.vin} • ${_timeAgo(_lastInspection!.createdAt)}',
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF8A6D3B), fontWeight: FontWeight.w600),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             Expanded(
               child: Stack(
                 children: [
