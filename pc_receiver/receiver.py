@@ -1050,6 +1050,7 @@ async def upload(
         raise HTTPException(status_code=400, detail="Bad timestamp")
     if abs(time.time() - ts) > SIGNATURE_WINDOW:
         _record_failure(client_ip)
+        print(f"[warn] rejected upload from '{x_device_id}' ({client_ip}): timestamp off by {abs(time.time() - ts):.0f}s (window {SIGNATURE_WINDOW}s)")
         raise HTTPException(status_code=401, detail="Request expired")
 
     try:
@@ -1100,12 +1101,15 @@ async def upload(
 
     manifest_path = extract_dir / "manifest.json"
     if manifest_path.exists():
-        try:
+        def _update_master_excel():
             inspections = json.loads(manifest_path.read_text())
             _apply_master_data_to_inspections(inspections, manifest_path)
             _apply_engine_data_to_inspections(inspections, manifest_path)
             rows = _flatten_manifest_rows(inspections, stamp, device_name=device["deviceName"])
             _append_to_master_excel(_app_master_dir(app_name), rows)
+
+        try:
+            await run_in_threadpool(_update_master_excel)
         except Exception as e:
             print(f"[warn] could not update master Excel for '{device_name}/{app_name}': {e}")
 
@@ -1152,6 +1156,7 @@ async def heartbeat(
         raise HTTPException(status_code=400, detail="Bad timestamp")
     if abs(time.time() - ts) > SIGNATURE_WINDOW:
         _record_failure(client_ip)
+        print(f"[warn] rejected heartbeat from '{x_device_id}' ({client_ip}): timestamp off by {abs(time.time() - ts):.0f}s (window {SIGNATURE_WINDOW}s)")
         raise HTTPException(status_code=401, detail="Request expired")
 
     expected_payload = f"{x_device_id}:{x_timestamp}"
