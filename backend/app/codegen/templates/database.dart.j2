@@ -145,6 +145,14 @@ class AppDatabase extends _$AppDatabase {
         .write(const TaskResultsCompanion(backupImagePath: Value(null)));
   }
 
+  // Most recent scan overall (any VIN/model code) -- used by the scan
+  // screen to show a "last scan was VIN... X min ago" hint without
+  // interrupting the next scan.
+  Future<Inspection?> getMostRecentInspection() =>
+      (select(inspections)
+        ..orderBy([(t) => OrderingTerm.desc(t.createdAt)])
+        ..limit(1)).getSingleOrNull();
+
   // For checking task progress in current session
   Future<List<TaskResult>> getLatestResultsForVin(String vin) async {
     final latest = await (select(inspections)
