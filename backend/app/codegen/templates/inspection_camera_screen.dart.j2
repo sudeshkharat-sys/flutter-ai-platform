@@ -1020,6 +1020,44 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                             child: Column(
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
+                                                // The actual predicted text, made deliberately loud (large,
+                                                // bold, monospace, its own high-contrast bar) and placed
+                                                // BEFORE the OK/NOT OK status row -- this is the single
+                                                // most-asked-for piece of information on this screen ("what
+                                                // did the OCR actually read") and it was previously a small
+                                                // 11px white70 line easy to miss next to the badge/Truth
+                                                // text. Always rendered when detected, whether or not it
+                                                // matched, so a wrong read is exactly as visible as a right
+                                                // one.
+                                                if (detected) ...[
+                                                  Builder(builder: (context) {
+                                                    final hasText = ocrText != null && ocrText.isNotEmpty;
+                                                    final charCount = entry.value?.ocrCharBoxes?.length;
+                                                    return Container(
+                                                      width: double.infinity,
+                                                      margin: const EdgeInsets.only(bottom: 6),
+                                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black.withOpacity(0.55),
+                                                        borderRadius: BorderRadius.circular(4),
+                                                      ),
+                                                      child: Text(
+                                                        hasText
+                                                            ? 'PREDICTED: $ocrText'
+                                                            : (charCount != null
+                                                                ? 'PREDICTED: (nothing read -- $charCount character box(es) found)'
+                                                                : 'PREDICTED: (nothing read)'),
+                                                        style: TextStyle(
+                                                          fontSize: 17,
+                                                          fontWeight: FontWeight.bold,
+                                                          fontFamily: 'monospace',
+                                                          letterSpacing: 1.2,
+                                                          color: hasText ? Colors.amberAccent : Colors.orangeAccent,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }),
+                                                ],
                                                 Row(children: [
                                                   Icon(
                                                     !detected ? Icons.error_outline : ocrMatch == true ? Icons.check : Icons.warning_amber,
@@ -1044,31 +1082,6 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                     ),
                                                   ),
                                                 ]),
-                                                // Always shown when the class was detected -- previously
-                                                // hidden entirely whenever ocrText came back empty, which
-                                                // looked identical to "OCR was never wired up" from the
-                                                // capture screen. Naming the char-box count found (0 means
-                                                // the main detector never produced single-character-class
-                                                // boxes inside this region -- the CNN engine has nothing
-                                                // to classify) turns a silent failure into a diagnosable one.
-                                                if (detected) ...[
-                                                  const SizedBox(height: 2),
-                                                  Builder(builder: (context) {
-                                                    final hasText = ocrText != null && ocrText.isNotEmpty;
-                                                    final charCount = entry.value?.ocrCharBoxes?.length;
-                                                    return Text(
-                                                      hasText
-                                                          ? 'Read: "$ocrText"'
-                                                          : (charCount != null
-                                                              ? 'Read: (nothing read -- $charCount character box(es) found)'
-                                                              : 'Read: (nothing read)'),
-                                                      style: TextStyle(
-                                                        fontSize: 11,
-                                                        color: hasText ? Colors.white70 : Colors.orangeAccent,
-                                                      ),
-                                                    );
-                                                  }),
-                                                ],
                                                 // Per-engine reads, always shown when that engine
                                                 // ran -- not just when they differ from the final
                                                 // text. While tuning the CRNN model, seeing every
@@ -1090,7 +1103,16 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                 // are confirmed good and this is no longer needed day to day.
                                                 if (detected && hasOcr && ocrTruth.isNotEmpty) ...[
                                                   const SizedBox(height: 2),
-                                                  Text('Truth: "$ocrTruth"', style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                                                  Text(
+                                                    'TRUTH: $ocrTruth',
+                                                    style: const TextStyle(
+                                                      fontSize: 15,
+                                                      fontWeight: FontWeight.bold,
+                                                      fontFamily: 'monospace',
+                                                      letterSpacing: 1.2,
+                                                      color: Colors.lightGreenAccent,
+                                                    ),
+                                                  ),
                                                 ],
                                               ],
                                             ),
