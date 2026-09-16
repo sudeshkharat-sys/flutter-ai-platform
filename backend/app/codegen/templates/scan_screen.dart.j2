@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:camera/camera.dart';
+{% if unmapped_code_auto_submit %}
+import 'package:drift/drift.dart' as drift;
+{% endif %}
 import 'home_screen.dart';
 import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
@@ -227,6 +230,83 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     }
   }
 
+{% if unmapped_code_auto_submit %}
+  /// Shown instead of [_showErrorDialog] when a scanned code matches no
+  /// configured task profile and unmapped codes are allowed to auto-pass --
+  /// e.g. a real variant that simply has nothing to inspect, not a typo'd
+  /// or unknown code. Not silently automatic: the operator still has to
+  /// tap Submit (or Cancel to rescan) so a genuinely wrong scan doesn't
+  /// get waved through unnoticed. Records an OK inspection with no task
+  /// and no photo, which syncs to the PC receiver exactly like any other
+  /// result.
+  void _showUnmappedCodeDialog(String vin, String code) {
+    _scannerController.stop();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Expanded(
+              child: Text('No Inspection Required',
+                  style: TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold)),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Cancel',
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                if (mounted) {
+                  setState(() {
+                    _isProcessing = false;
+                    _pendingBarcode = null;
+                  });
+                  _restartScanner();
+                }
+              },
+            ),
+          ],
+        ),
+        content: Text(
+          'Scanned code "$code" doesn\'t match any configured inspection task for this app.\n\n'
+          'If this variant genuinely has nothing to inspect, tap Submit to record it as OK with '
+          'no photo. If this was a misread, tap the X above and rescan.',
+        ),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF43A047)),
+            onPressed: () async {
+              final inspectionId = await db.saveInspection(InspectionsCompanion.insert(vin: vin, modelCode: code));
+              await db.saveTaskResult(TaskResultsCompanion.insert(
+                inspectionId: inspectionId,
+                taskName: 'no_task_mapped',
+                className: 'N/A',
+                confidence: 1.0,
+                success: true,
+                imagePath: const drift.Value(null),
+              ));
+              if (!ctx.mounted) return;
+              Navigator.of(ctx).pop();
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Submitted (OK) -- no inspection required'), backgroundColor: Color(0xFF43A047)),
+              );
+              setState(() {
+                _isProcessing = false;
+                _pendingBarcode = null;
+              });
+              await _restartScanner();
+              _refreshUnsyncedBadge();
+            },
+            child: const Text('Submit (OK)', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+{% endif %}
+
   void _showErrorDialog(String message) {
     _scannerController.stop();
     showDialog(
@@ -313,7 +393,11 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       setState(() => _isProcessing = true);
 {% if not skip_masterdata_validation %}
       if (!_isKnownEngineCode(partNo)) {
+{% if unmapped_code_auto_submit %}
+        _showUnmappedCodeDialog(engineSerial, partNo);
+{% else %}
         _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+{% endif %}
         return;
       }
 {% endif %}
@@ -382,7 +466,11 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       setState(() => _isProcessing = true);
 {% if not skip_masterdata_validation %}
       if (!_isKnownEngineCode(partNo)) {
+{% if unmapped_code_auto_submit %}
+        _showUnmappedCodeDialog(engineSerial, partNo);
+{% else %}
         _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+{% endif %}
         return;
       }
 {% endif %}
@@ -455,7 +543,11 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 
 {% if not skip_masterdata_validation %}
     if (!_isKnownModelCode(extractedModelCode)) {
+{% if unmapped_code_auto_submit %}
+      _showUnmappedCodeDialog(vin, extractedModelCode);
+{% else %}
       _showErrorDialog('Model code is not present, please add code and rebuild app.');
+{% endif %}
       return;
     }
 {% endif %}
@@ -544,7 +636,11 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 
 {% if not skip_masterdata_validation %}
     if (!_isKnownModelCode(extractedModelCode)) {
+{% if unmapped_code_auto_submit %}
+      _showUnmappedCodeDialog(vin, extractedModelCode);
+{% else %}
       _showErrorDialog('Model code is not present, please add code and rebuild app.');
+{% endif %}
       return;
     }
 {% endif %}
@@ -598,7 +694,11 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 
 {% if not skip_masterdata_validation %}
     if (!_isKnownModelCode(extractedModelCode)) {
+{% if unmapped_code_auto_submit %}
+      _showUnmappedCodeDialog(vin, extractedModelCode);
+{% else %}
       _showErrorDialog('Model code is not present, please add code and rebuild app.');
+{% endif %}
       return;
     }
 {% endif %}

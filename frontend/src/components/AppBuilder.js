@@ -410,6 +410,17 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   // checklist). Off by default -- masterdata-restricted behavior is
   // unchanged from before this existed.
   const [openScan, setOpenScan] = useState(!!existingApp?.app_settings?.skip_masterdata_validation);
+  // A scanned code that matches none of this app's configured task profiles
+  // used to always hard-block ("code not present, rebuild app") -- correct
+  // when that really is an unknown/typo'd code, but wrong for a variant
+  // that legitimately has no inspection task defined for it (e.g. codes 1,
+  // 2, 4 have task profiles but 3 is a real, different variant that simply
+  // isn't inspected). On, a scan that matches no profile skips straight to
+  // an OK submit (no task, no photo) instead of blocking the operator.
+  // Independent of Open Scan: Open Scan accepts everything into the SAME
+  // checklist; this instead still uses per-code task mapping when it
+  // exists, and only auto-passes the codes that were never mapped at all.
+  const [autoSubmitUnmapped, setAutoSubmitUnmapped] = useState(!!existingApp?.app_settings?.unmapped_code_auto_submit);
   const [showDropdown, setShowDropdown] = useState(false);
   const [showEngineDropdown, setShowEngineDropdown] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -895,6 +906,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           scan_type: scanType,
           detection_method: detectionMethod,
           skip_masterdata_validation: openScan,
+          unmapped_code_auto_submit: autoSubmitUnmapped,
           model_codes: selectedModelCodes,
           model_code: selectedModelCodes[0],
           engine_codes: selectedEngineCodes,
@@ -1047,6 +1059,28 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                   </span>
                 </span>
               </label>
+
+              {openScan ? null : (
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={autoSubmitUnmapped}
+                    onChange={e => setAutoSubmitUnmapped(e.target.checked)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <span>
+                    <span style={{ ...labelStyle, display: 'block', marginBottom: 0 }}>Auto-submit OK for unmapped codes</span>
+                    <span style={{ fontSize: 11, color: C.muted }}>
+                      Off (default): a scanned code that doesn't match any selected {scanType === 'engine' ? 'Engine' : 'Model'}
+                      {' '}code below is rejected ("code not present, rebuild app"). On: instead of rejecting it, the
+                      operator sees a "no inspection required for this code" message with a Submit button -- submitting
+                      records that VIN with an OK result and no photo, without opening any task. Use this when some
+                      variants (like a different trim) legitimately have nothing to inspect, instead of treating them
+                      as an error.
+                    </span>
+                  </span>
+                </label>
+              )}
 
               {openScan ? null : scanType !== 'engine' ? (
                 <div style={{ position: 'relative' }} ref={modelDropdownRef}>

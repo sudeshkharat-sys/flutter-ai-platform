@@ -314,6 +314,14 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         # don't have that masterdata populated (or don't want the scan
         # rejected), instead of the check being unconditionally required.
         "skip_masterdata_validation": bool(settings.get("skip_masterdata_validation")),
+        # A scanned code that matches no configured task profile: reject it
+        # (default, current behavior) vs. treat it as a legitimate variant
+        # with nothing to inspect and let the operator submit an OK result
+        # directly, no task/photo involved. Independent of
+        # skip_masterdata_validation, which instead accepts every code into
+        # the SAME checklist -- this keeps per-code task mapping for codes
+        # that have one, and only auto-passes the codes that don't.
+        "unmapped_code_auto_submit": bool(settings.get("unmapped_code_auto_submit")),
         # OCR apps default to "engine" so the shared history screen shows
         # "Serial"/"Engine Code" labels instead of "VIN"/"Model" -- already
         # built into history_screen.dart.j2, just needs this flag set. A
