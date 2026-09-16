@@ -508,7 +508,13 @@ class ModelManager {
 
     final cropped = img.copyCrop(source, x: x1, y: y1, width: x2 - x1, height: y2 - y1);
     final gray = img.grayscale(cropped);
-    final enhanced = LineNormalizer.equalizeHistogram(gray);
+    // CLAHE, not global histogram equalization -- matches
+    // ai-vision-platform's actual training/inference preprocessing exactly
+    // (cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4,4)) in
+    // _extract_char_crop). The classifier was trained exclusively on CLAHE
+    // crops; a global equalization here is a real train/inference mismatch,
+    // not just a weaker approximation.
+    final enhanced = LineNormalizer.claheApprox(gray);
 
     final ch = enhanced.height, cw = enhanced.width;
     final scale = size / (ch > cw ? ch : cw);
