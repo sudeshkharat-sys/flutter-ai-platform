@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:drift/drift.dart' as drift;
 import 'package:permission_handler/permission_handler.dart';
 import '../database/database.dart';
+import '../ml/detection_result.dart';
 import '../ml/ocr_recognizer.dart';
+import '../widgets/detection_overlay.dart';
 import 'history_screen.dart';
 
 /// Capture -> detect plate/chars -> read the string ('{{ ocr_engine }}'
@@ -37,6 +40,11 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
   bool _processing = false;
   OcrResult? _lastResult;
   Uint8List? _lastPhotoBytes;
+  // Natural pixel size of _lastPhotoBytes -- needed so the box overlay
+  // (drawn in an AspectRatio matching the photo, not the live camera
+  // preview) lines up with result.boxes, which are normalized to that same
+  // photo's own width/height.
+  Size? _lastPhotoSize;
   String? _error;
   // No detector is flawless on every frame -- a stray extra character or a
   // misread digit should be a quick edit before saving, not a retake.
@@ -108,10 +116,24 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
       final file = await _controller!.takePicture();
       final bytes = await file.readAsBytes();
       final result = await OcrRecognizer().recognize(bytes, truthValue: widget.truthValue);
+
+      // Decode just for its width/height -- result.boxes are normalized
+      // against the photo's own dimensions, so the overlay needs them to
+      // place boxes correctly regardless of how the photo is displayed.
+      Size? photoSize;
+      try {
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+        photoSize = Size(frame.image.width.toDouble(), frame.image.height.toDouble());
+      } catch (e) {
+        debugPrint('[OCR] Could not read photo dimensions for overlay: $e');
+      }
+
       if (!mounted) return;
       setState(() {
         _lastResult = result;
         _lastPhotoBytes = bytes;
+        _lastPhotoSize = photoSize;
         _textController.text = result.text;
         _processing = false;
       });
@@ -198,6 +220,7 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
     setState(() {
       _lastResult = null;
       _lastPhotoBytes = null;
+      _lastPhotoSize = null;
       _textController.clear();
     });
   }
@@ -205,6 +228,7 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
   void _scanAgain() => setState(() {
         _lastResult = null;
         _lastPhotoBytes = null;
+        _lastPhotoSize = null;
         _textController.clear();
       });
 
@@ -304,7 +328,27 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
               padding: const EdgeInsets.only(bottom: 10),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
-                child: Image.memory(_lastPhotoBytes!, height: 140, fit: BoxFit.cover, width: double.infinity),
+                child: _lastPhotoSize != null
+                    ? AspectRatio(
+                        // Matches the photo's own aspect ratio (not a fixed
+                        // height) so the overlay's normalized boxes line up
+                        // with the pixels they were detected on -- BoxFit.cover
+                        // at a fixed height would crop/scale the photo
+                        // differently than the boxes assume.
+                        aspectRatio: _lastPhotoSize!.width / _lastPhotoSize!.height,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Image.memory(_lastPhotoBytes!, fit: BoxFit.fill),
+                            if (result.boxes.isNotEmpty)
+                              DetectionOverlay(
+                                results: result.boxes,
+                                previewSize: _lastPhotoSize!,
+                              ),
+                          ],
+                        ),
+                      )
+                    : Image.memory(_lastPhotoBytes!, height: 140, fit: BoxFit.cover, width: double.infinity),
               ),
             ),
           if (result.matched != null)
@@ -360,6 +404,65 @@ class _OcrScanScreenState extends State<OcrScanScreen> with WidgetsBindingObserv
                 'Confidence: ${(result.confidence! * 100).toStringAsFixed(1)}%',
                 style: const TextStyle(color: Colors.white70),
               ),
+            ),
+          // Per-character read: which character the recognizer actually
+          // read at each detected box and how confident it was -- the CNN
+          // engine reads one box per character, so this is the same
+          // breakdown the training tool's OCR test panel shows (text +
+          // per-character confidence), previously dropped on the floor here
+          // even though OcrResult.boxes already carried it.
+          if (result.engine == 'cnn' && result.boxes.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: result.boxes.map((b) {
+                  final color = b.confidence >= 0.8
+                      ? Colors.green.shade600
+                      : b.confidence >= 0.5
+                          ? Colors.lightBlue.shade400
+                          : Colors.red.shade400;
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.25),
+                      border: Border.all(color: color),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '${b.className}  ${(b.confidence * 100).toStringAsFixed(0)}%',
+                      style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          // Character-by-character comparison against the QR-scanned truth
+          // value -- pinpoints exactly which position the read went wrong
+          // at, instead of just an overall OK/NOT OK.
+          if (result.truthValue != null && result.truthValue!.trim().isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Builder(builder: (context) {
+                final truth = result.truthValue!.toUpperCase().replaceAll(RegExp(r'\s+'), '');
+                final read = result.text.toUpperCase().replaceAll(RegExp(r'\s+'), '');
+                final maxLen = truth.length > read.length ? truth.length : read.length;
+                return RichText(
+                  text: TextSpan(
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+                    children: List.generate(maxLen, (i) {
+                      final t = i < truth.length ? truth[i] : '';
+                      final r = i < read.length ? read[i] : '_';
+                      final ok = t.isNotEmpty && t == r;
+                      return TextSpan(
+                        text: r,
+                        style: TextStyle(color: ok ? Colors.green.shade400 : Colors.red.shade400),
+                      );
+                    }),
+                  ),
+                );
+              }),
             ),
           // Debug-only side-by-side comparison panel: CRNN is always the
           // production read; ML Kit is only ever populated in a debug build
