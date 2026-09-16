@@ -382,31 +382,64 @@ class ModelManager {
     img.Image source,
     List<DetectionResult> charBoxes,
   ) async {
-    if (charBoxes.isEmpty) return null;
-    final inputShape = interpreter.getInputTensor(0).shape; // [1, size, size, 1]
-    if (inputShape.length != 4) return null;
+    if (charBoxes.isEmpty) {
+      debugPrint('[OCR][CNN] classifier skipped: no char boxes to classify');
+      return null;
+    }
+    // Every silent `return null` below used to be indistinguishable from
+    // "everything worked but read nothing" -- a shape mismatch or an
+    // interpreter that never actually loaded looked identical to a clean
+    // empty read from the outside. Logging the classifier's own declared
+    // tensor shapes here is the single most useful piece of information for
+    // telling those apart: it's either wrong (needs a differently-exported
+    // .tflite/labels file) or fine (the crops themselves are the problem).
+    final inputShape = interpreter.getInputTensor(0).shape; // expect [1, size, size, 1]
+    final outputShape = interpreter.getOutputTensor(0).shape; // expect [1, numClasses]
+    debugPrint('[OCR][CNN] classifier tensors: input=$inputShape output=$outputShape '
+        'charset=${charset.length} boxesToClassify=${charBoxes.length}');
+    if (inputShape.length != 4) {
+      debugPrint('[OCR][CNN] classifier skipped: input tensor rank ${inputShape.length} != 4 '
+          '(expected [1, size, size, channels] -- this .tflite is probably not a per-character '
+          'classifier, or was exported with an unexpected input layout)');
+      return null;
+    }
     final size = inputShape[1];
+    final channels = inputShape[3];
+    if (channels != 1) {
+      debugPrint('[OCR][CNN] WARNING: classifier expects $channels input channel(s), but crops are '
+          'built as single-channel grayscale -- reads will likely be garbage. Re-export the '
+          'classifier with a single-channel (grayscale) input to match training.');
+    }
 
     final crops = <Float32List>[];
     final keptJson = <Map<String, dynamic>>[];
     for (final c in charBoxes) {
       final crop = _extractCharCropForClassifier(source, c, size);
-      if (crop == null) continue;
+      if (crop == null) {
+        debugPrint('[OCR][CNN] skipped one char box: crop extraction failed '
+            '(box too small/degenerate after margin+clamp) bbox=${c.bbox}');
+        continue;
+      }
       crops.add(crop);
       keptJson.add(c.toJson());
     }
-    if (crops.isEmpty) return null;
+    if (crops.isEmpty) {
+      debugPrint('[OCR][CNN] classifier skipped: all ${charBoxes.length} char box(es) failed crop extraction');
+      return null;
+    }
 
     try {
-      return await compute(_runCnnCharBatch, {
+      final result = await compute(_runCnnCharBatch, {
         'crops': crops,
         'interpreter_address': interpreter.address,
         'charset': charset,
         'size': size,
         'boxesJson': keptJson,
       });
-    } catch (e) {
-      debugPrint('[OCR][CNN] batch inference failed: $e');
+      debugPrint('[OCR][CNN] classifier produced: "${result['text']}" from ${crops.length} crop(s)');
+      return result;
+    } catch (e, st) {
+      debugPrint('[OCR][CNN] batch inference threw: $e\n$st');
       return null;
     }
   }
@@ -701,6 +734,16 @@ class ModelManager {
       // identity at all; the CNN classifier is the ONLY source of the
       // actual character here, not a refinement on top of a usable guess.
       final charBoxes = _charBoxesInsideRegionAgnostic(det, charOnlyDetections);
+      // charOnlyDetections is EVERY box the class-agnostic detector found on
+      // the whole photo -- most of them are outside this plate. Logging the
+      // raw count vs. the containment-filtered count tells us whether the
+      // problem is "the two detectors don't agree on where the plate is" (raw
+      // 'char' count > 0 but charBoxes.length == 0) vs. "nothing to classify
+      // at all" (raw 'char' count == 0 too).
+      final rawCharOnlyCount = charOnlyDetections.where((d) => d.className.trim().toLowerCase() == 'char').length;
+      debugPrint('[OCR][CNN] region="${det.className}" bbox=${det.bbox} -- '
+          'charOnlyDetections total=${charOnlyDetections.length} raw "char" boxes=$rawCharOnlyCount, '
+          '${charBoxes.length} landed inside this region (>=50% containment)');
 {% else %}
       // Per-character read. The main detector already classifies each
       // character as its own box+class (chars + region class trained
@@ -720,8 +763,8 @@ class ModelManager {
       Map<String, dynamic>? cnnResult;
       try {
         cnnResult = await _classifyCharsCnn(_ocrInterpreter!, _ocrCharset, source, charBoxes);
-      } catch (e) {
-        debugPrint('[OCR][CNN] classifier refinement failed, using detector labels: $e');
+      } catch (e, st) {
+        debugPrint('[OCR][CNN] classifier refinement threw: $e\n$st');
       }
       final classifierBoxes = (cnnResult?['charBoxes'] as List?)
           ?.map((c) => DetectionResult.fromJson(Map<String, dynamic>.from(c as Map)))
