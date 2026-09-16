@@ -16,13 +16,19 @@ const api = axios.create({ baseURL: API_BASE });
  * @param {string}   modelName  Display name for this model
  * @param {string[]} classes    Array of class name strings  e.g. ["dog","cat"]
  * @param {number}   inputSize  Model input size (default 640)
+ * @param {string}   modelKind  'detector' (default) | 'detector_char_only' --
+ *                              the class-agnostic localization-only detector
+ *                              exported from ai-vision-platform's train-seed
+ *                              (class_agnostic=True); every box is a generic
+ *                              "char"/"plate" class with no character identity.
  */
-export const uploadModel = (file, modelName, classes, inputSize = 640) => {
+export const uploadModel = (file, modelName, classes, inputSize = 640, modelKind = 'detector') => {
   const form = new FormData();
   form.append('file', file);
   form.append('model_name', modelName);
   form.append('classes', JSON.stringify(classes));
   form.append('input_size', String(inputSize));
+  form.append('model_kind', modelKind);
   return api.post('/models/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });

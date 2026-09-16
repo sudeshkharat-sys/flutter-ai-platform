@@ -101,10 +101,13 @@ def upload_model(
     model_name: str = Form(...),
     classes: str = Form(None),
     input_size: int = Form(640),
+    model_kind: str = Form("detector"),
     db: StateDBConnector = Depends(get_db_connector),
 ):
     if not file.filename.endswith(".pt"):
         raise HTTPException(status_code=422, detail="Only .pt model files are supported.")
+    if model_kind not in ("detector", "detector_char_only"):
+        raise HTTPException(status_code=422, detail="model_kind must be one of: detector, detector_char_only")
 
     class_list = []
     if classes:
@@ -129,10 +132,13 @@ def upload_model(
         "vision_project_id": asset_id,
         "vision_project_name": model_name,
         "model_type": "uploaded",
+        "model_kind": model_kind,
         "classes": json.dumps(class_list),
         "pt_path": str(pt_path),
         "tflite_path": None,
         "labels_path": None,
+        "charset_path": None,
+        "meta_path": None,
         "status": "pending",
         "error_message": None,
         "conversion_log": "",

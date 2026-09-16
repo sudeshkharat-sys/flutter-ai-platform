@@ -1552,6 +1552,12 @@ function ModelModal({ id, appIds, onClose }) {
   const [existing, setExisting] = useState([]);
   
   const [ptFile, setPtFile] = useState(null);
+  // 'detector' (default, per-class YOLO) or 'detector_char_only' -- the
+  // class-agnostic localization-only detector exported from
+  // ai-vision-platform's train-seed (class_agnostic=True). Its boxes carry
+  // no character identity ("char"/"plate" only), so it's only useful
+  // alongside a trained CNN classifier attached as the OCR recognizer.
+  const [newModelKind, setNewModelKind] = useState('detector');
   const [modelName, setModelName] = useState('');
   const [classes, setClasses] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
@@ -1596,7 +1602,7 @@ function ModelModal({ id, appIds, onClose }) {
   const startConvert = async () => {
     setConverting(true); setConvLog('Initializing conversion...\n');
     try {
-      const r = await uploadModel(ptFile, modelName, classes);
+      const r = await uploadModel(ptFile, modelName, classes, 640, newModelKind);
       const mid = r.data.id;
       pollRef.current = setInterval(async () => {
         const s = await getModelStatus(mid); setConvLog(s.data.conversion_log || 'Processing...');
@@ -1686,6 +1692,13 @@ function ModelModal({ id, appIds, onClose }) {
             {ptFile && !converting && (
               <>
                 <input style={inputStyle} value={modelName} onChange={e => setModelName(e.target.value)} />
+                <div>
+                  <label style={labelStyle}>Model kind</label>
+                  <select style={inputStyle} value={newModelKind} onChange={e => setNewModelKind(e.target.value)}>
+                    <option value="detector">Detector (per-class YOLO)</option>
+                    <option value="detector_char_only">Class-agnostic char detector (localization only)</option>
+                  </select>
+                </div>
                 <button onClick={startConvert} style={{ width: '100%', padding: 14, borderRadius: 10, background: C.accent, color: '#fff', fontWeight: 800, border: 'none', cursor: 'pointer' }}>Convert & Add</button>
               </>
             )}

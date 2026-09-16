@@ -423,6 +423,26 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         ctx["ocr_class_recognizer_charset"] = _rec_paths.get("charset")
         ctx["ocr_class_recognizer_meta"] = _rec_paths.get("meta")
 
+        # Class-agnostic localization-only detector (ai-vision-platform's
+        # train-seed with class_agnostic=True, exported as any other YOLO
+        # .pt -- model_kind="detector_char_only"). Only meaningful for the
+        # 'cnn' engine: its boxes carry no character identity ("char"/
+        # "plate" only), so they're useless without a classifier to read
+        # them, unlike the per-character detector's own labeled boxes.
+        # Optional -- when absent, the CNN engine keeps using the main
+        # per-class detector's own labeled character boxes, exactly as
+        # before this model kind existed.
+        if ctx["ocr_class_engine"] == "cnn":
+            _charonly = next(
+                (ma for ma in models_list if get_attr(ma, "model_kind", "detector") == "detector_char_only"), None
+            )
+            if _charonly is not None:
+                _co_paths = model_id_to_paths.get(get_attr(_charonly, "id"), {})
+                ctx["ocr_charonly_tflite"] = _co_paths.get("tflite")
+                ctx["ocr_charonly_labels"] = _co_paths.get("labels")
+                ctx["ocr_charonly_input_size"] = get_attr(_charonly, "input_size", 640)
+    ctx["ocr_use_charonly_detector"] = bool(ctx.get("ocr_charonly_tflite"))
+
     # Same "second opinion via ML Kit on a CRNN mismatch" toggle the
     # standalone OCR app type already has (ocr_ctx above) -- reused here for
     # per-class OCR in multiclass/combined apps, which never had a way to

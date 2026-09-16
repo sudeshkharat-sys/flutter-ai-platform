@@ -305,6 +305,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         metaPath: {% if ocr_class_recognizer_meta %}'{{ ocr_class_recognizer_meta }}'{% else %}null{% endif %},
       );
 {% endif %}
+{% if ocr_use_charonly_detector %}
+      await ModelManager().loadCharOnlyDetector(
+        '{{ ocr_charonly_tflite | default("", true) }}',
+        '{{ ocr_charonly_labels | default("", true) }}',
+      );
+{% endif %}
       if (mounted) {
         setState(() {
           _isLoadingModel = false;
@@ -1478,6 +1484,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         '{{ ocr_class_recognizer_tflite | default("", true) }}',
         '{{ ocr_class_recognizer_charset | default("", true) }}',
         metaPath: {% if ocr_class_recognizer_meta %}'{{ ocr_class_recognizer_meta }}'{% else %}null{% endif %},
+      );
+{% endif %}
+{% if ocr_use_charonly_detector %}
+      await ModelManager().loadCharOnlyDetector(
+        '{{ ocr_charonly_tflite | default("", true) }}',
+        '{{ ocr_charonly_labels | default("", true) }}',
       );
 {% endif %}
       if (mounted) {

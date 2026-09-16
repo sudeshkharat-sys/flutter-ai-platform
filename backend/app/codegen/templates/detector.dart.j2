@@ -35,6 +35,17 @@ class ModelManager {
   List<String> _labels = [];
   String? _currentModelPath;
   bool _isLoaded = false;
+{% if ocr_use_charonly_detector %}
+  // Class-agnostic localization-only detector (ai-vision-platform's
+  // train-seed with class_agnostic=True) -- a second, independent
+  // interpreter run alongside the main task detector. Its boxes are all
+  // "char"/"plate" with no character identity, so it's only ever used to
+  // find WHERE the characters are; the CNN classifier is what reads WHICH
+  // character each one is (see _runOcrOnBbox).
+  Interpreter? _charOnlyInterpreter;
+  List<String> _charOnlyLabels = [];
+  bool _charOnlyLoaded = false;
+{% endif %}
 {% if ocr_enabled %}
   // Character boxes are tiny next to whole-object detections and score far
   // lower, so the app-wide default (0.5) finds the plate but drops its
@@ -564,6 +575,29 @@ class ModelManager {
     if (chars.isEmpty) return const [];
     return _groupIntoCharRows(chars).expand((row) => row).toList();
   }
+{% if ocr_use_charonly_detector %}
+  /// Same as [_charBoxesInsideRegion], but for the class-agnostic
+  /// localization-only detector's output: every box is the generic "char"
+  /// class (no character identity of its own), so boxes are picked by class
+  /// name rather than by "is this a single-character label" -- and each
+  /// returned box's className is reset to '?' (a visible placeholder,
+  /// never a claim about what character it is) since there is nothing
+  /// meaningful to fall back to if the CNN classifier fails to read it.
+  static List<DetectionResult> _charBoxesInsideRegionAgnostic(
+    DetectionResult region,
+    List<DetectionResult> charOnlyDetections,
+  ) {
+    final chars = charOnlyDetections
+        .where((d) =>
+            d.className.trim().toLowerCase() == 'char' && _containmentNorm(d, region) >= 0.5)
+        .toList();
+    if (chars.isEmpty) return const [];
+    return _groupIntoCharRows(chars)
+        .expand((row) => row)
+        .map((d) => DetectionResult(className: '?', confidence: d.confidence, bbox: d.bbox))
+        .toList();
+  }
+{% endif %}
 {% endif %}
 
   /// Fraction of [inner]'s own area that falls inside [outer]. Unlike IoU,
@@ -630,6 +664,9 @@ class ModelManager {
     DetectionResult det,
     img.Image source, {
     List<DetectionResult> allDetections = const [],
+{% if ocr_use_charonly_detector %}
+    List<DetectionResult> charOnlyDetections = const [],
+{% endif %}
   }) async {
     if (!_classOcrTargets.containsKey(det.className)) return det;
     final bool useScanTruth = _classesUsingScanTruth.contains(det.className) &&
@@ -656,6 +693,15 @@ class ModelManager {
 {% if ocr_uses_crnn %}
     if (engine == 'crnn' && _ocrModelLoaded && _ocrInterpreter != null) {
 {% if ocr_class_engine == 'cnn' %}
+{% if ocr_use_charonly_detector %}
+      // Per-character read, boxes from the class-agnostic localization-only
+      // detector (tighter on touching/engraved characters than the main
+      // per-class detector) -- see _charBoxesInsideRegionAgnostic. Every box
+      // starts labeled '?' since that detector carries no character
+      // identity at all; the CNN classifier is the ONLY source of the
+      // actual character here, not a refinement on top of a usable guess.
+      final charBoxes = _charBoxesInsideRegionAgnostic(det, charOnlyDetections);
+{% else %}
       // Per-character read. The main detector already classifies each
       // character as its own box+class (chars + region class trained
       // together) -- that raw per-character class IS a usable read on its
@@ -670,6 +716,7 @@ class ModelManager {
       // only replaces it when the classifier actually returned one for that
       // exact position.
       final charBoxes = _charBoxesInsideRegion(det, allDetections);
+{% endif %}
       Map<String, dynamic>? cnnResult;
       try {
         cnnResult = await _classifyCharsCnn(_ocrInterpreter!, _ocrCharset, source, charBoxes);
@@ -867,9 +914,32 @@ class ModelManager {
     debugPrint('Model loaded: $modelPath with ${_labels.length} labels');
   }
 
+{% if ocr_use_charonly_detector %}
+  Future<void> loadCharOnlyDetector(String modelPath, String labelsPath) async {
+    if (_charOnlyLoaded) return;
+    try {
+      final labelsData = await rootBundle.loadString(labelsPath);
+      _charOnlyLabels = labelsData
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+      _charOnlyInterpreter = await Interpreter.fromAsset(modelPath);
+      _charOnlyLoaded = true;
+      debugPrint('Class-agnostic char detector loaded: $modelPath (${_charOnlyLabels.length} labels)');
+    } catch (e) {
+      debugPrint('Error loading class-agnostic char detector: $e');
+    }
+  }
+{% endif %}
+
   void dispose() {
     _interpreter?.close();
     _isLoaded = false;
+{% if ocr_use_charonly_detector %}
+    _charOnlyInterpreter?.close();
+    _charOnlyLoaded = false;
+{% endif %}
   }
 
   /// Converts an already-decoded, EXIF-corrected [img.Image] into a flat
@@ -966,11 +1036,26 @@ class ModelManager {
       'threshold': confidenceThreshold,
     });
 {% if ocr_enabled %}
+{% if ocr_use_charonly_detector %}
+    // Second, independent detector pass -- its "char"/"plate" boxes have no
+    // identity of their own (see the field doc on _charOnlyInterpreter), but
+    // tend to localize touching/engraved characters tighter than the main
+    // per-class detector. Only run when it actually loaded.
+    final charOnlyDetections = (_charOnlyLoaded && _charOnlyInterpreter != null)
+        ? await compute(_runInferencePng, {
+            'pngBytes': pngBytes,
+            'interpreter_address': _charOnlyInterpreter!.address,
+            'labels': _charOnlyLabels,
+            'inputSize': {{ ocr_charonly_input_size | default(640) }},
+            'threshold': confidenceThreshold,
+          })
+        : <DetectionResult>[];
+{% endif %}
     final List<DetectionResult> withOcr = [];
     for (final det in detections) {
       // Pass every detection, not just this one -- the CRNN path needs the
       // character boxes found inside this region to build its line crops.
-      withOcr.add(await _runOcrOnBbox(det, orientedImage, allDetections: detections));
+      withOcr.add(await _runOcrOnBbox(det, orientedImage, allDetections: detections{% if ocr_use_charonly_detector %}, charOnlyDetections: charOnlyDetections{% endif %}));
     }
     return withOcr;
 {% else %}
@@ -994,9 +1079,21 @@ class ModelManager {
     img.Image? decoded = img.decodeImage(bytes);
     if (decoded == null) return detections;
     decoded = img.bakeOrientation(decoded);
+{% if ocr_use_charonly_detector %}
+    final decodedPngBytes = Uint8List.fromList(img.encodeJpg(decoded, quality: 92));
+    final charOnlyDetections = (_charOnlyLoaded && _charOnlyInterpreter != null)
+        ? await compute(_runInferencePng, {
+            'pngBytes': decodedPngBytes,
+            'interpreter_address': _charOnlyInterpreter!.address,
+            'labels': _charOnlyLabels,
+            'inputSize': {{ ocr_charonly_input_size | default(640) }},
+            'threshold': confidenceThreshold,
+          })
+        : <DetectionResult>[];
+{% endif %}
     final List<DetectionResult> withOcr = [];
     for (final det in detections) {
-      withOcr.add(await _runOcrOnBbox(det, decoded, allDetections: detections));
+      withOcr.add(await _runOcrOnBbox(det, decoded, allDetections: detections{% if ocr_use_charonly_detector %}, charOnlyDetections: charOnlyDetections{% endif %}));
     }
     return withOcr;
 {% else %}
