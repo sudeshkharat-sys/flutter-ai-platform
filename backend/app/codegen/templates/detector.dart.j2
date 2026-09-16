@@ -615,11 +615,26 @@ class ModelManager {
     // handles below. Without this, a class-agnostic main detector matched
     // nothing here (no class has length 1) and produced an empty read even
     // though its own boxes were right there in [all].
-    final chars = all
-        .where((d) =>
-            (d.className.trim().length == 1 || d.className.trim().toLowerCase() == 'char') &&
-            _containmentNorm(d, region) >= 0.5)
+    bool isCharClass(DetectionResult d) =>
+        d.className.trim().length == 1 || d.className.trim().toLowerCase() == 'char';
+
+    var chars = all
+        .where((d) => isCharClass(d) && _containmentNorm(d, region) >= 0.5)
         .toList();
+    // ai-vision-platform's own CNN test panel (ocr.py's predict_ocr) never
+    // filters character boxes by plate containment at all -- it reads
+    // every 'char' box the detector found anywhere in the photo, trusting
+    // the detector's own classification instead of a geometric cross-check.
+    // The containment filter above is still worth trying first (it's a real
+    // win when the photo also frames unrelated background clutter the
+    // detector mistakes for characters), but if it throws away every char
+    // box -- most likely the plate box just doesn't tightly/correctly
+    // enclose them -- falling back to every char box in the frame matches
+    // the reference implementation's actual, proven-accurate behavior
+    // instead of returning an empty read over a geometry mismatch.
+    if (chars.isEmpty) {
+      chars = all.where(isCharClass).toList();
+    }
     if (chars.isEmpty) return const [];
     // A 'char'-class box carries no identity of its own -- reset to '?' so
     // it never gets treated as a real (fabricated) character label if the
@@ -644,10 +659,18 @@ class ModelManager {
     DetectionResult region,
     List<DetectionResult> charOnlyDetections,
   ) {
-    final chars = charOnlyDetections
-        .where((d) =>
-            d.className.trim().toLowerCase() == 'char' && _containmentNorm(d, region) >= 0.5)
-        .toList();
+    bool isChar(DetectionResult d) => d.className.trim().toLowerCase() == 'char';
+
+    var chars = charOnlyDetections.where((d) => isChar(d) && _containmentNorm(d, region) >= 0.5).toList();
+    // Same fallback as _charBoxesInsideRegion: ai-vision-platform's own CNN
+    // test panel never filters by plate containment at all, it reads every
+    // 'char' box found anywhere in the photo. Try containment first (useful
+    // when the photo also frames background clutter), but never let a
+    // plate-box geometry mismatch turn "characters were found" into "read
+    // nothing".
+    if (chars.isEmpty) {
+      chars = charOnlyDetections.where(isChar).toList();
+    }
     if (chars.isEmpty) return const [];
     return _groupIntoCharRows(chars)
         .expand((row) => row)
