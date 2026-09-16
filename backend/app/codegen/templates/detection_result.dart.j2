@@ -15,6 +15,15 @@ class DetectionResult {
   // always has. Null means that engine didn't run for this detection.
   final String? ocrCrnnText;
   final String? ocrMlKitText;
+  // Per-character detections inside this region, only populated by the CNN
+  // (per-character TensorFlow classifier) engine -- each entry's className
+  // is the *predicted character*, not a detector class name, and its bbox
+  // is the original character box the main detector found. Lets the result
+  // screen overlay individual character boxes/confidences on the photo,
+  // the same breakdown the training tool's CNN test panel shows, instead of
+  // only ever surfacing the joined [ocrText] string. Null for every other
+  // engine (crnn/mlkit), which have no per-character boxes to show.
+  final List<DetectionResult>? ocrCharBoxes;
 
   const DetectionResult({
     required this.className,
@@ -24,6 +33,7 @@ class DetectionResult {
     this.isOcrMatch,
     this.ocrCrnnText,
     this.ocrMlKitText,
+    this.ocrCharBoxes,
   });
 
   DetectionResult copyWith({
@@ -31,6 +41,7 @@ class DetectionResult {
     bool? isOcrMatch,
     String? ocrCrnnText,
     String? ocrMlKitText,
+    List<DetectionResult>? ocrCharBoxes,
   }) => DetectionResult(
     className: className,
     confidence: confidence,
@@ -39,6 +50,7 @@ class DetectionResult {
     isOcrMatch: isOcrMatch ?? this.isOcrMatch,
     ocrCrnnText: ocrCrnnText ?? this.ocrCrnnText,
     ocrMlKitText: ocrMlKitText ?? this.ocrMlKitText,
+    ocrCharBoxes: ocrCharBoxes ?? this.ocrCharBoxes,
   );
 
   Map<String, dynamic> toJson() => {
@@ -54,6 +66,7 @@ class DetectionResult {
     'isOcrMatch': isOcrMatch,
     'ocrCrnnText': ocrCrnnText,
     'ocrMlKitText': ocrMlKitText,
+    'ocrCharBoxes': ocrCharBoxes?.map((c) => c.toJson()).toList(),
   };
 
   static DetectionResult fromJson(Map<String, dynamic> json) => DetectionResult(
@@ -71,6 +84,9 @@ class DetectionResult {
     // correct "this engine didn't run" value, so old history still loads.
     ocrCrnnText: json['ocrCrnnText'] as String?,
     ocrMlKitText: json['ocrMlKitText'] as String?,
+    ocrCharBoxes: (json['ocrCharBoxes'] as List?)
+        ?.map((c) => DetectionResult.fromJson(Map<String, dynamic>.from(c as Map)))
+        .toList(),
   );
 
   @override

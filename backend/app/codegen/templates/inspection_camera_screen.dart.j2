@@ -488,7 +488,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       final allDetections = orientedImage != null
           ? await ModelManager().predictImage(orientedImage, orientedPngBytes: blurCheck.orientedPngBytes)
           : await ModelManager().predictBytes(bytes);
-      setState(() => _allDetections = allDetections);
+      // Splice in each region's per-character boxes (only ever populated by
+      // the CNN engine's OcrRecognizer._runOcrOnBbox) alongside the region
+      // boxes themselves, so DetectionOverlay below draws individual
+      // character boxes on the photo too -- not just the plate/region box.
+      setState(() => _allDetections = [
+            ...allDetections,
+            for (final d in allDetections) ...?d.ocrCharBoxes,
+          ]);
 
       _addLog("Detections: ${allDetections.length}");
       for (final d in allDetections) {
@@ -1592,7 +1599,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       final allDetections = orientedImage != null
           ? await ModelManager().predictImage(orientedImage, orientedPngBytes: blurCheck.orientedPngBytes)
           : await ModelManager().predictBytes(bytes);
-      setState(() => _allDetections = allDetections);
+      // Splice in each region's per-character boxes (only ever populated by
+      // the CNN engine's OcrRecognizer._runOcrOnBbox) alongside the region
+      // boxes themselves, so DetectionOverlay below draws individual
+      // character boxes on the photo too -- not just the plate/region box.
+      setState(() => _allDetections = [
+            ...allDetections,
+            for (final d in allDetections) ...?d.ocrCharBoxes,
+          ]);
 
       String? savedImagePath;
       String? savedBackupPath;

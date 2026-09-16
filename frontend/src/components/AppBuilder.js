@@ -1255,7 +1255,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                 onChange={e => handleClassOcrEngine(idx, c, e.target.value)}
                                               >
                                                 <option value="crnn" disabled={!attachedOcrRecognizer}>
-                                                  {attachedOcrRecognizer ? `Trained OCR model (${attachedOcrRecognizer.vision_project_name})` : 'Trained OCR model (attach one first)'}
+                                                  {attachedOcrRecognizer
+                                                    ? `Trained OCR model -- ${attachedOcrRecognizer.model_kind === 'ocr_cnn' ? 'CNN' : 'CRNN'} (${attachedOcrRecognizer.vision_project_name})`
+                                                    : 'Trained OCR model (attach one first)'}
                                                 </option>
                                                 <option value="mlkit">Generic (ML Kit)</option>
                                               </select>
@@ -1409,7 +1411,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                   onChange={e => handleRowClassOcrEngine(rowIndex, aiIdx, c, e.target.value)}
                                                 >
                                                   <option value="crnn" disabled={!attachedOcrRecognizer}>
-                                                    {attachedOcrRecognizer ? `Trained (${attachedOcrRecognizer.vision_project_name})` : 'Trained model (attach one)'}
+                                                    {attachedOcrRecognizer
+                                                      ? `Trained ${attachedOcrRecognizer.model_kind === 'ocr_cnn' ? 'CNN' : 'CRNN'} (${attachedOcrRecognizer.vision_project_name})`
+                                                      : 'Trained model (attach one)'}
                                                   </option>
                                                   <option value="mlkit">ML Kit</option>
                                                 </select>

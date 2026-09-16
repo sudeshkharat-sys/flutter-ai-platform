@@ -10,7 +10,9 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 {% if ocr_enabled and ocr_uses_crnn %}
 import 'dart:convert';
 import 'line_normalizer.dart';
+{% if ocr_class_engine != 'cnn' %}
 import 'ctc_decoder.dart';
+{% endif %}
 {% endif %}
 import 'detection_result.dart';
 
@@ -282,6 +284,7 @@ class ModelManager {
     }
   }
 
+{% if ocr_class_engine != 'cnn' %}
   /// Runs the actual CRNN read (normalize + interpreter.run + CTC decode) on
   /// a background isolate via compute(), the same pattern the main YOLO
   /// detector already uses (_runInferencePng/_runInferenceBytes below) --
@@ -352,7 +355,153 @@ class ModelManager {
     final decoder = CtcDecoder(charset: charset, blankIndex: blankIndex);
     return decoder.decode(output[0]);
   }
+{% else %}
+  /// Classifies every character box inside [charBoxes] with the trained
+  /// per-character TensorFlow model in one background-isolate round trip --
+  /// the CNN engine has no CTC/line-reading step, each character box the
+  /// main detector already found gets its own independent classification,
+  /// same as the standalone OCR app's 'cnn' engine (ocr_recognizer.dart's
+  /// _recognizeWithCnn/_extractCharCrop) and the training tool's own CNN
+  /// test panel. Crop extraction happens here on the calling isolate (it
+  /// needs img.Image, which can't cross the isolate boundary) and only the
+  /// interpreter.run() calls happen in the background.
+  static Future<Map<String, dynamic>?> _classifyCharsCnn(
+    Interpreter interpreter,
+    List<String> charset,
+    img.Image source,
+    List<DetectionResult> charBoxes,
+  ) async {
+    if (charBoxes.isEmpty) return null;
+    final inputShape = interpreter.getInputTensor(0).shape; // [1, size, size, 1]
+    if (inputShape.length != 4) return null;
+    final size = inputShape[1];
 
+    final crops = <Float32List>[];
+    final keptJson = <Map<String, dynamic>>[];
+    for (final c in charBoxes) {
+      final crop = _extractCharCropForClassifier(source, c, size);
+      if (crop == null) continue;
+      crops.add(crop);
+      keptJson.add(c.toJson());
+    }
+    if (crops.isEmpty) return null;
+
+    try {
+      return await compute(_runCnnCharBatch, {
+        'crops': crops,
+        'interpreter_address': interpreter.address,
+        'charset': charset,
+        'size': size,
+        'boxesJson': keptJson,
+      });
+    } catch (e) {
+      debugPrint('[OCR][CNN] batch inference failed: $e');
+      return null;
+    }
+  }
+
+  /// Isolate entry-point for the CNN batch classify: one interpreter.run()
+  /// per character crop, argmax over the classifier's output, no CTC. Both
+  /// the read text and the per-character boxes (now carrying the *predicted*
+  /// class + confidence, not the detector's raw box label) come back so the
+  /// caller can show them on screen and overlay them on the photo.
+  static Map<String, dynamic> _runCnnCharBatch(Map<String, dynamic> args) {
+    final crops = List<Float32List>.from(args['crops'] as List);
+    final interpreterAddress = args['interpreter_address'] as int;
+    final charset = List<String>.from(args['charset'] as List);
+    final size = args['size'] as int;
+    final boxesJson = List<Map<String, dynamic>>.from(
+        (args['boxesJson'] as List).map((e) => Map<String, dynamic>.from(e as Map)));
+
+    final interpreter = Interpreter.fromAddress(interpreterAddress);
+    final numClasses = interpreter.getOutputTensor(0).shape.last;
+
+    final buffer = StringBuffer();
+    final charBoxesOut = <Map<String, dynamic>>[];
+    for (var i = 0; i < crops.length; i++) {
+      final input = crops[i].reshape([1, size, size, 1]);
+      final output = List.generate(1, (_) => List<double>.filled(numClasses, 0.0));
+      interpreter.run(input, output);
+      final probs = output[0];
+
+      var best = 0;
+      var bestScore = probs[0];
+      for (var c = 1; c < probs.length; c++) {
+        if (probs[c] > bestScore) {
+          bestScore = probs[c];
+          best = c;
+        }
+      }
+      final ch = (best >= 0 && best < charset.length) ? charset[best] : '?';
+      buffer.write(ch);
+      charBoxesOut.add({...boxesJson[i], 'className': ch, 'confidence': bestScore});
+    }
+    return {'text': buffer.toString(), 'charBoxes': charBoxesOut};
+  }
+
+  /// Ports `_extract_char_crop` (ai-vision-platform's ocr_training.py) /
+  /// `OcrRecognizer._extractCharCrop`: margin, grayscale, contrast
+  /// enhancement, aspect-preserving resize onto a square canvas padded with
+  /// the crop's own edge-median value -- the classifier was trained on crops
+  /// built exactly this way, not a plain resize.
+  static Float32List? _extractCharCropForClassifier(
+    img.Image source,
+    DetectionResult det,
+    int size, {
+    double margin = 0.12,
+  }) {
+    final bx = (det.bbox.left * source.width).round();
+    final by = (det.bbox.top * source.height).round();
+    final bw = (det.bbox.width * source.width).round();
+    final bh = (det.bbox.height * source.height).round();
+    final mx = (bw * margin).round();
+    final my = (bh * margin).round();
+    final x1 = (bx - mx).clamp(0, source.width - 1);
+    final y1 = (by - my).clamp(0, source.height - 1);
+    final x2 = (bx + bw + mx).clamp(0, source.width);
+    final y2 = (by + bh + my).clamp(0, source.height);
+    if (x2 - x1 < 2 || y2 - y1 < 2) return null;
+
+    final cropped = img.copyCrop(source, x: x1, y: y1, width: x2 - x1, height: y2 - y1);
+    final gray = img.grayscale(cropped);
+    final enhanced = LineNormalizer.equalizeHistogram(gray);
+
+    final ch = enhanced.height, cw = enhanced.width;
+    final scale = size / (ch > cw ? ch : cw);
+    final nw = (cw * scale).round().clamp(1, size);
+    final nh = (ch * scale).round().clamp(1, size);
+    final resized = img.copyResize(enhanced, width: nw, height: nh, interpolation: img.Interpolation.average);
+
+    final edge = <int>[];
+    for (var x = 0; x < nw; x++) {
+      edge.add(resized.getPixel(x, 0).r.toInt());
+      edge.add(resized.getPixel(x, nh - 1).r.toInt());
+    }
+    for (var y = 0; y < nh; y++) {
+      edge.add(resized.getPixel(0, y).r.toInt());
+      edge.add(resized.getPixel(nw - 1, y).r.toInt());
+    }
+    edge.sort();
+    final padVal = edge.isEmpty ? 255 : edge[edge.length ~/ 2];
+
+    final canvas = img.Image(width: size, height: size);
+    img.fill(canvas, color: img.ColorRgb8(padVal, padVal, padVal));
+    final y0 = (size - nh) ~/ 2;
+    final x0 = (size - nw) ~/ 2;
+    img.compositeImage(canvas, resized, dstX: x0, dstY: y0);
+
+    final out = Float32List(size * size);
+    var idx = 0;
+    for (var y = 0; y < size; y++) {
+      for (var x = 0; x < size; x++) {
+        out[idx++] = canvas.getPixel(x, y).r.toDouble() / 255.0;
+      }
+    }
+    return out;
+  }
+{% endif %}
+
+{% if ocr_class_engine != 'cnn' %}
   /// The tight text-line crops inside [region]'s box -- one per reading row --
   /// built from the single-character-class boxes the detector found inside it.
   /// Returns empty when there are none, letting the caller fall back to the
@@ -398,6 +547,24 @@ class ModelManager {
     }
     return crops;
   }
+{% else %}
+  /// The individual single-character-class detections inside [region], in
+  /// reading order -- unlike [_lineCropsInsideRegion] (which merges a row
+  /// into one shared line crop for the CRNN reader), the CNN engine
+  /// classifies every character crop on its own, so each box has to survive
+  /// individually instead of being flattened into a row rectangle.
+  static List<DetectionResult> _charBoxesInsideRegion(
+    DetectionResult region,
+    List<DetectionResult> all,
+  ) {
+    final chars = all
+        .where((d) =>
+            d.className.trim().length == 1 && _containmentNorm(d, region) >= 0.5)
+        .toList();
+    if (chars.isEmpty) return const [];
+    return _groupIntoCharRows(chars).expand((row) => row).toList();
+  }
+{% endif %}
 
   /// Fraction of [inner]'s own area that falls inside [outer]. Unlike IoU,
   /// this doesn't penalize the size gap between a small character box and a
@@ -480,9 +647,31 @@ class ModelManager {
     // Survives the CRNN -> ML Kit fallback below so both engines' reads make
     // it onto the result screen. Stays null when the CRNN never ran.
     String? crnnReadForReport;
+    // Per-character boxes (predicted char + confidence), only ever populated
+    // by the CNN engine below -- declared out here (not inside the `if`
+    // block) so it also survives the fall-through to the ML Kit path and
+    // reaches every return statement below.
+    List<DetectionResult>? charBoxesForDisplay;
 
 {% if ocr_uses_crnn %}
     if (engine == 'crnn' && _ocrModelLoaded && _ocrInterpreter != null) {
+{% if ocr_class_engine == 'cnn' %}
+      // Per-character TensorFlow classifier: no line-reading/CTC step. The
+      // main detector already found each character as its own box (chars +
+      // region class trained together), so classify each one independently
+      // and concatenate in reading order -- same architecture the
+      // standalone OCR app's 'cnn' engine and the training tool's CNN test
+      // panel use.
+      final charBoxes = _charBoxesInsideRegion(det, allDetections);
+      final cnnResult = await _classifyCharsCnn(_ocrInterpreter!, _ocrCharset, source, charBoxes);
+      final String crnnText = (cnnResult?['text'] as String?) ?? '';
+      if (cnnResult != null) {
+        charBoxesForDisplay = (cnnResult['charBoxes'] as List)
+            .map((c) => DetectionResult.fromJson(Map<String, dynamic>.from(c as Map)))
+            .toList();
+      }
+      debugPrint('[OCR][CNN] region="${det.className}" chars=${charBoxes.length} read="$crnnText"');
+{% else %}
       // Two-stage read, matching the standalone OCR pipeline
       // (ocr_recognizer.dart's _recognizeWithCrnn) rather than feeding the
       // recognizer the raw region box. The CRNN is trained on TIGHT SINGLE
@@ -510,9 +699,10 @@ class ModelManager {
       debugPrint('[OCR][CRNN] region="${det.className}" '
           'source=${lineCrops.isNotEmpty ? "char_boxes(${lineCrops.length} line(s))" : "region_crop"} '
           'read="$crnnText"');
+{% endif %}
       if (target.isEmpty) {
         // No target configured -- just record what was read, no pass/fail.
-        return det.copyWith(ocrText: crnnText, ocrCrnnText: crnnText);
+        return det.copyWith(ocrText: crnnText, ocrCrnnText: crnnText, ocrCharBoxes: charBoxesForDisplay);
       }
       final normTarget = _normalizeOcr(target);
       final normCrnn = _normalizeOcr(crnnText);
@@ -521,7 +711,7 @@ class ModelManager {
           : _ocrSimilarity(normCrnn, normTarget) >= 0.9;
       debugPrint('[OCR][CRNN] read="$crnnText" target="$target" matched=$crnnMatched');
       if (crnnMatched) {
-        return det.copyWith(ocrText: crnnText, isOcrMatch: true, ocrCrnnText: crnnText);
+        return det.copyWith(ocrText: crnnText, isOcrMatch: true, ocrCrnnText: crnnText, ocrCharBoxes: charBoxesForDisplay);
       }
       // CRNN didn't match the target.
       crnnReadForReport = crnnText;
@@ -532,7 +722,7 @@ class ModelManager {
       // image pass (sometimes twice, normal + inverted) plus a synchronous
       // native ML Kit round trip, on every box that doesn't match on the
       // first try -- the dominant cost of a capture when it fires often.
-      return det.copyWith(ocrText: crnnText, isOcrMatch: false, ocrCrnnText: crnnText);
+      return det.copyWith(ocrText: crnnText, isOcrMatch: false, ocrCrnnText: crnnText, ocrCharBoxes: charBoxesForDisplay);
 {% else %}
       // Fall through to the ML Kit path below as a second opinion on this
       // exact crop, same idea as the standalone OCR app's CRNN-then-ML-Kit
@@ -601,6 +791,7 @@ class ModelManager {
       isOcrMatch: matched,
       ocrCrnnText: crnnReadForReport,
       ocrMlKitText: extractedText,
+      ocrCharBoxes: charBoxesForDisplay,
     );
   }
 {% endif %}
