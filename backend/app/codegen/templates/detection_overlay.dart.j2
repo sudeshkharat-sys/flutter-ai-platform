@@ -89,9 +89,16 @@ class _BoundingBoxPainter extends CustomPainter {
       // inspector doesn't need to look at, so skip it entirely rather than
       // giving it its own (e.g. grey) color.
       if (_isIgnoredClass(result.className)) continue;
-      // overrideColor lets the caller force green/red based on pass/fail logic
-      // rather than relying on class name substring matching.
-      final color = overrideColor ?? _colorForClass(result.className, i);
+      // A per-character OCR box (result.isOcrMatch set, from the CNN
+      // engine's character-by-character truth comparison) draws as a thin
+      // plain rectangle, green when that character matches the truth value
+      // at its position and red when it doesn't -- separate from
+      // overrideColor/_colorForClass, which color the *region* box (e.g.
+      // "plate") by mandatory/fail-class rules that don't apply here.
+      final bool isCharMatchBox = result.isOcrMatch != null && overrideColor == null;
+      final color = isCharMatchBox
+          ? (result.isOcrMatch! ? const Color(0xFF43A047) : const Color(0xFFE53935))
+          : (overrideColor ?? _colorForClass(result.className, i));
 
       final rect = Rect.fromLTRB(
         result.bbox.left * size.width,
@@ -99,6 +106,15 @@ class _BoundingBoxPainter extends CustomPainter {
         result.bbox.right * size.width,
         result.bbox.bottom * size.height,
       );
+
+      if (isCharMatchBox) {
+        final thinPaint = Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5;
+        canvas.drawRect(rect, thinPaint);
+        continue;
+      }
 
       final boxPaint = Paint()
         ..color = color

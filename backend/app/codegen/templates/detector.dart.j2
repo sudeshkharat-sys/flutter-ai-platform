@@ -666,9 +666,28 @@ class ModelManager {
       final cnnResult = await _classifyCharsCnn(_ocrInterpreter!, _ocrCharset, source, charBoxes);
       final String crnnText = (cnnResult?['text'] as String?) ?? '';
       if (cnnResult != null) {
-        charBoxesForDisplay = (cnnResult['charBoxes'] as List)
+        final rawCharBoxes = (cnnResult['charBoxes'] as List)
             .map((c) => DetectionResult.fromJson(Map<String, dynamic>.from(c as Map)))
             .toList();
+        // Thin green/red per character -- green when that position's
+        // predicted character matches the truth value at the same
+        // position, red when it doesn't. This is a positional compare
+        // against the *normalized* truth value (target may have spaces,
+        // e.g. "PART_NO SERIAL_NO"), so it only ever runs when there's a
+        // truth value to compare against; with no target every box just
+        // carries its predicted character with no match color (isOcrMatch
+        // stays null, same as "not checked" everywhere else in the app).
+        if (target.isNotEmpty) {
+          final normTarget = _normalizeOcr(target);
+          charBoxesForDisplay = [
+            for (var i = 0; i < rawCharBoxes.length; i++)
+              rawCharBoxes[i].copyWith(
+                isOcrMatch: i < normTarget.length && rawCharBoxes[i].className == normTarget[i],
+              ),
+          ];
+        } else {
+          charBoxesForDisplay = rawCharBoxes;
+        }
       }
       debugPrint('[OCR][CNN] region="${det.className}" chars=${charBoxes.length} read="$crnnText"');
 {% else %}

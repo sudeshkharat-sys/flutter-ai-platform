@@ -1044,9 +1044,30 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                     ),
                                                   ),
                                                 ]),
-                                                if (detected && ocrText != null && ocrText.isNotEmpty) ...[
+                                                // Always shown when the class was detected -- previously
+                                                // hidden entirely whenever ocrText came back empty, which
+                                                // looked identical to "OCR was never wired up" from the
+                                                // capture screen. Naming the char-box count found (0 means
+                                                // the main detector never produced single-character-class
+                                                // boxes inside this region -- the CNN engine has nothing
+                                                // to classify) turns a silent failure into a diagnosable one.
+                                                if (detected) ...[
                                                   const SizedBox(height: 2),
-                                                  Text('Read: "$ocrText"', style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                                                  Builder(builder: (context) {
+                                                    final hasText = ocrText != null && ocrText.isNotEmpty;
+                                                    final charCount = entry.value?.ocrCharBoxes?.length;
+                                                    return Text(
+                                                      hasText
+                                                          ? 'Read: "$ocrText"'
+                                                          : (charCount != null
+                                                              ? 'Read: (nothing read -- $charCount character box(es) found)'
+                                                              : 'Read: (nothing read)'),
+                                                      style: TextStyle(
+                                                        fontSize: 11,
+                                                        color: hasText ? Colors.white70 : Colors.orangeAccent,
+                                                      ),
+                                                    );
+                                                  }),
                                                 ],
                                                 // Per-engine reads, always shown when that engine
                                                 // ran -- not just when they differ from the final
