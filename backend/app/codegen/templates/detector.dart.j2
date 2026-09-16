@@ -266,6 +266,14 @@ class ModelManager {
   List<String> _ocrCharset = [];
   int _ocrBlankIndex = -1;
   bool _ocrModelLoaded = false;
+  // Set on load failure, cleared on success -- surfaced on-screen (not just
+  // debugPrint) because the debug console scrolls fast enough during a live
+  // capture session that this one-time startup message reliably gets
+  // missed/screenshotted-past, making "did the classifier even load" the
+  // single most argued-about fact in a long debugging back-and-forth that a
+  // permanent on-screen badge settles in one glance.
+  String? ocrLoadError;
+  bool get isOcrModelLoaded => _ocrModelLoaded;
 
   Future<void> loadOcrModel(String modelPath, String charsetPath, {String? metaPath}) async {
     if (_ocrModelLoaded) return;
@@ -288,9 +296,16 @@ class ModelManager {
           debugPrint('[OCR] Could not parse OCR meta.json, using charset.txt defaults: $e');
         }
       }
+      if (_ocrCharset.isEmpty) {
+        ocrLoadError = 'Charset file loaded but is empty ($charsetPath) -- classifier has no labels to predict.';
+        debugPrint('[OCR] $ocrLoadError');
+        return;
+      }
       _ocrModelLoaded = true;
+      ocrLoadError = null;
       debugPrint('[OCR] CRNN recognizer loaded: $modelPath (${_ocrCharset.length} chars)');
     } catch (e) {
+      ocrLoadError = 'Failed to load "$modelPath" or "$charsetPath": $e';
       debugPrint('[OCR] Error loading CRNN recognizer: $e');
     }
   }

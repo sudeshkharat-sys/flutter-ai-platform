@@ -317,6 +317,16 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           _isModelLoaded = true;
         });
         _addLog("Model loaded. Target: ${task['classes']}");
+{% if ocr_uses_crnn %}
+        // Printed as its own clearly-labeled line (not buried in per-frame
+        // detection spam) precisely because "did the OCR classifier even
+        // load" was the single most argued-about unknown across a long
+        // debugging session -- this makes it impossible to miss in the log,
+        // and the on-screen badge below makes it impossible to miss at all.
+        _addLog(ModelManager().isOcrModelLoaded
+            ? "OCR CLASSIFIER: loaded OK"
+            : "OCR CLASSIFIER: FAILED TO LOAD -- ${ModelManager().ocrLoadError ?? 'unknown error'}");
+{% endif %}
       }
     } catch (e) {
       _addLog("AI Init error: $e");
@@ -897,6 +907,35 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                           ),
                         ),
                       ),
+{% if ocr_uses_crnn %}
+                    // Permanent, unmissable OCR classifier load status --
+                    // always on screen (not just in the scrolling debug
+                    // console) once the model finishes loading, since
+                    // whether the classifier actually loaded turned out to
+                    // be the hardest single fact to pin down purely from
+                    // console screenshots during a long debugging session.
+                    if (_isModelLoaded)
+                      Positioned(
+                        top: 16,
+                        left: 72,
+                        right: 16,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: (ModelManager().isOcrModelLoaded ? const Color(0xFF43A047) : const Color(0xFFE53935))
+                                .withOpacity(0.85),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            ModelManager().isOcrModelLoaded
+                                ? 'OCR classifier: loaded'
+                                : 'OCR classifier: FAILED -- ${ModelManager().ocrLoadError ?? "unknown error"}',
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                            maxLines: 3,
+                          ),
+                        ),
+                      ),
+{% endif %}
                     // Overall OK / NOT OK badge
                     if (!_isAnalyzing && _capturedImageBytes != null)
                       Positioned(
@@ -1498,6 +1537,16 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           _isModelLoaded = true;
         });
         _addLog("Model loaded. Target: ${task['classes']}");
+{% if ocr_uses_crnn %}
+        // Printed as its own clearly-labeled line (not buried in per-frame
+        // detection spam) precisely because "did the OCR classifier even
+        // load" was the single most argued-about unknown across a long
+        // debugging session -- this makes it impossible to miss in the log,
+        // and the on-screen badge below makes it impossible to miss at all.
+        _addLog(ModelManager().isOcrModelLoaded
+            ? "OCR CLASSIFIER: loaded OK"
+            : "OCR CLASSIFIER: FAILED TO LOAD -- ${ModelManager().ocrLoadError ?? 'unknown error'}");
+{% endif %}
       }
     } catch (e) {
       _addLog("AI Init error: $e");
