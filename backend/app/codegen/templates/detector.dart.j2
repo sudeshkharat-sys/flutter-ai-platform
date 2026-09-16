@@ -656,40 +656,58 @@ class ModelManager {
 {% if ocr_uses_crnn %}
     if (engine == 'crnn' && _ocrModelLoaded && _ocrInterpreter != null) {
 {% if ocr_class_engine == 'cnn' %}
-      // Per-character TensorFlow classifier: no line-reading/CTC step. The
-      // main detector already found each character as its own box (chars +
-      // region class trained together), so classify each one independently
-      // and concatenate in reading order -- same architecture the
-      // standalone OCR app's 'cnn' engine and the training tool's CNN test
-      // panel use.
+      // Per-character read. The main detector already classifies each
+      // character as its own box+class (chars + region class trained
+      // together) -- that raw per-character class IS a usable read on its
+      // own, and it's what History/the debug console already show working.
+      // The attached classifier model is only ever a *refinement* on top of
+      // that: it re-crops each character and re-classifies it, which can
+      // fail (wrong crop preprocessing, mismatched input size, a bundle
+      // that isn't really this shape) without the read becoming unusable --
+      // previously a classifier failure meant an empty final answer even
+      // though the detector's own labels were sitting right there. Now the
+      // detector's raw label is always the floor; the classifier's answer
+      // only replaces it when the classifier actually returned one for that
+      // exact position.
       final charBoxes = _charBoxesInsideRegion(det, allDetections);
-      final cnnResult = await _classifyCharsCnn(_ocrInterpreter!, _ocrCharset, source, charBoxes);
-      final String crnnText = (cnnResult?['text'] as String?) ?? '';
-      if (cnnResult != null) {
-        final rawCharBoxes = (cnnResult['charBoxes'] as List)
-            .map((c) => DetectionResult.fromJson(Map<String, dynamic>.from(c as Map)))
-            .toList();
-        // Thin green/red per character -- green when that position's
-        // predicted character matches the truth value at the same
-        // position, red when it doesn't. This is a positional compare
-        // against the *normalized* truth value (target may have spaces,
-        // e.g. "PART_NO SERIAL_NO"), so it only ever runs when there's a
-        // truth value to compare against; with no target every box just
-        // carries its predicted character with no match color (isOcrMatch
-        // stays null, same as "not checked" everywhere else in the app).
-        if (target.isNotEmpty) {
-          final normTarget = _normalizeOcr(target);
-          charBoxesForDisplay = [
-            for (var i = 0; i < rawCharBoxes.length; i++)
-              rawCharBoxes[i].copyWith(
-                isOcrMatch: i < normTarget.length && rawCharBoxes[i].className == normTarget[i],
-              ),
-          ];
-        } else {
-          charBoxesForDisplay = rawCharBoxes;
-        }
+      Map<String, dynamic>? cnnResult;
+      try {
+        cnnResult = await _classifyCharsCnn(_ocrInterpreter!, _ocrCharset, source, charBoxes);
+      } catch (e) {
+        debugPrint('[OCR][CNN] classifier refinement failed, using detector labels: $e');
       }
-      debugPrint('[OCR][CNN] region="${det.className}" chars=${charBoxes.length} read="$crnnText"');
+      final classifierBoxes = (cnnResult?['charBoxes'] as List?)
+          ?.map((c) => DetectionResult.fromJson(Map<String, dynamic>.from(c as Map)))
+          .toList();
+      // Same length as charBoxes (same crops, same order) -- if the
+      // classifier dropped/added any, the positions no longer line up
+      // reliably, so fall back to the detector's own labels entirely rather
+      // than risk splicing mismatched positions together.
+      final rawCharBoxes = (classifierBoxes != null && classifierBoxes.length == charBoxes.length)
+          ? classifierBoxes
+          : charBoxes;
+      final String crnnText = rawCharBoxes.map((c) => c.className).join();
+      // Thin green/red per character -- green when that position's
+      // predicted character matches the truth value at the same position,
+      // red when it doesn't. This is a positional compare against the
+      // *normalized* truth value (target may have spaces, e.g. "PART_NO
+      // SERIAL_NO"), so it only ever runs when there's a truth value to
+      // compare against; with no target every box just carries its
+      // predicted character with no match color (isOcrMatch stays null,
+      // same as "not checked" everywhere else in the app).
+      if (target.isNotEmpty) {
+        final normTarget = _normalizeOcr(target);
+        charBoxesForDisplay = [
+          for (var i = 0; i < rawCharBoxes.length; i++)
+            rawCharBoxes[i].copyWith(
+              isOcrMatch: i < normTarget.length && rawCharBoxes[i].className == normTarget[i],
+            ),
+        ];
+      } else {
+        charBoxesForDisplay = rawCharBoxes;
+      }
+      debugPrint('[OCR][CNN] region="${det.className}" chars=${charBoxes.length} '
+          'source=${classifierBoxes != null && classifierBoxes.length == charBoxes.length ? "classifier" : "detector labels"} read="$crnnText"');
 {% else %}
       // Two-stage read, matching the standalone OCR pipeline
       // (ocr_recognizer.dart's _recognizeWithCrnn) rather than feeding the
