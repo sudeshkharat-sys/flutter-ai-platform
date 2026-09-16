@@ -1204,10 +1204,17 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                         bottom: 0,
                         left: 0,
                         right: 0,
-                        height: 200,
+                        // Was a fixed 200px with 9px text -- long lines (a
+                        // classifier's tensor shapes, a stack trace) wrapped
+                        // into a handful of visible rows, so reading one
+                        // message meant constant scrolling and losing your
+                        // place. Now takes most of the screen (80%) with
+                        // much larger text, so a whole message is readable
+                        // in one glance; still scrollable for history.
+                        height: MediaQuery.of(context).size.height * 0.8,
                         child: Container(
-                          color: Colors.black.withOpacity(0.85),
-                          padding: const EdgeInsets.all(8),
+                          color: Colors.black.withOpacity(0.92),
+                          padding: const EdgeInsets.all(10),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -1219,10 +1226,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                       style: TextStyle(
                                           color: Colors.yellow,
                                           fontWeight: FontWeight.bold,
-                                          fontSize: 10)),
+                                          fontSize: 14)),
                                   IconButton(
                                     icon: const Icon(Icons.delete_sweep,
-                                        color: Colors.white, size: 16),
+                                        color: Colors.white, size: 22),
+                                    tooltip: 'Clear log',
                                     onPressed: () =>
                                         setState(() => _debugLogs = []),
                                     padding: EdgeInsets.zero,
@@ -1233,16 +1241,22 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                               const Divider(color: Colors.white24),
                               Expanded(
                                 child: ListView.builder(
+                                  reverse: true,
                                   itemCount: _debugLogs.length,
                                   itemBuilder: (_, idx) => Padding(
                                     padding:
-                                        const EdgeInsets.only(bottom: 2),
-                                    child: Text(
-                                      _debugLogs[idx],
+                                        const EdgeInsets.only(bottom: 8),
+                                    // Selectable so a message (a stack
+                                    // trace, a tensor shape) can be
+                                    // long-pressed and copied out instead of
+                                    // retyped from a photo of the screen.
+                                    child: SelectableText(
+                                      _debugLogs[_debugLogs.length - 1 - idx],
                                       style: const TextStyle(
                                           color: Colors.white,
                                           fontFamily: 'monospace',
-                                          fontSize: 9),
+                                          fontSize: 14,
+                                          height: 1.3),
                                     ),
                                   ),
                                 ),
@@ -2253,10 +2267,17 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                         bottom: 0,
                         left: 0,
                         right: 0,
-                        height: 200,
+                        // Was a fixed 200px with 9px text -- long lines (a
+                        // classifier's tensor shapes, a stack trace) wrapped
+                        // into a handful of visible rows, so reading one
+                        // message meant constant scrolling and losing your
+                        // place. Now takes most of the screen (80%) with
+                        // much larger text, so a whole message is readable
+                        // in one glance; still scrollable for history.
+                        height: MediaQuery.of(context).size.height * 0.8,
                         child: Container(
-                          color: Colors.black.withOpacity(0.85),
-                          padding: const EdgeInsets.all(8),
+                          color: Colors.black.withOpacity(0.92),
+                          padding: const EdgeInsets.all(10),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -2268,10 +2289,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                       style: TextStyle(
                                           color: Colors.yellow,
                                           fontWeight: FontWeight.bold,
-                                          fontSize: 10)),
+                                          fontSize: 14)),
                                   IconButton(
                                     icon: const Icon(Icons.delete_sweep,
-                                        color: Colors.white, size: 16),
+                                        color: Colors.white, size: 22),
+                                    tooltip: 'Clear log',
                                     onPressed: () =>
                                         setState(() => _debugLogs = []),
                                     padding: EdgeInsets.zero,
@@ -2282,16 +2304,22 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                               const Divider(color: Colors.white24),
                               Expanded(
                                 child: ListView.builder(
+                                  reverse: true,
                                   itemCount: _debugLogs.length,
                                   itemBuilder: (_, idx) => Padding(
                                     padding:
-                                        const EdgeInsets.only(bottom: 2),
-                                    child: Text(
-                                      _debugLogs[idx],
+                                        const EdgeInsets.only(bottom: 8),
+                                    // Selectable so a message (a stack
+                                    // trace, a tensor shape) can be
+                                    // long-pressed and copied out instead of
+                                    // retyped from a photo of the screen.
+                                    child: SelectableText(
+                                      _debugLogs[_debugLogs.length - 1 - idx],
                                       style: const TextStyle(
                                           color: Colors.white,
                                           fontFamily: 'monospace',
-                                          fontSize: 9),
+                                          fontSize: 14,
+                                          height: 1.3),
                                     ),
                                   ),
                                 ),
