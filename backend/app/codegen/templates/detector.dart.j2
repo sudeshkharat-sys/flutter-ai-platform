@@ -607,12 +607,30 @@ class ModelManager {
     DetectionResult region,
     List<DetectionResult> all,
   ) {
+    // Matches either a real per-character class (a genuine single-character
+    // detector, e.g. '0'-'9'/'A'-'Z') OR the generic 'char' class -- the
+    // main task detector itself can be a class-agnostic model (its own
+    // labels are just ['plate', 'char'], no real character identity),
+    // exactly like the separate detector _charBoxesInsideRegionAgnostic
+    // handles below. Without this, a class-agnostic main detector matched
+    // nothing here (no class has length 1) and produced an empty read even
+    // though its own boxes were right there in [all].
     final chars = all
         .where((d) =>
-            d.className.trim().length == 1 && _containmentNorm(d, region) >= 0.5)
+            (d.className.trim().length == 1 || d.className.trim().toLowerCase() == 'char') &&
+            _containmentNorm(d, region) >= 0.5)
         .toList();
     if (chars.isEmpty) return const [];
-    return _groupIntoCharRows(chars).expand((row) => row).toList();
+    // A 'char'-class box carries no identity of its own -- reset to '?' so
+    // it never gets treated as a real (fabricated) character label if the
+    // classifier below doesn't override it. A genuine single-character
+    // class keeps its own label as the floor, same as before.
+    final normalized = chars
+        .map((d) => d.className.trim().toLowerCase() == 'char'
+            ? DetectionResult(className: '?', confidence: d.confidence, bbox: d.bbox)
+            : d)
+        .toList();
+    return _groupIntoCharRows(normalized).expand((row) => row).toList();
   }
 {% if ocr_use_charonly_detector %}
   /// Same as [_charBoxesInsideRegion], but for the class-agnostic
