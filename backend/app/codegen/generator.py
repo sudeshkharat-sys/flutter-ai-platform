@@ -471,6 +471,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "lib/screens/confirmation_screen.dart": "confirmation_screen.dart.j2",
         "lib/screens/component_config_screen.dart": "component_config_screen.dart.j2",
         "lib/screens/inspection_camera_screen.dart": "inspection_camera_screen.dart.j2",
+        "lib/screens/live_inspection_camera_screen.dart": "live_inspection_camera_screen.dart.j2",
         "lib/screens/history_screen.dart": "history_screen.dart.j2",
         "lib/screens/printer_discovery_screen.dart": "printer_discovery_screen.dart.j2",
         "lib/screens/sync_screen.dart": "sync_screen.dart.j2",

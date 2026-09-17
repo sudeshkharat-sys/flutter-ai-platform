@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart' as drift;
 import 'inspection_camera_screen.dart';
+import 'live_inspection_camera_screen.dart';
 import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
@@ -553,7 +554,26 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const Spacer(),
-                  const SizedBox(width: 48), 
+                  IconButton(
+                    icon: const Icon(Icons.videocam_outlined, color: Colors.white),
+                    tooltip: 'Live Scan (Beta)',
+                    onPressed: () async {
+                      final result = await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => LiveInspectionCameraScreen(
+                            vin: widget.vin ?? "MANUAL_SCAN",
+                            modelCode: widget.modelCode ?? "",
+                            tasks: _tasks,
+                            initialIndex: 0,
+                          ),
+                        ),
+                      );
+                      if (result != null && result is Map<int, dynamic>) {
+                        setState(() => _taskResults.addAll(result));
+                      }
+                    },
+                  ),
                 ],
               ),
             ),
