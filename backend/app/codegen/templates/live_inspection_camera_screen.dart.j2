@@ -242,6 +242,15 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // warming up) just skips itself rather than blocking.
   CameraImage? _latestFrame;
   bool _isStreaming = false;
+  // If the platform camera stream silently never delivers a frame (seen on
+  // some devices/OEMs -- the very first startImageStream after a fresh
+  // CameraController init just never fires its callback, though a later
+  // one after a controller swap works fine), ticks would otherwise skip
+  // forever with nothing on screen and no error. After a run of ticks that
+  // never see a frame, force a stop+restart of the stream rather than
+  // trusting it to recover on its own.
+  int _consecutiveNullFrameTicks = 0;
+  static const int _nullFrameRestartThreshold = 5;
 
   // Simultaneous scan mode -- the primary path when every task in this run
   // shares one tflite/labels pair (the real-world case: one detector, many
@@ -686,6 +695,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (_watchActive) return;
     _watchActive = true;
     _holdCount = 0;
+    _consecutiveNullFrameTicks = 0;
     _watchDeadline = DateTime.now().add(_watchTimeout);
     _startImageStream();
     _watchLoop();
@@ -738,6 +748,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   void _startSimScan() {
     if (_simScanActive) return;
     _simScanActive = true;
+    _consecutiveNullFrameTicks = 0;
     _simDeadline = DateTime.now().add(_watchTimeout);
     _startImageStream();
     _simWatchLoop();
@@ -769,8 +780,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // Stream still warming up (or briefly paused around a
           // full-quality capture) -- skip this tick rather than block.
           tickStopwatch.stop();
+          _consecutiveNullFrameTicks++;
+          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
+            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- restarting stream');
+            _consecutiveNullFrameTicks = 0;
+            await _stopImageStream();
+            _startImageStream();
+          }
           continue;
         }
+        _consecutiveNullFrameTicks = 0;
         final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
         final bytes = await compute(_convertCameraFrameToJpeg, {
           'width': frame.width,
@@ -933,8 +952,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // Stream still warming up (or briefly paused around a
           // full-quality capture) -- skip this tick rather than block.
           tickStopwatch.stop();
+          _consecutiveNullFrameTicks++;
+          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
+            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- restarting stream');
+            _consecutiveNullFrameTicks = 0;
+            await _stopImageStream();
+            _startImageStream();
+          }
           continue;
         }
+        _consecutiveNullFrameTicks = 0;
         final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
         final bytes = await compute(_convertCameraFrameToJpeg, {
           'width': frame.width,
@@ -2472,6 +2499,15 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // warming up) just skips itself rather than blocking.
   CameraImage? _latestFrame;
   bool _isStreaming = false;
+  // If the platform camera stream silently never delivers a frame (seen on
+  // some devices/OEMs -- the very first startImageStream after a fresh
+  // CameraController init just never fires its callback, though a later
+  // one after a controller swap works fine), ticks would otherwise skip
+  // forever with nothing on screen and no error. After a run of ticks that
+  // never see a frame, force a stop+restart of the stream rather than
+  // trusting it to recover on its own.
+  int _consecutiveNullFrameTicks = 0;
+  static const int _nullFrameRestartThreshold = 5;
 
   // Simultaneous scan mode -- the primary path when every task in this run
   // shares one tflite/labels pair (the real-world case: one detector, many
@@ -2862,6 +2898,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (_watchActive) return;
     _watchActive = true;
     _holdCount = 0;
+    _consecutiveNullFrameTicks = 0;
     _watchDeadline = DateTime.now().add(_watchTimeout);
     _startImageStream();
     _watchLoop();
@@ -2914,6 +2951,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   void _startSimScan() {
     if (_simScanActive) return;
     _simScanActive = true;
+    _consecutiveNullFrameTicks = 0;
     _simDeadline = DateTime.now().add(_watchTimeout);
     _startImageStream();
     _simWatchLoop();
@@ -2945,8 +2983,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // Stream still warming up (or briefly paused around a
           // full-quality capture) -- skip this tick rather than block.
           tickStopwatch.stop();
+          _consecutiveNullFrameTicks++;
+          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
+            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- restarting stream');
+            _consecutiveNullFrameTicks = 0;
+            await _stopImageStream();
+            _startImageStream();
+          }
           continue;
         }
+        _consecutiveNullFrameTicks = 0;
         final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
         final bytes = await compute(_convertCameraFrameToJpeg, {
           'width': frame.width,
@@ -3105,8 +3151,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // Stream still warming up (or briefly paused around a
           // full-quality capture) -- skip this tick rather than block.
           tickStopwatch.stop();
+          _consecutiveNullFrameTicks++;
+          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
+            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- restarting stream');
+            _consecutiveNullFrameTicks = 0;
+            await _stopImageStream();
+            _startImageStream();
+          }
           continue;
         }
+        _consecutiveNullFrameTicks = 0;
         final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
         final bytes = await compute(_convertCameraFrameToJpeg, {
           'width': frame.width,
