@@ -64,6 +64,101 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
   }
 }
 
+/// Runs on a background isolate via compute(). Converts one raw camera
+/// stream frame (YUV420 -- 3 planes on Android, or a 2-plane NV12-style
+/// frame on iOS) into a small RGB JPEG the existing detector pipeline
+/// already knows how to read (ModelManager().predictBytes). Downscaling to
+/// [targetWidth] here (not after) is what keeps each live tick cheap --
+/// converting at full sensor resolution would cost far more than the
+/// inference itself.
+///
+/// [rotationDegrees] should be the camera's sensorOrientation (typically
+/// 90 for a phone's back camera held in portrait). If live boxes come out
+/// sideways/upside-down on a given device, that's the constant to check --
+/// this couldn't be verified against real hardware while building it.
+Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
+  try {
+    final int width = args['width'] as int;
+    final int height = args['height'] as int;
+    final List<dynamic> planes = args['planes'] as List<dynamic>;
+    final int rotationDegrees = args['rotationDegrees'] as int;
+    final int targetWidth = args['targetWidth'] as int;
+
+    final Map yPlane = planes[0] as Map;
+    final Uint8List yBytes = yPlane['bytes'] as Uint8List;
+    final int yRowStride = yPlane['bytesPerRow'] as int;
+
+    final Uint8List uBytes;
+    final Uint8List vBytes;
+    final int uvRowStride;
+    final int uvPixelStride;
+    // Android's yuv420 format group usually delivers 3 separate planes
+    // (Y, U, V), each with its own pixel stride. iOS's yuv420 group
+    // delivers 2 planes (Y, and interleaved UV -- NV12 order), so treat
+    // anything with fewer than 3 planes as that layout instead.
+    final bool threePlane = planes.length >= 3;
+    if (threePlane) {
+      final Map uPlane = planes[1] as Map;
+      final Map vPlane = planes[2] as Map;
+      uBytes = uPlane['bytes'] as Uint8List;
+      vBytes = vPlane['bytes'] as Uint8List;
+      uvRowStride = uPlane['bytesPerRow'] as int;
+      uvPixelStride = (uPlane['bytesPerPixel'] as int?) ?? 1;
+    } else {
+      final Map uvPlane = planes[1] as Map;
+      final Uint8List uv = uvPlane['bytes'] as Uint8List;
+      uBytes = uv;
+      vBytes = uv;
+      uvRowStride = uvPlane['bytesPerRow'] as int;
+      uvPixelStride = 2;
+    }
+
+    final out = img.Image(width: width, height: height);
+    for (int y = 0; y < height; y++) {
+      final int yRow = y * yRowStride;
+      final int uvRow = (y >> 1) * uvRowStride;
+      for (int x = 0; x < width; x++) {
+        final int yIndex = yRow + x;
+        if (yIndex >= yBytes.length) continue;
+        final int uvIndex = uvRow + (x >> 1) * uvPixelStride;
+
+        final int yVal = yBytes[yIndex];
+        int uVal, vVal;
+        if (threePlane) {
+          if (uvIndex >= uBytes.length || uvIndex >= vBytes.length) continue;
+          uVal = uBytes[uvIndex];
+          vVal = vBytes[uvIndex];
+        } else {
+          // NV12: U then V interleaved in the same buffer.
+          if (uvIndex + 1 >= uBytes.length) continue;
+          uVal = uBytes[uvIndex];
+          vVal = uBytes[uvIndex + 1];
+        }
+
+        final double yy = yVal.toDouble();
+        final double uu = uVal.toDouble() - 128.0;
+        final double vv = vVal.toDouble() - 128.0;
+        final int r = (yy + 1.402 * vv).round().clamp(0, 255);
+        final int g = (yy - 0.344136 * uu - 0.714136 * vv).round().clamp(0, 255);
+        final int b = (yy + 1.772 * uu).round().clamp(0, 255);
+        out.setPixelRgb(x, y, r, g, b);
+      }
+    }
+
+    img.Image rotated = out;
+    if (rotationDegrees == 90 || rotationDegrees == 180 || rotationDegrees == 270) {
+      rotated = img.copyRotate(out, angle: rotationDegrees);
+    }
+
+    final img.Image resized =
+        rotated.width > targetWidth ? img.copyResize(rotated, width: targetWidth) : rotated;
+
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 75));
+  } catch (_) {
+    return null;
+  }
+}
+
 class LiveInspectionCameraScreen extends StatefulWidget {
   final String vin;
   final String modelCode;
@@ -126,6 +221,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   static const Duration _watchInterval = Duration(milliseconds: 700);
   static const Duration _watchTimeout = Duration(seconds: 45);
   DateTime? _watchDeadline;
+
+  // Streaming: the watch/sim ticks below no longer call takePicture() per
+  // tick (a full shutter + JPEG round trip, measured ~2s per tick on a real
+  // device) -- instead CameraController.startImageStream keeps
+  // _latestFrame updated with whatever the sensor currently sees, cheaply,
+  // and each tick just converts whatever's in it to a small JPEG on a
+  // background isolate. A tick that finds no frame yet (stream still
+  // warming up) just skips itself rather than blocking.
+  CameraImage? _latestFrame;
+  bool _isStreaming = false;
 
   // Simultaneous scan mode -- the primary path when every task in this run
   // shares one tflite/labels pair (the real-world case: one detector, many
@@ -412,6 +517,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _watchActive = false;
     _simScanActive = false;
     WidgetsBinding.instance.removeObserver(this);
+    if (_isStreaming) {
+      _cameraController?.stopImageStream().catchError((_) {});
+    }
     if (_isFlashOn) {
       _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});
     }
@@ -426,6 +534,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (state == AppLifecycleState.inactive) {
       _watchActive = false;
       _simScanActive = false;
+      if (_isStreaming) {
+        ctrl.stopImageStream().catchError((_) {});
+        _isStreaming = false;
+      }
       if (_isFlashOn) {
         ctrl.setFlashMode(FlashMode.off).catchError((_) {});
         setState(() => _isFlashOn = false);
@@ -443,12 +555,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   }
 
   // ResolutionPreset.low, not medium -- see _takeFullQualityPicture below.
-  // This controller is what CameraPreview shows and what every watch tick
-  // calls takePicture() on, so it being fast matters far more here than for
-  // a one-shot manual capture: at ~700ms between ticks, shaving the
-  // per-tick JPEG encode/shutter round trip down is the only lever
-  // available short of a full CameraController.startImageStream rewrite
-  // (out of scope for this pass -- see _watchLoop's comment on that).
+  // This controller is what CameraPreview shows and what startImageStream
+  // reads frames from; low is plenty since _convertCameraFrameToJpeg
+  // downscales every streamed frame further before inference anyway, and a
+  // smaller sensor image means less work per frame to begin with.
+  // imageFormatGroup is explicit (not left to the platform default) since
+  // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
   Future<void> _initializeCamera() async {
     try {
       final cameras = await availableCameras();
@@ -461,7 +573,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           (c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cameras.first);
       _backCamera = back;
-      final controller = CameraController(back, ResolutionPreset.low, enableAudio: false);
+      final controller = CameraController(
+        back,
+        ResolutionPreset.low,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
       _cameraController = controller;
       await controller.initialize();
       if (mounted) setState(() => _isCameraInitialized = true);
@@ -484,10 +601,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   /// result frame anyway.
   Future<XFile> _takeFullQualityPicture() async {
     final camera = _backCamera;
+    // takePicture() and an active image stream can't run concurrently on
+    // the same controller, and the hi-res swap below needs sole ownership
+    // of the camera anyway.
+    await _stopImageStream();
     if (camera == null) {
       // Shouldn't happen once the camera has initialized once, but fail
       // toward "still take the photo" rather than a hard crash.
-      return await _cameraController!.takePicture();
+      final pic = await _cameraController!.takePicture();
+      if (mounted && (_watchActive || _simScanActive)) _startImageStream();
+      return pic;
     }
     final wasFlashOn = _isFlashOn;
     CameraController? hiResController;
@@ -505,11 +628,43 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       if (wasFlashOn && mounted) {
         await _cameraController?.setFlashMode(FlashMode.torch).catchError((_) {});
       }
+      // Simultaneous mode keeps ticking for the other still-pending tasks
+      // while this one's full-quality capture runs in the background, so
+      // the stream needs to come straight back for them. Sequential mode
+      // already sets _watchActive false before calling this (retake/next
+      // task/timeout paths restart it themselves via _startWatching), so
+      // this is a no-op there.
+      if (mounted && (_watchActive || _simScanActive)) _startImageStream();
     }
   }
 
+  /// Cheap per-frame callback for CameraController.startImageStream --
+  /// just remembers the latest frame. The actual conversion+inference work
+  /// happens on the watch/sim tick's own cadence (see _watchLoop /
+  /// _simWatchLoop), reading whatever _latestFrame currently holds, so this
+  /// callback itself stays effectively free and never falls behind the
+  /// sensor's frame rate even while a previous tick is still busy.
+  void _startImageStream() {
+    if (_isStreaming || _cameraController == null || !_isCameraInitialized) return;
+    try {
+      _cameraController!.startImageStream((image) => _latestFrame = image);
+      _isStreaming = true;
+    } catch (e) {
+      _addLog('startImageStream failed: $e');
+    }
+  }
+
+  Future<void> _stopImageStream() async {
+    if (!_isStreaming) return;
+    try {
+      await _cameraController?.stopImageStream();
+    } catch (_) {}
+    _isStreaming = false;
+    _latestFrame = null;
+  }
+
   /// Starts the live-watch loop: every [_watchInterval], while nothing else
-  /// is going on, take a quick picture and run it through the same
+  /// is going on, read the latest live-stream frame and run it through the same
   /// detector already loaded for this task, checking it against the same
   /// mandatory/fail/ignored matching the manual capture flow uses. The
   /// [_watchDeadline] resets here every time watching (re)starts -- new
@@ -521,6 +676,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _watchActive = true;
     _holdCount = 0;
     _watchDeadline = DateTime.now().add(_watchTimeout);
+    _startImageStream();
     _watchLoop();
   }
 
@@ -572,11 +728,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (_simScanActive) return;
     _simScanActive = true;
     _simDeadline = DateTime.now().add(_watchTimeout);
+    _startImageStream();
     _simWatchLoop();
   }
 
-  /// One continuous loop for the whole task list: every tick takes a single
-  /// low-res photo, runs it through the shared model once, then checks
+  /// One continuous loop for the whole task list: every tick reads the
+  /// latest live-stream frame, runs it through the shared model once, then checks
   /// EVERY still-pending task's classes against that one tick's detections.
   /// A task whose hold counter reaches target fires its own background
   /// full-quality capture+save (_autoCaptureSimTask) without pausing this
@@ -596,8 +753,28 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _simTicking = true;
       final tickStopwatch = Stopwatch()..start();
       try {
-        final XFile image = await _cameraController!.takePicture();
-        final bytes = await image.readAsBytes();
+        final frame = _latestFrame;
+        if (frame == null) {
+          // Stream still warming up (or briefly paused around a
+          // full-quality capture) -- skip this tick rather than block.
+          tickStopwatch.stop();
+          continue;
+        }
+        final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
+        final bytes = await compute(_convertCameraFrameToJpeg, {
+          'width': frame.width,
+          'height': frame.height,
+          'planes': frame.planes
+              .map((p) => {
+                    'bytes': p.bytes,
+                    'bytesPerRow': p.bytesPerRow,
+                    'bytesPerPixel': p.bytesPerPixel ?? 1,
+                  })
+              .toList(),
+          'rotationDegrees': sensorOrientation,
+          'targetWidth': 480,
+        });
+        if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
         tickStopwatch.stop();
         _addLog("Sim tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections");
@@ -718,16 +895,35 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         return;
       }
       _watching = true;
-      // takePicture() -- even against the low-res controller above -- is a
-      // full hardware shutter + JPEG encode round trip, not a cheap frame
-      // grab, so it (not _watchInterval) is the real floor on how fast
-      // ticks can go; only CameraController.startImageStream analyzing raw
-      // preview frames would meaningfully beat it, and that's the larger,
-      // riskier rewrite this file's doc comment already rules out for now.
+      // Reads the latest CameraController.startImageStream frame instead of
+      // calling takePicture() -- a full shutter + JPEG round trip was the
+      // real floor on tick speed before (measured ~2s per tick on device).
+      // The frame is already sitting in memory, so a tick now costs only
+      // the isolate conversion + inference.
       final tickStopwatch = Stopwatch()..start();
       try {
-        final XFile image = await _cameraController!.takePicture();
-        final bytes = await image.readAsBytes();
+        final frame = _latestFrame;
+        if (frame == null) {
+          // Stream still warming up (or briefly paused around a
+          // full-quality capture) -- skip this tick rather than block.
+          tickStopwatch.stop();
+          continue;
+        }
+        final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
+        final bytes = await compute(_convertCameraFrameToJpeg, {
+          'width': frame.width,
+          'height': frame.height,
+          'planes': frame.planes
+              .map((p) => {
+                    'bytes': p.bytes,
+                    'bytesPerRow': p.bytesPerRow,
+                    'bytesPerPixel': p.bytesPerPixel ?? 1,
+                  })
+              .toList(),
+          'rotationDegrees': sensorOrientation,
+          'targetWidth': 480,
+        });
+        if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
         tickStopwatch.stop();
         _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms");
@@ -1592,7 +1788,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                     // simultaneous-mode screen) -- without this the feed
                     // just looks like a static preview with nothing
                     // happening for the several seconds a tick's
-                    // takePicture()+predict round trip actually takes, even
+                    // stream-frame conversion+predict round trip actually takes, even
                     // though it's finding and holding on the target the
                     // whole time.
                     if (_capturedImageBytes == null &&
@@ -2015,13 +2211,13 @@ import 'package:flutter/foundation.dart' show compute;
 /// auto-fires anyway on the current frame and records the existing
 /// not-found outcome, rather than watching forever.
 ///
-/// This intentionally does NOT use CameraController.startImageStream --
-/// converting a raw YUV/BGRA camera frame to whatever ModelManager expects
-/// is a much larger, higher-risk change (per-platform pixel format
-/// handling) than this first testable version needs. Instead it re-uses
-/// takePicture() on a timer, which is slower per check (whole-JPEG round
-/// trip each time) but reuses the exact same, already-correct detection
-/// path as manual capture -- nothing new to get subtly wrong.
+/// Ticks are driven by CameraController.startImageStream, not a
+/// takePicture()-per-tick timer -- a full shutter + JPEG round trip
+/// measured ~2s per tick on a real device, which is what made the earlier
+/// version feel dead rather than live. Each raw stream frame is converted
+/// to a small JPEG on a background isolate (_convertCameraFrameToJpeg) and
+/// fed through the exact same ModelManager().predictBytes() path a manual
+/// capture uses, so nothing about detection itself is new to get wrong.
 class _BlurCheckResult {
   final double? variance;
   final Uint8List? orientedPngBytes;
@@ -2061,6 +2257,101 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
     );
   } catch (_) {
     return const _BlurCheckResult();
+  }
+}
+
+/// Runs on a background isolate via compute(). Converts one raw camera
+/// stream frame (YUV420 -- 3 planes on Android, or a 2-plane NV12-style
+/// frame on iOS) into a small RGB JPEG the existing detector pipeline
+/// already knows how to read (ModelManager().predictBytes). Downscaling to
+/// [targetWidth] here (not after) is what keeps each live tick cheap --
+/// converting at full sensor resolution would cost far more than the
+/// inference itself.
+///
+/// [rotationDegrees] should be the camera's sensorOrientation (typically
+/// 90 for a phone's back camera held in portrait). If live boxes come out
+/// sideways/upside-down on a given device, that's the constant to check --
+/// this couldn't be verified against real hardware while building it.
+Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
+  try {
+    final int width = args['width'] as int;
+    final int height = args['height'] as int;
+    final List<dynamic> planes = args['planes'] as List<dynamic>;
+    final int rotationDegrees = args['rotationDegrees'] as int;
+    final int targetWidth = args['targetWidth'] as int;
+
+    final Map yPlane = planes[0] as Map;
+    final Uint8List yBytes = yPlane['bytes'] as Uint8List;
+    final int yRowStride = yPlane['bytesPerRow'] as int;
+
+    final Uint8List uBytes;
+    final Uint8List vBytes;
+    final int uvRowStride;
+    final int uvPixelStride;
+    // Android's yuv420 format group usually delivers 3 separate planes
+    // (Y, U, V), each with its own pixel stride. iOS's yuv420 group
+    // delivers 2 planes (Y, and interleaved UV -- NV12 order), so treat
+    // anything with fewer than 3 planes as that layout instead.
+    final bool threePlane = planes.length >= 3;
+    if (threePlane) {
+      final Map uPlane = planes[1] as Map;
+      final Map vPlane = planes[2] as Map;
+      uBytes = uPlane['bytes'] as Uint8List;
+      vBytes = vPlane['bytes'] as Uint8List;
+      uvRowStride = uPlane['bytesPerRow'] as int;
+      uvPixelStride = (uPlane['bytesPerPixel'] as int?) ?? 1;
+    } else {
+      final Map uvPlane = planes[1] as Map;
+      final Uint8List uv = uvPlane['bytes'] as Uint8List;
+      uBytes = uv;
+      vBytes = uv;
+      uvRowStride = uvPlane['bytesPerRow'] as int;
+      uvPixelStride = 2;
+    }
+
+    final out = img.Image(width: width, height: height);
+    for (int y = 0; y < height; y++) {
+      final int yRow = y * yRowStride;
+      final int uvRow = (y >> 1) * uvRowStride;
+      for (int x = 0; x < width; x++) {
+        final int yIndex = yRow + x;
+        if (yIndex >= yBytes.length) continue;
+        final int uvIndex = uvRow + (x >> 1) * uvPixelStride;
+
+        final int yVal = yBytes[yIndex];
+        int uVal, vVal;
+        if (threePlane) {
+          if (uvIndex >= uBytes.length || uvIndex >= vBytes.length) continue;
+          uVal = uBytes[uvIndex];
+          vVal = vBytes[uvIndex];
+        } else {
+          // NV12: U then V interleaved in the same buffer.
+          if (uvIndex + 1 >= uBytes.length) continue;
+          uVal = uBytes[uvIndex];
+          vVal = uBytes[uvIndex + 1];
+        }
+
+        final double yy = yVal.toDouble();
+        final double uu = uVal.toDouble() - 128.0;
+        final double vv = vVal.toDouble() - 128.0;
+        final int r = (yy + 1.402 * vv).round().clamp(0, 255);
+        final int g = (yy - 0.344136 * uu - 0.714136 * vv).round().clamp(0, 255);
+        final int b = (yy + 1.772 * uu).round().clamp(0, 255);
+        out.setPixelRgb(x, y, r, g, b);
+      }
+    }
+
+    img.Image rotated = out;
+    if (rotationDegrees == 90 || rotationDegrees == 180 || rotationDegrees == 270) {
+      rotated = img.copyRotate(out, angle: rotationDegrees);
+    }
+
+    final img.Image resized =
+        rotated.width > targetWidth ? img.copyResize(rotated, width: targetWidth) : rotated;
+
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 75));
+  } catch (_) {
+    return null;
   }
 }
 
@@ -2120,6 +2411,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   static const Duration _watchInterval = Duration(milliseconds: 700);
   static const Duration _watchTimeout = Duration(seconds: 45);
   DateTime? _watchDeadline;
+
+  // Streaming: the watch/sim ticks below no longer call takePicture() per
+  // tick (a full shutter + JPEG round trip, measured ~2s per tick on a real
+  // device) -- instead CameraController.startImageStream keeps
+  // _latestFrame updated with whatever the sensor currently sees, cheaply,
+  // and each tick just converts whatever's in it to a small JPEG on a
+  // background isolate. A tick that finds no frame yet (stream still
+  // warming up) just skips itself rather than blocking.
+  CameraImage? _latestFrame;
+  bool _isStreaming = false;
 
   // Simultaneous scan mode -- the primary path when every task in this run
   // shares one tflite/labels pair (the real-world case: one detector, many
@@ -2351,6 +2652,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _watchActive = false;
     _simScanActive = false;
     WidgetsBinding.instance.removeObserver(this);
+    if (_isStreaming) {
+      _cameraController?.stopImageStream().catchError((_) {});
+    }
     if (_isFlashOn) {
       _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});
     }
@@ -2365,6 +2669,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (state == AppLifecycleState.inactive) {
       _watchActive = false;
       _simScanActive = false;
+      if (_isStreaming) {
+        ctrl.stopImageStream().catchError((_) {});
+        _isStreaming = false;
+      }
       if (_isFlashOn) {
         ctrl.setFlashMode(FlashMode.off).catchError((_) {});
         setState(() => _isFlashOn = false);
@@ -2382,12 +2690,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   }
 
   // ResolutionPreset.low, not medium -- see _takeFullQualityPicture below.
-  // This controller is what CameraPreview shows and what every watch tick
-  // calls takePicture() on, so it being fast matters far more here than for
-  // a one-shot manual capture: at ~700ms between ticks, shaving the
-  // per-tick JPEG encode/shutter round trip down is the only lever
-  // available short of a full CameraController.startImageStream rewrite
-  // (out of scope for this pass -- see _watchLoop's comment on that).
+  // This controller is what CameraPreview shows and what startImageStream
+  // reads frames from; low is plenty since _convertCameraFrameToJpeg
+  // downscales every streamed frame further before inference anyway, and a
+  // smaller sensor image means less work per frame to begin with.
+  // imageFormatGroup is explicit (not left to the platform default) since
+  // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
   Future<void> _initializeCamera() async {
     try {
       final cameras = await availableCameras();
@@ -2400,7 +2708,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           (c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cameras.first);
       _backCamera = back;
-      final controller = CameraController(back, ResolutionPreset.low, enableAudio: false);
+      final controller = CameraController(
+        back,
+        ResolutionPreset.low,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
       _cameraController = controller;
       await controller.initialize();
       if (mounted) setState(() => _isCameraInitialized = true);
@@ -2423,10 +2736,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   /// result frame anyway.
   Future<XFile> _takeFullQualityPicture() async {
     final camera = _backCamera;
+    // takePicture() and an active image stream can't run concurrently on
+    // the same controller, and the hi-res swap below needs sole ownership
+    // of the camera anyway.
+    await _stopImageStream();
     if (camera == null) {
       // Shouldn't happen once the camera has initialized once, but fail
       // toward "still take the photo" rather than a hard crash.
-      return await _cameraController!.takePicture();
+      final pic = await _cameraController!.takePicture();
+      if (mounted && (_watchActive || _simScanActive)) _startImageStream();
+      return pic;
     }
     final wasFlashOn = _isFlashOn;
     CameraController? hiResController;
@@ -2444,11 +2763,43 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       if (wasFlashOn && mounted) {
         await _cameraController?.setFlashMode(FlashMode.torch).catchError((_) {});
       }
+      // Simultaneous mode keeps ticking for the other still-pending tasks
+      // while this one's full-quality capture runs in the background, so
+      // the stream needs to come straight back for them. Sequential mode
+      // already sets _watchActive false before calling this (retake/next
+      // task/timeout paths restart it themselves via _startWatching), so
+      // this is a no-op there.
+      if (mounted && (_watchActive || _simScanActive)) _startImageStream();
     }
   }
 
+  /// Cheap per-frame callback for CameraController.startImageStream --
+  /// just remembers the latest frame. The actual conversion+inference work
+  /// happens on the watch/sim tick's own cadence (see _watchLoop /
+  /// _simWatchLoop), reading whatever _latestFrame currently holds, so this
+  /// callback itself stays effectively free and never falls behind the
+  /// sensor's frame rate even while a previous tick is still busy.
+  void _startImageStream() {
+    if (_isStreaming || _cameraController == null || !_isCameraInitialized) return;
+    try {
+      _cameraController!.startImageStream((image) => _latestFrame = image);
+      _isStreaming = true;
+    } catch (e) {
+      _addLog('startImageStream failed: $e');
+    }
+  }
+
+  Future<void> _stopImageStream() async {
+    if (!_isStreaming) return;
+    try {
+      await _cameraController?.stopImageStream();
+    } catch (_) {}
+    _isStreaming = false;
+    _latestFrame = null;
+  }
+
   /// Starts the live-watch loop: every [_watchInterval], while nothing else
-  /// is going on, take a quick picture and run it through the same
+  /// is going on, read the latest live-stream frame and run it through the same
   /// detector already loaded for this task. This is deliberately the exact
   /// same detection call _handleCapture() uses, just without the blur
   /// dialog or the save-to-disk work -- those only need to happen once, on
@@ -2461,6 +2812,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _watchActive = true;
     _holdCount = 0;
     _watchDeadline = DateTime.now().add(_watchTimeout);
+    _startImageStream();
     _watchLoop();
   }
 
@@ -2512,11 +2864,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (_simScanActive) return;
     _simScanActive = true;
     _simDeadline = DateTime.now().add(_watchTimeout);
+    _startImageStream();
     _simWatchLoop();
   }
 
-  /// One continuous loop for the whole task list: every tick takes a single
-  /// low-res photo, runs it through the shared model once, then checks
+  /// One continuous loop for the whole task list: every tick reads the
+  /// latest live-stream frame, runs it through the shared model once, then checks
   /// EVERY still-pending task's classes against that one tick's detections.
   /// A task whose hold counter reaches target fires its own background
   /// full-quality capture+save (_autoCaptureSimTask) without pausing this
@@ -2536,8 +2889,28 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _simTicking = true;
       final tickStopwatch = Stopwatch()..start();
       try {
-        final XFile image = await _cameraController!.takePicture();
-        final bytes = await image.readAsBytes();
+        final frame = _latestFrame;
+        if (frame == null) {
+          // Stream still warming up (or briefly paused around a
+          // full-quality capture) -- skip this tick rather than block.
+          tickStopwatch.stop();
+          continue;
+        }
+        final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
+        final bytes = await compute(_convertCameraFrameToJpeg, {
+          'width': frame.width,
+          'height': frame.height,
+          'planes': frame.planes
+              .map((p) => {
+                    'bytes': p.bytes,
+                    'bytesPerRow': p.bytesPerRow,
+                    'bytesPerPixel': p.bytesPerPixel ?? 1,
+                  })
+              .toList(),
+          'rotationDegrees': sensorOrientation,
+          'targetWidth': 480,
+        });
+        if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
         tickStopwatch.stop();
         _addLog("Sim tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections");
@@ -2658,16 +3031,35 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         return;
       }
       _watching = true;
-      // takePicture() -- even against the low-res controller above -- is a
-      // full hardware shutter + JPEG encode round trip, not a cheap frame
-      // grab, so it (not _watchInterval) is the real floor on how fast
-      // ticks can go; only CameraController.startImageStream analyzing raw
-      // preview frames would meaningfully beat it, and that's the larger,
-      // riskier rewrite this file's doc comment already rules out for now.
+      // Reads the latest CameraController.startImageStream frame instead of
+      // calling takePicture() -- a full shutter + JPEG round trip was the
+      // real floor on tick speed before (measured ~2s per tick on device).
+      // The frame is already sitting in memory, so a tick now costs only
+      // the isolate conversion + inference.
       final tickStopwatch = Stopwatch()..start();
       try {
-        final XFile image = await _cameraController!.takePicture();
-        final bytes = await image.readAsBytes();
+        final frame = _latestFrame;
+        if (frame == null) {
+          // Stream still warming up (or briefly paused around a
+          // full-quality capture) -- skip this tick rather than block.
+          tickStopwatch.stop();
+          continue;
+        }
+        final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
+        final bytes = await compute(_convertCameraFrameToJpeg, {
+          'width': frame.width,
+          'height': frame.height,
+          'planes': frame.planes
+              .map((p) => {
+                    'bytes': p.bytes,
+                    'bytesPerRow': p.bytesPerRow,
+                    'bytesPerPixel': p.bytesPerPixel ?? 1,
+                  })
+              .toList(),
+          'rotationDegrees': sensorOrientation,
+          'targetWidth': 480,
+        });
+        if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
         tickStopwatch.stop();
         _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms");
@@ -3508,7 +3900,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                     // simultaneous-mode screen) -- without this the feed
                     // just looks like a static preview with nothing
                     // happening for the several seconds a tick's
-                    // takePicture()+predict round trip actually takes, even
+                    // stream-frame conversion+predict round trip actually takes, even
                     // though it's finding and holding on the target the
                     // whole time.
                     if (_capturedImageBytes == null &&
