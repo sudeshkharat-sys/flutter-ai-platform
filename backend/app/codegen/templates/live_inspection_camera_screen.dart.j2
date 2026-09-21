@@ -113,11 +113,22 @@ Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
       uvPixelStride = 2;
     }
 
-    final out = img.Image(width: width, height: height);
-    for (int y = 0; y < height; y++) {
+    // Sample directly at (approximately) targetWidth instead of building a
+    // full sensor-resolution image first and downscaling after -- a live
+    // tick only ever needs a small frame, and converting every source pixel
+    // just to throw most of them away in a resize step afterward was most
+    // of this function's cost per tick.
+    final double scale = width > targetWidth ? targetWidth / width : 1.0;
+    final int outW = (width * scale).round().clamp(1, width);
+    final int outH = (height * scale).round().clamp(1, height);
+
+    final out = img.Image(width: outW, height: outH);
+    for (int oy = 0; oy < outH; oy++) {
+      final int y = (oy / scale).floor().clamp(0, height - 1);
       final int yRow = y * yRowStride;
       final int uvRow = (y >> 1) * uvRowStride;
-      for (int x = 0; x < width; x++) {
+      for (int ox = 0; ox < outW; ox++) {
+        final int x = (ox / scale).floor().clamp(0, width - 1);
         final int yIndex = yRow + x;
         if (yIndex >= yBytes.length) continue;
         final int uvIndex = uvRow + (x >> 1) * uvPixelStride;
@@ -141,19 +152,19 @@ Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
         final int r = (yy + 1.402 * vv).round().clamp(0, 255);
         final int g = (yy - 0.344136 * uu - 0.714136 * vv).round().clamp(0, 255);
         final int b = (yy + 1.772 * uu).round().clamp(0, 255);
-        out.setPixelRgb(x, y, r, g, b);
+        out.setPixelRgb(ox, oy, r, g, b);
       }
     }
 
+    // Rotating the already-small image here is cheap -- this is the same
+    // img.copyRotate call as before, just no longer applied to a
+    // full-resolution frame.
     img.Image rotated = out;
     if (rotationDegrees == 90 || rotationDegrees == 180 || rotationDegrees == 270) {
       rotated = img.copyRotate(out, angle: rotationDegrees);
     }
 
-    final img.Image resized =
-        rotated.width > targetWidth ? img.copyResize(rotated, width: targetWidth) : rotated;
-
-    return Uint8List.fromList(img.encodeJpg(resized, quality: 75));
+    return Uint8List.fromList(img.encodeJpg(rotated, quality: 75));
   } catch (_) {
     return null;
   }
@@ -781,9 +792,24 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         if (!mounted || !_simScanActive) return;
         final confident = detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList();
-        // Only still-pending tasks' boxes matter -- an already-found task
-        // doesn't need to keep drawing, so this doubles as the overlay data.
-        setState(() => _liveTickDetections = confident);
+        // Only boxes for still-pending tasks' own target classes are shown
+        // -- an already-found task doesn't need to keep drawing, and a
+        // confident detection of some unrelated class would otherwise show
+        // as a box that looks like progress but isn't for anything this
+        // scan still needs.
+        final pendingTargetClasses = <String>{
+          for (var i = 0; i < widget.tasks.length; i++)
+            if (_taskStatus[i] == 'pending')
+              ...(() {
+                final task = widget.tasks[i];
+                final mandatory = List<String>.from(task['mandatoryClasses'] ?? []);
+                final all = List<String>.from(task['classes'] ?? []);
+                return (mandatory.isNotEmpty ? mandatory : all).map((c) => c.toLowerCase().trim());
+              })(),
+        };
+        setState(() => _liveTickDetections = confident
+            .where((d) => pendingTargetClasses.contains(d.className.toLowerCase().trim()))
+            .toList());
 
         int? matchedTaskIndex;
         for (var i = 0; i < widget.tasks.length; i++) {
@@ -1409,6 +1435,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                             _cameraController!.value.previewSize!.height,
                             _cameraController!.value.previewSize!.width,
                           ),
+                          // Already filtered to only still-pending tasks'
+                          // own target classes above, so a visible box
+                          // always means real progress -- force it green
+                          // rather than the arbitrary per-class palette.
+                          overrideColor: Colors.greenAccent,
                         ),
                       ),
                     if (_isLoadingModel)
@@ -1802,6 +1833,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                             _cameraController!.value.previewSize!.height,
                             _cameraController!.value.previewSize!.width,
                           ),
+                          // Without these the painter's default (no
+                          // mandatory list => everything red) makes every
+                          // live box look like a defect even while it's
+                          // correctly tracking the target class.
+                          mandatoryClasses: mandatoryClasses,
+                          ignoredClasses: ignoredClasses,
                         ),
                       ),
                     if (_capturedImageBytes != null)
@@ -2309,11 +2346,22 @@ Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
       uvPixelStride = 2;
     }
 
-    final out = img.Image(width: width, height: height);
-    for (int y = 0; y < height; y++) {
+    // Sample directly at (approximately) targetWidth instead of building a
+    // full sensor-resolution image first and downscaling after -- a live
+    // tick only ever needs a small frame, and converting every source pixel
+    // just to throw most of them away in a resize step afterward was most
+    // of this function's cost per tick.
+    final double scale = width > targetWidth ? targetWidth / width : 1.0;
+    final int outW = (width * scale).round().clamp(1, width);
+    final int outH = (height * scale).round().clamp(1, height);
+
+    final out = img.Image(width: outW, height: outH);
+    for (int oy = 0; oy < outH; oy++) {
+      final int y = (oy / scale).floor().clamp(0, height - 1);
       final int yRow = y * yRowStride;
       final int uvRow = (y >> 1) * uvRowStride;
-      for (int x = 0; x < width; x++) {
+      for (int ox = 0; ox < outW; ox++) {
+        final int x = (ox / scale).floor().clamp(0, width - 1);
         final int yIndex = yRow + x;
         if (yIndex >= yBytes.length) continue;
         final int uvIndex = uvRow + (x >> 1) * uvPixelStride;
@@ -2337,19 +2385,19 @@ Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
         final int r = (yy + 1.402 * vv).round().clamp(0, 255);
         final int g = (yy - 0.344136 * uu - 0.714136 * vv).round().clamp(0, 255);
         final int b = (yy + 1.772 * uu).round().clamp(0, 255);
-        out.setPixelRgb(x, y, r, g, b);
+        out.setPixelRgb(ox, oy, r, g, b);
       }
     }
 
+    // Rotating the already-small image here is cheap -- this is the same
+    // img.copyRotate call as before, just no longer applied to a
+    // full-resolution frame.
     img.Image rotated = out;
     if (rotationDegrees == 90 || rotationDegrees == 180 || rotationDegrees == 270) {
       rotated = img.copyRotate(out, angle: rotationDegrees);
     }
 
-    final img.Image resized =
-        rotated.width > targetWidth ? img.copyResize(rotated, width: targetWidth) : rotated;
-
-    return Uint8List.fromList(img.encodeJpg(resized, quality: 75));
+    return Uint8List.fromList(img.encodeJpg(rotated, quality: 75));
   } catch (_) {
     return null;
   }
@@ -2917,9 +2965,20 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         if (!mounted || !_simScanActive) return;
         final confident = detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList();
-        // Only still-pending tasks' boxes matter -- an already-found task
-        // doesn't need to keep drawing, so this doubles as the overlay data.
-        setState(() => _liveTickDetections = confident);
+        // Only boxes for still-pending tasks' own target classes are shown
+        // -- an already-found task doesn't need to keep drawing, and a
+        // confident detection of some unrelated class would otherwise show
+        // as a box that looks like progress but isn't for anything this
+        // scan still needs.
+        final pendingTargetClasses = <String>{
+          for (var i = 0; i < widget.tasks.length; i++)
+            if (_taskStatus[i] == 'pending')
+              ...List<String>.from(widget.tasks[i]['classes'] ?? [])
+                  .map((c) => c.toLowerCase().trim()),
+        };
+        setState(() => _liveTickDetections = confident
+            .where((d) => pendingTargetClasses.contains(d.className.toLowerCase().trim()))
+            .toList());
 
         int? matchedTaskIndex;
         for (var i = 0; i < widget.tasks.length; i++) {
@@ -3063,13 +3122,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         final detections = await ModelManager().predictBytes(bytes);
         tickStopwatch.stop();
         _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms");
-        // Drawn live over the preview below -- without this the feed looks
-        // static for the whole hold-steady countdown even while it's
-        // actually seeing and tracking the part.
-        if (mounted) {
-          setState(() => _liveTickDetections =
-              detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList());
-        }
 
         final currentTask = widget.tasks[_currentIndex];
         final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
@@ -3077,6 +3129,15 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             d.confidence >= _watchConfidenceThreshold &&
             targetClasses.any((tc) => d.className.toLowerCase().trim() == tc.toLowerCase().trim()) &&
             !_isNotOkClass(d.className));
+        // Drawn live over the preview below -- without this the feed looks
+        // static for the whole hold-steady countdown even while it's
+        // actually seeing and tracking the part. Only the target-class
+        // match is shown (not every confident detection of anything) and
+        // forced green, so a visible box actually means "this is
+        // progressing toward capture", not just "something was seen".
+        if (mounted) {
+          setState(() => _liveTickDetections = match.toList());
+        }
 
         if (!mounted || !_watchActive) return;
         if (match.isNotEmpty) {
@@ -3523,6 +3584,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                             _cameraController!.value.previewSize!.height,
                             _cameraController!.value.previewSize!.width,
                           ),
+                          // Already filtered to only still-pending tasks'
+                          // own target classes above, so a visible box
+                          // always means real progress -- force it green
+                          // rather than the arbitrary per-class palette.
+                          overrideColor: Colors.greenAccent,
                         ),
                       ),
                     if (_isLoadingModel)
@@ -3914,6 +3980,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                             _cameraController!.value.previewSize!.height,
                             _cameraController!.value.previewSize!.width,
                           ),
+                          // Already filtered to only still-pending tasks'
+                          // own target classes above, so a visible box
+                          // always means real progress -- force it green
+                          // rather than the arbitrary per-class palette.
+                          overrideColor: Colors.greenAccent,
                         ),
                       ),
                     if (_capturedImageBytes != null)
