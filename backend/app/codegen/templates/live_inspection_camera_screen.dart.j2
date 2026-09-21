@@ -57,23 +57,17 @@ import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
 
 /// Live Scan (Beta) -- experimental alternative to the normal "aim, tap,
-/// capture" flow. Instead of waiting for a manual tap, it continuously
-/// watches the live preview for the current task's target class and, once
-/// it has been seen confidently for a few consecutive checks in a row,
-/// automatically freezes and analyzes that frame -- same full pipeline
+/// capture" flow. It continuously reads the raw camera stream (not
+/// takePicture() -- see the note on _onCameraFrame for why that first
+/// version was unacceptably slow), draws live detection boxes over the
+/// preview as they come in, and once the target class has been seen
+/// confidently for a few consecutive processed frames, automatically
+/// freezes and analyzes that moment through the exact same full pipeline
 /// (blur check, detection, save) as a manual capture. The frozen result
 /// still needs a manual "Save & Continue" -- an auto-detected frame is
 /// never written to history without that confirmation, so a false-positive
 /// "OK" never gets recorded silently. A manual capture tap still works too,
 /// as a fallback if live detection never locks on.
-///
-/// This intentionally does NOT use CameraController.startImageStream --
-/// converting a raw YUV/BGRA camera frame to whatever ModelManager expects
-/// is a much larger, higher-risk change (per-platform pixel format
-/// handling) than this first testable version needs. Instead it re-uses
-/// takePicture() on a timer, which is slower per check (whole-JPEG round
-/// trip each time) but reuses the exact same, already-correct detection
-/// path as manual capture -- nothing new to get subtly wrong.
 class _BlurCheckResult {
   final double? variance;
   final Uint8List? orientedPngBytes;
@@ -116,6 +110,101 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
   }
 }
 
+/// Runs on a background isolate via compute(). Converts one raw camera
+/// stream frame (YUV420 -- 3 planes on Android, or a 2-plane NV12-style
+/// frame on iOS) into a small RGB JPEG the existing detector pipeline
+/// already knows how to read (ModelManager().predictBytes). Downscaling to
+/// [targetWidth] here (not after) is what keeps each live tick cheap --
+/// converting at full sensor resolution (often 1920x1080+) would cost far
+/// more than the inference itself.
+///
+/// [rotationDegrees] should be the camera's sensorOrientation (typically
+/// 90 for a phone's back camera held in portrait). If live boxes come out
+/// sideways/upside-down on a given device, that's the constant to adjust --
+/// this couldn't be verified against real hardware while building it.
+Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
+  try {
+    final int width = args['width'] as int;
+    final int height = args['height'] as int;
+    final List<dynamic> planes = args['planes'] as List<dynamic>;
+    final int rotationDegrees = args['rotationDegrees'] as int;
+    final int targetWidth = args['targetWidth'] as int;
+
+    final Map yPlane = planes[0] as Map;
+    final Uint8List yBytes = yPlane['bytes'] as Uint8List;
+    final int yRowStride = yPlane['bytesPerRow'] as int;
+
+    final Uint8List uBytes;
+    final Uint8List vBytes;
+    final int uvRowStride;
+    final int uvPixelStride;
+    // Android's yuv420 format group usually delivers 3 separate planes
+    // (Y, U, V), each with its own pixel stride. iOS's yuv420 group
+    // delivers 2 planes (Y, and interleaved UV -- NV12 order), so treat
+    // anything with fewer than 3 planes as that layout instead.
+    final bool threePlane = planes.length >= 3;
+    if (threePlane) {
+      final Map uPlane = planes[1] as Map;
+      final Map vPlane = planes[2] as Map;
+      uBytes = uPlane['bytes'] as Uint8List;
+      vBytes = vPlane['bytes'] as Uint8List;
+      uvRowStride = uPlane['bytesPerRow'] as int;
+      uvPixelStride = (uPlane['bytesPerPixel'] as int?) ?? 1;
+    } else {
+      final Map uvPlane = planes[1] as Map;
+      final Uint8List uv = uvPlane['bytes'] as Uint8List;
+      uBytes = uv;
+      vBytes = uv;
+      uvRowStride = uvPlane['bytesPerRow'] as int;
+      uvPixelStride = 2;
+    }
+
+    final out = img.Image(width: width, height: height);
+    for (int y = 0; y < height; y++) {
+      final int yRow = y * yRowStride;
+      final int uvRow = (y >> 1) * uvRowStride;
+      for (int x = 0; x < width; x++) {
+        final int yIndex = yRow + x;
+        if (yIndex >= yBytes.length) continue;
+        final int uvIndex = uvRow + (x >> 1) * uvPixelStride;
+
+        final int yVal = yBytes[yIndex];
+        int uVal, vVal;
+        if (threePlane) {
+          if (uvIndex >= uBytes.length || uvIndex >= vBytes.length) continue;
+          uVal = uBytes[uvIndex];
+          vVal = vBytes[uvIndex];
+        } else {
+          // NV12: U then V interleaved in the same buffer.
+          if (uvIndex + 1 >= uBytes.length) continue;
+          uVal = uBytes[uvIndex];
+          vVal = uBytes[uvIndex + 1];
+        }
+
+        final double yy = yVal.toDouble();
+        final double uu = uVal.toDouble() - 128.0;
+        final double vv = vVal.toDouble() - 128.0;
+        final int r = (yy + 1.402 * vv).round().clamp(0, 255);
+        final int g = (yy - 0.344136 * uu - 0.714136 * vv).round().clamp(0, 255);
+        final int b = (yy + 1.772 * uu).round().clamp(0, 255);
+        out.setPixelRgb(x, y, r, g, b);
+      }
+    }
+
+    img.Image rotated = out;
+    if (rotationDegrees == 90 || rotationDegrees == 180 || rotationDegrees == 270) {
+      rotated = img.copyRotate(out, angle: rotationDegrees);
+    }
+
+    final img.Image resized =
+        rotated.width > targetWidth ? img.copyResize(rotated, width: targetWidth) : rotated;
+
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 75));
+  } catch (_) {
+    return null;
+  }
+}
+
 class LiveInspectionCameraScreen extends StatefulWidget {
   final String vin;
   final String modelCode;
@@ -155,17 +244,27 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   int _currentIndex = 0;
   final Map<int, dynamic> _results = {};
 
-  // Live-watch state. _holdCount fills toward _holdTarget every consecutive
-  // watch tick that sees the current task's target class confidently; any
-  // tick that doesn't resets it to 0. Hitting the target auto-fires the
-  // full capture+analyze pipeline exactly once (_watchActive guards against
-  // a second auto-fire while that capture is still in flight).
+  // Live-watch state, driven by the raw camera stream (see
+  // _onCameraFrame) rather than repeated takePicture() calls -- that first
+  // approach round-tripped a full-resolution photo capture every tick
+  // (200-500ms just for the shutter) on top of full-size inference, which
+  // is what made it feel like a multi-second dead gap before anything
+  // showed on screen. Reading stream frames directly and running detection
+  // on a small downscaled copy is what actually gets boxes on screen
+  // continuously instead of in occasional bursts.
   bool _watchActive = false;
-  bool _watching = false;
+  bool _isStreaming = false;
+  bool _frameBusy = false;
+  int _frameSkipCounter = 0;
+  // Every 2nd delivered stream frame is processed -- streams typically
+  // deliver 15-30fps, and processing every single one queues up more work
+  // than the conversion+inference can keep up with, causing growing lag
+  // instead of a steady live rate.
+  static const int _frameStride = 2;
+  List<DetectionResult> _liveDetections = [];
   int _holdCount = 0;
   static const int _holdTarget = 3;
   static const double _watchConfidenceThreshold = 0.55;
-  static const Duration _watchInterval = Duration(milliseconds: 700);
 
   @override
   void initState() {
@@ -227,6 +326,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   void dispose() {
     _watchActive = false;
     WidgetsBinding.instance.removeObserver(this);
+    if (_isStreaming) {
+      _cameraController?.stopImageStream().catchError((_) {});
+    }
     if (_isFlashOn) {
       _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});
     }
@@ -240,6 +342,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (ctrl == null || !ctrl.value.isInitialized) return;
     if (state == AppLifecycleState.inactive) {
       _watchActive = false;
+      if (_isStreaming) {
+        ctrl.stopImageStream().catchError((_) {});
+        _isStreaming = false;
+      }
       if (_isFlashOn) {
         ctrl.setFlashMode(FlashMode.off).catchError((_) {});
         setState(() => _isFlashOn = false);
@@ -261,7 +367,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       final back = cameras.firstWhere(
           (c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cameras.first);
-      final controller = CameraController(back, ResolutionPreset.medium, enableAudio: false);
+      final controller = CameraController(
+        back,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
       _cameraController = controller;
       await controller.initialize();
       if (mounted) setState(() => _isCameraInitialized = true);
@@ -272,64 +383,98 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  /// Starts the live-watch loop: every [_watchInterval], while nothing else
-  /// is going on, take a quick picture and run it through the same
-  /// detector already loaded for this task. This is deliberately the exact
-  /// same detection call _handleCapture() uses, just without the blur
-  /// dialog or the save-to-disk work -- those only need to happen once, on
-  /// the frame that's actually kept.
   void _startWatching() {
-    if (_watchActive) return;
+    if (_watchActive || _cameraController == null || !_isCameraInitialized) return;
     _watchActive = true;
     _holdCount = 0;
-    _watchLoop();
+    try {
+      _cameraController!.startImageStream(_onCameraFrame);
+      _isStreaming = true;
+      _addLog('Live stream started');
+    } catch (e) {
+      _addLog('startImageStream failed: $e');
+      _watchActive = false;
+    }
   }
 
-  void _stopWatching() {
+  Future<void> _stopWatching() async {
     _watchActive = false;
-    if (mounted) setState(() => _holdCount = 0);
+    if (_isStreaming) {
+      try {
+        await _cameraController?.stopImageStream();
+      } catch (_) {}
+      _isStreaming = false;
+    }
+    if (mounted) {
+      setState(() {
+        _holdCount = 0;
+        _liveDetections = [];
+      });
+    }
   }
 
-  Future<void> _watchLoop() async {
-    while (_watchActive && mounted) {
-      await Future.delayed(_watchInterval);
-      if (!_watchActive || !mounted) return;
-      if (_isAnalyzing || _watching || _capturedImageBytes != null ||
-          !_isModelLoaded || _cameraController == null || !_isCameraInitialized) {
-        continue;
-      }
-      _watching = true;
-      try {
-        final XFile image = await _cameraController!.takePicture();
-        final bytes = await image.readAsBytes();
-        final detections = await ModelManager().predictBytes(bytes);
+  /// Called by the camera plugin for every delivered stream frame --
+  /// this must return fast, since it's invoked on a hot path. Real work
+  /// happens in [_processFrame]; [_frameBusy] guards against a slow
+  /// conversion+inference tick still running when the next frame arrives
+  /// (queuing frames instead of skipping them is what caused the earlier
+  /// takePicture()-based version to fall further and further behind).
+  void _onCameraFrame(CameraImage image) {
+    if (!_watchActive || _frameBusy || _isAnalyzing || _capturedImageBytes != null || !_isModelLoaded) {
+      return;
+    }
+    _frameSkipCounter++;
+    if (_frameSkipCounter % _frameStride != 0) return;
+    _frameBusy = true;
+    _processFrame(image).whenComplete(() => _frameBusy = false);
+  }
 
-        final currentTask = widget.tasks[_currentIndex];
-        final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
-        final match = detections.where((d) =>
-            d.confidence >= _watchConfidenceThreshold &&
-            targetClasses.any((tc) => d.className.toLowerCase().trim() == tc.toLowerCase().trim()) &&
-            !_isNotOkClass(d.className));
+  Future<void> _processFrame(CameraImage image) async {
+    try {
+      final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
+      final planesData = image.planes
+          .map((p) => {
+                'bytes': p.bytes,
+                'bytesPerRow': p.bytesPerRow,
+                'bytesPerPixel': p.bytesPerPixel ?? 1,
+              })
+          .toList();
 
-        if (!mounted || !_watchActive) return;
-        if (match.isNotEmpty) {
-          setState(() => _holdCount++);
-          _addLog("Live watch: target seen (${_holdCount}/${_holdTarget})");
-          if (_holdCount >= _holdTarget) {
-            _watchActive = false;
-            setState(() => _holdCount = 0);
-            _addLog('Live watch: steady -- auto-capturing');
-            await _handleCapture();
-            return;
-          }
-        } else if (_holdCount != 0) {
-          setState(() => _holdCount = 0);
+      final jpegBytes = await compute(_convertCameraFrameToJpeg, {
+        'width': image.width,
+        'height': image.height,
+        'planes': planesData,
+        'rotationDegrees': sensorOrientation,
+        'targetWidth': 480,
+      });
+      if (jpegBytes == null || !mounted || !_watchActive) return;
+
+      final detections = await ModelManager().predictBytes(jpegBytes);
+      if (!mounted || !_watchActive) return;
+
+      final currentTask = widget.tasks[_currentIndex];
+      final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
+      final matches = detections
+          .where((d) =>
+              d.confidence >= _watchConfidenceThreshold &&
+              targetClasses.any((tc) => d.className.toLowerCase().trim() == tc.toLowerCase().trim()) &&
+              !_isNotOkClass(d.className))
+          .toList();
+
+      if (matches.isNotEmpty) {
+        _holdCount++;
+        if (_holdCount >= _holdTarget) {
+          _addLog('Live watch: steady -- auto-capturing');
+          await _stopWatching();
+          await _handleCapture();
+          return;
         }
-      } catch (e) {
-        _addLog("Live watch tick failed: $e");
-      } finally {
-        _watching = false;
+      } else if (_holdCount != 0) {
+        _holdCount = 0;
       }
+      setState(() => _liveDetections = detections);
+    } catch (e) {
+      _addLog("Live frame failed: $e");
     }
   }
 
@@ -338,7 +483,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _addLog("Capture blocked: analyzing=$_isAnalyzing modelReady=$_isModelLoaded");
       return;
     }
-    _watchActive = false;
+    await _stopWatching();
     setState(() => _isAnalyzing = true);
     try {
       _addLog('--- Start Inference ---');
@@ -688,198 +833,196 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                 ),
               ),
               Expanded(
-                child: Stack(
-                  children: [
-                    if (_capturedImageBytes == null)
-                      Positioned.fill(
-                        child: _isCameraInitialized && _cameraController != null
-                            ? CameraPreview(_cameraController!)
-                            : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
-                      ),
-                    if (_capturedImageBytes != null)
-                      Positioned.fill(
-                        child: _capturedImageSize != null
-                            ? FittedBox(
-                                fit: BoxFit.contain,
-                                child: SizedBox(
-                                  width: _capturedImageSize!.width,
-                                  height: _capturedImageSize!.height,
-                                  child: Stack(
-                                    fit: StackFit.expand,
-                                    children: [
-                                      Image.memory(
-                                        _capturedImageBytes!,
-                                        fit: BoxFit.fill,
-                                        width: _capturedImageSize!.width,
-                                        height: _capturedImageSize!.height,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final liveSize = Size(constraints.maxWidth, constraints.maxHeight);
+                    return Stack(
+                      children: [
+                        if (_capturedImageBytes == null)
+                          Positioned.fill(
+                            child: _isCameraInitialized && _cameraController != null
+                                ? CameraPreview(_cameraController!)
+                                : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
+                          ),
+                        // Live boxes -- redrawn every processed stream frame
+                        // (see _processFrame), not just once at the end. This
+                        // is what makes the screen actually feel live instead
+                        // of "point camera, wait several seconds, see a box".
+                        if (_capturedImageBytes == null && _liveDetections.isNotEmpty)
+                          Positioned.fill(
+                            child: DetectionOverlay(
+                              results: _liveDetections,
+                              previewSize: liveSize,
+                              overrideColor: _holdCount > 0 ? const Color(0xFFFFC107) : null,
+                            ),
+                          ),
+                        if (_capturedImageBytes != null)
+                          Positioned.fill(
+                            child: _capturedImageSize != null
+                                ? FittedBox(
+                                    fit: BoxFit.contain,
+                                    child: SizedBox(
+                                      width: _capturedImageSize!.width,
+                                      height: _capturedImageSize!.height,
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          Image.memory(
+                                            _capturedImageBytes!,
+                                            fit: BoxFit.fill,
+                                            width: _capturedImageSize!.width,
+                                            height: _capturedImageSize!.height,
+                                          ),
+                                          if (overlayResult != null)
+                                            DetectionOverlay(
+                                              results: [overlayResult],
+                                              previewSize: _capturedImageSize!,
+                                              overrideColor: badgeGreen ? Colors.green : Colors.red,
+                                            ),
+                                        ],
                                       ),
-                                      if (overlayResult != null)
-                                        DetectionOverlay(
-                                          results: [overlayResult],
-                                          previewSize: _capturedImageSize!,
-                                          overrideColor: badgeGreen ? Colors.green : Colors.red,
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              )
-                            : Image.memory(_capturedImageBytes!, fit: BoxFit.contain),
-                      ),
-                    if (_capturedImageBytes == null)
-                      Center(
-                        child: Container(
-                          width: 280,
-                          height: 280,
-                          decoration: BoxDecoration(
-                            border: Border.all(
-                              // Border brightens amber -> green as the hold
-                              // counter fills, so the frame itself is the
-                              // "getting close" cue -- not just the pill below.
-                              color: _holdCount == 0
-                                  ? const Color(0xFFDC143C)
-                                  : Color.lerp(const Color(0xFFFFC107), const Color(0xFF22C55E),
-                                      _holdCount / _holdTarget)!,
-                              width: _holdCount == 0 ? 2 : 3,
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (_capturedImageBytes == null && _holdCount > 0)
-                      Positioned(
-                        top: 16,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.7),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('Hold steady…',
-                                    style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
-                                const SizedBox(width: 10),
-                                SizedBox(
-                                  width: 70,
-                                  height: 6,
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(3),
-                                    child: LinearProgressIndicator(
-                                      value: _holdCount / _holdTarget,
-                                      backgroundColor: Colors.white24,
-                                      valueColor: const AlwaysStoppedAnimation(Color(0xFF22C55E)),
                                     ),
-                                  ),
-                                ),
-                              ],
-                            ),
+                                  )
+                                : Image.memory(_capturedImageBytes!, fit: BoxFit.contain),
                           ),
-                        ),
-                      ),
-                    if (_isLoadingModel && _capturedImageBytes == null)
-                      Container(
-                        color: Colors.black45,
-                        child: const Center(child: CircularProgressIndicator(color: Colors.white)),
-                      ),
-                    if (_isAnalyzing)
-                      Container(
-                        color: Colors.black54,
-                        child: const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
-                      ),
-                    if (_capturedImageBytes == null && _isCameraInitialized)
-                      Positioned(
-                        top: 16,
-                        left: 16,
-                        child: GestureDetector(
-                          onTap: _toggleFlash,
-                          child: Container(
-                            width: 48,
-                            height: 48,
-                            decoration: BoxDecoration(
-                              color: _isFlashOn ? const Color(0xFFFFD700) : Colors.black54,
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: _isFlashOn ? const Color(0xFFFFD700) : Colors.white30,
-                                width: 1.5,
+                        if (_capturedImageBytes == null && _holdCount > 0)
+                          Positioned(
+                            top: 16,
+                            left: 0,
+                            right: 0,
+                            child: Center(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withOpacity(0.7),
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text('Hold steady…',
+                                        style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                                    const SizedBox(width: 10),
+                                    SizedBox(
+                                      width: 70,
+                                      height: 6,
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(3),
+                                        child: LinearProgressIndicator(
+                                          value: _holdCount / _holdTarget,
+                                          backgroundColor: Colors.white24,
+                                          valueColor: const AlwaysStoppedAnimation(Color(0xFF22C55E)),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                            child: Icon(
-                              _isFlashOn ? Icons.flashlight_on : Icons.flashlight_off,
-                              color: _isFlashOn ? Colors.black : Colors.white,
-                              size: 24,
+                          ),
+                        if (_isLoadingModel && _capturedImageBytes == null)
+                          Container(
+                            color: Colors.black45,
+                            child: const Center(child: CircularProgressIndicator(color: Colors.white)),
+                          ),
+                        if (_isAnalyzing)
+                          Container(
+                            color: Colors.black54,
+                            child: const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
+                          ),
+                        if (_capturedImageBytes == null && _isCameraInitialized)
+                          Positioned(
+                            top: 16,
+                            left: 16,
+                            child: GestureDetector(
+                              onTap: _toggleFlash,
+                              child: Container(
+                                width: 48,
+                                height: 48,
+                                decoration: BoxDecoration(
+                                  color: _isFlashOn ? const Color(0xFFFFD700) : Colors.black54,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: _isFlashOn ? const Color(0xFFFFD700) : Colors.white30,
+                                    width: 1.5,
+                                  ),
+                                ),
+                                child: Icon(
+                                  _isFlashOn ? Icons.flashlight_on : Icons.flashlight_off,
+                                  color: _isFlashOn ? Colors.black : Colors.white,
+                                  size: 24,
+                                ),
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                    if (!_isAnalyzing && _capturedImageBytes != null)
-                      Positioned(
-                        top: 16,
-                        right: 16,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: badgeGreen ? Colors.green : Colors.red,
-                            borderRadius: BorderRadius.circular(20),
+                        if (!_isAnalyzing && _capturedImageBytes != null)
+                          Positioned(
+                            top: 16,
+                            right: 16,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: badgeGreen ? Colors.green : Colors.red,
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                badgeGreen
+                                    ? '✓ ${_bestResult!.className}'
+                                    : overlayResult != null
+                                        ? '✗ ${overlayResult.className}'
+                                        : 'NOT FOUND',
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ),
                           ),
-                          child: Text(
-                            badgeGreen
-                                ? '✓ ${_bestResult!.className}'
-                                : overlayResult != null
-                                    ? '✗ ${overlayResult.className}'
-                                    : 'NOT FOUND',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
-                          ),
-                        ),
-                      ),
-                    if (_showDebugConsole)
-                      Positioned(
-                        bottom: 0,
-                        left: 0,
-                        right: 0,
-                        height: MediaQuery.of(context).size.height * 0.8,
-                        child: Container(
-                          color: Colors.black.withOpacity(0.92),
-                          padding: const EdgeInsets.all(10),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        if (_showDebugConsole)
+                          Positioned(
+                            bottom: 0,
+                            left: 0,
+                            right: 0,
+                            height: MediaQuery.of(context).size.height * 0.8,
+                            child: Container(
+                              color: Colors.black.withOpacity(0.92),
+                              padding: const EdgeInsets.all(10),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Text('DEBUG CONSOLE',
-                                      style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 22),
-                                    tooltip: 'Clear log',
-                                    onPressed: () => setState(() => _debugLogs = []),
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      const Text('DEBUG CONSOLE',
+                                          style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
+                                      IconButton(
+                                        icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 22),
+                                        tooltip: 'Clear log',
+                                        onPressed: () => setState(() => _debugLogs = []),
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                      ),
+                                    ],
+                                  ),
+                                  const Divider(color: Colors.white24),
+                                  Expanded(
+                                    child: ListView.builder(
+                                      reverse: true,
+                                      itemCount: _debugLogs.length,
+                                      itemBuilder: (_, idx) => Padding(
+                                        padding: const EdgeInsets.only(bottom: 8),
+                                        child: SelectableText(
+                                          _debugLogs[_debugLogs.length - 1 - idx],
+                                          style: const TextStyle(
+                                              color: Colors.white, fontFamily: 'monospace', fontSize: 14, height: 1.3),
+                                        ),
+                                      ),
+                                    ),
                                   ),
                                 ],
                               ),
-                              const Divider(color: Colors.white24),
-                              Expanded(
-                                child: ListView.builder(
-                                  reverse: true,
-                                  itemCount: _debugLogs.length,
-                                  itemBuilder: (_, idx) => Padding(
-                                    padding: const EdgeInsets.only(bottom: 8),
-                                    child: SelectableText(
-                                      _debugLogs[_debugLogs.length - 1 - idx],
-                                      style: const TextStyle(
-                                          color: Colors.white, fontFamily: 'monospace', fontSize: 14, height: 1.3),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
+                            ),
                           ),
-                        ),
-                      ),
-                  ],
+                      ],
+                    );
+                  },
                 ),
               ),
               Padding(
