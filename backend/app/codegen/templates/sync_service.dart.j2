@@ -378,6 +378,7 @@ class SyncService {
       // over the limit) -- never awaited so it can't slow down reporting
       // the sync result back to the UI.
       unawaited(_enforceCacheLimit());
+      unawaited(_deleteSyncedNegativeImages());
     });
     _inFlightSends[pc.deviceId] = future;
     return future;
@@ -418,6 +419,31 @@ class SyncService {
           }
         }
         await db.clearBackupImagePath(c.taskResultId);
+      }
+    } catch (_) {
+      // Best-effort housekeeping -- a failure here must never affect sync.
+    }
+  }
+
+  // Unlike the compressed backup cache (kept up to _kMaxCacheBytes as a
+  // sync fallback), the full-quality negative-dataset copy has no reason to
+  // stay on the phone at all once its inspection is confirmed synced -- the
+  // PC's negative_dataset copy is now the one that matters for training, so
+  // every synced negative image is deleted, not just the oldest ones over a
+  // limit.
+  Future<void> _deleteSyncedNegativeImages() async {
+    try {
+      final candidates = await db.getSyncedNegativeImages();
+      for (final c in candidates) {
+        final file = File(c.path);
+        if (await file.exists()) {
+          try {
+            await file.delete();
+          } catch (_) {
+            continue; // couldn't delete -- leave its DB path intact and move on
+          }
+        }
+        await db.clearNegativeImagePath(c.taskResultId);
       }
     } catch (_) {
       // Best-effort housekeeping -- a failure here must never affect sync.

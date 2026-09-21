@@ -886,11 +886,14 @@ def _copy_negative_dataset_files(extract_dir: Path, manifest_path: Path, app_nam
     """Copies this upload's negatives/ files (per-task NOT OK captures, at
     near-original quality) out of the timestamped extract_dir -- easy to lose
     track of there among many uploads -- into a dataset-shaped store bucketed
-    by class: negative_dataset/<app name>/<className>/<original filename>.
+    by task: negative_dataset/<app name>/<taskName>/<original filename>. No
+    date subfolder -- every upload for the same task just appends into that
+    one folder, so the dataset accumulates in place instead of fragmenting
+    by day.
 
-    Matches each negatives/ file to its class via the manifest's per-task
+    Matches each negatives/ file to its task via the manifest's per-task
     negativeImagePath (the zip arcname the phone recorded), since that's the
-    only place the className for a given file is known. Blocking file I/O,
+    only place the taskName for a given file is known. Blocking file I/O,
     so callers should run this via run_in_threadpool like the Excel update.
     """
     copied = 0
@@ -908,8 +911,8 @@ def _copy_negative_dataset_files(extract_dir: Path, manifest_path: Path, app_nam
             src = extract_dir / arc_path
             if not src.exists():
                 continue
-            class_name = _safe_name(str(task.get("className") or "unknown"))
-            dest_dir = NEGATIVE_DATASET_DIR / app_name / class_name
+            task_name = _safe_name(str(task.get("taskName") or "unknown"))
+            dest_dir = NEGATIVE_DATASET_DIR / app_name / task_name
             try:
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 dest = dest_dir / src.name
@@ -1558,7 +1561,7 @@ async def api_storage_download(path: str, _: None = Depends(_require_local)):
 async def api_negative_dataset(_: None = Depends(_require_local)):
     """Summary of the negative-example training dataset accumulated on this
     PC from every paired phone's NOT OK captures, broken down by app and
-    class -- a local admin/QA view, so a plain glob + stat is fine here."""
+    task -- a local admin/QA view, so a plain glob + stat is fine here."""
     apps: dict[str, dict] = {}
     total_files = 0
     total_bytes = 0
@@ -1566,18 +1569,18 @@ async def api_negative_dataset(_: None = Depends(_require_local)):
         for app_dir in sorted(NEGATIVE_DATASET_DIR.iterdir()):
             if not app_dir.is_dir():
                 continue
-            classes = {}
-            for class_dir in sorted(app_dir.iterdir()):
-                if not class_dir.is_dir():
+            tasks = {}
+            for task_dir in sorted(app_dir.iterdir()):
+                if not task_dir.is_dir():
                     continue
-                file_count, size = _dir_stats(class_dir)
+                file_count, size = _dir_stats(task_dir)
                 if file_count == 0:
                     continue
-                classes[class_dir.name] = {"fileCount": file_count, "sizeBytes": size}
+                tasks[task_dir.name] = {"fileCount": file_count, "sizeBytes": size}
                 total_files += file_count
                 total_bytes += size
-            if classes:
-                apps[app_dir.name] = classes
+            if tasks:
+                apps[app_dir.name] = tasks
     return {"totalFiles": total_files, "totalBytes": total_bytes, "apps": apps}
 
 
@@ -3033,10 +3036,10 @@ async function loadNegativeDataset() {
       ${appNames.map(appName => `
         <div class="app-group">
           <div class="app-name">${appName}</div>
-          ${Object.keys(d.apps[appName]).map(cls => `
+          ${Object.keys(d.apps[appName]).map(taskName => `
             <div class="batch-row">
-              <span class="b-name">${cls}</span>
-              <span class="b-meta">${d.apps[appName][cls].fileCount} files • ${fmtBytes(d.apps[appName][cls].sizeBytes)}</span>
+              <span class="b-name">${taskName}</span>
+              <span class="b-meta">${d.apps[appName][taskName].fileCount} files • ${fmtBytes(d.apps[appName][taskName].sizeBytes)}</span>
             </div>
           `).join('')}
         </div>

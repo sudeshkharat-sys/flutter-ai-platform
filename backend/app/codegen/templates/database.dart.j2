@@ -152,6 +152,30 @@ class AppDatabase extends _$AppDatabase {
         .write(const TaskResultsCompanion(backupImagePath: Value(null)));
   }
 
+  // ── Negative-dataset image housekeeping ─────────────────────────────────
+  // The full-quality NOT OK copy only needs to live on the phone until the
+  // PC has it -- once synced, the PC's negative_dataset copy is the one
+  // that matters, so the on-device original is safe to delete to save
+  // storage instead of accumulating forever.
+  Future<List<BackupImageRef>> getSyncedNegativeImages() async {
+    final query = select(taskResults).join([
+      innerJoin(inspections, inspections.id.equalsExp(taskResults.inspectionId)),
+    ])
+      ..where(inspections.isSynced.equals(true) & taskResults.negativeImagePath.isNotNull())
+      ..orderBy([OrderingTerm.asc(taskResults.timestamp)]);
+    final rows = await query.get();
+    return rows
+        .map((row) => row.readTable(taskResults))
+        .where((tr) => tr.negativeImagePath != null)
+        .map((tr) => BackupImageRef(taskResultId: tr.id, path: tr.negativeImagePath!))
+        .toList();
+  }
+
+  Future<void> clearNegativeImagePath(int taskResultId) async {
+    await (update(taskResults)..where((t) => t.id.equals(taskResultId)))
+        .write(const TaskResultsCompanion(negativeImagePath: Value(null)));
+  }
+
   // Most recent scan overall (any VIN/model code) -- used by the scan
   // screen to show a "last scan was VIN... X min ago" hint without
   // interrupting the next scan.
