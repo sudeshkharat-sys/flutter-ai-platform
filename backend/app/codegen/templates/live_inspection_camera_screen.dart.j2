@@ -127,13 +127,43 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   static const Duration _watchTimeout = Duration(seconds: 45);
   DateTime? _watchDeadline;
 
+  // Simultaneous scan mode -- the primary path when every task in this run
+  // shares one tflite/labels pair (the real-world case: one detector, many
+  // target classes). One continuous watch loop checks ALL still-pending
+  // tasks against each tick's detections; whichever task locks on first
+  // auto-captures in the background without freezing the feed, while the
+  // rest keep scanning, until every task resolves or the shared 45s
+  // deadline hits. Tasks that don't all share a model fall back to the
+  // sequential per-task flow above (_startWatching/_watchLoop) unchanged.
+  bool _simultaneousMode = false;
+  bool _simScanActive = false;
+  bool _simScanDone = false;
+  bool _simTicking = false;
+  bool _simCapturingTask = false;
+  DateTime? _simDeadline;
+  final Map<int, String> _taskStatus = {}; // 'pending' | 'found' | 'notFound'
+  final Map<int, int> _taskHoldCount = {};
+  List<DetectionResult> _liveTickDetections = [];
+
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
     WidgetsBinding.instance.addObserver(this);
+    _simultaneousMode = widget.tasks.length > 1 &&
+        widget.tasks.every((t) =>
+            t['tflite_path'] == widget.tasks[0]['tflite_path'] &&
+            t['labels_path'] == widget.tasks[0]['labels_path']);
+    for (var i = 0; i < widget.tasks.length; i++) {
+      _taskStatus[i] = 'pending';
+      _taskHoldCount[i] = 0;
+    }
     _initializeCamera();
-    _loadCurrentModel();
+    if (_simultaneousMode) {
+      _loadSharedModelAndStartSim();
+    } else {
+      _loadCurrentModel();
+    }
     _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
@@ -194,6 +224,149 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     return allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()));
   }
 
+  /// Same mandatory/fail/ignored matching _allMandatoryPassed uses, applied
+  /// to one task against one watch tick's confident detections.
+  bool _simTaskPasses(dynamic task, List<DetectionResult> confident) {
+    final List<String> allModelClasses = List<String>.from(task['classes'] ?? []);
+    final List<String> mandatoryClasses = List<String>.from(task['mandatoryClasses'] ?? []);
+    final List<String> ignoredClasses = List<String>.from(task['ignoredClasses'] ?? []);
+    final List<String> targetClasses = mandatoryClasses.isNotEmpty ? mandatoryClasses : allModelClasses;
+    final List<String> failClasses = mandatoryClasses.isNotEmpty
+        ? allModelClasses.where((c) =>
+            !mandatoryClasses.any((m) => m.toLowerCase().trim() == c.toLowerCase().trim()) &&
+            !ignoredClasses.any((ig) => ig.toLowerCase().trim() == c.toLowerCase().trim())).toList()
+        : [];
+    final Map<String, DetectionResult?> tickMandatory = {
+      for (final tc in targetClasses)
+        tc: confident.where((d) => d.className.toLowerCase().trim() == tc.toLowerCase().trim()).isNotEmpty
+            ? confident.firstWhere((d) => d.className.toLowerCase().trim() == tc.toLowerCase().trim())
+            : null,
+    };
+    return _allMandatoryPassed(tickMandatory, confident, failClasses, ignoredClasses);
+  }
+
+  /// Background full-quality capture+save for one task, fired once its hold
+  /// counter reaches target. Deliberately skips the blur-retry dialog the
+  /// manual/sequential flow shows -- this must not interrupt the feed or
+  /// block on user input; a blurry auto-capture just lands as whatever
+  /// pass/fail it detects, same as any other tick's result would.
+  Future<void> _autoCaptureSimTask(int index) async {
+    final task = widget.tasks[index];
+    try {
+      _addLog('--- Sim auto-capture: ${task['name']} ---');
+      final XFile image = await _takeFullQualityPicture();
+      final bytes = await image.readAsBytes();
+      final decodedRaw = img.decodeImage(bytes);
+      final oriented = decodedRaw != null ? img.bakeOrientation(decodedRaw) : null;
+
+      final allDetections = oriented != null
+          ? await ModelManager().predictImage(oriented)
+          : await ModelManager().predictBytes(bytes);
+
+      final List<String> allModelClasses = List<String>.from(task['classes'] ?? []);
+      final List<String> mandatoryClasses = List<String>.from(task['mandatoryClasses'] ?? []);
+      final List<String> ignoredClasses = List<String>.from(task['ignoredClasses'] ?? []);
+      final List<String> targetClasses = mandatoryClasses.isNotEmpty ? mandatoryClasses : allModelClasses;
+      final List<String> failClasses = mandatoryClasses.isNotEmpty
+          ? allModelClasses.where((c) =>
+              !mandatoryClasses.any((m) => m.toLowerCase().trim() == c.toLowerCase().trim()) &&
+              !ignoredClasses.any((ig) => ig.toLowerCase().trim() == c.toLowerCase().trim())).toList()
+          : [];
+
+      final Map<String, DetectionResult?> mandatoryResults = {};
+      for (final mc in targetClasses) {
+        final matches = allDetections.where((d) => d.className.toLowerCase().trim() == mc.toLowerCase().trim());
+        mandatoryResults[mc] = matches.isNotEmpty
+            ? (matches.toList()..sort((a, b) => b.confidence.compareTo(a.confidence))).first
+            : null;
+      }
+      final bool overallPass = _allMandatoryPassed(mandatoryResults, allDetections, failClasses, ignoredClasses);
+
+      String? savedImagePath;
+      String? savedBackupPath;
+      try {
+        PermissionStatus status = await Permission.photos.request();
+        if (!status.isGranted) status = await Permission.storage.request();
+
+        final baseDir = Directory('/storage/emulated/0/Pictures');
+        if (!await baseDir.exists()) await baseDir.create(recursive: true);
+        final safeVin = widget.vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final safeTask = (task['name'] as String? ?? 'task').replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final appName = '{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final imgDir = Directory('${baseDir.path}/MAI/$appName/Inspections/$safeVin/$safeTask');
+        await imgDir.create(recursive: true);
+
+        final now = DateTime.now();
+        final dateStr =
+            '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+        final timeStr =
+            '${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}';
+        final resultBadge = overallPass ? 'OK' : 'NOT_OK';
+        savedImagePath = '${imgDir.path}/${safeTask}_${resultBadge}_${dateStr}_$timeStr.jpg';
+
+        List<int> compressed;
+        if (decodedRaw != null) {
+          final iw = decodedRaw.width.toDouble();
+          final ih = decodedRaw.height.toDouble();
+          for (final det in allDetections) {
+            final isMandatory = targetClasses.any((tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim());
+            final boxColor = isMandatory ? img.ColorRgb8(0, 200, 0) : img.ColorRgb8(220, 0, 0);
+            final x1 = (det.bbox.left * iw).toInt().clamp(0, decodedRaw.width - 1);
+            final y1 = (det.bbox.top * ih).toInt().clamp(0, decodedRaw.height - 1);
+            final x2 = (det.bbox.right * iw).toInt().clamp(0, decodedRaw.width - 1);
+            final y2 = (det.bbox.bottom * ih).toInt().clamp(0, decodedRaw.height - 1);
+            for (int t = 0; t < 3; t++) {
+              img.drawRect(decodedRaw, x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t, color: boxColor);
+            }
+            final label = '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%';
+            final labelY = (y1 - 20).clamp(0, decodedRaw.height - 20);
+            img.fillRect(decodedRaw, x1: x1, y1: labelY, x2: x1 + label.length * 8 + 6, y2: labelY + 18, color: boxColor);
+            img.drawString(decodedRaw, label, font: img.arial14, x: x1 + 3, y: labelY + 2, color: img.ColorRgb8(255, 255, 255));
+          }
+          compressed = img.encodeJpg(decodedRaw, quality: 40);
+        } else {
+          compressed = bytes;
+        }
+        await File(savedImagePath).writeAsBytes(compressed, flush: true);
+        _addLog("Sim image saved [${task['name']}]: $savedImagePath");
+
+        try {
+          final appDir = await getApplicationSupportDirectory();
+          final backupDir = Directory('${appDir.path}/inspection_backups/$safeVin/$safeTask');
+          await backupDir.create(recursive: true);
+          final backupFile = File('${backupDir.path}/${safeTask}_${resultBadge}_${dateStr}_$timeStr.jpg');
+          if (decodedRaw != null) {
+            final thumb = img.copyResize(decodedRaw, width: 480);
+            await backupFile.writeAsBytes(img.encodeJpg(thumb, quality: 15), flush: true);
+          } else {
+            await backupFile.writeAsBytes(compressed, flush: true);
+          }
+          savedBackupPath = backupFile.path;
+        } catch (e) {
+          _addLog("Sim backup save FAILED: $e");
+        }
+      } catch (e) {
+        _addLog("Sim image save FAILED: $e");
+        savedImagePath = null;
+      }
+
+      _results[index] = {
+        'className': overallPass
+            ? 'OK'
+            : (_hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'NOT OK' : 'None'),
+        'success': overallPass,
+        'imagePath': savedImagePath,
+        'backupImagePath': savedBackupPath,
+        'mandatoryResults': mandatoryResults.map((k, v) => MapEntry(k, v != null ? v.toJson() : null)),
+        'detectionsJson': jsonEncode(allDetections.map((d) => d.toJson()).toList()),
+      };
+      if (mounted) setState(() => _taskStatus[index] = 'found');
+      _addLog("Sim task done [${task['name']}]: ${overallPass ? 'OK' : 'NOT OK'}");
+    } catch (e) {
+      _addLog('Sim auto-capture failed for ${task['name']}: $e');
+    }
+  }
+
   Future<void> _loadCurrentModel() async {
     setState(() {
       _isLoadingModel = true;
@@ -220,6 +393,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   @override
   void dispose() {
     _watchActive = false;
+    _simScanActive = false;
     WidgetsBinding.instance.removeObserver(this);
     if (_isFlashOn) {
       _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});
@@ -234,13 +408,20 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (ctrl == null || !ctrl.value.isInitialized) return;
     if (state == AppLifecycleState.inactive) {
       _watchActive = false;
+      _simScanActive = false;
       if (_isFlashOn) {
         ctrl.setFlashMode(FlashMode.off).catchError((_) {});
         setState(() => _isFlashOn = false);
       }
       ctrl.dispose();
     } else if (state == AppLifecycleState.resumed) {
-      _initializeCamera().then((_) => _startWatching());
+      _initializeCamera().then((_) {
+        if (_simultaneousMode) {
+          if (!_simScanDone) _startSimScan();
+        } else {
+          _startWatching();
+        }
+      });
     }
   }
 
@@ -336,6 +517,172 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (deadline == null) return 0;
     final left = deadline.difference(DateTime.now()).inSeconds;
     return left < 0 ? 0 : left;
+  }
+
+  int _simSecondsLeft() {
+    final deadline = _simDeadline;
+    if (deadline == null) return 0;
+    final left = deadline.difference(DateTime.now()).inSeconds;
+    return left < 0 ? 0 : left;
+  }
+
+  /// Loads the ONE model shared by every task in this run (the real-world
+  /// shape: one detector, many target classes) and starts the simultaneous
+  /// watch loop once it's ready.
+  Future<void> _loadSharedModelAndStartSim() async {
+    setState(() {
+      _isLoadingModel = true;
+      _isModelLoaded = false;
+    });
+    try {
+      final task = widget.tasks[0];
+      _addLog("Simultaneous scan: loading shared model for ${widget.tasks.length} tasks");
+      await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
+      if (mounted) {
+        setState(() {
+          _isLoadingModel = false;
+          _isModelLoaded = true;
+        });
+        _startSimScan();
+      }
+    } catch (e) {
+      _addLog("AI Init error: $e");
+      if (mounted) setState(() => _error = "AI Init error: $e");
+    }
+  }
+
+  void _startSimScan() {
+    if (_simScanActive) return;
+    _simScanActive = true;
+    _simDeadline = DateTime.now().add(_watchTimeout);
+    _simWatchLoop();
+  }
+
+  /// One continuous loop for the whole task list: every tick takes a single
+  /// low-res photo, runs it through the shared model once, then checks
+  /// EVERY still-pending task's classes against that one tick's detections.
+  /// A task whose hold counter reaches target fires its own background
+  /// full-quality capture+save (_autoCaptureSimTask) without pausing this
+  /// loop for the others. On the shared 45s deadline, every still-pending
+  /// task is marked not-found and the loop stops.
+  Future<void> _simWatchLoop() async {
+    while (_simScanActive && mounted) {
+      await Future.delayed(_watchInterval);
+      if (!_simScanActive || !mounted) return;
+      if (_simTicking || !_isModelLoaded || _cameraController == null || !_isCameraInitialized) {
+        continue;
+      }
+      if (_simDeadline != null && DateTime.now().isAfter(_simDeadline!)) {
+        _finishSimTimeouts();
+        return;
+      }
+      _simTicking = true;
+      final tickStopwatch = Stopwatch()..start();
+      try {
+        final XFile image = await _cameraController!.takePicture();
+        final bytes = await image.readAsBytes();
+        final detections = await ModelManager().predictBytes(bytes);
+        tickStopwatch.stop();
+        _addLog("Sim tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections");
+
+        if (!mounted || !_simScanActive) return;
+        final confident = detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList();
+        // Only still-pending tasks' boxes matter -- an already-found task
+        // doesn't need to keep drawing, so this doubles as the overlay data.
+        setState(() => _liveTickDetections = confident);
+
+        int? matchedTaskIndex;
+        for (var i = 0; i < widget.tasks.length; i++) {
+          if (_taskStatus[i] != 'pending') continue;
+          final tickPass = _simTaskPasses(widget.tasks[i], confident);
+          if (tickPass) {
+            _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) + 1;
+            if (_taskHoldCount[i]! >= _holdTarget && matchedTaskIndex == null) {
+              matchedTaskIndex = i;
+            }
+          } else if ((_taskHoldCount[i] ?? 0) != 0) {
+            _taskHoldCount[i] = 0;
+          }
+        }
+        if (mounted) setState(() {});
+
+        if (matchedTaskIndex != null && !_simCapturingTask) {
+          final idx = matchedTaskIndex;
+          _addLog("Sim: task ${idx + 1} steady -- auto-capturing in background");
+          _simCapturingTask = true;
+          // Fire-and-forget: the watch loop keeps ticking for the other
+          // pending tasks while this one's full-quality capture+save runs.
+          unawaited(_autoCaptureSimTask(idx).whenComplete(() {
+            _simCapturingTask = false;
+            _maybeFinishSimScan();
+          }));
+        }
+      } catch (e) {
+        _addLog("Sim tick failed: $e");
+      } finally {
+        _simTicking = false;
+      }
+    }
+  }
+
+  void _finishSimTimeouts() {
+    _simScanActive = false;
+    for (var i = 0; i < widget.tasks.length; i++) {
+      if (_taskStatus[i] == 'pending') {
+        _taskStatus[i] = 'notFound';
+        _results[i] ??= {
+          'className': 'None',
+          'success': false,
+          'imagePath': null,
+          'detectionsJson': jsonEncode([]),
+        };
+        _addLog("Sim: task ${i + 1} (${widget.tasks[i]['name']}) NOT FOUND at 45s deadline");
+      }
+    }
+    if (mounted) setState(() => _simScanDone = true);
+  }
+
+  void _maybeFinishSimScan() {
+    if (!mounted || !_simScanActive) return;
+    final allResolved = widget.tasks
+        .asMap()
+        .keys
+        .every((i) => _taskStatus[i] != 'pending');
+    if (allResolved) {
+      _simScanActive = false;
+      setState(() => _simScanDone = true);
+      _addLog('Sim: all tasks resolved');
+    }
+  }
+
+  /// Small fallback for when auto-detect never locks on: forces an
+  /// immediate full-quality capture attempt for the first still-pending
+  /// task, using the same background pipeline the watch loop uses.
+  Future<void> _manualSimCapture() async {
+    if (_simCapturingTask || !_simScanActive) return;
+    final pendingEntry = _taskStatus.entries.firstWhere(
+      (e) => e.value == 'pending',
+      orElse: () => const MapEntry(-1, ''),
+    );
+    if (pendingEntry.key < 0) return;
+    _simCapturingTask = true;
+    _addLog('Manual capture for task ${pendingEntry.key + 1}');
+    await _autoCaptureSimTask(pendingEntry.key);
+    _simCapturingTask = false;
+    _maybeFinishSimScan();
+  }
+
+  void _retrySimScan() {
+    setState(() {
+      for (var i = 0; i < widget.tasks.length; i++) {
+        _taskStatus[i] = 'pending';
+        _taskHoldCount[i] = 0;
+      }
+      _results.clear();
+      _simScanDone = false;
+      _liveTickDetections = [];
+    });
+    _startSimScan();
   }
 
   Future<void> _watchLoop() async {
@@ -695,10 +1042,400 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _loadCurrentModel();
   }
 
+  /// Live feed + persistent checklist for the simultaneous-scan primary
+  /// path: one continuous preview with a bounding-box overlay updated every
+  /// tick, a chip per task showing pending/found/not-found, and a small
+  /// manual-capture fallback. Switches to the results/Submit screen once
+  /// _simScanDone flips (all tasks resolved, or the 45s deadline hit).
+  Widget _buildSimultaneousScreen(BuildContext context) {
+    if (_simScanDone) return _buildSimSummaryScreen(context);
+
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.white, Color(0xFFFFF5F5)],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      onPressed: () => Navigator.pop(context, _results),
+                    ),
+                    Expanded(
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('LIVE SCAN -- ALL TASKS',
+                                style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                            Text('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
+                                style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        _showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined,
+                        color: Colors.white70,
+                      ),
+                      onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                color: Colors.white.withOpacity(0.9),
+                child: Column(
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      alignment: WrapAlignment.center,
+                      children: List.generate(widget.tasks.length, (i) {
+                        final status = _taskStatus[i] ?? 'pending';
+                        final name = widget.tasks[i]['name'] as String? ?? 'Task ${i + 1}';
+                        final color = status == 'found'
+                            ? Colors.green
+                            : (status == 'notFound' ? Colors.red : Colors.grey);
+                        final icon = status == 'found'
+                            ? Icons.check_circle
+                            : (status == 'notFound' ? Icons.cancel : Icons.radio_button_unchecked);
+                        return Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: color.withOpacity(0.5)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(icon, color: color, size: 14),
+                              const SizedBox(width: 5),
+                              Text(name, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+                            ],
+                          ),
+                        );
+                      }),
+                    ),
+                    if (_simScanActive)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text('Auto-capturing as parts are recognized -- ${_simSecondsLeft()}s left',
+                            style: const TextStyle(color: Colors.grey, fontSize: 11)),
+                      ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: _isCameraInitialized && _cameraController != null
+                          ? FittedBox(
+                              fit: BoxFit.cover,
+                              child: SizedBox(
+                                width: _cameraController!.value.previewSize?.height ??
+                                    _cameraController!.value.aspectRatio,
+                                height: _cameraController!.value.previewSize?.width ?? 1,
+                                child: CameraPreview(_cameraController!),
+                              ),
+                            )
+                          : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
+                    ),
+                    // Live tick overlay -- only still-pending tasks' boxes are
+                    // pushed into _liveTickDetections, so an already-found
+                    // task's box drops off on the next tick instead of
+                    // cluttering the feed.
+                    if (_liveTickDetections.isNotEmpty &&
+                        _cameraController != null &&
+                        _cameraController!.value.previewSize != null)
+                      Positioned.fill(
+                        child: DetectionOverlay(
+                          results: _liveTickDetections,
+                          previewSize: Size(
+                            _cameraController!.value.previewSize!.height,
+                            _cameraController!.value.previewSize!.width,
+                          ),
+                        ),
+                      ),
+                    if (_isLoadingModel)
+                      Container(
+                        color: Colors.black45,
+                        child: const Center(child: CircularProgressIndicator(color: Colors.white)),
+                      ),
+                    if (_simCapturingTask)
+                      Positioned(
+                        bottom: 100,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.7),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                              SizedBox(
+                                  width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                              SizedBox(width: 8),
+                              Text('Saving…', style: TextStyle(color: Colors.white, fontSize: 12)),
+                            ]),
+                          ),
+                        ),
+                      ),
+                    if (_isCameraInitialized)
+                      Positioned(
+                        top: 16,
+                        left: 16,
+                        child: GestureDetector(
+                          onTap: _toggleFlash,
+                          child: Container(
+                            width: 48,
+                            height: 48,
+                            decoration: BoxDecoration(
+                              color: _isFlashOn ? const Color(0xFFFFD700) : Colors.black54,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: _isFlashOn ? const Color(0xFFFFD700) : Colors.white30,
+                                width: 1.5,
+                              ),
+                            ),
+                            child: Icon(
+                              _isFlashOn ? Icons.flashlight_on : Icons.flashlight_off,
+                              color: _isFlashOn ? Colors.black : Colors.white,
+                              size: 24,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_simScanActive)
+                      Positioned(
+                        top: 16,
+                        right: 16,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.7),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: const BoxDecoration(color: Color(0xFFDC143C), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 6),
+                              const Text('LIVE',
+                                  style: TextStyle(
+                                      color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    // Small manual-capture fallback -- secondary to the
+                    // automatic per-tick detection, kept unobtrusive.
+                    Positioned(
+                      bottom: 16,
+                      right: 16,
+                      child: GestureDetector(
+                        onTap: _manualSimCapture,
+                        child: Container(
+                          width: 52,
+                          height: 52,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFDC143C).withOpacity(0.85),
+                            shape: BoxShape.circle,
+                            boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 3))],
+                          ),
+                          child: const Icon(Icons.camera_alt, color: Colors.white, size: 22),
+                        ),
+                      ),
+                    ),
+                    if (_showDebugConsole)
+                      Positioned(
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        height: MediaQuery.of(context).size.height * 0.8,
+                        child: Container(
+                          color: Colors.black.withOpacity(0.92),
+                          padding: const EdgeInsets.all(10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('DEBUG CONSOLE',
+                                      style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 22),
+                                    tooltip: 'Clear log',
+                                    onPressed: () => setState(() => _debugLogs = []),
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                  ),
+                                ],
+                              ),
+                              const Divider(color: Colors.white24),
+                              Expanded(
+                                child: ListView.builder(
+                                  reverse: true,
+                                  itemCount: _debugLogs.length,
+                                  itemBuilder: (_, idx) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: SelectableText(
+                                      _debugLogs[_debugLogs.length - 1 - idx],
+                                      style: const TextStyle(
+                                          color: Colors.white, fontFamily: 'monospace', fontSize: 14, height: 1.3),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Final checklist once every task in this scan is resolved (auto-found
+  /// or timed-out not-found). The one deliberate manual step in this mode:
+  /// the user reviews it and taps SUBMIT to actually return _results to the
+  /// caller, same Navigator.pop(context, _results) contract as the
+  /// sequential flow.
+  Widget _buildSimSummaryScreen(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.white, Color(0xFFFFF5F5)],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      onPressed: () => Navigator.pop(context, _results),
+                    ),
+                    const Expanded(
+                      child: Center(
+                        child: Text('SCAN RESULTS',
+                            style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    const SizedBox(width: 48),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: widget.tasks.length,
+                  itemBuilder: (_, i) {
+                    final status = _taskStatus[i] ?? 'notFound';
+                    final name = widget.tasks[i]['name'] as String? ?? 'Task ${i + 1}';
+                    final ok = status == 'found';
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: (ok ? Colors.green : Colors.red).withOpacity(0.4)),
+                        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))],
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(ok ? Icons.check_circle : Icons.cancel, color: ok ? Colors.green : Colors.red, size: 22),
+                          const SizedBox(width: 12),
+                          Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14))),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                                color: ok ? Colors.green : Colors.red, borderRadius: BorderRadius.circular(12)),
+                            child: Text(ok ? 'OK' : 'NOT OK',
+                                style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _retrySimScan,
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          side: const BorderSide(color: Color(0xFFDC143C)),
+                        ),
+                        child: const Text('RETRY ALL', style: TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context, _results),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(vertical: 16)),
+                        child: const Text('SUBMIT', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
       return Scaffold(body: Center(child: Text('Error: $_error')));
+    }
+    if (_simultaneousMode) {
+      return _buildSimultaneousScreen(context);
     }
     final currentTask = widget.tasks[_currentIndex];
     final List<String> mandatoryClasses =
@@ -1322,13 +2059,43 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   static const Duration _watchTimeout = Duration(seconds: 45);
   DateTime? _watchDeadline;
 
+  // Simultaneous scan mode -- the primary path when every task in this run
+  // shares one tflite/labels pair (the real-world case: one detector, many
+  // target classes). One continuous watch loop checks ALL still-pending
+  // tasks against each tick's detections; whichever task locks on first
+  // auto-captures in the background without freezing the feed, while the
+  // rest keep scanning, until every task resolves or the shared 45s
+  // deadline hits. Tasks that don't all share a model fall back to the
+  // sequential per-task flow above (_startWatching/_watchLoop) unchanged.
+  bool _simultaneousMode = false;
+  bool _simScanActive = false;
+  bool _simScanDone = false;
+  bool _simTicking = false;
+  bool _simCapturingTask = false;
+  DateTime? _simDeadline;
+  final Map<int, String> _taskStatus = {}; // 'pending' | 'found' | 'notFound'
+  final Map<int, int> _taskHoldCount = {};
+  List<DetectionResult> _liveTickDetections = [];
+
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
     WidgetsBinding.instance.addObserver(this);
+    _simultaneousMode = widget.tasks.length > 1 &&
+        widget.tasks.every((t) =>
+            t['tflite_path'] == widget.tasks[0]['tflite_path'] &&
+            t['labels_path'] == widget.tasks[0]['labels_path']);
+    for (var i = 0; i < widget.tasks.length; i++) {
+      _taskStatus[i] = 'pending';
+      _taskHoldCount[i] = 0;
+    }
     _initializeCamera();
-    _loadCurrentModel();
+    if (_simultaneousMode) {
+      _loadSharedModelAndStartSim();
+    } else {
+      _loadCurrentModel();
+    }
     _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
@@ -1353,6 +2120,129 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (_isNotOkClass(className)) return false;
     final cn = className.toLowerCase().trim();
     return targetClasses.any((tc) => tc.toLowerCase().trim() == cn);
+  }
+
+  bool _simTaskPasses(dynamic task, List<DetectionResult> confident) {
+    final List<String> targetClasses = List<String>.from(task['classes'] ?? []);
+    return confident.any((d) =>
+        !_isNotOkClass(d.className) &&
+        targetClasses.any((tc) => tc.toLowerCase().trim() == d.className.toLowerCase().trim()));
+  }
+
+  /// Background full-quality capture+save for one task, fired once its hold
+  /// counter reaches target. Deliberately skips the blur-retry dialog the
+  /// manual/sequential flow shows -- this must not interrupt the feed or
+  /// block on user input; a blurry auto-capture just lands as whatever
+  /// pass/fail it detects, same as any other tick's result would.
+  Future<void> _autoCaptureSimTask(int index) async {
+    final task = widget.tasks[index];
+    try {
+      _addLog('--- Sim auto-capture: ${task['name']} ---');
+      final XFile image = await _takeFullQualityPicture();
+      final bytes = await image.readAsBytes();
+      final decodedRaw = img.decodeImage(bytes);
+      final oriented = decodedRaw != null ? img.bakeOrientation(decodedRaw) : null;
+
+      final allDetections = oriented != null
+          ? await ModelManager().predictImage(oriented)
+          : await ModelManager().predictBytes(bytes);
+
+      final List<String> targetClasses = List<String>.from(task['classes'] ?? []);
+      final filtered = allDetections
+          .where((d) => targetClasses.any((tc) => d.className.toLowerCase().trim() == tc.toLowerCase().trim()))
+          .toList()
+        ..sort((a, b) => b.confidence.compareTo(a.confidence));
+      final DetectionResult? winner = filtered.isNotEmpty
+          ? filtered.first
+          : (allDetections.isNotEmpty
+              ? (List<DetectionResult>.from(allDetections)..sort((a, b) => b.confidence.compareTo(a.confidence))).first
+              : null);
+      final bool isPass = filtered.isNotEmpty;
+
+      String? savedImagePath;
+      String? savedBackupPath;
+      try {
+        PermissionStatus status = await Permission.photos.request();
+        if (!status.isGranted) status = await Permission.storage.request();
+
+        final baseDir = Directory('/storage/emulated/0/Pictures');
+        if (!await baseDir.exists()) await baseDir.create(recursive: true);
+        final safeVin = widget.vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final safeTask = (task['name'] as String? ?? 'task').replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final appName = '{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final imgDir = Directory('${baseDir.path}/MAI/$appName/Inspections/$safeVin/$safeTask');
+        await imgDir.create(recursive: true);
+
+        final resultLabel = winner != null
+            ? winner.className.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')
+            : 'no_detection';
+
+        final now = DateTime.now();
+        final dateStr =
+            '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+        final timeStr =
+            '${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}';
+        final resultBadge = isPass ? 'OK' : 'NOT_OK';
+        savedImagePath = '${imgDir.path}/${safeTask}_${resultLabel}_${resultBadge}_${dateStr}_$timeStr.jpg';
+
+        List<int> compressed;
+        if (decodedRaw != null) {
+          final iw = decodedRaw.width.toDouble();
+          final ih = decodedRaw.height.toDouble();
+          for (final det in allDetections) {
+            final isTarget = targetClasses.any((tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim());
+            final boxColor = isTarget ? img.ColorRgb8(0, 200, 0) : img.ColorRgb8(220, 0, 0);
+            final x1 = (det.bbox.left * iw).toInt().clamp(0, decodedRaw.width - 1);
+            final y1 = (det.bbox.top * ih).toInt().clamp(0, decodedRaw.height - 1);
+            final x2 = (det.bbox.right * iw).toInt().clamp(0, decodedRaw.width - 1);
+            final y2 = (det.bbox.bottom * ih).toInt().clamp(0, decodedRaw.height - 1);
+            for (int t = 0; t < 3; t++) {
+              img.drawRect(decodedRaw, x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t, color: boxColor);
+            }
+            final label = '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%';
+            final labelY = (y1 - 20).clamp(0, decodedRaw.height - 20);
+            img.fillRect(decodedRaw, x1: x1, y1: labelY, x2: x1 + label.length * 8 + 6, y2: labelY + 18, color: boxColor);
+            img.drawString(decodedRaw, label, font: img.arial14, x: x1 + 3, y: labelY + 2, color: img.ColorRgb8(255, 255, 255));
+          }
+          compressed = img.encodeJpg(decodedRaw, quality: 40);
+        } else {
+          compressed = bytes;
+        }
+        await File(savedImagePath).writeAsBytes(compressed, flush: true);
+        _addLog("Sim image saved [${task['name']}]: $savedImagePath");
+
+        try {
+          final appDir = await getApplicationSupportDirectory();
+          final backupDir = Directory('${appDir.path}/inspection_backups/$safeVin/$safeTask');
+          await backupDir.create(recursive: true);
+          final backupFile = File('${backupDir.path}/${safeTask}_${resultLabel}_${resultBadge}_${dateStr}_$timeStr.jpg');
+          if (decodedRaw != null) {
+            final thumb = img.copyResize(decodedRaw, width: 480);
+            await backupFile.writeAsBytes(img.encodeJpg(thumb, quality: 15), flush: true);
+          } else {
+            await backupFile.writeAsBytes(compressed, flush: true);
+          }
+          savedBackupPath = backupFile.path;
+        } catch (e) {
+          _addLog("Sim backup save FAILED: $e");
+        }
+      } catch (e) {
+        _addLog("Sim image save FAILED: $e");
+        savedImagePath = null;
+      }
+
+      _results[index] = {
+        'className': winner?.className ?? 'None',
+        'success': isPass,
+        'imagePath': savedImagePath,
+        'backupImagePath': savedBackupPath,
+        'detectionsJson': winner != null ? jsonEncode([winner.toJson()]) : jsonEncode([]),
+      };
+      if (mounted) setState(() => _taskStatus[index] = 'found');
+      _addLog("Sim task done [${task['name']}]: ${isPass ? 'OK' : 'NOT OK'}");
+    } catch (e) {
+      _addLog('Sim auto-capture failed for ${task['name']}: $e');
+    }
   }
 
   Future<void> _loadCurrentModel() async {
@@ -1381,6 +2271,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   @override
   void dispose() {
     _watchActive = false;
+    _simScanActive = false;
     WidgetsBinding.instance.removeObserver(this);
     if (_isFlashOn) {
       _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});
@@ -1395,13 +2286,20 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (ctrl == null || !ctrl.value.isInitialized) return;
     if (state == AppLifecycleState.inactive) {
       _watchActive = false;
+      _simScanActive = false;
       if (_isFlashOn) {
         ctrl.setFlashMode(FlashMode.off).catchError((_) {});
         setState(() => _isFlashOn = false);
       }
       ctrl.dispose();
     } else if (state == AppLifecycleState.resumed) {
-      _initializeCamera().then((_) => _startWatching());
+      _initializeCamera().then((_) {
+        if (_simultaneousMode) {
+          if (!_simScanDone) _startSimScan();
+        } else {
+          _startWatching();
+        }
+      });
     }
   }
 
@@ -1498,6 +2396,172 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (deadline == null) return 0;
     final left = deadline.difference(DateTime.now()).inSeconds;
     return left < 0 ? 0 : left;
+  }
+
+  int _simSecondsLeft() {
+    final deadline = _simDeadline;
+    if (deadline == null) return 0;
+    final left = deadline.difference(DateTime.now()).inSeconds;
+    return left < 0 ? 0 : left;
+  }
+
+  /// Loads the ONE model shared by every task in this run (the real-world
+  /// shape: one detector, many target classes) and starts the simultaneous
+  /// watch loop once it's ready.
+  Future<void> _loadSharedModelAndStartSim() async {
+    setState(() {
+      _isLoadingModel = true;
+      _isModelLoaded = false;
+    });
+    try {
+      final task = widget.tasks[0];
+      _addLog("Simultaneous scan: loading shared model for ${widget.tasks.length} tasks");
+      await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
+      if (mounted) {
+        setState(() {
+          _isLoadingModel = false;
+          _isModelLoaded = true;
+        });
+        _startSimScan();
+      }
+    } catch (e) {
+      _addLog("AI Init error: $e");
+      if (mounted) setState(() => _error = "AI Init error: $e");
+    }
+  }
+
+  void _startSimScan() {
+    if (_simScanActive) return;
+    _simScanActive = true;
+    _simDeadline = DateTime.now().add(_watchTimeout);
+    _simWatchLoop();
+  }
+
+  /// One continuous loop for the whole task list: every tick takes a single
+  /// low-res photo, runs it through the shared model once, then checks
+  /// EVERY still-pending task's classes against that one tick's detections.
+  /// A task whose hold counter reaches target fires its own background
+  /// full-quality capture+save (_autoCaptureSimTask) without pausing this
+  /// loop for the others. On the shared 45s deadline, every still-pending
+  /// task is marked not-found and the loop stops.
+  Future<void> _simWatchLoop() async {
+    while (_simScanActive && mounted) {
+      await Future.delayed(_watchInterval);
+      if (!_simScanActive || !mounted) return;
+      if (_simTicking || !_isModelLoaded || _cameraController == null || !_isCameraInitialized) {
+        continue;
+      }
+      if (_simDeadline != null && DateTime.now().isAfter(_simDeadline!)) {
+        _finishSimTimeouts();
+        return;
+      }
+      _simTicking = true;
+      final tickStopwatch = Stopwatch()..start();
+      try {
+        final XFile image = await _cameraController!.takePicture();
+        final bytes = await image.readAsBytes();
+        final detections = await ModelManager().predictBytes(bytes);
+        tickStopwatch.stop();
+        _addLog("Sim tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections");
+
+        if (!mounted || !_simScanActive) return;
+        final confident = detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList();
+        // Only still-pending tasks' boxes matter -- an already-found task
+        // doesn't need to keep drawing, so this doubles as the overlay data.
+        setState(() => _liveTickDetections = confident);
+
+        int? matchedTaskIndex;
+        for (var i = 0; i < widget.tasks.length; i++) {
+          if (_taskStatus[i] != 'pending') continue;
+          final tickPass = _simTaskPasses(widget.tasks[i], confident);
+          if (tickPass) {
+            _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) + 1;
+            if (_taskHoldCount[i]! >= _holdTarget && matchedTaskIndex == null) {
+              matchedTaskIndex = i;
+            }
+          } else if ((_taskHoldCount[i] ?? 0) != 0) {
+            _taskHoldCount[i] = 0;
+          }
+        }
+        if (mounted) setState(() {});
+
+        if (matchedTaskIndex != null && !_simCapturingTask) {
+          final idx = matchedTaskIndex;
+          _addLog("Sim: task ${idx + 1} steady -- auto-capturing in background");
+          _simCapturingTask = true;
+          // Fire-and-forget: the watch loop keeps ticking for the other
+          // pending tasks while this one's full-quality capture+save runs.
+          unawaited(_autoCaptureSimTask(idx).whenComplete(() {
+            _simCapturingTask = false;
+            _maybeFinishSimScan();
+          }));
+        }
+      } catch (e) {
+        _addLog("Sim tick failed: $e");
+      } finally {
+        _simTicking = false;
+      }
+    }
+  }
+
+  void _finishSimTimeouts() {
+    _simScanActive = false;
+    for (var i = 0; i < widget.tasks.length; i++) {
+      if (_taskStatus[i] == 'pending') {
+        _taskStatus[i] = 'notFound';
+        _results[i] ??= {
+          'className': 'None',
+          'success': false,
+          'imagePath': null,
+          'detectionsJson': jsonEncode([]),
+        };
+        _addLog("Sim: task ${i + 1} (${widget.tasks[i]['name']}) NOT FOUND at 45s deadline");
+      }
+    }
+    if (mounted) setState(() => _simScanDone = true);
+  }
+
+  void _maybeFinishSimScan() {
+    if (!mounted || !_simScanActive) return;
+    final allResolved = widget.tasks
+        .asMap()
+        .keys
+        .every((i) => _taskStatus[i] != 'pending');
+    if (allResolved) {
+      _simScanActive = false;
+      setState(() => _simScanDone = true);
+      _addLog('Sim: all tasks resolved');
+    }
+  }
+
+  /// Small fallback for when auto-detect never locks on: forces an
+  /// immediate full-quality capture attempt for the first still-pending
+  /// task, using the same background pipeline the watch loop uses.
+  Future<void> _manualSimCapture() async {
+    if (_simCapturingTask || !_simScanActive) return;
+    final pendingEntry = _taskStatus.entries.firstWhere(
+      (e) => e.value == 'pending',
+      orElse: () => const MapEntry(-1, ''),
+    );
+    if (pendingEntry.key < 0) return;
+    _simCapturingTask = true;
+    _addLog('Manual capture for task ${pendingEntry.key + 1}');
+    await _autoCaptureSimTask(pendingEntry.key);
+    _simCapturingTask = false;
+    _maybeFinishSimScan();
+  }
+
+  void _retrySimScan() {
+    setState(() {
+      for (var i = 0; i < widget.tasks.length; i++) {
+        _taskStatus[i] = 'pending';
+        _taskHoldCount[i] = 0;
+      }
+      _results.clear();
+      _simScanDone = false;
+      _liveTickDetections = [];
+    });
+    _startSimScan();
   }
 
   Future<void> _watchLoop() async {
@@ -1835,10 +2899,400 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _loadCurrentModel();
   }
 
+  /// Live feed + persistent checklist for the simultaneous-scan primary
+  /// path: one continuous preview with a bounding-box overlay updated every
+  /// tick, a chip per task showing pending/found/not-found, and a small
+  /// manual-capture fallback. Switches to the results/Submit screen once
+  /// _simScanDone flips (all tasks resolved, or the 45s deadline hit).
+  Widget _buildSimultaneousScreen(BuildContext context) {
+    if (_simScanDone) return _buildSimSummaryScreen(context);
+
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.white, Color(0xFFFFF5F5)],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      onPressed: () => Navigator.pop(context, _results),
+                    ),
+                    Expanded(
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('LIVE SCAN -- ALL TASKS',
+                                style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                            Text('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
+                                style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        _showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined,
+                        color: Colors.white70,
+                      ),
+                      onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                color: Colors.white.withOpacity(0.9),
+                child: Column(
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      alignment: WrapAlignment.center,
+                      children: List.generate(widget.tasks.length, (i) {
+                        final status = _taskStatus[i] ?? 'pending';
+                        final name = widget.tasks[i]['name'] as String? ?? 'Task ${i + 1}';
+                        final color = status == 'found'
+                            ? Colors.green
+                            : (status == 'notFound' ? Colors.red : Colors.grey);
+                        final icon = status == 'found'
+                            ? Icons.check_circle
+                            : (status == 'notFound' ? Icons.cancel : Icons.radio_button_unchecked);
+                        return Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: color.withOpacity(0.5)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(icon, color: color, size: 14),
+                              const SizedBox(width: 5),
+                              Text(name, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+                            ],
+                          ),
+                        );
+                      }),
+                    ),
+                    if (_simScanActive)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text('Auto-capturing as parts are recognized -- ${_simSecondsLeft()}s left',
+                            style: const TextStyle(color: Colors.grey, fontSize: 11)),
+                      ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: _isCameraInitialized && _cameraController != null
+                          ? FittedBox(
+                              fit: BoxFit.cover,
+                              child: SizedBox(
+                                width: _cameraController!.value.previewSize?.height ??
+                                    _cameraController!.value.aspectRatio,
+                                height: _cameraController!.value.previewSize?.width ?? 1,
+                                child: CameraPreview(_cameraController!),
+                              ),
+                            )
+                          : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
+                    ),
+                    // Live tick overlay -- only still-pending tasks' boxes are
+                    // pushed into _liveTickDetections, so an already-found
+                    // task's box drops off on the next tick instead of
+                    // cluttering the feed.
+                    if (_liveTickDetections.isNotEmpty &&
+                        _cameraController != null &&
+                        _cameraController!.value.previewSize != null)
+                      Positioned.fill(
+                        child: DetectionOverlay(
+                          results: _liveTickDetections,
+                          previewSize: Size(
+                            _cameraController!.value.previewSize!.height,
+                            _cameraController!.value.previewSize!.width,
+                          ),
+                        ),
+                      ),
+                    if (_isLoadingModel)
+                      Container(
+                        color: Colors.black45,
+                        child: const Center(child: CircularProgressIndicator(color: Colors.white)),
+                      ),
+                    if (_simCapturingTask)
+                      Positioned(
+                        bottom: 100,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.7),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                              SizedBox(
+                                  width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                              SizedBox(width: 8),
+                              Text('Saving…', style: TextStyle(color: Colors.white, fontSize: 12)),
+                            ]),
+                          ),
+                        ),
+                      ),
+                    if (_isCameraInitialized)
+                      Positioned(
+                        top: 16,
+                        left: 16,
+                        child: GestureDetector(
+                          onTap: _toggleFlash,
+                          child: Container(
+                            width: 48,
+                            height: 48,
+                            decoration: BoxDecoration(
+                              color: _isFlashOn ? const Color(0xFFFFD700) : Colors.black54,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: _isFlashOn ? const Color(0xFFFFD700) : Colors.white30,
+                                width: 1.5,
+                              ),
+                            ),
+                            child: Icon(
+                              _isFlashOn ? Icons.flashlight_on : Icons.flashlight_off,
+                              color: _isFlashOn ? Colors.black : Colors.white,
+                              size: 24,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_simScanActive)
+                      Positioned(
+                        top: 16,
+                        right: 16,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.7),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: const BoxDecoration(color: Color(0xFFDC143C), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 6),
+                              const Text('LIVE',
+                                  style: TextStyle(
+                                      color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    // Small manual-capture fallback -- secondary to the
+                    // automatic per-tick detection, kept unobtrusive.
+                    Positioned(
+                      bottom: 16,
+                      right: 16,
+                      child: GestureDetector(
+                        onTap: _manualSimCapture,
+                        child: Container(
+                          width: 52,
+                          height: 52,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFDC143C).withOpacity(0.85),
+                            shape: BoxShape.circle,
+                            boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 3))],
+                          ),
+                          child: const Icon(Icons.camera_alt, color: Colors.white, size: 22),
+                        ),
+                      ),
+                    ),
+                    if (_showDebugConsole)
+                      Positioned(
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        height: MediaQuery.of(context).size.height * 0.8,
+                        child: Container(
+                          color: Colors.black.withOpacity(0.92),
+                          padding: const EdgeInsets.all(10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('DEBUG CONSOLE',
+                                      style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 22),
+                                    tooltip: 'Clear log',
+                                    onPressed: () => setState(() => _debugLogs = []),
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                  ),
+                                ],
+                              ),
+                              const Divider(color: Colors.white24),
+                              Expanded(
+                                child: ListView.builder(
+                                  reverse: true,
+                                  itemCount: _debugLogs.length,
+                                  itemBuilder: (_, idx) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: SelectableText(
+                                      _debugLogs[_debugLogs.length - 1 - idx],
+                                      style: const TextStyle(
+                                          color: Colors.white, fontFamily: 'monospace', fontSize: 14, height: 1.3),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Final checklist once every task in this scan is resolved (auto-found
+  /// or timed-out not-found). The one deliberate manual step in this mode:
+  /// the user reviews it and taps SUBMIT to actually return _results to the
+  /// caller, same Navigator.pop(context, _results) contract as the
+  /// sequential flow.
+  Widget _buildSimSummaryScreen(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.white, Color(0xFFFFF5F5)],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                decoration: const BoxDecoration(color: Color(0xFFDC143C)),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      onPressed: () => Navigator.pop(context, _results),
+                    ),
+                    const Expanded(
+                      child: Center(
+                        child: Text('SCAN RESULTS',
+                            style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    const SizedBox(width: 48),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: widget.tasks.length,
+                  itemBuilder: (_, i) {
+                    final status = _taskStatus[i] ?? 'notFound';
+                    final name = widget.tasks[i]['name'] as String? ?? 'Task ${i + 1}';
+                    final ok = status == 'found';
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: (ok ? Colors.green : Colors.red).withOpacity(0.4)),
+                        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))],
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(ok ? Icons.check_circle : Icons.cancel, color: ok ? Colors.green : Colors.red, size: 22),
+                          const SizedBox(width: 12),
+                          Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14))),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                                color: ok ? Colors.green : Colors.red, borderRadius: BorderRadius.circular(12)),
+                            child: Text(ok ? 'OK' : 'NOT OK',
+                                style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _retrySimScan,
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          side: const BorderSide(color: Color(0xFFDC143C)),
+                        ),
+                        child: const Text('RETRY ALL', style: TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context, _results),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(vertical: 16)),
+                        child: const Text('SUBMIT', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
       return Scaffold(body: Center(child: Text('Error: $_error')));
+    }
+    if (_simultaneousMode) {
+      return _buildSimultaneousScreen(context);
     }
     final currentTask = widget.tasks[_currentIndex];
     final List<String> taskClasses = List<String>.from(currentTask['classes'] ?? []);
