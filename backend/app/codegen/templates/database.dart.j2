@@ -24,6 +24,10 @@ class TaskResults extends Table {
   BoolColumn get success => boolean()();
   TextColumn get imagePath => text().nullable()();
   TextColumn get backupImagePath => text().nullable()();
+  // Near-original-quality copy of a NOT OK capture, saved to the
+  // NegativeDataset folder tree for training-data collection -- null for
+  // OK results and whenever the extra save failed.
+  TextColumn get negativeImagePath => text().nullable()();
   TextColumn get detectionsJson => text().nullable()();
   DateTimeColumn get timestamp => dateTime().withDefault(currentDateAndTime)();
 }
@@ -42,7 +46,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration {
@@ -54,6 +58,9 @@ class AppDatabase extends _$AppDatabase {
         }
         if (from < 3) {
           await m.addColumn(taskResults, taskResults.backupImagePath);
+        }
+        if (from < 4) {
+          await m.addColumn(taskResults, taskResults.negativeImagePath);
         }
       },
       beforeOpen: (details) async {
@@ -143,6 +150,30 @@ class AppDatabase extends _$AppDatabase {
   Future<void> clearBackupImagePath(int taskResultId) async {
     await (update(taskResults)..where((t) => t.id.equals(taskResultId)))
         .write(const TaskResultsCompanion(backupImagePath: Value(null)));
+  }
+
+  // ── Negative-dataset image housekeeping ─────────────────────────────────
+  // The full-quality NOT OK copy only needs to live on the phone until the
+  // PC has it -- once synced, the PC's negative_dataset copy is the one
+  // that matters, so the on-device original is safe to delete to save
+  // storage instead of accumulating forever.
+  Future<List<BackupImageRef>> getSyncedNegativeImages() async {
+    final query = select(taskResults).join([
+      innerJoin(inspections, inspections.id.equalsExp(taskResults.inspectionId)),
+    ])
+      ..where(inspections.isSynced.equals(true) & taskResults.negativeImagePath.isNotNull())
+      ..orderBy([OrderingTerm.asc(taskResults.timestamp)]);
+    final rows = await query.get();
+    return rows
+        .map((row) => row.readTable(taskResults))
+        .where((tr) => tr.negativeImagePath != null)
+        .map((tr) => BackupImageRef(taskResultId: tr.id, path: tr.negativeImagePath!))
+        .toList();
+  }
+
+  Future<void> clearNegativeImagePath(int taskResultId) async {
+    await (update(taskResults)..where((t) => t.id.equals(taskResultId)))
+        .write(const TaskResultsCompanion(negativeImagePath: Value(null)));
   }
 
   // Most recent scan overall (any VIN/model code) -- used by the scan
