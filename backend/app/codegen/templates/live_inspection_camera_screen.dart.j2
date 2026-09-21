@@ -952,7 +952,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
         tickStopwatch.stop();
-        _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms");
+        final tickSummary = detections.isEmpty
+            ? 'none'
+            : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%').join(', ');
+        _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections ($tickSummary)");
         // Drawn live over the preview below -- without this the feed looks
         // static for the whole hold-steady countdown even while it's
         // actually seeing and tracking the part.
@@ -3121,7 +3124,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
         tickStopwatch.stop();
-        _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms");
+        final tickSummary = detections.isEmpty
+            ? 'none'
+            : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%').join(', ');
+        _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections ($tickSummary)");
 
         final currentTask = widget.tasks[_currentIndex];
         final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
