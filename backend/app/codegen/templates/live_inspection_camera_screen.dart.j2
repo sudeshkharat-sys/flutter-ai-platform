@@ -731,6 +731,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         final detections = await ModelManager().predictBytes(bytes);
         tickStopwatch.stop();
         _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms");
+        // Drawn live over the preview below -- without this the feed looks
+        // static for the whole hold-steady countdown even while it's
+        // actually seeing and tracking the part.
+        if (mounted) {
+          setState(() => _liveTickDetections =
+              detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList());
+        }
 
         final currentTask = widget.tasks[_currentIndex];
         final List<String> allModelClasses = List<String>.from(currentTask['classes'] ?? []);
@@ -1046,6 +1053,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _isAnalyzing = false;
       _allDetections = [];
       _detectedNonTargetClasses = [];
+      _liveTickDetections = [];
     });
     _startWatching();
   }
@@ -1579,6 +1587,26 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 ),
                               )
                             : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
+                      ),
+                    // Live detection-box overlay while watching (mirrors the
+                    // simultaneous-mode screen) -- without this the feed
+                    // just looks like a static preview with nothing
+                    // happening for the several seconds a tick's
+                    // takePicture()+predict round trip actually takes, even
+                    // though it's finding and holding on the target the
+                    // whole time.
+                    if (_capturedImageBytes == null &&
+                        _liveTickDetections.isNotEmpty &&
+                        _cameraController != null &&
+                        _cameraController!.value.previewSize != null)
+                      Positioned.fill(
+                        child: DetectionOverlay(
+                          results: _liveTickDetections,
+                          previewSize: Size(
+                            _cameraController!.value.previewSize!.height,
+                            _cameraController!.value.previewSize!.width,
+                          ),
+                        ),
                       ),
                     if (_capturedImageBytes != null)
                       Positioned.fill(
@@ -2643,6 +2671,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         final detections = await ModelManager().predictBytes(bytes);
         tickStopwatch.stop();
         _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms");
+        // Drawn live over the preview below -- without this the feed looks
+        // static for the whole hold-steady countdown even while it's
+        // actually seeing and tracking the part.
+        if (mounted) {
+          setState(() => _liveTickDetections =
+              detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList());
+        }
 
         final currentTask = widget.tasks[_currentIndex];
         final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
@@ -2937,6 +2972,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _isAnalyzing = false;
       _allDetections = [];
       _detectedNonTargetClasses = [];
+      _liveTickDetections = [];
     });
     _startWatching();
   }
@@ -3467,6 +3503,26 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 ),
                               )
                             : const Center(child: CircularProgressIndicator(color: Color(0xFFDC143C))),
+                      ),
+                    // Live detection-box overlay while watching (mirrors the
+                    // simultaneous-mode screen) -- without this the feed
+                    // just looks like a static preview with nothing
+                    // happening for the several seconds a tick's
+                    // takePicture()+predict round trip actually takes, even
+                    // though it's finding and holding on the target the
+                    // whole time.
+                    if (_capturedImageBytes == null &&
+                        _liveTickDetections.isNotEmpty &&
+                        _cameraController != null &&
+                        _cameraController!.value.previewSize != null)
+                      Positioned.fill(
+                        child: DetectionOverlay(
+                          results: _liveTickDetections,
+                          previewSize: Size(
+                            _cameraController!.value.previewSize!.height,
+                            _cameraController!.value.previewSize!.width,
+                          ),
+                        ),
                       ),
                     if (_capturedImageBytes != null)
                       Positioned.fill(
