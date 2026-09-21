@@ -628,21 +628,26 @@ class SyncService {
       for (final r in results) {
         String? zipImagePath;
         String? zipBackupPath;
+        String? zipNegativePath;
         for (final entry in [
-          MapEntry(r.imagePath, (String p) => zipImagePath = p),
-          MapEntry(r.backupImagePath, (String p) => zipBackupPath = p),
+          (r.imagePath, 'images', (String p) => zipImagePath = p),
+          (r.backupImagePath, 'images', (String p) => zipBackupPath = p),
+          // Negative-dataset copies go under a separate top-level folder so
+          // the PC receiver can tell them apart from ordinary result photos
+          // without needing to inspect manifest.json first.
+          (r.negativeImagePath, 'negatives', (String p) => zipNegativePath = p),
         ]) {
-          final path = entry.key;
+          final path = entry.$1;
           if (path == null || path.isEmpty) continue;
           final f = File(path);
-          final arcName = 'images/${f.uri.pathSegments.last}';
+          final arcName = '${entry.$2}/${f.uri.pathSegments.last}';
           if (await f.exists()) {
             if (!seenImagePaths.contains(path)) {
               seenImagePaths.add(path);
               final bytes = await f.readAsBytes();
               archive.addFile(ArchiveFile(arcName, bytes.length, bytes));
             }
-            entry.value(arcName);
+            entry.$3(arcName);
           }
         }
 
@@ -652,6 +657,7 @@ class SyncService {
           'success': r.success,
           'imagePath': zipImagePath,
           'backupImagePath': zipBackupPath,
+          'negativeImagePath': zipNegativePath,
           'timestamp': r.timestamp.toIso8601String(),
         });
       }

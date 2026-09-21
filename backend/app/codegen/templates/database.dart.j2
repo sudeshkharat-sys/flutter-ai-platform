@@ -24,6 +24,10 @@ class TaskResults extends Table {
   BoolColumn get success => boolean()();
   TextColumn get imagePath => text().nullable()();
   TextColumn get backupImagePath => text().nullable()();
+  // Near-original-quality copy of a NOT OK capture, saved to the
+  // NegativeDataset folder tree for training-data collection -- null for
+  // OK results and whenever the extra save failed.
+  TextColumn get negativeImagePath => text().nullable()();
   TextColumn get detectionsJson => text().nullable()();
   DateTimeColumn get timestamp => dateTime().withDefault(currentDateAndTime)();
 }
@@ -42,7 +46,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration {
@@ -54,6 +58,9 @@ class AppDatabase extends _$AppDatabase {
         }
         if (from < 3) {
           await m.addColumn(taskResults, taskResults.backupImagePath);
+        }
+        if (from < 4) {
+          await m.addColumn(taskResults, taskResults.negativeImagePath);
         }
       },
       beforeOpen: (details) async {

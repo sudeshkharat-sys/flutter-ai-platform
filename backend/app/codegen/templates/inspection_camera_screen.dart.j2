@@ -81,7 +81,12 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
 class _AnnotatedImages {
   final Uint8List? full;
   final Uint8List? thumb;
-  const _AnnotatedImages({this.full, this.thumb});
+  // Near-original-quality encode of the same annotated frame, only produced
+  // when the caller flags this capture as NOT OK -- feeds the negative
+  // training dataset, so we skip the extra quality:95 encode on the much
+  // more common OK path.
+  final Uint8List? negative;
+  const _AnnotatedImages({this.full, this.thumb, this.negative});
 }
 
 /// Draws the detection boxes onto the captured frame and encodes both the
@@ -102,6 +107,7 @@ _AnnotatedImages _annotateAndEncode(Map<String, dynamic> args) {
   try {
     final Uint8List imageBytes = args['imageBytes'] as Uint8List;
     final List<dynamic> boxes = args['boxes'] as List<dynamic>;
+    final bool saveNegative = args['saveNegative'] as bool? ?? false;
 
     final decoded = img.decodeImage(imageBytes);
     if (decoded == null) return const _AnnotatedImages();
@@ -135,6 +141,9 @@ _AnnotatedImages _annotateAndEncode(Map<String, dynamic> args) {
     return _AnnotatedImages(
       full: Uint8List.fromList(img.encodeJpg(decoded, quality: 40)),
       thumb: Uint8List.fromList(img.encodeJpg(img.copyResize(decoded, width: 480), quality: 15)),
+      negative: saveNegative
+          ? Uint8List.fromList(img.encodeJpg(decoded, quality: 95))
+          : null,
     );
   } catch (_) {
     return const _AnnotatedImages();
@@ -543,6 +552,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
       String? savedImagePath;
       String? savedBackupPath;
+      String? savedNegativePath;
       try {
         PermissionStatus status = await Permission.photos.request();
         if (!status.isGranted) {
@@ -599,6 +609,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         final annotated = await compute(_annotateAndEncode, {
           'imageBytes': blurCheck.orientedPngBytes ?? bytes,
           'boxes': boxArgs,
+          'saveNegative': !overallPass,
         });
         final List<int> compressed = annotated.full ?? bytes;
 
@@ -616,6 +627,24 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           _addLog("Backup saved: $savedBackupPath");
         } catch (e) {
           _addLog("Backup save FAILED: $e");
+        }
+
+        // NOT OK captures only: keep a near-original-quality copy in a
+        // parallel folder tree for building a negative-example dataset.
+        if (!overallPass && annotated.negative != null) {
+          try {
+            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            await negDir.create(recursive: true);
+            final className = overallPass
+                ? 'OK'
+                : (_hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'NOT_OK' : 'None');
+            final negFile = File('${negDir.path}/${className}_${dateStr}_$timeStr.jpg');
+            await negFile.writeAsBytes(annotated.negative!, flush: true);
+            savedNegativePath = negFile.path;
+            _addLog("Negative dataset image saved: $savedNegativePath");
+          } catch (e) {
+            _addLog("Negative dataset save FAILED: $e");
+          }
         }
       } catch (e) {
         _addLog("Image save FAILED: $e");
@@ -638,6 +667,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           'success': overallPass,
           'imagePath': savedImagePath,
           'backupImagePath': savedBackupPath,
+          'negativeImagePath': savedNegativePath,
           'mandatoryResults': mandatoryResults.map((k, v) => MapEntry(k, v != null ? v.toJson() : null)),
           'detectionsJson': jsonEncode(allDetections.map((d) => d.toJson()).toList()),
         };
@@ -1728,6 +1758,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
       String? savedImagePath;
       String? savedBackupPath;
+      String? savedNegativePath;
       try {
         // placeholder — path assigned below after filtered is computed
       } catch (e) {
@@ -1854,6 +1885,21 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         } catch (e) {
           _addLog("Backup save FAILED: $e");
         }
+
+        // NOT OK captures only: keep a near-original-quality copy in a
+        // parallel folder tree for building a negative-example dataset.
+        if (!isPass && decoded != null) {
+          try {
+            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            await negDir.create(recursive: true);
+            final negFile = File('${negDir.path}/${resultLabel}_${dateStr}_$timeStr.jpg');
+            await negFile.writeAsBytes(img.encodeJpg(decoded, quality: 95), flush: true);
+            savedNegativePath = negFile.path;
+            _addLog("Negative dataset image saved: $savedNegativePath");
+          } catch (e) {
+            _addLog("Negative dataset save FAILED: $e");
+          }
+        }
       } catch (e) {
         _addLog("Image save FAILED: $e");
         savedImagePath = null;
@@ -1871,6 +1917,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             'success': pass,
             'imagePath': savedImagePath,
             'backupImagePath': savedBackupPath,
+            'negativeImagePath': savedNegativePath,
             'detectionsJson': jsonEncode([_bestResult!.toJson()]),
           };
         } else {
@@ -1890,6 +1937,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             'success': false,
             'imagePath': savedImagePath,
             'backupImagePath': savedBackupPath,
+            'negativeImagePath': savedNegativePath,
             'detectionsJson': bestDetected != null
                 ? jsonEncode([bestDetected.toJson()])
                 : jsonEncode([]),

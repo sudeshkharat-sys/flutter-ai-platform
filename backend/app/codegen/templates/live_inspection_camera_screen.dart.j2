@@ -284,6 +284,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
       String? savedImagePath;
       String? savedBackupPath;
+      String? savedNegativePath;
       try {
         PermissionStatus status = await Permission.photos.request();
         if (!status.isGranted) status = await Permission.storage.request();
@@ -345,6 +346,21 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         } catch (e) {
           _addLog("Sim backup save FAILED: $e");
         }
+
+        // NOT OK captures only: keep a near-original-quality copy in a
+        // parallel folder tree for building a negative-example dataset.
+        if (!overallPass && decodedRaw != null) {
+          try {
+            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            await negDir.create(recursive: true);
+            final className = _hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'NOT_OK' : 'None';
+            final negFile = File('${negDir.path}/${className}_${dateStr}_$timeStr.jpg');
+            await negFile.writeAsBytes(img.encodeJpg(decodedRaw, quality: 95), flush: true);
+            savedNegativePath = negFile.path;
+          } catch (e) {
+            _addLog("Sim negative dataset save FAILED: $e");
+          }
+        }
       } catch (e) {
         _addLog("Sim image save FAILED: $e");
         savedImagePath = null;
@@ -357,6 +373,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         'success': overallPass,
         'imagePath': savedImagePath,
         'backupImagePath': savedBackupPath,
+        'negativeImagePath': savedNegativePath,
         'mandatoryResults': mandatoryResults.map((k, v) => MapEntry(k, v != null ? v.toJson() : null)),
         'detectionsJson': jsonEncode(allDetections.map((d) => d.toJson()).toList()),
       };
@@ -880,6 +897,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
       String? savedImagePath;
       String? savedBackupPath;
+      String? savedNegativePath;
       try {
         PermissionStatus status = await Permission.photos.request();
         if (!status.isGranted) {
@@ -953,6 +971,21 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         } catch (e) {
           _addLog("Backup save FAILED: $e");
         }
+
+        // NOT OK captures only: keep a near-original-quality copy in a
+        // parallel folder tree for building a negative-example dataset.
+        if (!overallPass && decoded != null) {
+          try {
+            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            await negDir.create(recursive: true);
+            final className = _hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'NOT_OK' : 'None';
+            final negFile = File('${negDir.path}/${className}_${dateStr}_$timeStr.jpg');
+            await negFile.writeAsBytes(img.encodeJpg(decoded, quality: 95), flush: true);
+            savedNegativePath = negFile.path;
+          } catch (e) {
+            _addLog("Negative dataset save FAILED: $e");
+          }
+        }
       } catch (e) {
         _addLog("Image save FAILED: $e");
         savedImagePath = null;
@@ -974,6 +1007,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           'success': overallPass,
           'imagePath': savedImagePath,
           'backupImagePath': savedBackupPath,
+          'negativeImagePath': savedNegativePath,
           'mandatoryResults': mandatoryResults.map((k, v) => MapEntry(k, v != null ? v.toJson() : null)),
           'detectionsJson': jsonEncode(allDetections.map((d) => d.toJson()).toList()),
         };
@@ -2161,6 +2195,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
       String? savedImagePath;
       String? savedBackupPath;
+      String? savedNegativePath;
       try {
         PermissionStatus status = await Permission.photos.request();
         if (!status.isGranted) status = await Permission.storage.request();
@@ -2226,6 +2261,20 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         } catch (e) {
           _addLog("Sim backup save FAILED: $e");
         }
+
+        // NOT OK captures only: keep a near-original-quality copy in a
+        // parallel folder tree for building a negative-example dataset.
+        if (!isPass && decodedRaw != null) {
+          try {
+            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            await negDir.create(recursive: true);
+            final negFile = File('${negDir.path}/${resultLabel}_${dateStr}_$timeStr.jpg');
+            await negFile.writeAsBytes(img.encodeJpg(decodedRaw, quality: 95), flush: true);
+            savedNegativePath = negFile.path;
+          } catch (e) {
+            _addLog("Sim negative dataset save FAILED: $e");
+          }
+        }
       } catch (e) {
         _addLog("Sim image save FAILED: $e");
         savedImagePath = null;
@@ -2236,6 +2285,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         'success': isPass,
         'imagePath': savedImagePath,
         'backupImagePath': savedBackupPath,
+        'negativeImagePath': savedNegativePath,
         'detectionsJson': winner != null ? jsonEncode([winner.toJson()]) : jsonEncode([]),
       };
       if (mounted) setState(() => _taskStatus[index] = 'found');
@@ -2709,6 +2759,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
       String? savedImagePath;
       String? savedBackupPath;
+      String? savedNegativePath;
 
       _addLog("Detections: ${allDetections.length}");
       for (final d in allDetections) {
@@ -2802,6 +2853,20 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         } catch (e) {
           _addLog("Backup save FAILED: $e");
         }
+
+        // NOT OK captures only: keep a near-original-quality copy in a
+        // parallel folder tree for building a negative-example dataset.
+        if (!isPass && decoded != null) {
+          try {
+            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            await negDir.create(recursive: true);
+            final negFile = File('${negDir.path}/${resultLabel}_${dateStr}_$timeStr.jpg');
+            await negFile.writeAsBytes(img.encodeJpg(decoded, quality: 95), flush: true);
+            savedNegativePath = negFile.path;
+          } catch (e) {
+            _addLog("Negative dataset save FAILED: $e");
+          }
+        }
       } catch (e) {
         _addLog("Image save FAILED: $e");
         savedImagePath = null;
@@ -2819,6 +2884,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             'success': pass,
             'imagePath': savedImagePath,
             'backupImagePath': savedBackupPath,
+            'negativeImagePath': savedNegativePath,
             'detectionsJson': jsonEncode([_bestResult!.toJson()]),
           };
         } else {
@@ -2833,6 +2899,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             'success': false,
             'imagePath': savedImagePath,
             'backupImagePath': savedBackupPath,
+            'negativeImagePath': savedNegativePath,
             'detectionsJson': bestDetected != null ? jsonEncode([bestDetected.toJson()]) : jsonEncode([]),
           };
         }

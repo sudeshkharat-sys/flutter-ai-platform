@@ -156,6 +156,13 @@ DATA_DIR = Path(
     or os.environ.get("PCRECEIVER_DATA_DIR")
     or (APP_DIR / "received_data")
 )
+# A separate, dataset-shaped store for NOT OK captures the phone saves at
+# near-original quality -- deliberately outside DATA_DIR (which the person
+# can repoint via Settings, and which is organized by device/app/timestamp,
+# not by class) so this survives a DATA_DIR change and stays easy to zip up
+# as a training set on its own.
+NEGATIVE_DATASET_DIR = APP_DIR / "negative_dataset"
+
 _data_dir_error = _ensure_writable_dir(DATA_DIR)
 if _data_dir_error:
     # Deliberately non-fatal: the dashboard (which only needs APP_DIR to be
@@ -875,6 +882,52 @@ def _safe_name(name: str) -> str:
     return cleaned or "unknown"
 
 
+def _copy_negative_dataset_files(extract_dir: Path, manifest_path: Path, app_name: str) -> int:
+    """Copies this upload's negatives/ files (per-task NOT OK captures, at
+    near-original quality) out of the timestamped extract_dir -- easy to lose
+    track of there among many uploads -- into a dataset-shaped store bucketed
+    by class: negative_dataset/<app name>/<className>/<original filename>.
+
+    Matches each negatives/ file to its class via the manifest's per-task
+    negativeImagePath (the zip arcname the phone recorded), since that's the
+    only place the className for a given file is known. Blocking file I/O,
+    so callers should run this via run_in_threadpool like the Excel update.
+    """
+    copied = 0
+    try:
+        inspections = json.loads(manifest_path.read_text())
+    except Exception as e:
+        print(f"[warn] could not read manifest for negative-dataset copy: {e}")
+        return copied
+
+    for insp in inspections:
+        for task in insp.get("tasks", []):
+            arc_path = task.get("negativeImagePath")
+            if not arc_path:
+                continue
+            src = extract_dir / arc_path
+            if not src.exists():
+                continue
+            class_name = _safe_name(str(task.get("className") or "unknown"))
+            dest_dir = NEGATIVE_DATASET_DIR / app_name / class_name
+            try:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / src.name
+                # A filename collision (same phone timestamp/task resent, or
+                # two devices with the same clock) would otherwise silently
+                # overwrite a different image -- de-dupe by content hash
+                # suffix instead of skipping or clobbering.
+                if dest.exists() and dest.stat().st_size != src.stat().st_size:
+                    digest = hashlib.sha256(src.read_bytes()).hexdigest()[:8]
+                    dest = dest_dir / f"{src.stem}_{digest}{src.suffix}"
+                if not dest.exists():
+                    dest.write_bytes(src.read_bytes())
+                    copied += 1
+            except Exception as e:
+                print(f"[warn] could not copy negative-dataset file {src}: {e}")
+    return copied
+
+
 # ── Local IP discovery (for the QR payload / mDNS registration) ────────────
 
 def _local_ip() -> str:
@@ -1112,6 +1165,15 @@ async def upload(
             await run_in_threadpool(_update_master_excel)
         except Exception as e:
             print(f"[warn] could not update master Excel for '{device_name}/{app_name}': {e}")
+
+        try:
+            copied = await run_in_threadpool(
+                _copy_negative_dataset_files, extract_dir, manifest_path, app_name
+            )
+            if copied:
+                print(f"[received] {copied} negative-dataset image(s) added for '{app_name}'")
+        except Exception as e:
+            print(f"[warn] could not copy negative-dataset files for '{device_name}/{app_name}': {e}")
 
     with _lock:
         _recent_events.append({
@@ -1490,6 +1552,72 @@ async def api_storage_download(path: str, _: None = Depends(_require_local)):
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(target, filename=target.name)
+
+
+@app.get("/api/negative-dataset")
+async def api_negative_dataset(_: None = Depends(_require_local)):
+    """Summary of the negative-example training dataset accumulated on this
+    PC from every paired phone's NOT OK captures, broken down by app and
+    class -- a local admin/QA view, so a plain glob + stat is fine here."""
+    apps: dict[str, dict] = {}
+    total_files = 0
+    total_bytes = 0
+    if NEGATIVE_DATASET_DIR.exists():
+        for app_dir in sorted(NEGATIVE_DATASET_DIR.iterdir()):
+            if not app_dir.is_dir():
+                continue
+            classes = {}
+            for class_dir in sorted(app_dir.iterdir()):
+                if not class_dir.is_dir():
+                    continue
+                file_count, size = _dir_stats(class_dir)
+                if file_count == 0:
+                    continue
+                classes[class_dir.name] = {"fileCount": file_count, "sizeBytes": size}
+                total_files += file_count
+                total_bytes += size
+            if classes:
+                apps[app_dir.name] = classes
+    return {"totalFiles": total_files, "totalBytes": total_bytes, "apps": apps}
+
+
+def _build_negative_dataset_zip() -> bytes:
+    """Blocking: zips the entire negative_dataset store in memory. Run via
+    run_in_threadpool -- matches how /upload's own blocking work (Excel
+    update, dataset copy) is kept off the event loop."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if NEGATIVE_DATASET_DIR.exists():
+            for f in NEGATIVE_DATASET_DIR.rglob("*"):
+                if f.is_file():
+                    zf.write(f, f.relative_to(NEGATIVE_DATASET_DIR))
+    return buf.getvalue()
+
+
+@app.get("/api/negative-dataset/download")
+async def api_negative_dataset_download(_: None = Depends(_require_local)):
+    if not NEGATIVE_DATASET_DIR.exists() or not any(NEGATIVE_DATASET_DIR.rglob("*")):
+        raise HTTPException(status_code=404, detail="No negative-dataset images yet")
+    zip_bytes = await run_in_threadpool(_build_negative_dataset_zip)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="negative_dataset_{stamp}.zip"'},
+    )
+
+
+@app.post("/api/negative-dataset/delete")
+async def api_negative_dataset_delete(_: None = Depends(_require_local)):
+    """Deletes the entire negative-dataset store from disk. A deliberately
+    separate, explicit action from download -- never triggered by download
+    itself -- so an interrupted or failed download can never silently lose
+    this data; the person must verify the ZIP first, then delete here."""
+    import shutil
+
+    if NEGATIVE_DATASET_DIR.exists():
+        await run_in_threadpool(shutil.rmtree, NEGATIVE_DATASET_DIR)
+    return {"status": "ok"}
 
 
 def _resolve_under_data_dir(rel_path: str) -> Path:
@@ -2124,6 +2252,19 @@ DASHBOARD_HTML = """<!doctype html>
   </section>
 
   <section id="tab-storage" class="tab">
+    <div class="card" style="display:block;padding:16px;margin-bottom:18px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">
+        <h3 style="margin:0;">Negative Training Dataset</h3>
+        <button class="ghost" onclick="loadNegativeDataset()">Refresh</button>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;">Near-original-quality copies of every NOT OK capture, collected from paired phones for building a negative-example training set.</p>
+      <div id="negativeDatasetSummary"><div class="empty">Loading…</div></div>
+      <div style="display:flex;gap:10px;margin-top:12px;">
+        <button class="ghost" onclick="downloadNegativeDataset()">Download ZIP</button>
+        <button class="ghost" style="color:#c0392b;border-color:#c0392b;" onclick="deleteNegativeDataset()">Delete from PC</button>
+      </div>
+    </div>
+
     <div class="toolbar">
       <h2>Vault</h2>
       <button class="ghost" onclick="loadStorage()">Refresh</button>
@@ -2349,7 +2490,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'storage') loadStorage();
+    if (btn.dataset.tab === 'storage') { loadStorage(); loadNegativeDataset(); }
     if (btn.dataset.tab === 'apps') loadApps();
     if (btn.dataset.tab === 'admin') { loadMasterDataStatus(); loadEngineDataStatus(); loadAdminDeviceList(); }
   });
@@ -2874,6 +3015,52 @@ async function loadStorage() {
     `).join('');
   } catch (e) {
     el.innerHTML = '<div class="empty">Could not load storage.</div>';
+  }
+}
+
+async function loadNegativeDataset() {
+  const el = document.getElementById('negativeDatasetSummary');
+  try {
+    const r = await fetch('/api/negative-dataset');
+    const d = await r.json();
+    if (!d.totalFiles) {
+      el.innerHTML = '<div class="empty">No negative-dataset images yet.</div>';
+      return;
+    }
+    const appNames = Object.keys(d.apps);
+    el.innerHTML = `
+      <div style="margin-bottom:8px;"><b>${d.totalFiles}</b> image(s) • ${fmtBytes(d.totalBytes)}</div>
+      ${appNames.map(appName => `
+        <div class="app-group">
+          <div class="app-name">${appName}</div>
+          ${Object.keys(d.apps[appName]).map(cls => `
+            <div class="batch-row">
+              <span class="b-name">${cls}</span>
+              <span class="b-meta">${d.apps[appName][cls].fileCount} files • ${fmtBytes(d.apps[appName][cls].sizeBytes)}</span>
+            </div>
+          `).join('')}
+        </div>
+      `).join('')}
+    `;
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Could not load negative dataset summary.</div>';
+  }
+}
+
+function downloadNegativeDataset() {
+  window.location = '/api/negative-dataset/download';
+}
+
+async function deleteNegativeDataset() {
+  if (!confirm('Delete the entire negative training dataset from this PC? This cannot be undone -- make sure you have already downloaded a copy.')) return;
+  try {
+    const r = await fetch('/api/negative-dataset/delete', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast('Negative dataset deleted from PC');
+    loadNegativeDataset();
+  } catch (e) {
+    alert('Could not delete: ' + e.message);
   }
 }
 

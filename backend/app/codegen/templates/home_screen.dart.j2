@@ -132,6 +132,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 'success': res.success,
                 'imagePath': res.imagePath,
                 'backupImagePath': res.backupImagePath,
+                'negativeImagePath': res.negativeImagePath,
                 'detectionsJson': res.detectionsJson,
               };
             }
@@ -198,6 +199,7 @@ class _HomeScreenState extends State<HomeScreen> {
         success: success,
         imagePath: drift.Value(result['imagePath'] as String?),
         backupImagePath: drift.Value(result['backupImagePath'] as String?),
+        negativeImagePath: drift.Value(result['negativeImagePath'] as String?),
         detectionsJson: drift.Value(result['detectionsJson'] as String?),
       ));
     }
