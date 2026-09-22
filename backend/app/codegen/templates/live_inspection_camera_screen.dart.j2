@@ -227,9 +227,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   bool _watchActive = false;
   bool _watching = false;
   int _holdCount = 0;
-  static const int _holdTarget = 3;
+  // Lowered from 3/700ms (2.1s nominal, longer in practice since any single
+  // missed tick used to reset the whole countdown) to 2/400ms (0.8s nominal)
+  // for line-assembly pace, now that a miss only decrements instead of
+  // zeroing the hold count -- see _watchLoop/_simWatchLoop.
+  static const int _holdTarget = 2;
   static const double _watchConfidenceThreshold = 0.55;
-  static const Duration _watchInterval = Duration(milliseconds: 700);
+  static const Duration _watchInterval = Duration(milliseconds: 400);
   static const Duration _watchTimeout = Duration(seconds: 45);
   DateTime? _watchDeadline;
 
@@ -886,7 +890,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
               matchedTaskIndex = i;
             }
           } else if ((_taskHoldCount[i] ?? 0) != 0) {
-            _taskHoldCount[i] = 0;
+            // Decrement instead of a hard reset to 0 -- on an assembly line
+            // the part doesn't move, so a miss here is almost always sensor
+            // noise/motion-blur on a single frame, not a genuinely different
+            // part showing up. A full reset made one bad frame throw away
+            // several seconds of real progress, which is what made capture
+            // feel slow even once detection was solid.
+            _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) - 1;
           }
         }
         if (mounted) setState(() {});
@@ -1089,7 +1099,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             return;
           }
         } else if (_holdCount != 0) {
-          setState(() => _holdCount = 0);
+          // Decrement instead of a hard reset -- see the simultaneous-mode
+          // loop's identical comment: on a stationary assembly-line part, a
+          // single missed tick is almost always noise, and a full reset
+          // there made a solid detection take many real seconds longer to
+          // capture than the nominal hold target implies.
+          setState(() => _holdCount--);
         } else {
           // Force a rebuild even with nothing else changing, so the
           // on-screen countdown keeps ticking down.
@@ -2559,9 +2574,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   bool _watchActive = false;
   bool _watching = false;
   int _holdCount = 0;
-  static const int _holdTarget = 3;
+  // Lowered from 3/700ms (2.1s nominal, longer in practice since any single
+  // missed tick used to reset the whole countdown) to 2/400ms (0.8s nominal)
+  // for line-assembly pace, now that a miss only decrements instead of
+  // zeroing the hold count -- see _watchLoop/_simWatchLoop.
+  static const int _holdTarget = 2;
   static const double _watchConfidenceThreshold = 0.55;
-  static const Duration _watchInterval = Duration(milliseconds: 700);
+  static const Duration _watchInterval = Duration(milliseconds: 400);
   static const Duration _watchTimeout = Duration(seconds: 45);
   DateTime? _watchDeadline;
 
@@ -3151,7 +3170,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
               matchedTaskIndex = i;
             }
           } else if ((_taskHoldCount[i] ?? 0) != 0) {
-            _taskHoldCount[i] = 0;
+            // Decrement instead of a hard reset to 0 -- on an assembly line
+            // the part doesn't move, so a miss here is almost always sensor
+            // noise/motion-blur on a single frame, not a genuinely different
+            // part showing up. A full reset made one bad frame throw away
+            // several seconds of real progress, which is what made capture
+            // feel slow even once detection was solid.
+            _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) - 1;
           }
         }
         if (mounted) setState(() {});
@@ -3343,7 +3368,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             return;
           }
         } else if (_holdCount != 0) {
-          setState(() => _holdCount = 0);
+          // Decrement instead of a hard reset -- see the simultaneous-mode
+          // loop's identical comment: on a stationary assembly-line part, a
+          // single missed tick is almost always noise, and a full reset
+          // there made a solid detection take many real seconds longer to
+          // capture than the nominal hold target implies.
+          setState(() => _holdCount--);
         } else {
           // Force a rebuild even with nothing else changing, so the
           // on-screen countdown keeps ticking down.
