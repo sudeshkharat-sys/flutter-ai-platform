@@ -603,6 +603,18 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       await controller.initialize();
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
+      // Model load and camera init race in initState -- _startWatching()
+      // may already have run (and had its _startImageStream() no-op
+      // because _isCameraInitialized was still false at the time) before
+      // the camera finishes initializing here. Without this, that race
+      // left the stream never started and no self-heal ever kicked in
+      // (it only retries an already-streaming feed), so no live boxes
+      // ever appeared until a manual capture's controller swap finished
+      // with the camera already initialized. Catch that here: if watching
+      // is already active and the stream isn't up yet, start it now.
+      if (mounted && (_watchActive || _simScanActive) && !_isStreaming) {
+        _startImageStream();
+      }
     } catch (e) {
       _addLog("Camera error: $e");
       if (mounted) setState(() => _error = "Camera error: $e");
@@ -781,7 +793,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // full-quality capture) -- skip this tick rather than block.
           tickStopwatch.stop();
           _consecutiveNullFrameTicks++;
-          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
+          // Not gated on _isStreaming -- a stream that never started at all
+          // (the init-order race above) looks identical to a stalled one
+          // from here: _latestFrame is null either way, and both need the
+          // same recreate to recover.
+          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold) {
             // A plain stop+start of the image stream on the SAME
             // CameraController doesn't reliably unstick it -- device logs
             // showed the platform stream can stay silently dead across a
@@ -969,7 +985,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // full-quality capture) -- skip this tick rather than block.
           tickStopwatch.stop();
           _consecutiveNullFrameTicks++;
-          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
+          // Not gated on _isStreaming -- a stream that never started at all
+          // (the init-order race above) looks identical to a stalled one
+          // from here: _latestFrame is null either way, and both need the
+          // same recreate to recover.
+          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold) {
             // A plain stop+start of the image stream on the SAME
             // CameraController doesn't reliably unstick it -- device logs
             // showed the platform stream can stay silently dead across a
@@ -2837,6 +2857,18 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       await controller.initialize();
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
+      // Model load and camera init race in initState -- _startWatching()
+      // may already have run (and had its _startImageStream() no-op
+      // because _isCameraInitialized was still false at the time) before
+      // the camera finishes initializing here. Without this, that race
+      // left the stream never started and no self-heal ever kicked in
+      // (it only retries an already-streaming feed), so no live boxes
+      // ever appeared until a manual capture's controller swap finished
+      // with the camera already initialized. Catch that here: if watching
+      // is already active and the stream isn't up yet, start it now.
+      if (mounted && (_watchActive || _simScanActive) && !_isStreaming) {
+        _startImageStream();
+      }
     } catch (e) {
       _addLog("Camera error: $e");
       if (mounted) setState(() => _error = "Camera error: $e");
@@ -3016,7 +3048,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // full-quality capture) -- skip this tick rather than block.
           tickStopwatch.stop();
           _consecutiveNullFrameTicks++;
-          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
+          // Not gated on _isStreaming -- a stream that never started at all
+          // (the init-order race above) looks identical to a stalled one
+          // from here: _latestFrame is null either way, and both need the
+          // same recreate to recover.
+          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold) {
             // A plain stop+start of the image stream on the SAME
             // CameraController doesn't reliably unstick it -- device logs
             // showed the platform stream can stay silently dead across a
@@ -3200,7 +3236,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // full-quality capture) -- skip this tick rather than block.
           tickStopwatch.stop();
           _consecutiveNullFrameTicks++;
-          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
+          // Not gated on _isStreaming -- a stream that never started at all
+          // (the init-order race above) looks identical to a stalled one
+          // from here: _latestFrame is null either way, and both need the
+          // same recreate to recover.
+          if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold) {
             // A plain stop+start of the image stream on the SAME
             // CameraController doesn't reliably unstick it -- device logs
             // showed the platform stream can stay silently dead across a
