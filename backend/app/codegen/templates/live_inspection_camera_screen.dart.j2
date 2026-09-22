@@ -227,11 +227,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   bool _watchActive = false;
   bool _watching = false;
   int _holdCount = 0;
-  // Lowered from 3/700ms (2.1s nominal, longer in practice since any single
-  // missed tick used to reset the whole countdown) to 2/400ms (0.8s nominal)
-  // for line-assembly pace, now that a miss only decrements instead of
-  // zeroing the hold count -- see _watchLoop/_simWatchLoop.
-  static const int _holdTarget = 2;
+  // Capture on the FIRST tick that sees every required class, not after
+  // holding steady across several ticks -- an assembly line needs the
+  // photo taken the instant the part is in frame, not a wait for a
+  // stability countdown to finish. _holdCount/the decrement-on-miss logic
+  // in _watchLoop/_simWatchLoop is kept (rather than deleted) so a value
+  // above 1 stays a one-line way to bring steadiness back if 1 turns out
+  // to trigger on partial/fluke frames in practice.
+  static const int _holdTarget = 1;
   static const double _watchConfidenceThreshold = 0.55;
   static const Duration _watchInterval = Duration(milliseconds: 400);
   static const Duration _watchTimeout = Duration(seconds: 45);
@@ -2574,11 +2577,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   bool _watchActive = false;
   bool _watching = false;
   int _holdCount = 0;
-  // Lowered from 3/700ms (2.1s nominal, longer in practice since any single
-  // missed tick used to reset the whole countdown) to 2/400ms (0.8s nominal)
-  // for line-assembly pace, now that a miss only decrements instead of
-  // zeroing the hold count -- see _watchLoop/_simWatchLoop.
-  static const int _holdTarget = 2;
+  // Capture on the FIRST tick that sees every required class, not after
+  // holding steady across several ticks -- an assembly line needs the
+  // photo taken the instant the part is in frame, not a wait for a
+  // stability countdown to finish. _holdCount/the decrement-on-miss logic
+  // in _watchLoop/_simWatchLoop is kept (rather than deleted) so a value
+  // above 1 stays a one-line way to bring steadiness back if 1 turns out
+  // to trigger on partial/fluke frames in practice.
+  static const int _holdTarget = 1;
   static const double _watchConfidenceThreshold = 0.55;
   static const Duration _watchInterval = Duration(milliseconds: 400);
   static const Duration _watchTimeout = Duration(seconds: 45);
