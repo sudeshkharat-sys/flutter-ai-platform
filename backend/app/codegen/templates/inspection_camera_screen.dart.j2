@@ -112,6 +112,13 @@ _AnnotatedImages _annotateAndEncode(Map<String, dynamic> args) {
     final decoded = img.decodeImage(imageBytes);
     if (decoded == null) return const _AnnotatedImages();
 
+    // Snapshotted BEFORE any box is drawn -- drawRect/fillRect/drawString
+    // below mutate `decoded` in place, so a negative-dataset copy encoded
+    // afterward would carry the same burned-in boxes/labels as the
+    // display image, which is useless for retraining.
+    final Uint8List? negativeSourceBytes =
+        saveNegative ? Uint8List.fromList(img.encodeJpg(decoded, quality: 95)) : null;
+
     final iw = decoded.width.toDouble();
     final ih = decoded.height.toDouble();
 
@@ -141,9 +148,7 @@ _AnnotatedImages _annotateAndEncode(Map<String, dynamic> args) {
     return _AnnotatedImages(
       full: Uint8List.fromList(img.encodeJpg(decoded, quality: 40)),
       thumb: Uint8List.fromList(img.encodeJpg(img.copyResize(decoded, width: 480), quality: 15)),
-      negative: saveNegative
-          ? Uint8List.fromList(img.encodeJpg(decoded, quality: 95))
-          : null,
+      negative: negativeSourceBytes,
     );
   } catch (_) {
     return const _AnnotatedImages();
@@ -1819,7 +1824,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         // Decode, draw bounding boxes + labels, then compress and save
         final decoded = img.decodeImage(bytes);
         List<int> compressed;
+        // Captured BEFORE any detection boxes are drawn -- a negative-dataset
+        // image needs to be the clean, unannotated frame to be usable for
+        // retraining, not a copy with boxes/labels burned in.
+        List<int>? cleanImageBytes;
         if (decoded != null) {
+          cleanImageBytes = img.encodeJpg(decoded, quality: 95);
           final iw = decoded.width.toDouble();
           final ih = decoded.height.toDouble();
 
@@ -1888,12 +1898,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
         // NOT OK captures only: keep a near-original-quality copy in a
         // parallel folder tree for building a negative-example dataset.
-        if (!isPass && decoded != null) {
+        if (!isPass && cleanImageBytes != null) {
           try {
             final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final negFile = File('${negDir.path}/${resultLabel}_${dateStr}_$timeStr.jpg');
-            await negFile.writeAsBytes(img.encodeJpg(decoded, quality: 95), flush: true);
+            await negFile.writeAsBytes(cleanImageBytes, flush: true);
             savedNegativePath = negFile.path;
             _addLog("Negative dataset image saved: $savedNegativePath");
           } catch (e) {
