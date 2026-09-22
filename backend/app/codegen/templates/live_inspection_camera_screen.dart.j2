@@ -782,10 +782,26 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           tickStopwatch.stop();
           _consecutiveNullFrameTicks++;
           if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
-            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- restarting stream');
+            // A plain stop+start of the image stream on the SAME
+            // CameraController doesn't reliably unstick it -- device logs
+            // showed the platform stream can stay silently dead across a
+            // stop/start pair on the controller that never delivered a
+            // frame in the first place. What does reliably fix it (every
+            // scan after the first one, via the full-quality capture's
+            // controller swap-and-restore in _takeFullQualityPicture)
+            // is disposing that controller and creating a fresh one, so
+            // do that here instead of trusting stop/start to recover it.
+            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- recreating camera controller');
             _consecutiveNullFrameTicks = 0;
             await _stopImageStream();
-            _startImageStream();
+            try {
+              await _cameraController?.dispose();
+            } catch (_) {}
+            if (mounted) {
+              setState(() => _isCameraInitialized = false);
+              await _initializeCamera();
+            }
+            if (mounted && (_watchActive || _simScanActive)) _startImageStream();
           }
           continue;
         }
@@ -954,10 +970,26 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           tickStopwatch.stop();
           _consecutiveNullFrameTicks++;
           if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
-            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- restarting stream');
+            // A plain stop+start of the image stream on the SAME
+            // CameraController doesn't reliably unstick it -- device logs
+            // showed the platform stream can stay silently dead across a
+            // stop/start pair on the controller that never delivered a
+            // frame in the first place. What does reliably fix it (every
+            // scan after the first one, via the full-quality capture's
+            // controller swap-and-restore in _takeFullQualityPicture)
+            // is disposing that controller and creating a fresh one, so
+            // do that here instead of trusting stop/start to recover it.
+            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- recreating camera controller');
             _consecutiveNullFrameTicks = 0;
             await _stopImageStream();
-            _startImageStream();
+            try {
+              await _cameraController?.dispose();
+            } catch (_) {}
+            if (mounted) {
+              setState(() => _isCameraInitialized = false);
+              await _initializeCamera();
+            }
+            if (mounted && (_watchActive || _simScanActive)) _startImageStream();
           }
           continue;
         }
@@ -2985,10 +3017,26 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           tickStopwatch.stop();
           _consecutiveNullFrameTicks++;
           if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
-            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- restarting stream');
+            // A plain stop+start of the image stream on the SAME
+            // CameraController doesn't reliably unstick it -- device logs
+            // showed the platform stream can stay silently dead across a
+            // stop/start pair on the controller that never delivered a
+            // frame in the first place. What does reliably fix it (every
+            // scan after the first one, via the full-quality capture's
+            // controller swap-and-restore in _takeFullQualityPicture)
+            // is disposing that controller and creating a fresh one, so
+            // do that here instead of trusting stop/start to recover it.
+            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- recreating camera controller');
             _consecutiveNullFrameTicks = 0;
             await _stopImageStream();
-            _startImageStream();
+            try {
+              await _cameraController?.dispose();
+            } catch (_) {}
+            if (mounted) {
+              setState(() => _isCameraInitialized = false);
+              await _initializeCamera();
+            }
+            if (mounted && (_watchActive || _simScanActive)) _startImageStream();
           }
           continue;
         }
@@ -3153,10 +3201,26 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           tickStopwatch.stop();
           _consecutiveNullFrameTicks++;
           if (_consecutiveNullFrameTicks >= _nullFrameRestartThreshold && _isStreaming) {
-            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- restarting stream');
+            // A plain stop+start of the image stream on the SAME
+            // CameraController doesn't reliably unstick it -- device logs
+            // showed the platform stream can stay silently dead across a
+            // stop/start pair on the controller that never delivered a
+            // frame in the first place. What does reliably fix it (every
+            // scan after the first one, via the full-quality capture's
+            // controller swap-and-restore in _takeFullQualityPicture)
+            // is disposing that controller and creating a fresh one, so
+            // do that here instead of trusting stop/start to recover it.
+            _addLog('No frames from camera stream after $_consecutiveNullFrameTicks ticks -- recreating camera controller');
             _consecutiveNullFrameTicks = 0;
             await _stopImageStream();
-            _startImageStream();
+            try {
+              await _cameraController?.dispose();
+            } catch (_) {}
+            if (mounted) {
+              setState(() => _isCameraInitialized = false);
+              await _initializeCamera();
+            }
+            if (mounted && (_watchActive || _simScanActive)) _startImageStream();
           }
           continue;
         }
