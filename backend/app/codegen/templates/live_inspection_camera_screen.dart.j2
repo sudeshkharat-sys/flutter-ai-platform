@@ -431,7 +431,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         savedImagePath = '${imgDir.path}/${safeTask}_${resultBadge}_${dateStr}_$timeStr.jpg';
 
         List<int> compressed;
+        // Captured BEFORE any detection boxes are drawn -- drawRect/fillRect/
+        // drawString below mutate decodedRaw in place, and a negative-dataset
+        // image needs to be the clean, unannotated frame so it's actually
+        // usable for retraining, not a copy with boxes/labels burned in.
+        List<int>? cleanImageBytes;
         if (decodedRaw != null) {
+          cleanImageBytes = img.encodeJpg(decodedRaw, quality: 95);
           final iw = decodedRaw.width.toDouble();
           final ih = decodedRaw.height.toDouble();
           for (final det in allDetections) {
@@ -482,13 +488,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         // NOT OK captures only: keep a near-original-quality copy in a
         // parallel folder tree for building a negative-example dataset.
-        if (!overallPass && decodedRaw != null) {
+        if (!overallPass && cleanImageBytes != null) {
           try {
             final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final className = _hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'NOT_OK' : 'None';
             final negFile = File('${negDir.path}/${className}_${dateStr}_$timeStr.jpg');
-            await negFile.writeAsBytes(img.encodeJpg(decodedRaw, quality: 95), flush: true);
+            await negFile.writeAsBytes(cleanImageBytes, flush: true);
             savedNegativePath = negFile.path;
           } catch (e) {
             _addLog("Sim negative dataset save FAILED: $e");
@@ -1243,7 +1249,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         final decoded = img.decodeImage(bytes);
         List<int> compressed;
+        // Captured BEFORE any detection boxes are drawn -- see the
+        // sequential capture path's identical comment above.
+        List<int>? cleanImageBytes;
         if (decoded != null) {
+          cleanImageBytes = img.encodeJpg(decoded, quality: 95);
           final iw = decoded.width.toDouble();
           final ih = decoded.height.toDouble();
 
@@ -1298,13 +1308,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         // NOT OK captures only: keep a near-original-quality copy in a
         // parallel folder tree for building a negative-example dataset.
-        if (!overallPass && decoded != null) {
+        if (!overallPass && cleanImageBytes != null) {
           try {
             final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final className = _hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'NOT_OK' : 'None';
             final negFile = File('${negDir.path}/${className}_${dateStr}_$timeStr.jpg');
-            await negFile.writeAsBytes(img.encodeJpg(decoded, quality: 95), flush: true);
+            await negFile.writeAsBytes(cleanImageBytes, flush: true);
             savedNegativePath = negFile.path;
           } catch (e) {
             _addLog("Negative dataset save FAILED: $e");
@@ -2702,7 +2712,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         savedImagePath = '${imgDir.path}/${safeTask}_${resultLabel}_${resultBadge}_${dateStr}_$timeStr.jpg';
 
         List<int> compressed;
+        // Captured BEFORE any detection boxes are drawn -- a negative-dataset
+        // image needs to be the clean, unannotated frame to be usable for
+        // retraining, not a copy with boxes/labels burned in.
+        List<int>? cleanImageBytes;
         if (decodedRaw != null) {
+          cleanImageBytes = img.encodeJpg(decodedRaw, quality: 95);
           final iw = decodedRaw.width.toDouble();
           final ih = decodedRaw.height.toDouble();
           for (final det in allDetections) {
@@ -2745,12 +2760,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         // NOT OK captures only: keep a near-original-quality copy in a
         // parallel folder tree for building a negative-example dataset.
-        if (!isPass && decodedRaw != null) {
+        if (!isPass && cleanImageBytes != null) {
           try {
             final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final negFile = File('${negDir.path}/${resultLabel}_${dateStr}_$timeStr.jpg');
-            await negFile.writeAsBytes(img.encodeJpg(decodedRaw, quality: 95), flush: true);
+            await negFile.writeAsBytes(cleanImageBytes, flush: true);
             savedNegativePath = negFile.path;
           } catch (e) {
             _addLog("Sim negative dataset save FAILED: $e");
@@ -3471,7 +3486,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         final decoded = img.decodeImage(bytes);
         List<int> compressed;
+        // Captured BEFORE any detection boxes are drawn -- see the
+        // sequential capture path's identical comment above.
+        List<int>? cleanImageBytes;
         if (decoded != null) {
+          cleanImageBytes = img.encodeJpg(decoded, quality: 95);
           final iw = decoded.width.toDouble();
           final ih = decoded.height.toDouble();
 
@@ -3521,12 +3540,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         // NOT OK captures only: keep a near-original-quality copy in a
         // parallel folder tree for building a negative-example dataset.
-        if (!isPass && decoded != null) {
+        if (!isPass && cleanImageBytes != null) {
           try {
             final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final negFile = File('${negDir.path}/${resultLabel}_${dateStr}_$timeStr.jpg');
-            await negFile.writeAsBytes(img.encodeJpg(decoded, quality: 95), flush: true);
+            await negFile.writeAsBytes(cleanImageBytes, flush: true);
             savedNegativePath = negFile.path;
           } catch (e) {
             _addLog("Negative dataset save FAILED: $e");
