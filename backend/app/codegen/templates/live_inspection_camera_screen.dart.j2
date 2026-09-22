@@ -204,7 +204,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   bool _showDebugConsole = false;
   bool _isFlashOn = false;
 
-  CameraDescription? _backCamera;
   List<DetectionResult> _allDetections = [];
   List<DetectionResult> _detectedNonTargetClasses = [];
   // Maps mandatory class name -> best DetectionResult found (null = not detected)
@@ -595,26 +594,21 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  // MUST match _takeFullQualityPicture's hiResController preset
-  // (ResolutionPreset.medium) exactly, not just be "close enough" or
-  // "cheaper". On real devices, switching a CameraController between
-  // resolution presets doesn't just change pixel count -- it can select a
-  // different sensor crop, i.e. a genuinely different field of view. Live
-  // scan used to run this controller at ResolutionPreset.low while the
-  // final full-quality photo used ResolutionPreset.medium, and on-device
-  // testing showed exactly that: the target logo filled much of the frame
-  // during live watch (tight FOV) but came out much smaller within a far
-  // wider view in the final captured photo -- same physical framing, two
-  // different crops. Since the tick that triggers capture is doing
-  // inference on the tight-FOV live frame but the actual pass/fail
-  // decision re-runs inference on the wide-FOV final photo, a detection
-  // that clearly passed live could still come back NOT FOUND on the
-  // frame that actually decides the result. Matching presets removes that
-  // mismatch entirely. _convertCameraFrameToJpeg still downscales every
-  // streamed frame to a small width in software for per-tick inference
-  // speed -- that's a separate, safe optimization since it doesn't change
-  // what part of the scene is IN the frame, only how many pixels it's
-  // encoded at.
+  // ResolutionPreset.low -- this is now the ONLY CameraController for this
+  // screen; _takeFullQualityPicture takes the final photo directly from
+  // this same controller instead of swapping to a separate one on a
+  // different preset. That swap (previously to ResolutionPreset.medium)
+  // caused two real, on-device-confirmed problems: switching presets can
+  // select a different sensor crop, so the final photo was a genuinely
+  // different, wider field of view than what live watch had just seen --
+  // a confident live detection could come back NOT FOUND purely because
+  // the final decision ran on a differently-framed image; and disposing +
+  // reinitializing two controllers around every single capture was slow
+  // enough on-device to be mistaken for a stuck camera. Using one
+  // controller throughout removes both: identical framing by construction,
+  // and no dispose/reinitialize round trip on capture. low keeps camera
+  // startup fast; _convertCameraFrameToJpeg still downscales every
+  // streamed frame further in software for per-tick inference speed.
   // imageFormatGroup is explicit (not left to the platform default) since
   // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
   Future<void> _initializeCamera() async {
@@ -628,10 +622,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       final back = cameras.firstWhere(
           (c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cameras.first);
-      _backCamera = back;
       final controller = CameraController(
         back,
-        ResolutionPreset.medium,
+        ResolutionPreset.low,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
@@ -658,44 +651,34 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   }
 
   /// Takes the one photo that actually gets analyzed, saved and shown on
-  /// the review screen -- at full quality, regardless of the low-res
-  /// controller the live preview and watch ticks use. Only one
-  /// CameraController can hold the camera open at a time, so this briefly
-  /// disposes the low-res controller, opens a medium-res one for a single
-  /// takePicture(), then hands back to _initializeCamera() to restore the
-  /// low-res preview/watch controller. That swap is not its own visible
-  /// glitch: _handleCapture already shows a spinner overlay for the
-  /// duration, and the preview is about to be replaced by the frozen
-  /// result frame anyway.
+  /// the review screen -- using the SAME already-open, already-warmed-up
+  /// controller the live preview and watch ticks use, not a separate
+  /// controller on a different ResolutionPreset.
+  ///
+  /// This used to dispose the live controller and open a fresh
+  /// ResolutionPreset.medium one just for this one takePicture(), then
+  /// tear that down and reinitialize the low-res one again afterward. That
+  /// caused two real problems found on-device: (1) switching presets can
+  /// select a different sensor crop, so the final photo showed a visibly
+  /// different, wider field of view than what the live tick that
+  /// triggered capture had just seen -- a confident live detection could
+  /// come back NOT FOUND on the differently-framed final image purely
+  /// because of this mismatch; (2) every single capture paid the cost of
+  /// disposing and fully reinitializing TWO camera controllers in a row,
+  /// which on some devices is genuinely slow and compounds with the
+  /// stalled-stream self-heal path (_nullFrameRestartThreshold) --
+  /// together these could stretch a capture into many seconds.
+  /// Reusing the same controller fixes both: identical framing by
+  /// construction (it's literally the same camera session, not just a
+  /// matching preset value), and takePicture() alone with no
+  /// dispose/reinitialize round trip.
   Future<XFile> _takeFullQualityPicture() async {
-    final camera = _backCamera;
     // takePicture() and an active image stream can't run concurrently on
-    // the same controller, and the hi-res swap below needs sole ownership
-    // of the camera anyway.
+    // the same controller.
     await _stopImageStream();
-    if (camera == null) {
-      // Shouldn't happen once the camera has initialized once, but fail
-      // toward "still take the photo" rather than a hard crash.
-      final pic = await _cameraController!.takePicture();
-      if (mounted && (_watchActive || _simScanActive)) _startImageStream();
-      return pic;
-    }
-    final wasFlashOn = _isFlashOn;
-    CameraController? hiResController;
     try {
-      await _cameraController?.dispose();
-      hiResController = CameraController(camera, ResolutionPreset.medium, enableAudio: false);
-      await hiResController.initialize();
-      if (wasFlashOn) {
-        await hiResController.setFlashMode(FlashMode.torch).catchError((_) {});
-      }
-      return await hiResController.takePicture();
+      return await _cameraController!.takePicture();
     } finally {
-      await hiResController?.dispose();
-      if (mounted) await _initializeCamera();
-      if (wasFlashOn && mounted) {
-        await _cameraController?.setFlashMode(FlashMode.torch).catchError((_) {});
-      }
       // Simultaneous mode keeps ticking for the other still-pending tasks
       // while this one's full-quality capture runs in the background, so
       // the stream needs to come straight back for them. Sequential mode
@@ -2575,7 +2558,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   bool _showDebugConsole = false;
   bool _isFlashOn = false;
 
-  CameraDescription? _backCamera;
   List<DetectionResult> _allDetections = [];
   List<DetectionResult> _detectedNonTargetClasses = [];
   int _currentIndex = 0;
@@ -2896,26 +2878,21 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  // MUST match _takeFullQualityPicture's hiResController preset
-  // (ResolutionPreset.medium) exactly, not just be "close enough" or
-  // "cheaper". On real devices, switching a CameraController between
-  // resolution presets doesn't just change pixel count -- it can select a
-  // different sensor crop, i.e. a genuinely different field of view. Live
-  // scan used to run this controller at ResolutionPreset.low while the
-  // final full-quality photo used ResolutionPreset.medium, and on-device
-  // testing showed exactly that: the target logo filled much of the frame
-  // during live watch (tight FOV) but came out much smaller within a far
-  // wider view in the final captured photo -- same physical framing, two
-  // different crops. Since the tick that triggers capture is doing
-  // inference on the tight-FOV live frame but the actual pass/fail
-  // decision re-runs inference on the wide-FOV final photo, a detection
-  // that clearly passed live could still come back NOT FOUND on the
-  // frame that actually decides the result. Matching presets removes that
-  // mismatch entirely. _convertCameraFrameToJpeg still downscales every
-  // streamed frame to a small width in software for per-tick inference
-  // speed -- that's a separate, safe optimization since it doesn't change
-  // what part of the scene is IN the frame, only how many pixels it's
-  // encoded at.
+  // ResolutionPreset.low -- this is now the ONLY CameraController for this
+  // screen; _takeFullQualityPicture takes the final photo directly from
+  // this same controller instead of swapping to a separate one on a
+  // different preset. That swap (previously to ResolutionPreset.medium)
+  // caused two real, on-device-confirmed problems: switching presets can
+  // select a different sensor crop, so the final photo was a genuinely
+  // different, wider field of view than what live watch had just seen --
+  // a confident live detection could come back NOT FOUND purely because
+  // the final decision ran on a differently-framed image; and disposing +
+  // reinitializing two controllers around every single capture was slow
+  // enough on-device to be mistaken for a stuck camera. Using one
+  // controller throughout removes both: identical framing by construction,
+  // and no dispose/reinitialize round trip on capture. low keeps camera
+  // startup fast; _convertCameraFrameToJpeg still downscales every
+  // streamed frame further in software for per-tick inference speed.
   // imageFormatGroup is explicit (not left to the platform default) since
   // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
   Future<void> _initializeCamera() async {
@@ -2929,10 +2906,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       final back = cameras.firstWhere(
           (c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cameras.first);
-      _backCamera = back;
       final controller = CameraController(
         back,
-        ResolutionPreset.medium,
+        ResolutionPreset.low,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
@@ -2959,44 +2935,34 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   }
 
   /// Takes the one photo that actually gets analyzed, saved and shown on
-  /// the review screen -- at full quality, regardless of the low-res
-  /// controller the live preview and watch ticks use. Only one
-  /// CameraController can hold the camera open at a time, so this briefly
-  /// disposes the low-res controller, opens a medium-res one for a single
-  /// takePicture(), then hands back to _initializeCamera() to restore the
-  /// low-res preview/watch controller. That swap is not its own visible
-  /// glitch: _handleCapture already shows a spinner overlay for the
-  /// duration, and the preview is about to be replaced by the frozen
-  /// result frame anyway.
+  /// the review screen -- using the SAME already-open, already-warmed-up
+  /// controller the live preview and watch ticks use, not a separate
+  /// controller on a different ResolutionPreset.
+  ///
+  /// This used to dispose the live controller and open a fresh
+  /// ResolutionPreset.medium one just for this one takePicture(), then
+  /// tear that down and reinitialize the low-res one again afterward. That
+  /// caused two real problems found on-device: (1) switching presets can
+  /// select a different sensor crop, so the final photo showed a visibly
+  /// different, wider field of view than what the live tick that
+  /// triggered capture had just seen -- a confident live detection could
+  /// come back NOT FOUND on the differently-framed final image purely
+  /// because of this mismatch; (2) every single capture paid the cost of
+  /// disposing and fully reinitializing TWO camera controllers in a row,
+  /// which on some devices is genuinely slow and compounds with the
+  /// stalled-stream self-heal path (_nullFrameRestartThreshold) --
+  /// together these could stretch a capture into many seconds.
+  /// Reusing the same controller fixes both: identical framing by
+  /// construction (it's literally the same camera session, not just a
+  /// matching preset value), and takePicture() alone with no
+  /// dispose/reinitialize round trip.
   Future<XFile> _takeFullQualityPicture() async {
-    final camera = _backCamera;
     // takePicture() and an active image stream can't run concurrently on
-    // the same controller, and the hi-res swap below needs sole ownership
-    // of the camera anyway.
+    // the same controller.
     await _stopImageStream();
-    if (camera == null) {
-      // Shouldn't happen once the camera has initialized once, but fail
-      // toward "still take the photo" rather than a hard crash.
-      final pic = await _cameraController!.takePicture();
-      if (mounted && (_watchActive || _simScanActive)) _startImageStream();
-      return pic;
-    }
-    final wasFlashOn = _isFlashOn;
-    CameraController? hiResController;
     try {
-      await _cameraController?.dispose();
-      hiResController = CameraController(camera, ResolutionPreset.medium, enableAudio: false);
-      await hiResController.initialize();
-      if (wasFlashOn) {
-        await hiResController.setFlashMode(FlashMode.torch).catchError((_) {});
-      }
-      return await hiResController.takePicture();
+      return await _cameraController!.takePicture();
     } finally {
-      await hiResController?.dispose();
-      if (mounted) await _initializeCamera();
-      if (wasFlashOn && mounted) {
-        await _cameraController?.setFlashMode(FlashMode.torch).catchError((_) {});
-      }
       // Simultaneous mode keeps ticking for the other still-pending tasks
       // while this one's full-quality capture runs in the background, so
       // the stream needs to come straight back for them. Sequential mode
