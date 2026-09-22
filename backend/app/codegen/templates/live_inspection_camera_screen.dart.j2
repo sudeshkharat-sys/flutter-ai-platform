@@ -595,11 +595,26 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  // ResolutionPreset.low, not medium -- see _takeFullQualityPicture below.
-  // This controller is what CameraPreview shows and what startImageStream
-  // reads frames from; low is plenty since _convertCameraFrameToJpeg
-  // downscales every streamed frame further before inference anyway, and a
-  // smaller sensor image means less work per frame to begin with.
+  // MUST match _takeFullQualityPicture's hiResController preset
+  // (ResolutionPreset.medium) exactly, not just be "close enough" or
+  // "cheaper". On real devices, switching a CameraController between
+  // resolution presets doesn't just change pixel count -- it can select a
+  // different sensor crop, i.e. a genuinely different field of view. Live
+  // scan used to run this controller at ResolutionPreset.low while the
+  // final full-quality photo used ResolutionPreset.medium, and on-device
+  // testing showed exactly that: the target logo filled much of the frame
+  // during live watch (tight FOV) but came out much smaller within a far
+  // wider view in the final captured photo -- same physical framing, two
+  // different crops. Since the tick that triggers capture is doing
+  // inference on the tight-FOV live frame but the actual pass/fail
+  // decision re-runs inference on the wide-FOV final photo, a detection
+  // that clearly passed live could still come back NOT FOUND on the
+  // frame that actually decides the result. Matching presets removes that
+  // mismatch entirely. _convertCameraFrameToJpeg still downscales every
+  // streamed frame to a small width in software for per-tick inference
+  // speed -- that's a separate, safe optimization since it doesn't change
+  // what part of the scene is IN the frame, only how many pixels it's
+  // encoded at.
   // imageFormatGroup is explicit (not left to the platform default) since
   // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
   Future<void> _initializeCamera() async {
@@ -616,7 +631,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _backCamera = back;
       final controller = CameraController(
         back,
-        ResolutionPreset.low,
+        ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
@@ -2881,11 +2896,26 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  // ResolutionPreset.low, not medium -- see _takeFullQualityPicture below.
-  // This controller is what CameraPreview shows and what startImageStream
-  // reads frames from; low is plenty since _convertCameraFrameToJpeg
-  // downscales every streamed frame further before inference anyway, and a
-  // smaller sensor image means less work per frame to begin with.
+  // MUST match _takeFullQualityPicture's hiResController preset
+  // (ResolutionPreset.medium) exactly, not just be "close enough" or
+  // "cheaper". On real devices, switching a CameraController between
+  // resolution presets doesn't just change pixel count -- it can select a
+  // different sensor crop, i.e. a genuinely different field of view. Live
+  // scan used to run this controller at ResolutionPreset.low while the
+  // final full-quality photo used ResolutionPreset.medium, and on-device
+  // testing showed exactly that: the target logo filled much of the frame
+  // during live watch (tight FOV) but came out much smaller within a far
+  // wider view in the final captured photo -- same physical framing, two
+  // different crops. Since the tick that triggers capture is doing
+  // inference on the tight-FOV live frame but the actual pass/fail
+  // decision re-runs inference on the wide-FOV final photo, a detection
+  // that clearly passed live could still come back NOT FOUND on the
+  // frame that actually decides the result. Matching presets removes that
+  // mismatch entirely. _convertCameraFrameToJpeg still downscales every
+  // streamed frame to a small width in software for per-tick inference
+  // speed -- that's a separate, safe optimization since it doesn't change
+  // what part of the scene is IN the frame, only how many pixels it's
+  // encoded at.
   // imageFormatGroup is explicit (not left to the platform default) since
   // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
   Future<void> _initializeCamera() async {
@@ -2902,7 +2932,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _backCamera = back;
       final controller = CameraController(
         back,
-        ResolutionPreset.low,
+        ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
