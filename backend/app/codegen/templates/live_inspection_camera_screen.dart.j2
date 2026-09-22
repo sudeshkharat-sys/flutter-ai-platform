@@ -435,6 +435,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           final iw = decodedRaw.width.toDouble();
           final ih = decodedRaw.height.toDouble();
           for (final det in allDetections) {
+            // An explicitly ignored class still needs to run through the
+            // detector so its area can count toward mask/region
+            // intersection for OTHER classes, but it must never render on
+            // the saved/uploaded image -- it has no bearing on the result
+            // and a red box for it here reads as "this failed because of
+            // X" when X was deliberately excluded from the pass/fail
+            // check entirely.
+            if (_isIgnored(det.className, ignoredClasses)) continue;
             final isMandatory = targetClasses.any((tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim());
             final boxColor = isMandatory ? img.ColorRgb8(0, 200, 0) : img.ColorRgb8(220, 0, 0);
             final x1 = (det.bbox.left * iw).toInt().clamp(0, decodedRaw.width - 1);
@@ -1240,6 +1248,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           final ih = decoded.height.toDouble();
 
           for (final det in allDetections) {
+            // See the sequential capture path's identical check above --
+            // an ignored class must still be detected (its area can count
+            // toward another class's mask/region intersection) but never
+            // rendered on the saved/uploaded image.
+            if (_isIgnored(det.className, ignoredClasses)) continue;
             final isMandatory = targetClasses.any(
               (tc) => det.className.toLowerCase().trim() == tc.toLowerCase().trim(),
             );
