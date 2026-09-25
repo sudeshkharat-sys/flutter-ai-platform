@@ -37,6 +37,7 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import zipfile
 import sys
@@ -836,30 +837,100 @@ async def download_filtered_excel(request: Request, _: None = Depends(_require_s
     )
 
 
-def _build_negative_dataset_zip() -> bytes:
-    """Blocking: zips the entire negative_dataset store in memory. Mirrors
-    receiver.py's own _build_negative_dataset_zip -- read-only here too,
-    there's no equivalent delete route in this app."""
+_NEG_FILENAME_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def _negative_dataset_file_date(f: Path) -> str | None:
+    """Pulls the capture date (YYYY-MM-DD) out of the filename itself --
+    the phone names these '<task>_<OK/NOT_OK>_YYYY-MM-DD_HH-MM-SS.jpg', so
+    this is the actual capture date, not just whenever receiver.py happened
+    to copy the file in (which can lag behind, e.g. a phone that synced late
+    after being offline)."""
+    m = _NEG_FILENAME_DATE_RE.search(f.name)
+    return m.group(1) if m else None
+
+
+def _iter_negative_dataset_files(app_name: str | None, task: str | None, since: str | None, until: str | None):
+    """Yields (file, arcname) pairs under NEGATIVE_DATASET_DIR, filtered by
+    app/task subfolder and/or capture-date range. since/until are inclusive
+    YYYY-MM-DD strings; a file whose name has no parseable date is only
+    included when no date filter was requested (better to withhold an
+    unparseable file from a date-scoped export than silently guess)."""
+    if not NEGATIVE_DATASET_DIR.exists():
+        return
+    root = NEGATIVE_DATASET_DIR
+    if app_name:
+        root = root / _safe_name(app_name)
+        if task:
+            root = root / _safe_name(task)
+    if not root.exists():
+        return
+    for f in root.rglob("*"):
+        if not f.is_file():
+            continue
+        if since or until:
+            file_date = _negative_dataset_file_date(f)
+            if file_date is None:
+                continue
+            if since and file_date < since:
+                continue
+            if until and file_date > until:
+                continue
+        yield f, f.relative_to(NEGATIVE_DATASET_DIR)
+
+
+def _build_negative_dataset_zip(app_name: str | None, task: str | None, since: str | None, until: str | None) -> bytes:
+    """Blocking: zips the (optionally filtered) negative_dataset store in
+    memory. Run via run_in_threadpool, same as the Excel builders above."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        if NEGATIVE_DATASET_DIR.exists():
-            for f in NEGATIVE_DATASET_DIR.rglob("*"):
-                if f.is_file():
-                    zf.write(f, f.relative_to(NEGATIVE_DATASET_DIR))
+        for f, arcname in _iter_negative_dataset_files(app_name, task, since, until):
+            zf.write(f, arcname)
     return buf.getvalue()
 
 
+@app.get("/api/negative-dataset/tasks")
+async def api_negative_dataset_tasks(appName: str, _: None = Depends(_require_session)):
+    """Task list + file counts for one app's negative dataset, so the UI can
+    offer a task dropdown scoped to whichever app is currently open."""
+    app_dir = NEGATIVE_DATASET_DIR / _safe_name(appName)
+    tasks: list[dict] = []
+    if app_dir.exists():
+        for task_dir in sorted(app_dir.iterdir()):
+            if not task_dir.is_dir():
+                continue
+            count = sum(1 for f in task_dir.rglob("*") if f.is_file())
+            if count:
+                tasks.append({"task": task_dir.name, "fileCount": count})
+    return {"tasks": tasks}
+
+
 @app.get("/download/negative-dataset")
-async def download_negative_dataset(_: None = Depends(_require_session)):
+async def download_negative_dataset(
+    appName: str = "",
+    task: str = "",
+    since: str = "",
+    until: str = "",
+    _: None = Depends(_require_session),
+):
     """Lets any logged-in viewer pull a ZIP of the NOT OK training images
     receiver.py has accumulated -- same data receiver.py's own (localhost-only)
     Download ZIP button offers, just reachable over the network here since
     this viewer is already the app people use to grab data off-PC (the Excel
     downloads above work the same way). Delete deliberately has no viewer
-    equivalent -- that destructive action stays receiver.py/localhost-only."""
-    if not NEGATIVE_DATASET_DIR.exists() or not any(NEGATIVE_DATASET_DIR.rglob("*")):
-        raise HTTPException(status_code=404, detail="No negative-dataset images yet")
-    zip_bytes = await run_in_threadpool(_build_negative_dataset_zip)
+    equivalent -- that destructive action stays receiver.py/localhost-only.
+
+    appName/task narrow to one app or one task within it; since/until (both
+    YYYY-MM-DD, inclusive) narrow by capture date -- e.g. set since=today to
+    grab only what's new since yesterday's pull, instead of re-downloading
+    the whole accumulated dataset every time."""
+    for label, value in (("since", since), ("until", until)):
+        if value and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise HTTPException(status_code=422, detail=f"{label} must be YYYY-MM-DD")
+    has_match = any(True for _ in _iter_negative_dataset_files(appName or None, task or None, since or None, until or None))
+    if not has_match:
+        raise HTTPException(status_code=404, detail="No negative-dataset images match that filter")
+    zip_bytes = await run_in_threadpool(_build_negative_dataset_zip, appName or None, task or None, since or None, until or None)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return Response(
         content=zip_bytes,
@@ -1182,7 +1253,18 @@ VIEWER_HTML = """<!doctype html>
     <button class="secondary" id="downloadMonthBtn">Download Month</button>
     <button class="secondary" id="downloadFullBtn">Download Full Excel</button>
     <button class="primary" id="downloadFilteredBtn">Download Filtered Excel</button>
-    <button class="secondary" id="downloadNegBtn">Download NOT OK Dataset (ZIP)</button>
+  </div>
+  <div class="data-header" id="negDatasetRow" style="border-top:1px dashed var(--border); padding-top:10px;">
+    <span class="muted" style="font-size:12px;">NOT OK training dataset:</span>
+    <select id="negTask" title="Leave as All Tasks to download everything for this app">
+      <option value="">All Tasks</option>
+    </select>
+    <input id="negSince" type="date" title="Only images captured on/after this date">
+    <span class="muted" style="font-size:12px;">to</span>
+    <input id="negUntil" type="date" title="Only images captured on/before this date">
+    <button class="secondary" id="negClearRange" title="Clear the date range">Clear Dates</button>
+    <span style="flex:1"></span>
+    <button class="secondary" id="downloadNegBtn">Download ZIP</button>
   </div>
   <div id="sizeWarnBanner" style="display:none;"></div>
   <div id="truncatedBanner" style="display:none;"></div>
@@ -1401,6 +1483,7 @@ async function openAppDataViewer(appNameSafe, appNameDisplay) {
   document.getElementById('dataViewTitle').textContent = appNameDisplay;
   document.getElementById('fDate').value = '';
   populateDownloadMonthYears();
+  populateNegDatasetTasks(appNameDisplay);
   const warnBanner = document.getElementById('sizeWarnBanner');
   if (currentAppTotalBytes > FULL_DOWNLOAD_WARN_BYTES) {
     warnBanner.style.display = 'block';
@@ -1929,8 +2012,35 @@ document.getElementById('downloadFilteredBtn').addEventListener('click', () => {
   downloadBlob('/download/excel-filtered', { rows, device: currentDevice, appName: currentAppName },
     `${currentDevice}_${currentAppName}_filtered.xlsx`);
 });
+async function populateNegDatasetTasks(appNameDisplay) {
+  const sel = document.getElementById('negTask');
+  sel.innerHTML = '<option value="">All Tasks</option>';
+  try {
+    const res = await fetch('/api/negative-dataset/tasks?' + new URLSearchParams({ appName: appNameDisplay }));
+    if (res.status === 401) { window.location = '/login'; return; }
+    const data = await res.json();
+    for (const t of (data.tasks || [])) {
+      const opt = document.createElement('option');
+      opt.value = t.task;
+      opt.textContent = `${t.task} (${t.fileCount})`;
+      sel.appendChild(opt);
+    }
+  } catch { /* leave just "All Tasks" if this fails -- download still works */ }
+}
+document.getElementById('negClearRange').addEventListener('click', () => {
+  document.getElementById('negSince').value = '';
+  document.getElementById('negUntil').value = '';
+});
 document.getElementById('downloadNegBtn').addEventListener('click', () => {
-  window.location = '/download/negative-dataset';
+  const since = document.getElementById('negSince').value;
+  const until = document.getElementById('negUntil').value;
+  if (since && until && since > until) { alert('"From" date must be before "To" date.'); return; }
+  const params = { appName: currentAppName };
+  const task = document.getElementById('negTask').value;
+  if (task) params.task = task;
+  if (since) params.since = since;
+  if (until) params.until = until;
+  window.location = '/download/negative-dataset?' + new URLSearchParams(params);
 });
 
 loadApps();

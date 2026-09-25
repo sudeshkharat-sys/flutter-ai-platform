@@ -20,8 +20,10 @@ bug or restart here can never affect the live phone → PC sync pipeline.
   every phone/app that has sent data.
 - ✅ Filter by VIN/model text, OK/NOT OK, and date range.
 - ✅ Download the full running Excel file, or a filtered export.
-- ✅ Download the NOT OK training-image dataset as a ZIP (same data
-  receiver.py's own Download ZIP button offers, just reachable off-PC here).
+- ✅ Download the NOT OK training-image dataset as a ZIP, scoped to one app
+  (the app you have open), optionally one task within it, and/or a capture
+  date range (e.g. "just today's") -- so a repeat pull doesn't have to
+  re-download everything again.
 - ❌ No pairing, no upload, no delete, no settings, no device management.
   Every route is read-only at the code level (files are only ever opened
   for reading) — the negative-dataset ZIP download above has no delete
