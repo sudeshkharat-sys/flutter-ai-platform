@@ -20,9 +20,12 @@ bug or restart here can never affect the live phone → PC sync pipeline.
   every phone/app that has sent data.
 - ✅ Filter by VIN/model text, OK/NOT OK, and date range.
 - ✅ Download the full running Excel file, or a filtered export.
+- ✅ Download the NOT OK training-image dataset as a ZIP (same data
+  receiver.py's own Download ZIP button offers, just reachable off-PC here).
 - ❌ No pairing, no upload, no delete, no settings, no device management.
   Every route is read-only at the code level (files are only ever opened
-  for reading).
+  for reading) — the negative-dataset ZIP download above has no delete
+  counterpart here; deleting that dataset stays receiver.py/localhost-only.
 - ❌ No access to `receiver.py`'s admin dashboard, config, or device list —
   those stay on the receiver, localhost-only, exactly as today.
 
@@ -87,6 +90,14 @@ it, change the folder, then start it again.
 scripted first-run — it's only used if nothing has been saved via
 `--set-data-dir` yet, same priority order the receiver itself uses for its
 own data-folder setting.)
+
+**Negative-dataset folder:** the NOT OK training images live in a separate
+folder next to `received_data/` (receiver.py's `negative_dataset/`), so it
+has its own setting — `VIEWER_NEGATIVE_DATASET_DIR`. On the same PC as
+receiver.py this defaults correctly with nothing to set. Running elsewhere,
+point it at a synced copy the same way as `VIEWER_DATA_DIR` above (there's
+no `--set-negative-dataset-dir` flag yet — set the environment variable
+before starting the viewer).
 
 - **Running on the same PC as receiver.py** (simplest): point it straight
   at the receiver's own data folder — same path, no copying.

@@ -38,10 +38,12 @@ import io
 import json
 import os
 import secrets
+import zipfile
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 import mimetypes
@@ -52,6 +54,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+from starlette.concurrency import run_in_threadpool
 
 from assets import FAVICON_PNG_BASE64, LOGO_PNG_BASE64
 
@@ -163,6 +166,19 @@ if not DATA_DIR.exists():
     print(f"[warn] Data folder {DATA_DIR} does not exist yet -- the viewer will "
           f"show no data until it does. Set VIEWER_DATA_DIR to point at the "
           f"receiver's data folder.")
+
+# Same idea as DATA_DIR above, but for receiver.py's negative_dataset/ store
+# (NOT OK training images) -- a separate folder next to received_data/, not
+# inside it, so it needs its own path. Download-only here (no delete: that
+# stays receiver.py/localhost-only, see README). Defaults to the sibling of
+# received_data/ when DATA_DIR wasn't overridden, matching receiver.py's own
+# APP_DIR/negative_dataset default; set VIEWER_NEGATIVE_DATASET_DIR explicitly
+# if this viewer's data folder was repointed at a synced copy elsewhere.
+NEGATIVE_DATASET_DIR = Path(
+    _config.get("negativeDatasetDir")
+    or os.environ.get("VIEWER_NEGATIVE_DATASET_DIR")
+    or (APP_DIR / "negative_dataset")
+)
 
 PORT = int(os.environ.get("VIEWER_PORT", "8766"))
 TLS_CERT = os.environ.get("VIEWER_TLS_CERT")
@@ -820,6 +836,38 @@ async def download_filtered_excel(request: Request, _: None = Depends(_require_s
     )
 
 
+def _build_negative_dataset_zip() -> bytes:
+    """Blocking: zips the entire negative_dataset store in memory. Mirrors
+    receiver.py's own _build_negative_dataset_zip -- read-only here too,
+    there's no equivalent delete route in this app."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if NEGATIVE_DATASET_DIR.exists():
+            for f in NEGATIVE_DATASET_DIR.rglob("*"):
+                if f.is_file():
+                    zf.write(f, f.relative_to(NEGATIVE_DATASET_DIR))
+    return buf.getvalue()
+
+
+@app.get("/download/negative-dataset")
+async def download_negative_dataset(_: None = Depends(_require_session)):
+    """Lets any logged-in viewer pull a ZIP of the NOT OK training images
+    receiver.py has accumulated -- same data receiver.py's own (localhost-only)
+    Download ZIP button offers, just reachable over the network here since
+    this viewer is already the app people use to grab data off-PC (the Excel
+    downloads above work the same way). Delete deliberately has no viewer
+    equivalent -- that destructive action stays receiver.py/localhost-only."""
+    if not NEGATIVE_DATASET_DIR.exists() or not any(NEGATIVE_DATASET_DIR.rglob("*")):
+        raise HTTPException(status_code=404, detail="No negative-dataset images yet")
+    zip_bytes = await run_in_threadpool(_build_negative_dataset_zip)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="negative_dataset_{stamp}.zip"'},
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(viewer_session: str | None = Cookie(default=None)):
     if not _session_valid(viewer_session):
@@ -1134,6 +1182,7 @@ VIEWER_HTML = """<!doctype html>
     <button class="secondary" id="downloadMonthBtn">Download Month</button>
     <button class="secondary" id="downloadFullBtn">Download Full Excel</button>
     <button class="primary" id="downloadFilteredBtn">Download Filtered Excel</button>
+    <button class="secondary" id="downloadNegBtn">Download NOT OK Dataset (ZIP)</button>
   </div>
   <div id="sizeWarnBanner" style="display:none;"></div>
   <div id="truncatedBanner" style="display:none;"></div>
@@ -1879,6 +1928,9 @@ document.getElementById('downloadFilteredBtn').addEventListener('click', () => {
   const rows = getFilteredRows();
   downloadBlob('/download/excel-filtered', { rows, device: currentDevice, appName: currentAppName },
     `${currentDevice}_${currentAppName}_filtered.xlsx`);
+});
+document.getElementById('downloadNegBtn').addEventListener('click', () => {
+  window.location = '/download/negative-dataset';
 });
 
 loadApps();
