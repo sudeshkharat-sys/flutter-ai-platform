@@ -70,7 +70,14 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
 /// already knows how to read (ModelManager().predictBytes). Downscaling to
 /// [targetWidth] here (not after) is what keeps each live tick cheap --
 /// converting at full sensor resolution would cost far more than the
-/// inference itself.
+/// inference itself. Called at 640px/quality-90 (bumped up from an earlier
+/// 480px/quality-75) -- the smaller settings were producing confidence
+/// scores that hovered right around the watch threshold for small targets
+/// (a logo/badge occupying a small part of the frame), causing the live
+/// box to flicker in and out tick-to-tick even on a stationary part. If a
+/// device shows tick times creeping past the ~400ms watch interval in the
+/// debug console, that's the tradeoff to re-check before pushing this
+/// higher still.
 ///
 /// [rotationDegrees] should be the camera's sensorOrientation (typically
 /// 90 for a phone's back camera held in portrait). If live boxes come out
@@ -164,7 +171,7 @@ Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
       rotated = img.copyRotate(out, angle: rotationDegrees);
     }
 
-    return Uint8List.fromList(img.encodeJpg(rotated, quality: 75));
+    return Uint8List.fromList(img.encodeJpg(rotated, quality: 90));
   } catch (_) {
     return null;
   }
@@ -853,7 +860,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   })
               .toList(),
           'rotationDegrees': sensorOrientation,
-          'targetWidth': 480,
+          'targetWidth': 640,
         });
         if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
@@ -1051,7 +1058,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   })
               .toList(),
           'rotationDegrees': sensorOrientation,
-          'targetWidth': 480,
+          'targetWidth': 640,
         });
         if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
@@ -2424,7 +2431,14 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
 /// already knows how to read (ModelManager().predictBytes). Downscaling to
 /// [targetWidth] here (not after) is what keeps each live tick cheap --
 /// converting at full sensor resolution would cost far more than the
-/// inference itself.
+/// inference itself. Called at 640px/quality-90 (bumped up from an earlier
+/// 480px/quality-75) -- the smaller settings were producing confidence
+/// scores that hovered right around the watch threshold for small targets
+/// (a logo/badge occupying a small part of the frame), causing the live
+/// box to flicker in and out tick-to-tick even on a stationary part. If a
+/// device shows tick times creeping past the ~400ms watch interval in the
+/// debug console, that's the tradeoff to re-check before pushing this
+/// higher still.
 ///
 /// [rotationDegrees] should be the camera's sensorOrientation (typically
 /// 90 for a phone's back camera held in portrait). If live boxes come out
@@ -2518,7 +2532,7 @@ Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
       rotated = img.copyRotate(out, angle: rotationDegrees);
     }
 
-    return Uint8List.fromList(img.encodeJpg(rotated, quality: 75));
+    return Uint8List.fromList(img.encodeJpg(rotated, quality: 90));
   } catch (_) {
     return null;
   }
@@ -3138,7 +3152,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   })
               .toList(),
           'rotationDegrees': sensorOrientation,
-          'targetWidth': 480,
+          'targetWidth': 640,
         });
         if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
@@ -3332,7 +3346,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   })
               .toList(),
           'rotationDegrees': sensorOrientation,
-          'targetWidth': 480,
+          'targetWidth': 640,
         });
         if (bytes == null) continue;
         final detections = await ModelManager().predictBytes(bytes);
