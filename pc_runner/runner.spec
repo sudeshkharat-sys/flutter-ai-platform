@@ -6,7 +6,9 @@
 # wires in the YOLO detector).
 #
 # Build:   pyinstaller runner.spec
-# Output:  dist/runner/runner.exe
+# Output:  dist/runner.exe -- a single self-contained file (onefile mode).
+#          Copy just this one .exe anywhere and double-click it to run --
+#          no Python install, no accompanying folder needed.
 
 from PyInstaller.utils.hooks import collect_all
 
@@ -45,8 +47,10 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="runner",
     debug=False,
     bootloader_ignore_signals=False,
@@ -54,15 +58,4 @@ exe = EXE(
     upx=False,
     console=True,
     icon=None,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="runner",
 )
