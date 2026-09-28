@@ -100,26 +100,36 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
     }
   }
 
+  Completer<void>? _captureLoopDone;
+
   Future<void> _captureLoop() async {
+    _captureLoopDone = Completer<void>();
     while (_streaming && _cameraController != null) {
       try {
         final picture = await _cameraController!.takePicture();
+        if (!_streaming) break; // Stop was pressed while takePicture() was in flight.
         final bytes = await picture.readAsBytes();
+        if (!_streaming) break;
         _channel?.sink.add(bytes);
         _framesSent++;
         if (mounted) setState(() {});
       } catch (e) {
-        setState(() => _status = 'send error: $e');
+        if (_streaming) setState(() => _status = 'send error: $e');
         break;
       }
       await Future.delayed(const Duration(milliseconds: 200));
     }
+    _captureLoopDone?.complete();
   }
 
   Future<void> _stop() async {
     _streaming = false;
     _connectionConfirmed = false;
-    await _cameraController?.stopImageStream().catchError((_) {});
+    // Wait for any in-flight takePicture()/send in _captureLoop to notice
+    // _streaming is false and exit before disposing the controller under it
+    // -- disposing while it's still mid-await is what made Stop look like
+    // it wasn't working (it silently threw inside the loop's try/catch).
+    await _captureLoopDone?.future;
     await _cameraController?.dispose();
     await _channel?.sink.close();
     _cameraController = null;
