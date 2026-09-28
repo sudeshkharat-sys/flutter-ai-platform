@@ -1,0 +1,20 @@
+name: connectivity_test_app
+description: Throwaway phone->PC camera streaming connectivity test (step 1 of LIVE_FEED_RUNNER_PLAN.md).
+publish_to: "none"
+version: 0.0.1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  camera: ^0.10.6
+  web_socket_channel: ^2.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
