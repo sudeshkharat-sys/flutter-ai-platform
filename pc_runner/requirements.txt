@@ -3,3 +3,4 @@ uvicorn[standard]
 opencv-python
 numpy
 websockets
+pyinstaller
