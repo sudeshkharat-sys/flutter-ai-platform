@@ -48,6 +48,8 @@ async def stream(websocket: WebSocket):
                 continue
 
             frame_count += 1
+            await websocket.send_text(f"ack:{frame_count}")
+
             now = time.monotonic()
             if now - last_report >= 1.0:
                 print(f"[runner] {frame_count} frames received so far")

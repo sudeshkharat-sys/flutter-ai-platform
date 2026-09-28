@@ -29,7 +29,9 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
   CameraController? _cameraController;
   WebSocketChannel? _channel;
   bool _streaming = false;
+  bool _connectionConfirmed = false;
   int _framesSent = 0;
+  int _framesAcked = 0;
   String _status = 'idle';
 
   @override
@@ -50,6 +52,36 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
     try {
       _channel = WebSocketChannel.connect(uri);
 
+      // WebSocketChannel.connect() returns immediately without actually
+      // waiting for the handshake to succeed -- awaiting `ready` is what
+      // surfaces a real connection failure instead of silently pretending
+      // it worked.
+      await _channel!.ready;
+      _connectionConfirmed = true;
+
+      _channel!.stream.listen(
+        (message) {
+          // runner.py sends back "ack:<n>" after each frame it decodes,
+          // so a rising _framesAcked means frames are really arriving,
+          // not just being handed to the socket.
+          if (message is String && message.startsWith('ack:')) {
+            setState(() => _framesAcked++);
+          }
+        },
+        onDone: () {
+          setState(() {
+            _status = 'connection closed by server';
+            _streaming = false;
+          });
+        },
+        onError: (e) {
+          setState(() {
+            _status = 'connection error: $e';
+            _streaming = false;
+          });
+        },
+      );
+
       _cameraController = CameraController(
         _cameras.first,
         ResolutionPreset.low,
@@ -64,7 +96,7 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
 
       _captureLoop();
     } catch (e) {
-      setState(() => _status = 'error: $e');
+      setState(() => _status = 'connect failed: $e');
     }
   }
 
@@ -86,6 +118,7 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
 
   Future<void> _stop() async {
     _streaming = false;
+    _connectionConfirmed = false;
     await _cameraController?.stopImageStream().catchError((_) {});
     await _cameraController?.dispose();
     await _channel?.sink.close();
@@ -120,7 +153,9 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
             ),
             const SizedBox(height: 16),
             Text('Status: $_status'),
+            Text('Connection confirmed: $_connectionConfirmed'),
             Text('Frames sent: $_framesSent'),
+            Text('Frames acked by PC: $_framesAcked'),
           ],
         ),
       ),
