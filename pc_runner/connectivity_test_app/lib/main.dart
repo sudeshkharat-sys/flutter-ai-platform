@@ -47,9 +47,25 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
     final port = _portController.text.trim();
     final uri = Uri.parse('ws://$ip:$port/stream');
 
-    setState(() => _status = 'connecting to $uri ...');
+    setState(() => _status = 'starting camera ...');
 
     try {
+      // Camera init (and its permission prompt) happens before the network
+      // connect, not after -- with connect-first, a network failure threw
+      // out of _start() before the camera line ever ran, so the camera
+      // permission dialog never appeared and made it look like the app had
+      // stopped asking for camera access. Starting the camera first means
+      // you always get the permission prompt and can see the camera is
+      // working even while debugging a network problem separately.
+      _cameraController = CameraController(
+        _cameras.first,
+        ResolutionPreset.low,
+        enableAudio: false,
+      );
+      await _cameraController!.initialize();
+
+      setState(() => _status = 'connecting to $uri ...');
+
       _channel = WebSocketChannel.connect(uri);
 
       // WebSocketChannel.connect() returns immediately without actually
@@ -82,13 +98,6 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
         },
       );
 
-      _cameraController = CameraController(
-        _cameras.first,
-        ResolutionPreset.low,
-        enableAudio: false,
-      );
-      await _cameraController!.initialize();
-
       setState(() {
         _streaming = true;
         _status = 'streaming to $uri';
@@ -96,7 +105,9 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
 
       _captureLoop();
     } catch (e) {
-      setState(() => _status = 'connect failed: $e');
+      await _cameraController?.dispose();
+      _cameraController = null;
+      setState(() => _status = 'start failed: $e');
     }
   }
 
@@ -140,7 +151,7 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Connectivity test (step 1)')),
+      appBar: AppBar(title: const Text('Runner Cam (step 1)')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
