@@ -29,6 +29,18 @@ Then add camera + internet permissions:
 **android/app/build.gradle** -- make sure `minSdkVersion` is at least 21
 (the `camera` package requires it).
 
+Then generate the app icon (sky-blue camera glyph, matching the Receiver/
+Viewer card style) into the freshly-created `android/` scaffolding:
+
+```bash
+flutter pub get
+flutter pub run flutter_launcher_icons
+```
+
+`assets/icon/icon.png` is the source image; `flutter_launcher_icons` (config
+in `pubspec.yaml`) writes it into every `android/app/src/main/res/mipmap-*`
+density. Re-run that command any time `assets/icon/icon.png` changes.
+
 ## Run
 
 ```bash
