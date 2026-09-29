@@ -29,6 +29,16 @@ Then add camera + internet permissions:
 **android/app/build.gradle** -- make sure `minSdkVersion` is at least 21
 (the `camera` package requires it).
 
+Then set the home-screen app name to "Runner Cam" (`flutter create` defaults
+`android:label` to the raw project name, `connectivity_test_app`):
+
+```bash
+# from inside connectivity_test_app/
+sed -i 's/android:label="connectivity_test_app"/android:label="Runner Cam"/' android/app/src/main/AndroidManifest.xml
+```
+(On Windows PowerShell, use:
+`(Get-Content android\app\src\main\AndroidManifest.xml) -replace 'android:label="connectivity_test_app"', 'android:label="Runner Cam"' | Set-Content android\app\src\main\AndroidManifest.xml`)
+
 Then generate the app icon (sky-blue camera glyph, matching the Receiver/
 Viewer card style) into the freshly-created `android/` scaffolding:
 
