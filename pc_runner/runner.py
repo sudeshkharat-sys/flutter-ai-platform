@@ -33,21 +33,17 @@ app = FastAPI()
 # milliseconds per call. Doing that inline in the async websocket handler
 # stalls the asyncio loop, which stops draining the phone's TCP socket --
 # on Windows that shows up as "WinError 121: semaphore timeout period has
-# expired" a few frames in, and the phone gets disconnected. Displaying
-# happens in a dedicated thread instead, fed through a small queue, so the
-# websocket receive loop never blocks on the window.
+# expired" a few frames in, and the phone gets disconnected.
+#
+# The fix is NOT to move cv2.imshow onto a worker thread -- OpenCV's
+# HighGUI window on Windows is unreliable (often silently never paints)
+# when driven from a thread other than the process's main thread. Instead
+# the server itself runs on a background thread, and the main thread runs
+# the cv2 display loop, pulling decoded frames through a small queue. That
+# keeps imshow/waitKey on the main thread (where Windows wants it) while
+# still keeping the websocket receive loop from ever blocking on the
+# window.
 _display_queue: "queue.Queue[np.ndarray | None]" = queue.Queue(maxsize=2)
-
-
-def _display_worker():
-    window = "runner.py -- connectivity check (no model)"
-    while True:
-        frame = _display_queue.get()
-        if frame is None:
-            break
-        cv2.imshow(window, frame)
-        cv2.waitKey(1)
-    cv2.destroyAllWindows()
 
 
 @app.websocket("/stream")
@@ -86,7 +82,7 @@ async def stream(websocket: WebSocket):
                 (0, 255, 0),
                 2,
             )
-            # Drop the frame if the display thread is still behind rather
+            # Drop the frame if the display loop is still behind rather
             # than blocking the receive loop on a full queue.
             try:
                 _display_queue.put_nowait(frame)
@@ -97,12 +93,28 @@ async def stream(websocket: WebSocket):
         print(f"[runner] phone disconnected after {frame_count} frames")
 
 
+def _run_server(port: int):
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8090)
     args = parser.parse_args()
 
-    threading.Thread(target=_display_worker, daemon=True).start()
-
     print(f"[runner] listening on ws://0.0.0.0:{args.port}/stream")
-    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    threading.Thread(target=_run_server, args=(args.port,), daemon=True).start()
+
+    # Main thread: own the cv2 window. Windows' HighGUI backend wants
+    # imshow/waitKey called consistently from one thread, and reliably
+    # that means the main thread.
+    window = "runner.py -- connectivity check (no model)"
+    try:
+        while True:
+            frame = _display_queue.get()
+            cv2.imshow(window, frame)
+            cv2.waitKey(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cv2.destroyAllWindows()
