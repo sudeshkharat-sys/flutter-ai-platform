@@ -93,8 +93,21 @@ async def stream(websocket: WebSocket):
         print(f"[runner] phone disconnected after {frame_count} frames")
 
 
+class _ServerNoSignalHandlers(uvicorn.Server):
+    # uvicorn installs OS signal handlers (Ctrl+C, etc.) on startup, which
+    # Python only allows from the main thread -- on Windows that raises
+    # ValueError: signal only works in main thread of the main interpreter.
+    # That exception killed this thread before the server ever bound its
+    # socket, so it printed nothing and accepted no connections, old APK
+    # or new. The main thread's cv2 loop below already handles Ctrl+C, so
+    # this thread doesn't need its own signal handlers.
+    def install_signal_handlers(self) -> None:
+        pass
+
+
 def _run_server(port: int):
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    config = uvicorn.Config(app, host="0.0.0.0", port=port)
+    _ServerNoSignalHandlers(config).run()
 
 
 if __name__ == "__main__":
