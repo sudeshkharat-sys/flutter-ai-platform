@@ -1233,17 +1233,10 @@ class ModelManager {
     final input = inputData.reshape([1, inputSize, inputSize, 3]);
 {% endif %}
 
-    final outputTensor = interpreter.getOutputTensor(0);
-    final shape = outputTensor.shape;
-    var output;
-    if (shape.length == 3) {
-      output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
-    } else {
-      return [];
-    }
-
-    interpreter.run(input, output);
-    final detections = _parseGenericYolo(output[0], labels, threshold, inputSize, shape{% if ocr_enabled %},
+    final raw = _runModel(interpreter, input);
+    if (raw == null) return [];
+    final detections = _parseGenericYolo(raw.output[0], labels, threshold, inputSize, raw.shape,
+        protos: raw.protos, protoShape: raw.protoShape{% if ocr_enabled %},
         padX: lb.padX, padY: lb.padY, unpadW: lb.unpadW, unpadH: lb.unpadH{% endif %});
     debugPrint('[Detector] raw detections: ${detections.length}, first bbox: ${detections.isNotEmpty ? detections.first.bbox : "none"}');
     return detections;
@@ -1278,20 +1271,39 @@ class ModelManager {
     final input = inputData.reshape([1, inputSize, inputSize, 3]);
 {% endif %}
 
-    final outputTensor = interpreter.getOutputTensor(0);
-    final shape = outputTensor.shape;
-    var output;
-    if (shape.length == 3) {
-      output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
-    } else {
-      return [];
-    }
-
-    interpreter.run(input, output);
-    final detections = _parseGenericYolo(output[0], labels, threshold, inputSize, shape{% if ocr_enabled %},
+    final raw = _runModel(interpreter, input);
+    if (raw == null) return [];
+    final detections = _parseGenericYolo(raw.output[0], labels, threshold, inputSize, raw.shape,
+        protos: raw.protos, protoShape: raw.protoShape{% if ocr_enabled %},
         padX: lb.padX, padY: lb.padY, unpadW: lb.unpadW, unpadH: lb.unpadH{% endif %});
     debugPrint('[Detector] raw detections: ${detections.length}, first bbox: ${detections.isNotEmpty ? detections.first.bbox : "none"}');
     return detections;
+  }
+
+  /// Runs the model. A detect export has one output ([1, 4+N, boxes]); a
+  /// segment export has a second rank-4 output (the mask prototypes,
+  /// [1, mh, mw, nm] or [1, nm, mh, mw]) that is what turns a box into a
+  /// polygon. Returns null for an unusable output layout.
+  static _RawOutput? _runModel(Interpreter interpreter, Object input) {
+    final outTensors = interpreter.getOutputTensors();
+    int detIdx = -1;
+    int protoIdx = -1;
+    for (int i = 0; i < outTensors.length; i++) {
+      final len = outTensors[i].shape.length;
+      if (len == 3 && detIdx < 0) detIdx = i;
+      if (len == 4 && protoIdx < 0) protoIdx = i;
+    }
+    if (detIdx < 0) return null;
+    final shape = outTensors[detIdx].shape;
+    final output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+    if (protoIdx < 0) {
+      interpreter.run(input, output);
+      return _RawOutput(output, shape, null, null);
+    }
+    final ps = outTensors[protoIdx].shape;
+    final protos = List.generate(ps[0], (_) => List.generate(ps[1], (_) => List.generate(ps[2], (_) => List.filled(ps[3], 0.0))));
+    interpreter.runForMultipleInputs([input], {detIdx: output, protoIdx: protos});
+    return _RawOutput(output, shape, protos, ps);
   }
 
   /// [padX]/[padY]/[unpadW]/[unpadH] describe the letterbox applied to the
@@ -1307,8 +1319,15 @@ class ModelManager {
     int padY = 0,
     int unpadW = 0,
     int unpadH = 0,
+    List<dynamic>? protos,
+    List<int>? protoShape,
   }) {
     final results = <DetectionResult>[];
+    // Per-detection mask coefficients + canvas-space box, only kept for a
+    // segment model; keyed by identity so they survive NMS reordering.
+    final segInfo = Map<DetectionResult, _SegInfo>.identity();
+    final int numMaskCoeffs = numElements - 4 - labels.length;
+    final bool hasMasks = protos != null && protoShape != null && numMaskCoeffs > 0;
 
     // Check if output is [4+N, 8400] or [8400, 4+N]
     bool isTransposed = shape[1] < shape[2];
@@ -1384,14 +1403,181 @@ class ModelManager {
             h / coordScale,
           );
         }
-        results.add(DetectionResult(
+        final det = DetectionResult(
           className: (classId >= 0 && classId < labels.length) ? labels[classId] : 'unknown (id:$classId)',
           confidence: maxClassScore,
           bbox: box,
-        ));
+        );
+        results.add(det);
+        if (hasMasks) {
+          // Box in canvas-normalized [0,1] coords (the space the mask
+          // prototypes live in), plus this box's mask coefficients.
+          final double denom = maxSampledCoord > 1.5 ? inputSize.toDouble() : 1.0;
+          final coeffs = List<double>.generate(numMaskCoeffs, (k) {
+            final ch = 4 + labels.length + k;
+            return (isTransposed ? output[ch][i] : output[i][ch]) as double;
+          });
+          segInfo[det] = _SegInfo(
+            coeffs,
+            Rect.fromLTRB((cx - w / 2) / denom, (cy - h / 2) / denom, (cx + w / 2) / denom, (cy + h / 2) / denom),
+          );
+        }
       }
     }
-    return _applyNMS(results, iouThreshold: 0.45);
+    final kept = _applyNMS(results, iouThreshold: 0.45);
+    if (!hasMasks) return kept;
+
+    final bool letterboxed = unpadW > 0 && unpadH > 0;
+    // Canvas-normalized point -> normalized original-image point, the same
+    // transform the bbox above went through.
+    Offset toImage(double u, double v) => letterboxed
+        ? Offset((u * inputSize - padX) / unpadW, (v * inputSize - padY) / unpadH)
+        : Offset(u, v);
+    return kept.map((d) {
+      final info = segInfo[d];
+      if (info == null) return d;
+      final poly = _maskToPolygon(info.coeffs, info.canvasBox, protos!, protoShape!, toImage);
+      return poly == null ? d : d.copyWith(polygon: poly);
+    }).toList();
+  }
+
+  /// mask = sigmoid(coeffs . protos), cropped to the detection box, then the
+  /// outline of its largest blob simplified to a small polygon (normalized
+  /// original-image coords). Null when the mask is empty.
+  static List<Offset>? _maskToPolygon(
+    List<double> coeffs,
+    Rect canvasBox,
+    List<dynamic> protos,
+    List<int> ps,
+    Offset Function(double, double) toImage,
+  ) {
+    final bool nhwc = ps[3] == coeffs.length;
+    final int mh = nhwc ? ps[1] : ps[2];
+    final int mw = nhwc ? ps[2] : ps[3];
+    final int nm = coeffs.length;
+    final p = protos[0] as List;
+
+    final int x0 = (canvasBox.left * mw).floor().clamp(0, mw - 1).toInt();
+    final int x1 = (canvasBox.right * mw).ceil().clamp(x0 + 1, mw).toInt();
+    final int y0 = (canvasBox.top * mh).floor().clamp(0, mh - 1).toInt();
+    final int y1 = (canvasBox.bottom * mh).ceil().clamp(y0 + 1, mh).toInt();
+    final int gw = x1 - x0;
+    final int gh = y1 - y0;
+
+    // Binary mask on the cropped grid (logit > 0 == sigmoid > 0.5).
+    final grid = List<bool>.filled(gw * gh, false);
+    bool any = false;
+    for (int y = 0; y < gh; y++) {
+      for (int x = 0; x < gw; x++) {
+        double logit = 0.0;
+        if (nhwc) {
+          final cell = p[y0 + y][x0 + x] as List;
+          for (int k = 0; k < nm; k++) {
+            logit += coeffs[k] * (cell[k] as double);
+          }
+        } else {
+          for (int k = 0; k < nm; k++) {
+            logit += coeffs[k] * ((p[k] as List)[y0 + y][x0 + x] as double);
+          }
+        }
+        if (logit > 0) {
+          grid[y * gw + x] = true;
+          any = true;
+        }
+      }
+    }
+    if (!any) return null;
+
+    // Keep only the largest 4-connected blob (drops stray specks).
+    final comp = List<int>.filled(gw * gh, 0);
+    int bestLabel = 0, bestSize = 0, label = 0;
+    for (int s = 0; s < gw * gh; s++) {
+      if (!grid[s] || comp[s] != 0) continue;
+      label++;
+      int size = 0;
+      final stack = <int>[s];
+      comp[s] = label;
+      while (stack.isNotEmpty) {
+        final c = stack.removeLast();
+        size++;
+        final fx = c % gw, fy = c ~/ gw;
+        if (fx > 0 && grid[c - 1] && comp[c - 1] == 0) { comp[c - 1] = label; stack.add(c - 1); }
+        if (fx < gw - 1 && grid[c + 1] && comp[c + 1] == 0) { comp[c + 1] = label; stack.add(c + 1); }
+        if (fy > 0 && grid[c - gw] && comp[c - gw] == 0) { comp[c - gw] = label; stack.add(c - gw); }
+        if (fy < gh - 1 && grid[c + gw] && comp[c + gw] == 0) { comp[c + gw] = label; stack.add(c + gw); }
+      }
+      if (size > bestSize) { bestSize = size; bestLabel = label; }
+    }
+    bool inMask(int x, int y) => x >= 0 && y >= 0 && x < gw && y < gh && comp[y * gw + x] == bestLabel;
+
+    // Moore-neighbour boundary trace of that blob.
+    int sx = -1, sy = -1;
+    outer:
+    for (int y = 0; y < gh; y++) {
+      for (int x = 0; x < gw; x++) {
+        if (inMask(x, y)) { sx = x; sy = y; break outer; }
+      }
+    }
+    if (sx < 0) return null;
+    const dx = [-1, -1, 0, 1, 1, 1, 0, -1];
+    const dy = [0, -1, -1, -1, 0, 1, 1, 1];
+    final contour = <Offset>[Offset(sx.toDouble(), sy.toDouble())];
+    int cx = sx, cy = sy, dir = 4; // first pixel in scan order: entered heading east
+    for (int guard = 0; guard < gw * gh * 4; guard++) {
+      bool moved = false;
+      for (int i = 0; i < 8; i++) {
+        final d = (dir + 5 + i) % 8; // clockwise, starting just past the backtrack cell
+        final nx = cx + dx[d], ny = cy + dy[d];
+        if (inMask(nx, ny)) {
+          cx = nx; cy = ny; dir = d; moved = true;
+          break;
+        }
+      }
+      if (!moved || (cx == sx && cy == sy)) break;
+      contour.add(Offset(cx.toDouble(), cy.toDouble()));
+    }
+    if (contour.length < 3) return null;
+
+    final simplified = _simplifyPolygon(contour, 1.0);
+    if (simplified.length < 3) return null;
+    return simplified
+        .map((o) => toImage((x0 + o.dx + 0.5) / mw, (y0 + o.dy + 0.5) / mh))
+        .toList();
+  }
+
+  /// Douglas-Peucker on a closed ring (split at the two farthest-apart
+  /// points so the ring's seam isn't an arbitrary anchor).
+  static List<Offset> _simplifyPolygon(List<Offset> pts, double eps) {
+    if (pts.length < 4) return pts;
+    int far = 0;
+    double best = -1;
+    for (int i = 1; i < pts.length; i++) {
+      final d = (pts[i] - pts[0]).distanceSquared;
+      if (d > best) { best = d; far = i; }
+    }
+    final a = _dp(pts.sublist(0, far + 1), eps);
+    final b = _dp([...pts.sublist(far), pts[0]], eps);
+    return [...a.sublist(0, a.length - 1), ...b.sublist(0, b.length - 1)];
+  }
+
+  static List<Offset> _dp(List<Offset> pts, double eps) {
+    if (pts.length < 3) return pts;
+    final a = pts.first, b = pts.last;
+    double maxD = 0;
+    int idx = 0;
+    final ab = b - a;
+    final len2 = ab.distanceSquared;
+    for (int i = 1; i < pts.length - 1; i++) {
+      final ap = pts[i] - a;
+      final double d = len2 == 0
+          ? ap.distance
+          : ((ap.dx * ab.dy - ap.dy * ab.dx).abs() / ab.distance);
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD <= eps) return [a, b];
+    final l = _dp(pts.sublist(0, idx + 1), eps);
+    final r = _dp(pts.sublist(idx), eps);
+    return [...l.sublist(0, l.length - 1), ...r];
   }
 
   // Non-Max Suppression: removes duplicate overlapping boxes, keeps highest confidence per object
@@ -1434,4 +1620,18 @@ class ModelManager {
     final unionArea = a.width * a.height + b.width * b.height - interArea;
     return unionArea <= 0 ? 0.0 : interArea / unionArea;
   }
+}
+
+class _RawOutput {
+  final List<dynamic> output;
+  final List<int> shape;
+  final List<dynamic>? protos;
+  final List<int>? protoShape;
+  _RawOutput(this.output, this.shape, this.protos, this.protoShape);
+}
+
+class _SegInfo {
+  final List<double> coeffs;
+  final Rect canvasBox;
+  _SegInfo(this.coeffs, this.canvasBox);
 }

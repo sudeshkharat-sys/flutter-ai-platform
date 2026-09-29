@@ -2,6 +2,24 @@
 import 'package:flutter/material.dart';
 import '../ml/detection_result.dart';
 
+// Draws a segmented object's outline: translucent fill + stroked polygon.
+void _drawPolygon(Canvas canvas, Size size, List<Offset> pts, Color color) {
+  final path = Path()..moveTo(pts.first.dx * size.width, pts.first.dy * size.height);
+  for (int k = 1; k < pts.length; k++) {
+    path.lineTo(pts[k].dx * size.width, pts[k].dy * size.height);
+  }
+  path.close();
+  canvas.drawPath(path, Paint()..color = color.withOpacity(0.25)..style = PaintingStyle.fill);
+  canvas.drawPath(
+    path,
+    Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5
+      ..strokeJoin = StrokeJoin.round,
+  );
+}
+
 class DetectionOverlay extends StatelessWidget {
   final List<DetectionResult> results;
   final Size previewSize;
@@ -116,26 +134,33 @@ class _BoundingBoxPainter extends CustomPainter {
         continue;
       }
 
-      final boxPaint = Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5;
-      canvas.drawRect(rect, boxPaint);
+      final poly = result.polygon;
+      if (poly != null && poly.length >= 3) {
+        // Segment model: outline the object itself instead of its box.
+        _drawPolygon(canvas, size, poly, color);
+      } else {
+        final boxPaint = Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5;
+        canvas.drawRect(rect, boxPaint);
 
-      final accentPaint = Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4.0;
-      const cornerLen = 16.0;
+        final accentPaint = Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 4.0;
+        const cornerLen = 16.0;
 
-      canvas.drawLine(rect.topLeft, rect.topLeft.translate(cornerLen, 0), accentPaint);
-      canvas.drawLine(rect.topLeft, rect.topLeft.translate(0, cornerLen), accentPaint);
-      canvas.drawLine(rect.topRight, rect.topRight.translate(-cornerLen, 0), accentPaint);
-      canvas.drawLine(rect.topRight, rect.topRight.translate(0, cornerLen), accentPaint);
-      canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(cornerLen, 0), accentPaint);
-      canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(0, -cornerLen), accentPaint);
-      canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(-cornerLen, 0), accentPaint);
-      canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(0, -cornerLen), accentPaint);
+        canvas.drawLine(rect.topLeft, rect.topLeft.translate(cornerLen, 0), accentPaint);
+        canvas.drawLine(rect.topLeft, rect.topLeft.translate(0, cornerLen), accentPaint);
+        canvas.drawLine(rect.topRight, rect.topRight.translate(-cornerLen, 0), accentPaint);
+        canvas.drawLine(rect.topRight, rect.topRight.translate(0, cornerLen), accentPaint);
+        canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(cornerLen, 0), accentPaint);
+        canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(0, -cornerLen), accentPaint);
+        canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(-cornerLen, 0), accentPaint);
+        canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(0, -cornerLen), accentPaint);
+
+      }
 
       if (showLabels) {
         final label = showConfidence
@@ -207,6 +232,24 @@ class _BoundingBoxPainter extends CustomPainter {
 {% else %}
 import 'package:flutter/material.dart';
 import '../ml/detection_result.dart';
+
+// Draws a segmented object's outline: translucent fill + stroked polygon.
+void _drawPolygon(Canvas canvas, Size size, List<Offset> pts, Color color) {
+  final path = Path()..moveTo(pts.first.dx * size.width, pts.first.dy * size.height);
+  for (int k = 1; k < pts.length; k++) {
+    path.lineTo(pts[k].dx * size.width, pts[k].dy * size.height);
+  }
+  path.close();
+  canvas.drawPath(path, Paint()..color = color.withOpacity(0.25)..style = PaintingStyle.fill);
+  canvas.drawPath(
+    path,
+    Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5
+      ..strokeJoin = StrokeJoin.round,
+  );
+}
 
 class DetectionOverlay extends StatelessWidget {
   final List<DetectionResult> results;
@@ -280,26 +323,33 @@ class _BoundingBoxPainter extends CustomPainter {
         result.bbox.bottom * size.height,
       );
 
-      final boxPaint = Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5;
-      canvas.drawRect(rect, boxPaint);
+      final poly = result.polygon;
+      if (poly != null && poly.length >= 3) {
+        // Segment model: outline the object itself instead of its box.
+        _drawPolygon(canvas, size, poly, color);
+      } else {
+        final boxPaint = Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5;
+        canvas.drawRect(rect, boxPaint);
 
-      final accentPaint = Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4.0;
-      const cornerLen = 16.0;
+        final accentPaint = Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 4.0;
+        const cornerLen = 16.0;
 
-      canvas.drawLine(rect.topLeft, rect.topLeft.translate(cornerLen, 0), accentPaint);
-      canvas.drawLine(rect.topLeft, rect.topLeft.translate(0, cornerLen), accentPaint);
-      canvas.drawLine(rect.topRight, rect.topRight.translate(-cornerLen, 0), accentPaint);
-      canvas.drawLine(rect.topRight, rect.topRight.translate(0, cornerLen), accentPaint);
-      canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(cornerLen, 0), accentPaint);
-      canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(0, -cornerLen), accentPaint);
-      canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(-cornerLen, 0), accentPaint);
-      canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(0, -cornerLen), accentPaint);
+        canvas.drawLine(rect.topLeft, rect.topLeft.translate(cornerLen, 0), accentPaint);
+        canvas.drawLine(rect.topLeft, rect.topLeft.translate(0, cornerLen), accentPaint);
+        canvas.drawLine(rect.topRight, rect.topRight.translate(-cornerLen, 0), accentPaint);
+        canvas.drawLine(rect.topRight, rect.topRight.translate(0, cornerLen), accentPaint);
+        canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(cornerLen, 0), accentPaint);
+        canvas.drawLine(rect.bottomLeft, rect.bottomLeft.translate(0, -cornerLen), accentPaint);
+        canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(-cornerLen, 0), accentPaint);
+        canvas.drawLine(rect.bottomRight, rect.bottomRight.translate(0, -cornerLen), accentPaint);
+
+      }
 
       if (showLabels) {
         final label = showConfidence

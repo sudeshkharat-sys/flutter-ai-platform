@@ -24,6 +24,9 @@ class DetectionResult {
   // only ever surfacing the joined [ocrText] string. Null for every other
   // engine (crnn/mlkit), which have no per-character boxes to show.
   final List<DetectionResult>? ocrCharBoxes;
+  // Outline of the segmented object (normalized 0-1 image coords), only set
+  // by segment-task models; null means draw the plain bbox.
+  final List<Offset>? polygon;
 
   const DetectionResult({
     required this.className,
@@ -34,6 +37,7 @@ class DetectionResult {
     this.ocrCrnnText,
     this.ocrMlKitText,
     this.ocrCharBoxes,
+    this.polygon,
   });
 
   DetectionResult copyWith({
@@ -42,6 +46,7 @@ class DetectionResult {
     String? ocrCrnnText,
     String? ocrMlKitText,
     List<DetectionResult>? ocrCharBoxes,
+    List<Offset>? polygon,
   }) => DetectionResult(
     className: className,
     confidence: confidence,
@@ -51,6 +56,7 @@ class DetectionResult {
     ocrCrnnText: ocrCrnnText ?? this.ocrCrnnText,
     ocrMlKitText: ocrMlKitText ?? this.ocrMlKitText,
     ocrCharBoxes: ocrCharBoxes ?? this.ocrCharBoxes,
+    polygon: polygon ?? this.polygon,
   );
 
   Map<String, dynamic> toJson() => {
@@ -67,6 +73,7 @@ class DetectionResult {
     'ocrCrnnText': ocrCrnnText,
     'ocrMlKitText': ocrMlKitText,
     'ocrCharBoxes': ocrCharBoxes?.map((c) => c.toJson()).toList(),
+    'polygon': polygon?.map((o) => [o.dx, o.dy]).toList(),
   };
 
   static DetectionResult fromJson(Map<String, dynamic> json) => DetectionResult(
@@ -86,6 +93,9 @@ class DetectionResult {
     ocrMlKitText: json['ocrMlKitText'] as String?,
     ocrCharBoxes: (json['ocrCharBoxes'] as List?)
         ?.map((c) => DetectionResult.fromJson(Map<String, dynamic>.from(c as Map)))
+        .toList(),
+    polygon: (json['polygon'] as List?)
+        ?.map((p) => Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()))
         .toList(),
   );
 
