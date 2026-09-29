@@ -57,5 +57,5 @@ exe = EXE(
     strip=False,
     upx=False,
     console=True,
-    icon="icon.ico",
+    icon=None,
 )

@@ -47,25 +47,9 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
     final port = _portController.text.trim();
     final uri = Uri.parse('ws://$ip:$port/stream');
 
-    setState(() => _status = 'starting camera ...');
+    setState(() => _status = 'connecting to $uri ...');
 
     try {
-      // Camera init (and its permission prompt) happens before the network
-      // connect, not after -- with connect-first, a network failure threw
-      // out of _start() before the camera line ever ran, so the camera
-      // permission dialog never appeared and made it look like the app had
-      // stopped asking for camera access. Starting the camera first means
-      // you always get the permission prompt and can see the camera is
-      // working even while debugging a network problem separately.
-      _cameraController = CameraController(
-        _cameras.first,
-        ResolutionPreset.low,
-        enableAudio: false,
-      );
-      await _cameraController!.initialize();
-
-      setState(() => _status = 'connecting to $uri ...');
-
       _channel = WebSocketChannel.connect(uri);
 
       // WebSocketChannel.connect() returns immediately without actually
@@ -98,6 +82,13 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
         },
       );
 
+      _cameraController = CameraController(
+        _cameras.first,
+        ResolutionPreset.low,
+        enableAudio: false,
+      );
+      await _cameraController!.initialize();
+
       setState(() {
         _streaming = true;
         _status = 'streaming to $uri';
@@ -105,42 +96,30 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
 
       _captureLoop();
     } catch (e) {
-      await _cameraController?.dispose();
-      _cameraController = null;
-      setState(() => _status = 'start failed: $e');
+      setState(() => _status = 'connect failed: $e');
     }
   }
 
-  Completer<void>? _captureLoopDone;
-
   Future<void> _captureLoop() async {
-    _captureLoopDone = Completer<void>();
     while (_streaming && _cameraController != null) {
       try {
         final picture = await _cameraController!.takePicture();
-        if (!_streaming) break; // Stop was pressed while takePicture() was in flight.
         final bytes = await picture.readAsBytes();
-        if (!_streaming) break;
         _channel?.sink.add(bytes);
         _framesSent++;
         if (mounted) setState(() {});
       } catch (e) {
-        if (_streaming) setState(() => _status = 'send error: $e');
+        setState(() => _status = 'send error: $e');
         break;
       }
       await Future.delayed(const Duration(milliseconds: 200));
     }
-    _captureLoopDone?.complete();
   }
 
   Future<void> _stop() async {
     _streaming = false;
     _connectionConfirmed = false;
-    // Wait for any in-flight takePicture()/send in _captureLoop to notice
-    // _streaming is false and exit before disposing the controller under it
-    // -- disposing while it's still mid-await is what made Stop look like
-    // it wasn't working (it silently threw inside the loop's try/catch).
-    await _captureLoopDone?.future;
+    await _cameraController?.stopImageStream().catchError((_) {});
     await _cameraController?.dispose();
     await _channel?.sink.close();
     _cameraController = null;
@@ -151,7 +130,7 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Runner Cam (step 1)')),
+      appBar: AppBar(title: const Text('Connectivity test (step 1)')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
