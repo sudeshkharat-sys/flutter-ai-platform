@@ -18,6 +18,8 @@ Each WebSocket message must be the raw bytes of one JPEG-encoded frame.
 """
 
 import argparse
+import queue
+import threading
 import time
 
 import cv2
@@ -26,6 +28,26 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 app = FastAPI()
+
+# cv2.imshow()/waitKey() pump a native GUI event loop and can take tens of
+# milliseconds per call. Doing that inline in the async websocket handler
+# stalls the asyncio loop, which stops draining the phone's TCP socket --
+# on Windows that shows up as "WinError 121: semaphore timeout period has
+# expired" a few frames in, and the phone gets disconnected. Displaying
+# happens in a dedicated thread instead, fed through a small queue, so the
+# websocket receive loop never blocks on the window.
+_display_queue: "queue.Queue[np.ndarray | None]" = queue.Queue(maxsize=2)
+
+
+def _display_worker():
+    window = "runner.py -- connectivity check (no model)"
+    while True:
+        frame = _display_queue.get()
+        if frame is None:
+            break
+        cv2.imshow(window, frame)
+        cv2.waitKey(1)
+    cv2.destroyAllWindows()
 
 
 @app.websocket("/stream")
@@ -64,19 +86,23 @@ async def stream(websocket: WebSocket):
                 (0, 255, 0),
                 2,
             )
-            cv2.imshow("runner.py -- connectivity check (no model)", frame)
-            cv2.waitKey(1)
+            # Drop the frame if the display thread is still behind rather
+            # than blocking the receive loop on a full queue.
+            try:
+                _display_queue.put_nowait(frame)
+            except queue.Full:
+                pass
 
     except WebSocketDisconnect:
         print(f"[runner] phone disconnected after {frame_count} frames")
-    finally:
-        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8090)
     args = parser.parse_args()
+
+    threading.Thread(target=_display_worker, daemon=True).start()
 
     print(f"[runner] listening on ws://0.0.0.0:{args.port}/stream")
     uvicorn.run(app, host="0.0.0.0", port=args.port)

@@ -140,7 +140,7 @@ class _StreamTestScreenState extends State<StreamTestScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Connectivity test (step 1)')),
+      appBar: AppBar(title: const Text('Runner Cam (step 1)')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
