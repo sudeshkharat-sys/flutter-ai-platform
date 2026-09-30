@@ -1326,13 +1326,13 @@ class ModelManager {
     // Per-detection mask coefficients + canvas-space box, only kept for a
     // segment model; keyed by identity so they survive NMS reordering.
     final segInfo = Map<DetectionResult, _SegInfo>.identity();
-    final int numMaskCoeffs = numElements - 4 - labels.length;
-    final bool hasMasks = protos != null && protoShape != null && numMaskCoeffs > 0;
 
     // Check if output is [4+N, 8400] or [8400, 4+N]
     bool isTransposed = shape[1] < shape[2];
     int numElements = isTransposed ? shape[1] : shape[2];
     int numBoxes = isTransposed ? shape[2] : shape[1];
+    final int numMaskCoeffs = numElements - 4 - labels.length;
+    final bool hasMasks = protos != null && protoShape != null && numMaskCoeffs > 0;
 
     // Auto-detect whether coordinates are absolute pixels [0, inputSize]
     // or already normalized [0, 1]. Sample the first few valid cx values:
