@@ -136,9 +136,11 @@ class _BoundingBoxPainter extends CustomPainter {
 
       final poly = result.polygon;
       if (poly != null && poly.length >= 3) {
-        // Segment model: outline the object itself instead of its box.
+        // Segment model: outline the object itself, then fall through to
+        // draw the box + corners too.
         _drawPolygon(canvas, size, poly, color);
-      } else {
+      }
+      {
         final boxPaint = Paint()
           ..color = color
           ..style = PaintingStyle.stroke
@@ -325,9 +327,11 @@ class _BoundingBoxPainter extends CustomPainter {
 
       final poly = result.polygon;
       if (poly != null && poly.length >= 3) {
-        // Segment model: outline the object itself instead of its box.
+        // Segment model: outline the object itself, then fall through to
+        // draw the box + corners too.
         _drawPolygon(canvas, size, poly, color);
-      } else {
+      }
+      {
         final boxPaint = Paint()
           ..color = color
           ..style = PaintingStyle.stroke

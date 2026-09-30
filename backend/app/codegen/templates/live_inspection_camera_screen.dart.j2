@@ -471,6 +471,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             for (int t = 0; t < 3; t++) {
               img.drawRect(decodedRaw, x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t, color: boxColor);
             }
+            DetectionResult.drawPolygonOnImage(decodedRaw, det.polygon, boxColor);
             final label = '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%';
             final labelY = (y1 - 20).clamp(0, decodedRaw.height - 20);
             img.fillRect(decodedRaw, x1: x1, y1: labelY, x2: x1 + label.length * 8 + 6, y2: labelY + 18, color: boxColor);
@@ -1299,6 +1300,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             for (int t = 0; t < 3; t++) {
               img.drawRect(decoded, x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t, color: boxColor);
             }
+            DetectionResult.drawPolygonOnImage(decoded, det.polygon, boxColor);
 
             final label = '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%';
             final labelY = (y1 - 20).clamp(0, decoded.height - 20);
@@ -2766,6 +2768,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             for (int t = 0; t < 3; t++) {
               img.drawRect(decodedRaw, x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t, color: boxColor);
             }
+            DetectionResult.drawPolygonOnImage(decodedRaw, det.polygon, boxColor);
             final label = '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%';
             final labelY = (y1 - 20).clamp(0, decodedRaw.height - 20);
             img.fillRect(decodedRaw, x1: x1, y1: labelY, x2: x1 + label.length * 8 + 6, y2: labelY + 18, color: boxColor);
@@ -3554,6 +3557,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             for (int t = 0; t < 3; t++) {
               img.drawRect(decoded, x1: x1 + t, y1: y1 + t, x2: x2 - t, y2: y2 - t, color: boxColor);
             }
+            DetectionResult.drawPolygonOnImage(decoded, det.polygon, boxColor);
 
             final label = '${det.className} ${(det.confidence * 100).toStringAsFixed(0)}%';
             final labelY = (y1 - 20).clamp(0, decoded.height - 20);

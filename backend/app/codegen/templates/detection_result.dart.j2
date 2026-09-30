@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'package:image/image.dart' as img;
 
 class DetectionResult {
   final String className;
@@ -98,6 +99,26 @@ class DetectionResult {
         ?.map((p) => Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()))
         .toList(),
   );
+
+  /// Burns [polygon] into [image] as a closed outline (saved / uploaded
+  /// annotated photos are drawn with package:image, not the screen painter).
+  /// No-op for detect-model results.
+  static void drawPolygonOnImage(img.Image image, List<Offset>? polygon, img.Color color) {
+    if (polygon == null || polygon.length < 3) return;
+    final w = image.width.toDouble();
+    final h = image.height.toDouble();
+    for (int i = 0; i < polygon.length; i++) {
+      final a = polygon[i];
+      final b = polygon[(i + 1) % polygon.length];
+      img.drawLine(image,
+          x1: (a.dx * w).round().clamp(0, image.width - 1),
+          y1: (a.dy * h).round().clamp(0, image.height - 1),
+          x2: (b.dx * w).round().clamp(0, image.width - 1),
+          y2: (b.dy * h).round().clamp(0, image.height - 1),
+          color: color,
+          thickness: 3);
+    }
+  }
 
   @override
   String toString() =>
