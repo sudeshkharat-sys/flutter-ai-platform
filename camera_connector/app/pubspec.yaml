@@ -1,0 +1,14 @@
+name: camera_connector
+description: Turns the phone camera into a smooth MJPEG network camera (like IP Webcam) for the PC runner.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

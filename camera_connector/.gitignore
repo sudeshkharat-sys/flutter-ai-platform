@@ -1,0 +1,11 @@
+app/android/
+app/ios/
+app/.dart_tool/
+app/build/
+app/.metadata
+app/.packages
+app/pubspec.lock
+pc/dist/
+pc/build/
+*.log
+__pycache__/
