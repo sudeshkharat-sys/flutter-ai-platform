@@ -161,6 +161,7 @@ class _HomeState extends State<Home> {
                   const SizedBox(height: 6),
                   Text('${_s['fps']} fps   ${_s['size'] ?? ''}   viewers: ${_s['viewers']}'),
                   Text('encode ${_s['encodeMs']} ms   frames ${_s['encoded']}   skipped ${_s['skipped']}'),
+                  Text('phone heat: ${_s['thermal'] ?? 'n/a'}   camera last frame ${_s['cameraAgeMs']} ms ago'),
                   const Text('Frames are only encoded while a viewer is connected (keeps the phone cool).',
                       style: TextStyle(fontSize: 11)),
                 ]),

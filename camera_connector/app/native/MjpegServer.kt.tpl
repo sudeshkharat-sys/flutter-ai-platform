@@ -100,7 +100,7 @@ class MjpegServer(
             }
         } catch (e: Exception) {
             // client closed the connection or timed out -- normal for streams
-            DebugLog.i("client $remote done: ${e.javaClass.simpleName}")
+            DebugLog.i("client $remote ended: ${e.javaClass.simpleName}: ${e.message}")
         } finally {
             try { sock.close() } catch (_: Exception) {}
         }

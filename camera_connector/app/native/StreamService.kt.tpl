@@ -64,6 +64,10 @@ class StreamService : LifecycleService() {
     @Volatile private var lastEncodeMs = 0.0
     @Volatile private var frameSize = ""
     @Volatile private var lastError = ""
+    @Volatile private var thermal = "n/a"
+    @Volatile private var lastCameraFrameAt = 0L
+    @Volatile private var watchdogRunning = false
+    private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
     private var fpsCount = 0
     private var fpsT = SystemClock.elapsedRealtime()
     private var nextDue = 0L
@@ -102,6 +106,8 @@ class StreamService : LifecycleService() {
             server = MjpegServer(port) { statusJson() }.also { it.start() }
             instance = this
             startBeacon()
+            startWatchdog()
+            watchThermal()
             bindCamera()
         } catch (e: Exception) {
             fail("start failed (port $port busy?)", e)
@@ -140,6 +146,7 @@ class StreamService : LifecycleService() {
                 analysis.setAnalyzer(analysisExecutor) { image ->
                     try {
                         val now = SystemClock.elapsedRealtime()
+                        lastCameraFrameAt = now
                         val srv = server
                         val minGap = 1000L / maxFps.coerceAtLeast(1)
                         // Frame-rate cap that keeps its rhythm: a 30 fps camera with a 20 fps cap
@@ -213,6 +220,50 @@ class StreamService : LifecycleService() {
         }
     }
 
+    // ---- watchdog: tells "camera stopped delivering" apart from "network dropped" ----
+
+    private fun startWatchdog() {
+        watchdogRunning = true
+        lastCameraFrameAt = SystemClock.elapsedRealtime()
+        thread(name = "watchdog", isDaemon = true) {
+            var stalled = false
+            while (watchdogRunning) {
+                Thread.sleep(2000)
+                val viewers = server?.clients?.get() ?: 0
+                val age = SystemClock.elapsedRealtime() - lastCameraFrameAt
+                if (age > 3000 && !stalled) {
+                    stalled = true
+                    DebugLog.w("CAMERA STALL: no frames from the camera for ${age / 1000}s (viewers=$viewers, thermal=$thermal) -- camera throttled/killed by the phone?")
+                } else if (age <= 3000 && stalled) {
+                    stalled = false
+                    DebugLog.i("camera frames resumed")
+                }
+            }
+        }
+    }
+
+    private fun thermalName(s: Int) = when (s) {
+        0 -> "none"; 1 -> "light"; 2 -> "moderate"; 3 -> "SEVERE"; 4 -> "CRITICAL"; 5 -> "EMERGENCY"; 6 -> "SHUTDOWN"
+        else -> "?"
+    }
+
+    private fun watchThermal() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            thermal = thermalName(pm.currentThermalStatus)
+            DebugLog.i("thermal status: $thermal")
+            val l = PowerManager.OnThermalStatusChangedListener { s ->
+                thermal = thermalName(s)
+                DebugLog.w("thermal status changed: $thermal")
+            }
+            thermalListener = l
+            pm.addThermalStatusListener(l)
+        } catch (e: Exception) {
+            DebugLog.w("thermal status unavailable: ${e.message}")
+        }
+    }
+
     // ---- status ----
 
     /** Addresses a PC can use: Wi-Fi / hotspot only (not mobile data, 192.0.0.x CLAT or link-local). */
@@ -245,6 +296,8 @@ class StreamService : LifecycleService() {
         put("skipped", skipped)
         put("encodeMs", Math.round(lastEncodeMs * 10) / 10.0)
         put("size", frameSize)
+        put("thermal", thermal)
+        put("cameraAgeMs", if (lastCameraFrameAt == 0L) -1 else SystemClock.elapsedRealtime() - lastCameraFrameAt)
         put("error", lastError)
     }.toString()
 
@@ -285,6 +338,13 @@ class StreamService : LifecycleService() {
     private fun shutdown() {
         DebugLog.i("stopping")
         beaconRunning = false
+        watchdogRunning = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                thermalListener?.let { (getSystemService(Context.POWER_SERVICE) as PowerManager).removeThermalStatusListener(it) }
+            } catch (_: Exception) {}
+            thermalListener = null
+        }
         try { provider?.unbindAll() } catch (_: Exception) {}
         server?.stop()
         server = null

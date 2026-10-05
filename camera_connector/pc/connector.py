@@ -19,7 +19,7 @@ connector_debug.log next to the program.
 import os
 
 # Must be set before cv2 is imported: low-latency ffmpeg reading, 5 s I/O timeout.
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "fflags;nobuffer|flags;low_delay|rw_timeout;5000000")
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "fflags;nobuffer|flags;low_delay|rw_timeout;3000000")
 
 import argparse
 import collections
@@ -249,7 +249,9 @@ class Reader(threading.Thread):
                     consecutive += 1
                     self.fails += 1
                     if consecutive >= 20:
-                        log("stream stalled / closed by phone -> reconnecting", "WARN")
+                        log(f"stream stalled / closed by phone after {self.frames} frames "
+                            f"(last frame {time.time() - self.last_frame_t:.1f}s ago) -> reconnecting", "WARN")
+                        diagnose(self.url, opencv_failed=False)  # is the phone still reachable, does /video answer?
                         break
                     time.sleep(0.05)
                     continue

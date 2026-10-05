@@ -37,9 +37,12 @@ object PcLink {
         return out
     }
 
+    private val probeErrors = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     /** Returns JSON array [{"ip","port","name"}]. Blocking: call from a background thread. */
     fun scan(port: Int): String {
         val found = JSONArray()
+        probeErrors.clear()
         val locals = localAddresses()
         if (locals.isEmpty()) {
             DebugLog.e("scan: phone has no IPv4 address -- Wi-Fi off?")
@@ -62,6 +65,7 @@ object PcLink {
             try { r.get(30, TimeUnit.SECONDS)?.let { found.put(it) } } catch (_: Exception) {}
         }
         pool.shutdownNow()
+        DebugLog.i("scan: probe outcomes (host count by result): $probeErrors")
         if (found.length() == 0) {
             DebugLog.w("scan: no PC answered on port $port. Is connector running on the PC (it prints " +
                 "'viewer: ...')? Firewall popup allowed? Same Wi-Fi? Some office Wi-Fi blocks phone<->PC.")
@@ -82,7 +86,14 @@ object PcLink {
             if (j.optString("app") == "runner-cam-pc") {
                 JSONObject().put("ip", ip).put("port", j.optInt("port", port)).put("name", j.optString("name", ip))
             } else null
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            val kind = e.javaClass.simpleName
+            probeErrors.merge(kind, 1) { a, b -> a + b }
+            // timeouts / refused are what every non-PC host does; anything else means a host DID answer oddly
+            if (e !is java.net.SocketTimeoutException && e !is java.net.ConnectException &&
+                e !is java.net.NoRouteToHostException) {
+                DebugLog.w("probe $ip: $kind: ${e.message}")
+            }
             null
         } finally {
             c?.disconnect()
