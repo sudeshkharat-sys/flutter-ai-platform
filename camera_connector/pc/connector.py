@@ -148,6 +148,49 @@ def scan(port=8080, extra_ips=()):
     return phones
 
 
+# ------------------------------------------------------------- diagnose --
+
+
+def diagnose(url):
+    """Plain-socket checks that explain WHY a stream cannot be opened (OpenCV only says 'cannot open')."""
+    u = urlparse(url)
+    host, port = u.hostname, u.port or 80
+    log(f"diagnose: PC addresses {local_ips() or 'NONE'}  ->  phone {host}:{port}", "WARN")
+    t = time.monotonic()
+    try:
+        s = socket.create_connection((host, port), timeout=4)
+        s.close()
+        log(f"diagnose: TCP connect OK ({(time.monotonic() - t) * 1000:.0f} ms) -- the phone is reachable", "WARN")
+    except socket.timeout:
+        log("diagnose: TCP connect TIMED OUT. Packets are being dropped: PC and phone are on different "
+            "networks/VLANs, or the Wi-Fi blocks device-to-device traffic (client isolation), or a firewall. "
+            "Try the phone's hotspot.", "ERROR")
+        return
+    except ConnectionRefusedError:
+        log(f"diagnose: connection REFUSED. The phone answered but nothing listens on port {port}: "
+            "is 'Start camera server' pressed, and is the port the same as in the app?", "ERROR")
+        return
+    except OSError as e:
+        log(f"diagnose: cannot reach {host}: [{e.errno}] {e}. Usually 'no route' = different network.", "ERROR")
+        return
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/ping", timeout=4) as r:
+            body = r.read(300).decode(errors="replace")
+        log(f"diagnose: /ping answered: {body}", "WARN")
+    except Exception as e:
+        log(f"diagnose: TCP ok but /ping failed: {type(e).__name__}: {e}", "ERROR")
+        return
+    try:
+        r = urllib.request.urlopen(f"http://{host}:{port}/video", timeout=6)
+        head = r.read(64)
+        log(f"diagnose: /video HTTP {r.status}, type={r.headers.get('Content-Type')}, first bytes={head[:24]!r}", "WARN")
+        r.close()
+        log("diagnose: network and phone are fine; OpenCV/ffmpeg itself failed to decode -- send this log", "ERROR")
+    except Exception as e:
+        log(f"diagnose: /video request failed: {type(e).__name__}: {e} (phone camera may not have started "
+            "-- check the phone's DEBUG LOG)", "ERROR")
+
+
 # ---------------------------------------------------------------- reader --
 
 
@@ -180,8 +223,10 @@ class Reader(threading.Thread):
                 pass
             if not cap.isOpened():
                 self.state = "cannot open (retrying)"
-                log(f"cannot open {self.url} -- phone app running? same Wi-Fi? port right?", "ERROR")
+                log(f"cannot open {self.url} (attempt {self.reconnects + 1})", "ERROR")
                 cap.release()
+                if self.reconnects % 10 == 0:
+                    diagnose(self.url)
                 self.reconnects += 1
                 time.sleep(2)
                 continue
@@ -301,7 +346,9 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *a):
-        log("http " + fmt % a, debug_only=True)
+        line = fmt % a
+        if "/api/" not in line and "/video" not in line:
+            log("http " + line, debug_only=True)
 
     def _send(self, body, ctype="application/json", code=200):
         if isinstance(body, str):
