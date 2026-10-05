@@ -87,8 +87,11 @@ def main():
         service = ('    <service android:name=".StreamService" android:exported="false"\n'
                    '        android:foregroundServiceType="camera"/>\n')
         x = x.replace("</application>", service + "    </application>", 1)
-        write(mpath, x)
         print("manifest patched")
+    if "usesCleartextTraffic" not in x:  # the app makes plain http:// calls to the PC (Find PC)
+        x = x.replace("<application", '<application android:usesCleartextTraffic="true"', 1)
+        print("manifest: cleartext http enabled")
+    write(mpath, x)
 
     # --- gradle ---
     kts = gradle.endswith(".kts")

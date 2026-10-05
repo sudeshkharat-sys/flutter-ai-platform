@@ -37,6 +37,26 @@ class MainActivity : FlutterActivity() {
                         startService(Intent(this, StreamService::class.java).setAction(StreamService.ACTION_STOP))
                         result.success(null)
                     }
+                    "scanPc" -> {
+                        val port = call.argument<Int>("port") ?: 8095
+                        Thread {
+                            val r = try { PcLink.scan(port) } catch (e: Exception) {
+                                DebugLog.e("scan crashed", e); "[]"
+                            }
+                            runOnUiThread { result.success(r) }
+                        }.start()
+                    }
+                    "registerPc" -> {
+                        val ip = call.argument<String>("ip") ?: ""
+                        val port = call.argument<Int>("port") ?: 8095
+                        val phonePort = call.argument<Int>("phonePort") ?: 8080
+                        Thread {
+                            val r = try { PcLink.register(ip, port, phonePort) } catch (e: Exception) {
+                                DebugLog.e("register crashed", e); "error: ${e.message}"
+                            }
+                            runOnUiThread { result.success(r) }
+                        }.start()
+                    }
                     "status" -> result.success(StreamService.status())
                     "log" -> result.success(DebugLog.tail(300))
                     else -> result.notImplemented()

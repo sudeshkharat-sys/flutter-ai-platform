@@ -40,6 +40,7 @@ import cv2
 
 VERSION = "0.1.0"
 PHONE_APP = "runner-cam-phone"
+PC_APP = "runner-cam-pc"
 BEACON_PORT = 8092
 DEBUG = True
 
@@ -128,8 +129,13 @@ def scan(port=8080, extra_ips=()):
     if not ips:
         log("scan: connect the PC to the same Wi-Fi as the phone (or to the phone's hotspot)", "ERROR")
     hosts = ["127.0.0.1"] + list(extra_ips)
+    bases = []
     for ip in ips:
-        base = ip.rsplit(".", 1)[0]
+        a, b, c, _ = ip.split(".")
+        for cc in (int(c), int(c) ^ 1):  # also the neighbouring /24: covers /23 networks like 10.3.64.0/23
+            if f"{a}.{b}.{cc}" not in bases:
+                bases.append(f"{a}.{b}.{cc}")
+    for base in bases:
         hosts += [f"{base}.{n}" for n in range(1, 255)]
     found, beacon = {}, []
     t = threading.Thread(target=listen_beacon, args=(3, beacon), daemon=True)
@@ -151,7 +157,7 @@ def scan(port=8080, extra_ips=()):
 # ------------------------------------------------------------- diagnose --
 
 
-def diagnose(url):
+def diagnose(url, opencv_failed=True):
     """Plain-socket checks that explain WHY a stream cannot be opened (OpenCV only says 'cannot open')."""
     u = urlparse(url)
     host, port = u.hostname, u.port or 80
@@ -165,30 +171,33 @@ def diagnose(url):
         log("diagnose: TCP connect TIMED OUT. Packets are being dropped: PC and phone are on different "
             "networks/VLANs, or the Wi-Fi blocks device-to-device traffic (client isolation), or a firewall. "
             "Try the phone's hotspot.", "ERROR")
-        return
+        return False, "PC cannot reach the phone: TCP connect timed out (different VLAN / Wi-Fi client isolation / firewall)"
     except ConnectionRefusedError:
         log(f"diagnose: connection REFUSED. The phone answered but nothing listens on port {port}: "
             "is 'Start camera server' pressed, and is the port the same as in the app?", "ERROR")
-        return
+        return False, f"PC reached the phone but port {port} refused the connection (camera server not started?)"
     except OSError as e:
         log(f"diagnose: cannot reach {host}: [{e.errno}] {e}. Usually 'no route' = different network.", "ERROR")
-        return
+        return False, f"PC cannot reach the phone: {e}"
     try:
         with urllib.request.urlopen(f"http://{host}:{port}/ping", timeout=4) as r:
             body = r.read(300).decode(errors="replace")
         log(f"diagnose: /ping answered: {body}", "WARN")
     except Exception as e:
         log(f"diagnose: TCP ok but /ping failed: {type(e).__name__}: {e}", "ERROR")
-        return
+        return False, f"PC reached the phone but /ping failed: {type(e).__name__}: {e}"
     try:
         r = urllib.request.urlopen(f"http://{host}:{port}/video", timeout=6)
         head = r.read(64)
         log(f"diagnose: /video HTTP {r.status}, type={r.headers.get('Content-Type')}, first bytes={head[:24]!r}", "WARN")
         r.close()
-        log("diagnose: network and phone are fine; OpenCV/ffmpeg itself failed to decode -- send this log", "ERROR")
+        if opencv_failed:
+            log("diagnose: network and phone are fine; OpenCV/ffmpeg itself failed to decode -- send this log", "ERROR")
+        return True, "PC reached the phone and /video answers"
     except Exception as e:
         log(f"diagnose: /video request failed: {type(e).__name__}: {e} (phone camera may not have started "
             "-- check the phone's DEBUG LOG)", "ERROR")
+        return False, f"PC reached the phone but /video failed: {type(e).__name__}: {e}"
 
 
 # ---------------------------------------------------------------- reader --
@@ -364,6 +373,9 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/":
             self._send(PAGE, "text/html")
+        elif u.path == "/ping":
+            self._send(json.dumps({"app": PC_APP, "version": VERSION, "name": socket.gethostname(),
+                                   "port": STATE.get("ui_port")}))
         elif u.path == "/api/status":
             r = STATE["reader"]
             self._send(json.dumps({"version": VERSION, "debug": DEBUG, "scanning": STATE["scanning"],
@@ -386,6 +398,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/scan":
             threading.Thread(target=do_scan, daemon=True).start()
             self._send("{}")
+        elif u.path == "/api/register":
+            # the phone found us (its "Find PC" scan) and tells us where its stream is
+            phone = parse_qs(u.query).get("phone", [""])[0]
+            log(f"phone {self.client_address[0]} registered itself: {phone}")
+            if not phone:
+                return self._send(json.dumps({"ok": False, "message": "no phone address given"}))
+            url = f"http://{phone}/video"
+            ok, msg = diagnose(url, opencv_failed=False)
+            if ok:
+                connect(url)
+                msg += " -- PC is now reading the stream"
+            self._send(json.dumps({"ok": ok, "message": msg}))
         elif u.path == "/api/connect":
             url = parse_qs(u.query).get("url", [""])[0]
             if url.startswith("http"):
@@ -431,6 +455,7 @@ def main():
     a = ap.parse_args()
     DEBUG = not a.no_debug
     STATE["port"] = a.phone_port
+    STATE["ui_port"] = a.ui_port
     try:
         _logf = open(os.path.join(app_dir(), "connector_debug.log"), "a", encoding="utf-8")
     except Exception as e:
@@ -448,6 +473,8 @@ def main():
         return 1
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     log(f"viewer: http://127.0.0.1:{a.ui_port}/")
+    log(f"on the phone: tap 'Find PC' (this PC listens on {local_ips() or '?'} port {a.ui_port}). "
+        "Windows firewall popup -> Allow.")
     if not a.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{a.ui_port}/")).start()
 

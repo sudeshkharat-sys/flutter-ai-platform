@@ -40,6 +40,10 @@ class _HomeState extends State<Home> {
   String _log = '';
   String _msg = '';
   Timer? _timer;
+  final _pcPort = TextEditingController(text: '8095');
+  List<Map<String, dynamic>> _pcs = [];
+  bool _scanningPc = false;
+  String _pcMsg = '';
 
   @override
   void initState() {
@@ -86,6 +90,42 @@ class _HomeState extends State<Home> {
     } on PlatformException catch (e) {
       setState(() => _msg = 'start failed: ${e.message}');
     }
+  }
+
+  Future<void> _scanPc() async {
+    setState(() {
+      _scanningPc = true;
+      _pcMsg = 'scanning the network for the PC connector...';
+    });
+    try {
+      final r = await _ch.invokeMethod<String>('scanPc', {'port': int.tryParse(_pcPort.text) ?? 8095}) ?? '[]';
+      final list = (jsonDecode(r) as List).cast<Map<String, dynamic>>();
+      setState(() {
+        _pcs = list;
+        _pcMsg = list.isEmpty
+            ? 'No PC found. Is connector running on the PC? Same Wi-Fi? See the debug log.'
+            : 'Found ${list.length} PC(s). Tap one to connect.';
+      });
+    } catch (e) {
+      setState(() => _pcMsg = 'scan error: $e');
+    } finally {
+      setState(() => _scanningPc = false);
+    }
+  }
+
+  Future<void> _sendToPc(Map<String, dynamic> pc) async {
+    if (_s['running'] != true) {
+      setState(() => _pcMsg = 'Start the camera server first, then tap the PC.');
+      return;
+    }
+    setState(() => _pcMsg = 'asking ${pc['name']} to connect to this phone...');
+    final r = await _ch.invokeMethod<String>('registerPc', {
+          'ip': pc['ip'],
+          'port': pc['port'],
+          'phonePort': int.tryParse(_port.text) ?? 8080,
+        }) ??
+        '';
+    setState(() => _pcMsg = 'PC replied: $r');
   }
 
   Future<void> _stop() async {
@@ -184,6 +224,21 @@ class _HomeState extends State<Home> {
             label: Text(running ? 'Stop' : 'Start camera server'),
           ),
           if (_msg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Text(_msg)),
+          const Divider(height: 24),
+          Row(children: [
+            SizedBox(width: 90, child: TextField(controller: _pcPort, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'PC port'))),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _scanningPc ? null : _scanPc,
+                icon: _scanningPc ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.wifi_find),
+                label: const Text('Find PC'),
+              ),
+            ),
+          ]),
+          if (_pcMsg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Text(_pcMsg)),
+          for (final pc in _pcs)
+            ListTile(dense: true, leading: const Icon(Icons.computer), title: Text('${pc['name']}  ${pc['ip']}:${pc['port']}'), subtitle: const Text('tap to connect'), onTap: () => _sendToPc(pc)),
           const SizedBox(height: 12),
           Row(children: [
             const Text('DEBUG LOG', style: TextStyle(fontWeight: FontWeight.bold)),

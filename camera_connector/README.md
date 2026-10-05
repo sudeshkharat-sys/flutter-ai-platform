@@ -38,6 +38,15 @@ on by default; log goes to the console, the viewer page and `connector_debug.log
 The reader thread keeps only the newest frame (no growing latency) and reconnects
 automatically. Windows may ask to allow network access once: choose Private networks.
 
+## Two ways to connect
+1. **Phone finds the PC (use this first):** run `connector.py` / `runner_connector.exe` on the PC,
+   start the camera server in the app, tap **Find PC**, tap the PC. The phone tells the PC where its
+   stream is; the PC replies whether it can reach it (or exactly why not) and starts reading.
+2. **PC finds the phone:** the connector also scans automatically, or use `--url http://PHONE-IP:8080/video`.
+
+Both directions need a network that lets phone and PC talk to each other (not blocked by Wi-Fi client
+isolation / security software). If one direction works and the other doesn't, the debug logs say which.
+
 ## Testing without a phone
 `python tools/mock_phone.py` serves the same HTTP contract as the Kotlin server.
 Verified: scan finds it, 1280x720 read at ~21 fps, snapshot/re-serve work, and the
