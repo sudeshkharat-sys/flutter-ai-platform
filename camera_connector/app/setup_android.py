@@ -29,6 +29,7 @@ DEPS = [
     "androidx.camera:camera-camera2:1.3.4",
     "androidx.camera:camera-lifecycle:1.3.4",
     "androidx.lifecycle:lifecycle-service:2.7.0",
+    "com.journeyapps:zxing-android-embedded:4.3.0",   # QR scanner, no Google Play services needed
 ]
 MARK = "runner-cam-setup"
 
@@ -108,13 +109,13 @@ def main():
 
     # --- gradle ---
     kts = gradle.endswith(".kts")
-    if MARK not in g:
-        g = re.sub(r"minSdk(Version)?\s*=?\s*(flutter\.minSdkVersion|\d+)",
-                   "minSdk = 24" if kts else "minSdkVersion 24", g, count=1)
-        block = "\n// %s\ndependencies {\n%s}\n" % (MARK, "".join(f'    implementation("{d}")\n' for d in DEPS))
-        g += block
-        write(gradle, g)
-        print("gradle patched (minSdk 24 + CameraX)")
+    g = re.sub(r"minSdk(Version)?\s*=?\s*(flutter\.minSdkVersion|\d+)",
+               "minSdk = 24" if kts else "minSdkVersion 24", g, count=1)
+    missing = [d for d in DEPS if d.split(":")[1] not in g]   # independent of earlier runs
+    if missing:
+        g += "\n// %s\ndependencies {\n%s}\n" % (MARK, "".join(f'    implementation("{d}")\n' for d in missing))
+        print("gradle: added", ", ".join(d.split(":")[1] for d in missing))
+    write(gradle, g)
 
     print("\nSetup done. Next: flutter pub get && flutter build apk --release")
 

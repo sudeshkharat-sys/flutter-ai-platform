@@ -206,9 +206,12 @@ def diagnose(url, opencv_failed=True):
 class Reader(threading.Thread):
     """Reads the stream with cv2.VideoCapture; keeps only the newest frame."""
 
-    def __init__(self, url):
+    def __init__(self, url, name=None):
         super().__init__(daemon=True)
         self.url = url
+        u = urlparse(url)
+        self.key = f"{u.hostname}:{u.port or 80}"
+        self.name = name or u.hostname
         self.stop_flag = False
         self.lock = threading.Lock()
         self.frame = None
@@ -286,7 +289,7 @@ class Reader(threading.Thread):
 
     def status(self):
         age = round(time.time() - self.last_frame_t, 1) if self.last_frame_t else None
-        return {"url": self.url, "state": self.state, "fps": self.fps if age is not None and age < 3 else 0,
+        return {"key": self.key, "name": self.name, "url": self.url, "state": self.state, "fps": self.fps if age is not None and age < 3 else 0,
                 "frames": self.frames, "failed_reads": self.fails, "reconnects": self.reconnects,
                 "size": f"{self.size[0]}x{self.size[1]}" if self.size else None,
                 "seconds_since_frame": age, "read_ms": round(self.read_ms, 1)}
@@ -294,17 +297,35 @@ class Reader(threading.Thread):
 
 # ------------------------------------------------------------------ http --
 
-STATE = {"reader": None, "phones": [], "scanning": False, "port": 8080}
+STATE = {"readers": {}, "phones": [], "scanning": False, "port": 8080, "ui_port": 8095}
 STATE_LOCK = threading.Lock()
 
 
-def connect(url):
+def connect(url, name=None):
+    """Start (or restart) reading one phone. Many phones can be connected at once."""
+    r = Reader(url, name)
     with STATE_LOCK:
-        if STATE["reader"]:
-            STATE["reader"].stop()
-        STATE["reader"] = Reader(url)
-        STATE["reader"].start()
-    log(f"connecting to {url}")
+        old = STATE["readers"].get(r.key)
+        if old:
+            old.stop()
+        STATE["readers"][r.key] = r
+    r.start()
+    log(f"connecting to {url} as '{r.name}' ({len(STATE['readers'])} phone(s) connected)")
+
+
+def disconnect(key):
+    with STATE_LOCK:
+        r = STATE["readers"].pop(key, None)
+    if r:
+        r.stop()
+        log(f"disconnected {key}")
+
+
+def first_reader(key=None):
+    rs = STATE["readers"]
+    if key and key in rs:
+        return rs[key]
+    return next(iter(rs.values()), None)
 
 
 def do_scan():
@@ -319,33 +340,91 @@ def do_scan():
         STATE["scanning"] = False
 
 
+# ---- QR code the phone scans to find this PC (no network scan needed) ----
+
+
+def qr_payload():
+    return json.dumps({"app": PC_APP, "ips": local_ips(), "port": STATE["ui_port"],
+                       "name": socket.gethostname()}, separators=(",", ":"))
+
+
+def qr_matrix(text):
+    import qrcode
+    q = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=0)
+    q.add_data(text)
+    q.make(fit=True)
+    return q.get_matrix()
+
+
+def qr_svg(text):
+    m = qr_matrix(text)
+    n, b = len(m), 3
+    rects = "".join(f'<rect x="{x + b}" y="{y + b}" width="1" height="1"/>'
+                    for y, row in enumerate(m) for x, v in enumerate(row) if v)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {n + 2 * b} {n + 2 * b}" '
+            f'shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/>'
+            f'<g fill="#000">{rects}</g></svg>')
+
+
+def print_qr_console(text):
+    try:
+        m = qr_matrix(text)
+        pad = [[False] * (len(m) + 4) for _ in range(2)]
+        rows = pad + [[False, False] + r + [False, False] for r in m] + pad
+        print("\nScan this QR with the Runner Cam phone app ('Scan QR'):\n")
+        for y in range(0, len(rows), 2):
+            line = ""
+            for x in range(len(rows[0])):
+                top = rows[y][x]
+                bot = rows[y + 1][x] if y + 1 < len(rows) else False
+                line += "\u2588" if top and bot else "\u2580" if top else "\u2584" if bot else " "
+            print(line)
+        print()
+    except Exception as e:  # console encoding / missing lib -- the viewer page still shows the QR
+        log(f"could not print QR in console ({type(e).__name__}); open the viewer page instead", "WARN", debug_only=True)
+
+
 PAGE = """<!doctype html><meta charset=utf-8><title>Runner Cam connector</title>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <style>body{margin:0;font:14px system-ui,sans-serif;background:#111;color:#ddd}
 header{padding:10px 16px;background:#0b6fa4;color:#fff;font-weight:600}
-main{display:flex;flex-wrap:wrap;gap:16px;padding:16px}#feed{flex:2 1 480px}
-#feed img{width:100%;background:#000;min-height:220px;border-radius:6px}#side{flex:1 1 320px}
-pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-height:320px;font-size:12px;margin:0}
+main{display:flex;flex-wrap:wrap;gap:16px;padding:16px}#feeds{flex:2 1 480px;display:grid;gap:10px;
+grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-content:start}
+.tile{background:#000;border-radius:6px;overflow:hidden}.tile img{width:100%;display:block;min-height:160px}
+.tile div{padding:4px 8px;font-size:12px;display:flex;justify-content:space-between}
+#side{flex:1 1 320px}#qr{background:#fff;padding:6px;border-radius:8px;width:230px}
+pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-height:300px;font-size:12px;margin:0}
 button{padding:5px 10px;margin:2px}td{padding:2px 8px 2px 0}.bad{color:#f66}.ok{color:#6f6}</style>
 <header>Runner Cam connector <span id=ver></span></header><main>
-<div id=feed><img id=v src="/video"></div>
+<div id=feeds><i id=nofeed>No phone connected yet. On the phone: tap <b>Scan QR</b> and scan the code on the right.</i></div>
 <div id=side>
-<h3>Phones <button onclick="fetch('/api/scan',{method:'POST'})">Scan</button><span id=scanning></span></h3>
+<h3>Connect a phone</h3>
+<img id=qr src="/qr.svg" alt="QR"><div id=addr></div>
+<small>Phone app: Scan QR (many phones can connect to this PC).</small>
+<h3>Phones found by scan <button onclick="fetch('/api/scan',{method:'POST'})">Scan</button><span id=scanning></span></h3>
 <div id=phones></div>
-<h3>Connection</h3><table id=st></table>
-<h3>Manual URL</h3><input id=u size=34 placeholder="http://192.168.1.50:8080/video">
+<h3>Connections</h3><table id=st></table>
+<h3>Manual URL</h3><input id=u size=30 placeholder="http://192.168.1.50:8080/video">
 <button onclick="go(u.value)">Connect</button>
 <h3>Debug log</h3><pre id=log></pre></div></main>
 <script>
 function go(url){fetch('/api/connect?url='+encodeURIComponent(url),{method:'POST'})}
+function drop(k){fetch('/api/disconnect?cam='+encodeURIComponent(k),{method:'POST'})}
+let shown='';
 async function tick(){try{
  const s=await (await fetch('/api/status')).json();
  ver.textContent='v'+s.version+(s.debug?' (debug)':'');
+ addr.textContent=s.ips.map(i=>i+':'+s.ui_port).join('   ')||'no network address';
  scanning.textContent=s.scanning?' scanning...':'';
  phones.innerHTML=s.phones.map(p=>'<div>'+p.name+' '+p.ip+':'+p.port+
   ' <button onclick="go(\\'http://'+p.ip+':'+p.port+'/video\\')">Connect</button></div>').join('')||'<i>none found yet</i>';
- const r=s.reader;
- st.innerHTML=r?Object.entries(r).map(([k,v])=>'<tr><td>'+k+'<td class='+(k=='state'&&v=='live'?'ok':'')+'>'+v).join(''):'<tr><td class=bad>not connected';
+ const keys=s.readers.map(r=>r.key).join(',');
+ if(keys!==shown){shown=keys;
+  feeds.innerHTML=s.readers.length?s.readers.map(r=>'<div class=tile><img src="/video?cam='+encodeURIComponent(r.key)+
+   '"><div><span>'+r.name+' ('+r.key+')</span><button onclick="drop(\\''+r.key+'\\')">disconnect</button></div></div>').join(''):
+   '<i>No phone connected yet. On the phone: tap <b>Scan QR</b> and scan the code on the right.</i>';}
+ st.innerHTML='<tr><th>name<th>state<th>fps<th>size<th>frames<th>reconn</tr>'+s.readers.map(r=>'<tr><td>'+r.name+
+  '<td class='+(r.state=='live'?'ok':'bad')+'>'+r.state+'<td>'+r.fps+'<td>'+(r.size||'-')+'<td>'+r.frames+'<td>'+r.reconnects).join('');
  const l=await (await fetch('/api/log')).json();
  const end=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
  log.textContent=l.join('\\n');if(end)log.scrollTop=log.scrollHeight;
@@ -373,54 +452,66 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
+        q = parse_qs(u.query)
         if u.path == "/":
             self._send(PAGE, "text/html")
         elif u.path == "/ping":
             self._send(json.dumps({"app": PC_APP, "version": VERSION, "name": socket.gethostname(),
                                    "port": STATE.get("ui_port")}))
+        elif u.path == "/qr.svg":
+            try:
+                self._send(qr_svg(qr_payload()), "image/svg+xml")
+            except Exception as e:
+                log(f"QR failed: {type(e).__name__}: {e}", "ERROR")
+                self._send("QR unavailable", "text/plain", 500)
         elif u.path == "/api/status":
-            r = STATE["reader"]
             self._send(json.dumps({"version": VERSION, "debug": DEBUG, "scanning": STATE["scanning"],
-                                   "phones": STATE["phones"], "reader": r.status() if r else None}))
+                                   "phones": STATE["phones"], "ips": local_ips(), "ui_port": STATE["ui_port"],
+                                   "readers": [r.status() for r in STATE["readers"].values()]}))
         elif u.path == "/api/log":
             self._send(json.dumps(list(LOG)[-200:]))
         elif u.path == "/snapshot.jpg":
-            r = STATE["reader"]
+            r = first_reader(q.get("cam", [None])[0])
             f = r.get()[0] if r else None
             if f is None:
                 return self._send("no frame yet", "text/plain", 404)
             self._send(cv2.imencode(".jpg", f)[1].tobytes(), "image/jpeg")
         elif u.path == "/video":
-            self._video()
+            self._video(q.get("cam", [None])[0])
         else:
             self._send("not found", "text/plain", 404)
 
     def do_POST(self):
         u = urlparse(self.path)
+        q = parse_qs(u.query)
         if u.path == "/api/scan":
             threading.Thread(target=do_scan, daemon=True).start()
             self._send("{}")
         elif u.path == "/api/register":
-            # the phone found us (its "Find PC" scan) and tells us where its stream is
-            phone = parse_qs(u.query).get("phone", [""])[0]
-            log(f"phone {self.client_address[0]} registered itself: {phone}")
+            # the phone scanned our QR (or found us) and tells us where its stream is
+            phone = q.get("phone", [""])[0]
+            name = q.get("name", [""])[0] or None
+            log(f"phone {self.client_address[0]} registered itself: {phone} name={name}")
             if not phone:
                 return self._send(json.dumps({"ok": False, "message": "no phone address given"}))
             url = f"http://{phone}/video"
             ok, msg = diagnose(url, opencv_failed=False)
             if ok:
-                connect(url)
+                connect(url, name)
                 msg += " -- PC is now reading the stream"
             self._send(json.dumps({"ok": ok, "message": msg}))
         elif u.path == "/api/connect":
-            url = parse_qs(u.query).get("url", [""])[0]
+            url = q.get("url", [""])[0]
             if url.startswith("http"):
                 connect(url)
+            self._send("{}")
+        elif u.path == "/api/disconnect":
+            disconnect(q.get("cam", [""])[0])
             self._send("{}")
         else:
             self._send("not found", "text/plain", 404)
 
-    def _video(self):
+    def _video(self, cam):
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-store")
@@ -428,7 +519,7 @@ class Handler(BaseHTTPRequestHandler):
         last = -1
         try:
             while True:
-                r = STATE["reader"]
+                r = first_reader(cam)
                 f, fid = r.get() if r else (None, -1)
                 if f is None or fid == last:
                     time.sleep(0.01)
@@ -449,10 +540,11 @@ def main():
     ap = argparse.ArgumentParser(description="Runner Cam PC connector")
     ap.add_argument("--url", help="skip scan, read this stream, e.g. http://192.168.1.50:8080/video")
     ap.add_argument("--phone-port", type=int, default=8080, help="port the phone app serves on")
-    ap.add_argument("--ui-port", type=int, default=8095, help="port of this program's viewer page")
+    ap.add_argument("--ui-port", type=int, default=8095, help="port of this program's viewer page (and QR)")
     ap.add_argument("--no-debug", action="store_true")
     ap.add_argument("--no-browser", action="store_true")
-    ap.add_argument("--window", action="store_true", help="also show an OpenCV window")
+    ap.add_argument("--no-scan", action="store_true", help="do not scan at start; wait for phones to scan the QR")
+    ap.add_argument("--window", action="store_true", help="also show an OpenCV window (first phone)")
     ap.add_argument("--scan-only", action="store_true")
     a = ap.parse_args()
     DEBUG = not a.no_debug
@@ -474,29 +566,29 @@ def main():
         log(f"cannot open viewer port {a.ui_port}: {e} (use --ui-port)", "ERROR")
         return 1
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    log(f"viewer: http://127.0.0.1:{a.ui_port}/")
-    log(f"on the phone: tap 'Find PC' (this PC listens on {local_ips() or '?'} port {a.ui_port}). "
-        "Windows firewall popup -> Allow.")
+    log(f"viewer + QR page: http://127.0.0.1:{a.ui_port}/   (PC addresses: {local_ips() or 'NONE'})")
+    log("Windows firewall popup -> Allow (Private AND Public), so phones can reach this PC.")
+    print_qr_console(qr_payload())
     if not a.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{a.ui_port}/")).start()
 
     if a.url:
         connect(a.url)
-    else:
+    elif not a.no_scan:
         do_scan()
         if len(STATE["phones"]) == 1:
             p = STATE["phones"][0]
-            connect(f"http://{p['ip']}:{p['port']}/video")
+            connect(f"http://{p['ip']}:{p['port']}/video", p["name"])
         elif not STATE["phones"]:
-            log("no phone found. Start the camera server in the app, same Wi-Fi, then press Scan in the viewer "
-                "(or pass --url).", "WARN")
+            log("no phone found by scanning. That is fine: scan the QR above with the phone app, "
+                "or press Scan on the viewer page.", "WARN")
         else:
-            log("several phones found -- pick one in the viewer page")
+            log("several phones found -- connect them from the viewer page")
 
     try:
         while True:
             if a.window:  # imshow must run on the main thread
-                r = STATE["reader"]
+                r = first_reader()
                 f = r.get()[0] if r else None
                 if f is not None:
                     cv2.imshow("Runner Cam", f)

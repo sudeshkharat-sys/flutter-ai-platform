@@ -3,7 +3,7 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas, binaries, hiddenimports = [], [], []
-for pkg in ["cv2"]:
+for pkg in ["cv2", "qrcode"]:
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hiddenimports += h
 

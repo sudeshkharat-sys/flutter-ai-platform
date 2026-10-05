@@ -38,14 +38,16 @@ on by default; log goes to the console, the viewer page and `connector_debug.log
 The reader thread keeps only the newest frame (no growing latency) and reconnects
 automatically. Windows may ask to allow network access once: choose Private networks.
 
-## Two ways to connect
-1. **Phone finds the PC (use this first):** run `connector.py` / `runner_connector.exe` on the PC,
-   start the camera server in the app, tap **Find PC**, tap the PC. The phone tells the PC where its
-   stream is; the PC replies whether it can reach it (or exactly why not) and starts reading.
-2. **PC finds the phone:** the connector also scans automatically, or use `--url http://PHONE-IP:8080/video`.
+## How phones and the PC find each other
+1. **QR code (main way, many phones at once).** Run the connector on the PC: it prints a QR code and shows it on
+   its viewer page. In the app tap **Scan QR from PC**, scan it, then tap **Start camera server** -- the phone
+   registers itself and the PC starts showing its stream in a tile. Every phone does the same; each gets a tile.
+   The QR holds the PC's addresses; the phone tests which one it can reach (and logs the result if none).
+   (Scan *before* starting: the scanner needs the camera, which the stream also uses.)
+2. **Find PC** button: the phone scans the Wi-Fi for the PC connector.
+3. **PC scan / manual URL:** the connector also scans for phones, or use `--url http://PHONE-IP:8080/video`.
 
-Both directions need a network that lets phone and PC talk to each other (not blocked by Wi-Fi client
-isolation / security software). If one direction works and the other doesn't, the debug logs say which.
+All three need a network where phone and PC can talk (a phone hotspot always works; some office Wi-Fi blocks it).
 
 ## Testing without a phone
 `python tools/mock_phone.py` serves the same HTTP contract as the Kotlin server.

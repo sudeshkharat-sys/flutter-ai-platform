@@ -3,6 +3,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -44,6 +45,7 @@ class _HomeState extends State<Home> {
   List<Map<String, dynamic>> _pcs = [];
   bool _scanningPc = false;
   String _pcMsg = '';
+  Map<String, dynamic>? _pcTarget; // PC chosen by QR / list; auto-connected after Start
 
   @override
   void initState() {
@@ -93,9 +95,96 @@ class _HomeState extends State<Home> {
         'name': _name.text.trim(),
       });
       setState(() => _msg = 'starting...');
+      if (_pcTarget != null) _autoRegister();
     } on PlatformException catch (e) {
       setState(() => _msg = 'start failed: ${e.message}');
     }
+  }
+
+  Future<void> _dlog(String msg, [String level = 'INFO']) async {
+    try {
+      await _ch.invokeMethod('logLine', {'level': level, 'msg': msg});
+    } catch (_) {}
+  }
+
+  /// Which of the PC's addresses can this phone actually reach? (HTTP /ping)
+  Future<Map<String, dynamic>?> _reach(List<String> ips, int port) async {
+    for (final ip in ips) {
+      final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      try {
+        final req = await c.getUrl(Uri.parse('http://$ip:$port/ping')).timeout(const Duration(seconds: 3));
+        final res = await req.close().timeout(const Duration(seconds: 3));
+        final body = await res.transform(utf8.decoder).join();
+        final j = jsonDecode(body);
+        if (j is Map && j['app'] == 'runner-cam-pc') {
+          await _dlog('QR: PC reachable at $ip:$port');
+          return {'ip': ip, 'port': port, 'name': '${j['name']}'};
+        }
+      } catch (e) {
+        await _dlog('QR: cannot reach $ip:$port -> ${e.runtimeType}', 'WARN');
+      } finally {
+        c.close(force: true);
+      }
+    }
+    return null;
+  }
+
+  Future<void> _scanQr() async {
+    if (_s['running'] == true) {
+      setState(() => _pcMsg = 'Stop streaming first (the scanner needs the camera), scan the QR, then start again.');
+      return;
+    }
+    final ok = await _ch.invokeMethod<bool>('requestPermissions') ?? false;
+    if (!ok) {
+      setState(() => _pcMsg = 'Camera permission is needed to scan the QR code.');
+      return;
+    }
+    String text;
+    try {
+      text = await _ch.invokeMethod<String>('scanQr') ?? '';
+    } on PlatformException catch (e) {
+      setState(() => _pcMsg = 'QR scanner error: ${e.message}');
+      return;
+    }
+    if (text.isEmpty) {
+      setState(() => _pcMsg = 'QR scan cancelled.');
+      return;
+    }
+    Map<String, dynamic> j;
+    try {
+      j = jsonDecode(text) as Map<String, dynamic>;
+      if (j['app'] != 'runner-cam-pc') throw const FormatException('not a Runner Cam code');
+    } catch (_) {
+      await _dlog('QR content is not a Runner Cam code: ${text.length > 80 ? text.substring(0, 80) : text}', 'WARN');
+      setState(() => _pcMsg = 'That QR code is not from the Runner Cam PC connector.');
+      return;
+    }
+    final ips = ((j['ips'] as List?) ?? []).cast<String>();
+    final port = (j['port'] as int?) ?? 8095;
+    await _dlog('QR read: PC ${j['name']} addresses=$ips port=$port');
+    setState(() => _pcMsg = 'QR read (${j['name']}). Checking which PC address this phone can reach...');
+    final pc = await _reach(ips, port);
+    if (pc == null) {
+      setState(() => _pcMsg = 'QR read, but this phone cannot reach the PC at ${ips.join(', ')} port $port. '
+          'Same Wi-Fi / hotspot? Windows firewall allowing the connector?');
+      return;
+    }
+    setState(() {
+      _pcTarget = pc;
+      _pcs = [pc];
+      _pcMsg = 'PC "${pc['name']}" found at ${pc['ip']}. Now tap Start camera server: it connects automatically.';
+    });
+  }
+
+  Future<void> _autoRegister() async {
+    for (var i = 0; i < 20; i++) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _poll();
+      if (_s['running'] == true) break;
+    }
+    if (_s['running'] != true || _pcTarget == null) return;
+    await Future.delayed(const Duration(seconds: 1)); // let the camera bind first
+    await _sendToPc(_pcTarget!);
   }
 
   Future<void> _scanPc() async {
@@ -129,6 +218,7 @@ class _HomeState extends State<Home> {
           'ip': pc['ip'],
           'port': pc['port'],
           'phonePort': int.tryParse(_port.text) ?? 8080,
+          'name': _name.text.trim(),
         }) ??
         '';
     setState(() => _pcMsg = 'PC replied: $r');
@@ -233,6 +323,15 @@ class _HomeState extends State<Home> {
           ),
           if (_msg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Text(_msg)),
           const Divider(height: 24),
+          FilledButton.tonalIcon(
+            onPressed: running ? null : _scanQr,
+            icon: const Icon(Icons.qr_code_scanner),
+            label: const Text('Scan QR from PC'),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(top: 4, bottom: 8),
+            child: Text('PC: run the connector, it shows a QR code. Scan it here, then Start camera server.', style: TextStyle(fontSize: 11)),
+          ),
           Row(children: [
             SizedBox(width: 90, child: TextField(controller: _pcPort, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'PC port'))),
             const SizedBox(width: 8),
@@ -246,7 +345,10 @@ class _HomeState extends State<Home> {
           ]),
           if (_pcMsg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Text(_pcMsg)),
           for (final pc in _pcs)
-            ListTile(dense: true, leading: const Icon(Icons.computer), title: Text('${pc['name']}  ${pc['ip']}:${pc['port']}'), subtitle: const Text('tap to connect'), onTap: () => _sendToPc(pc)),
+            ListTile(dense: true, leading: const Icon(Icons.computer), title: Text('${pc['name']}  ${pc['ip']}:${pc['port']}'), subtitle: const Text('tap to connect'), onTap: () {
+              setState(() => _pcTarget = pc);
+              _sendToPc(pc);
+            }),
           const SizedBox(height: 12),
           Row(children: [
             const Text('DEBUG LOG', style: TextStyle(fontWeight: FontWeight.bold)),

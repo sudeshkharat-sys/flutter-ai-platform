@@ -101,7 +101,7 @@ object PcLink {
     }
 
     /** Tell the PC where our stream is. Returns the PC's message, or our own error text. */
-    fun register(pcIp: String, pcPort: Int, phonePort: Int): String {
+    fun register(pcIp: String, pcPort: Int, phonePort: Int, name: String): String {
         // use the phone address that sits closest to the PC's (same Wi-Fi interface)
         val mine = localAddresses().map { it.first }
             .maxByOrNull { ip -> ip.split(".").zip(pcIp.split(".")).takeWhile { (a, b) -> a == b }.size }
@@ -110,7 +110,7 @@ object PcLink {
         DebugLog.i("telling PC $pcIp:$pcPort that my stream is http://$phone/video")
         var c: HttpURLConnection? = null
         return try {
-            c = (URL("http://$pcIp:$pcPort/api/register?phone=${URLEncoder.encode(phone, "UTF-8")}")
+            c = (URL("http://$pcIp:$pcPort/api/register?phone=${URLEncoder.encode(phone, "UTF-8")}&name=${URLEncoder.encode(name, "UTF-8")}")
                 .openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"; doOutput = true
                 connectTimeout = 3000; readTimeout = 20000       // the PC runs its own checks first
