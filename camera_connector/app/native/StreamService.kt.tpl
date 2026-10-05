@@ -15,6 +15,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Size
 import android.view.Surface
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -65,7 +66,7 @@ class StreamService : LifecycleService() {
     @Volatile private var lastError = ""
     private var fpsCount = 0
     private var fpsT = SystemClock.elapsedRealtime()
-    private var lastEncodeAt = 0L
+    private var nextDue = 0L
     private val jpegBuf = ByteArrayOutputStream(256 * 1024)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -122,7 +123,11 @@ class StreamService : LifecycleService() {
                 val p = future.get()
                 provider = p
                 val selector = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+                val aspect = if (width * 3 == height * 4)
+                    AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+                else AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
                 val rs = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(aspect)
                     .setResolutionStrategy(
                         ResolutionStrategy(Size(width, height), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
                     ).build()
@@ -137,11 +142,13 @@ class StreamService : LifecycleService() {
                         val now = SystemClock.elapsedRealtime()
                         val srv = server
                         val minGap = 1000L / maxFps.coerceAtLeast(1)
-                        if (srv == null || !srv.wantFrames() || now - lastEncodeAt < minGap) {
+                        // Frame-rate cap that keeps its rhythm: a 30 fps camera with a 20 fps cap
+                        // now gives 20 fps (a plain "gap since last frame" test gave 15).
+                        if (srv == null || !srv.wantFrames() || now + 3 < nextDue) {
                             skipped++
                             return@setAnalyzer
                         }
-                        lastEncodeAt = now
+                        nextDue = if (now - nextDue > minGap) now + minGap else nextDue + minGap
                         val bmp = image.toBitmap()
                         val rot = image.imageInfo.rotationDegrees
                         val upright = if (rot != 0) {
@@ -208,15 +215,24 @@ class StreamService : LifecycleService() {
 
     // ---- status ----
 
+    /** Addresses a PC can use: Wi-Fi / hotspot only (not mobile data, 192.0.0.x CLAT or link-local). */
     private fun localIps(): List<String> {
-        val ips = mutableListOf<String>()
+        val all = mutableListOf<String>()
+        val lan = mutableListOf<String>()
         try {
             for (ni in NetworkInterface.getNetworkInterfaces()) {
                 if (!ni.isUp || ni.isLoopback) continue
-                for (a in ni.inetAddresses) if (a is Inet4Address) ips.add(a.hostAddress ?: continue)
+                val mobile = ni.name.startsWith("rmnet") || ni.name.startsWith("ccmni") ||
+                    ni.name.contains("clat") || ni.name.startsWith("dummy") || ni.name.startsWith("tun")
+                for (a in ni.inetAddresses) {
+                    if (a !is Inet4Address) continue
+                    val ip = a.hostAddress ?: continue
+                    all.add(ip)
+                    if (!mobile && !ip.startsWith("192.0.0.") && !ip.startsWith("169.254.")) lan.add(ip)
+                }
             }
         } catch (_: Exception) {}
-        return ips
+        return if (lan.isNotEmpty()) lan else all
     }
 
     fun statusJson(): String = JSONObject().apply {

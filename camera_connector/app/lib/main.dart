@@ -62,7 +62,13 @@ class _HomeState extends State<Home> {
     try {
       final s = jsonDecode(await _ch.invokeMethod<String>('status') ?? '{}');
       final l = await _ch.invokeMethod<String>('log') ?? '';
-      if (mounted) setState(() { _s = s; _log = l; });
+      if (mounted) {
+        setState(() {
+          _s = s;
+          _log = l;
+          if (s['running'] == true && _msg == 'starting...') _msg = '';
+        });
+      }
     } catch (e) {
       if (mounted) setState(() => _msg = 'status error: $e');
     }
@@ -136,7 +142,7 @@ class _HomeState extends State<Home> {
   @override
   Widget build(BuildContext context) {
     final running = _s['running'] == true;
-    final ips = ((_s['ips'] as List?) ?? []).cast<String>();
+    final ips = ((_s['ips'] as List?) ?? []).cast<String>().where((i) => !i.startsWith('192.0.0.')).toList();
     final port = _s['port'] ?? _port.text;
     final err = (_s['error'] as String?) ?? '';
     return Scaffold(
@@ -151,6 +157,7 @@ class _HomeState extends State<Home> {
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   const Text('STREAMING', style: TextStyle(fontWeight: FontWeight.bold)),
                   for (final ip in ips) SelectableText('http://$ip:$port/video', style: const TextStyle(fontSize: 16)),
+                  const Text('Use this address on the PC (same Wi-Fi or this phone\'s hotspot).', style: TextStyle(fontSize: 11)),
                   const SizedBox(height: 6),
                   Text('${_s['fps']} fps   ${_s['size'] ?? ''}   viewers: ${_s['viewers']}'),
                   Text('encode ${_s['encodeMs']} ms   frames ${_s['encoded']}   skipped ${_s['skipped']}'),

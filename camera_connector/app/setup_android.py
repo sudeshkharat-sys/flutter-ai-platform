@@ -93,6 +93,19 @@ def main():
         print("manifest: cleartext http enabled")
     write(mpath, x)
 
+    # --- launcher icon (pre-sized PNGs from assets/icon/mipmap-*) ---
+    res = os.path.join("android", "app", "src", "main", "res")
+    for d in sorted(os.listdir(os.path.join("assets", "icon"))):
+        if not d.startswith("mipmap-"):
+            continue
+        dst = os.path.join(res, d)
+        os.makedirs(dst, exist_ok=True)
+        for f in os.listdir(dst):  # a leftover ic_launcher.webp/xml next to our .png = duplicate resource error
+            if f.startswith("ic_launcher") and not f.endswith("ic_launcher.png"):
+                os.remove(os.path.join(dst, f))
+        shutil.copy(os.path.join("assets", "icon", d, "ic_launcher.png"), os.path.join(dst, "ic_launcher.png"))
+    print("icon installed")
+
     # --- gradle ---
     kts = gradle.endswith(".kts")
     if MARK not in g:
