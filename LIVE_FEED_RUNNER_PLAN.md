@@ -38,6 +38,16 @@ connectivity step below is proven end-to-end.
   - `draw_overlay` / `draw_checklist` (same file) to render results, same
     look as the existing viewer.
 
+## Status (step 1 rebuilt as "Runner Cam")
+
+`pc_runner/runner.py` is now an IP-Webcam-style PC runner: browser live viewer
+(`/`, `/video` MJPEG, `/snapshot.jpg`), LAN discovery (`/ping` + UDP beacon on
+8091), debug log (console, `runner_debug.log`, `/api/log`; on by default,
+`--no-debug` to quiet), no OpenCV window. Phone app is `pc_runner/runner_cam_app`
+(scan, auto-reconnect, debug panel forwarded to the PC log). Exe + APK build via
+`.github/workflows/runner-cam-build.yml`. The app code has not been compiled
+yet -- first CI run will tell.
+
 ## Staged build order
 
 1. **[CURRENT STEP] Basic connectivity check, phone camera -> PC.**

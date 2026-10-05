@@ -1,9 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PyInstaller spec for runner.py -- step 1 connectivity check only (no
-# model/detection deps bundled yet; add ultralytics/torch collect_all()
-# entries here, matching deploy/exe/launcher.spec's pattern, once step 2
-# wires in the YOLO detector).
+# PyInstaller spec for runner.py (Runner Cam PC runner). No OpenCV/model deps
+# yet; add ultralytics/torch collect_all() entries here, matching
+# deploy/exe/launcher.spec's pattern, once the YOLO detector is wired in.
 #
 # Build:   pyinstaller runner.spec
 # Output:  dist/runner.exe -- a single self-contained file (onefile mode).
@@ -16,7 +15,7 @@ datas = []
 binaries = []
 hiddenimports = []
 
-for pkg in ["uvicorn", "fastapi", "starlette", "cv2"]:
+for pkg in ["uvicorn", "fastapi", "starlette", "websockets"]:
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
