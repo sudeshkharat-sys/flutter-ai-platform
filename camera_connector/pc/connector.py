@@ -123,7 +123,9 @@ def listen_beacon(seconds, out):
         s.close()
 
 
-def scan(port=8080, extra_ips=()):
+def scan(port=8080, extra_ips=(), quiet=False):
+    def log(m, level="INFO", debug_only=False):  # a quiet (background) scan only logs in debug mode
+        globals()["log"](m, level, debug_only or quiet)
     ips = local_ips()
     log(f"scan: this PC has {ips or 'NO network address'}; sweeping /24 on port {port}")
     if not ips:
@@ -203,6 +205,14 @@ def diagnose(url, opencv_failed=True):
 # ---------------------------------------------------------------- reader --
 
 
+def tcp_open(host, port, timeout=1.5):
+    try:
+        socket.create_connection((host, port), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
 class Reader(threading.Thread):
     """Reads the stream with cv2.VideoCapture; keeps only the newest frame."""
 
@@ -227,6 +237,15 @@ class Reader(threading.Thread):
 
     def run(self):
         while not self.stop_flag:
+            host, port = self.key.rsplit(":", 1)
+            if not tcp_open(host, int(port)):  # refused/unreachable answers at once; OpenCV would take ~6 s to say so
+                self.state = "phone not reachable (retrying)"
+                if self.reconnects % 10 == 0:
+                    log(f"{self.name}: {self.key} not reachable", "WARN")
+                    diagnose(self.url, opencv_failed=False)
+                self.reconnects += 1
+                time.sleep(2)
+                continue
             log(f"opening {self.url}", debug_only=True)
             cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
             try:
@@ -313,7 +332,11 @@ def connect(url, name=None):
     log(f"connecting to {url} as '{r.name}' ({len(STATE['readers'])} phone(s) connected)")
 
 
+DISMISSED = set()  # phones the user disconnected by hand: auto-scan must not reconnect them
+
+
 def disconnect(key):
+    DISMISSED.add(key)
     with STATE_LOCK:
         r = STATE["readers"].pop(key, None)
     if r:
@@ -338,6 +361,22 @@ def do_scan():
         log(f"scan crashed: {traceback.format_exc()}", "ERROR")
     finally:
         STATE["scanning"] = False
+
+
+def auto_scan_loop(interval):
+    """Phones appear by themselves: rescan now and then, connect to any new one (outbound traffic only)."""
+    while True:
+        time.sleep(interval)
+        if STATE["scanning"]:
+            continue
+        try:
+            for p in scan(STATE["port"], quiet=True):
+                key = f"{p['ip']}:{p['port']}"
+                if key not in STATE["readers"] and key not in DISMISSED:
+                    log(f"auto-scan found a new phone: {p['name']} {key} -> connecting")
+                    connect(f"http://{key}/video", p["name"])
+        except Exception:
+            log(f"auto-scan error: {traceback.format_exc()}", "ERROR")
 
 
 # ---- QR code the phone scans to find this PC (no network scan needed) ----
@@ -543,6 +582,8 @@ def main():
     ap.add_argument("--ui-port", type=int, default=8095, help="port of this program's viewer page (and QR)")
     ap.add_argument("--no-debug", action="store_true")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--auto-scan", type=int, default=15, metavar="SEC",
+                    help="rescan every SEC seconds and connect new phones (0 = off)")
     ap.add_argument("--no-scan", action="store_true", help="do not scan at start; wait for phones to scan the QR")
     ap.add_argument("--window", action="store_true", help="also show an OpenCV window (first phone)")
     ap.add_argument("--scan-only", action="store_true")
@@ -584,6 +625,10 @@ def main():
                 "or press Scan on the viewer page.", "WARN")
         else:
             log("several phones found -- connect them from the viewer page")
+
+    if a.auto_scan > 0 and not a.url:
+        threading.Thread(target=auto_scan_loop, args=(a.auto_scan,), daemon=True).start()
+        log(f"auto-scan on: new phones on this network connect by themselves (every {a.auto_scan}s)", debug_only=True)
 
     try:
         while True:

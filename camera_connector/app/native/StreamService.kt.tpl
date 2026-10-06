@@ -103,7 +103,7 @@ class StreamService : LifecycleService() {
         }
         try {
             acquireLocks()
-            server = MjpegServer(port) { statusJson() }.also { it.start() }
+            server = MjpegServer(port, name) { statusJson() }.also { it.start() }
             instance = this
             startBeacon()
             startWatchdog()

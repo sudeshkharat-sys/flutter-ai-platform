@@ -26,9 +26,13 @@ object PcLink {
         try {
             for (ni in NetworkInterface.getNetworkInterfaces()) {
                 if (!ni.isUp || ni.isLoopback) continue
+                val mobile = ni.name.startsWith("rmnet") || ni.name.startsWith("ccmni") ||
+                    ni.name.contains("clat") || ni.name.startsWith("dummy") || ni.name.startsWith("tun")
+                if (mobile) continue                       // mobile data is no use for reaching a PC
                 for (ia in ni.interfaceAddresses) {
                     val a = ia.address
-                    if (a is Inet4Address) out.add(Pair(a.hostAddress ?: continue, ia.networkPrefixLength.toInt()))
+                    if (a is Inet4Address && !(a.hostAddress ?: "").startsWith("192.0.0.") &&
+                        ia.networkPrefixLength <= 30) out.add(Pair(a.hostAddress ?: continue, ia.networkPrefixLength.toInt()))
                 }
             }
         } catch (e: Exception) {

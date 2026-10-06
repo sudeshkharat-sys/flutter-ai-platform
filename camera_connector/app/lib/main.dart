@@ -165,8 +165,10 @@ class _HomeState extends State<Home> {
     setState(() => _pcMsg = 'QR read (${j['name']}). Checking which PC address this phone can reach...');
     final pc = await _reach(ips, port);
     if (pc == null) {
-      setState(() => _pcMsg = 'QR read, but this phone cannot reach the PC at ${ips.join(', ')} port $port. '
-          'Same Wi-Fi / hotspot? Windows firewall allowing the connector?');
+      await _dlog('QR: phone cannot reach the PC (port $port blocked? firewall?). The PC can still find this phone by itself.', 'WARN');
+      setState(() => _pcMsg = 'QR read, but this phone cannot reach the PC at ${ips.join(', ')} port $port '
+          '(the PC firewall is probably blocking incoming connections). You can still tap Start camera server: '
+          'the PC rescans every 15 s and will find this phone by itself.');
       return;
     }
     setState(() {

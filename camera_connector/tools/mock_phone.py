@@ -12,7 +12,7 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
         if self.path.startswith("/ping"):
-            b = json.dumps({"app": "runner-cam-phone", "version": "mock", "port": A.port}).encode()
+            b = json.dumps({"app": "runner-cam-phone", "version": "mock", "port": A.port, "name": "mock-cam"}).encode()
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b))); self.send_header("Connection", "close"); self.end_headers(); self.wfile.write(b); return
         if self.path.startswith("/video"):

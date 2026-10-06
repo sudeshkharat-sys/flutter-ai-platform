@@ -20,6 +20,7 @@ import kotlin.concurrent.thread
  */
 class MjpegServer(
     private val port: Int,
+    private val name: String,
     private val statusJson: () -> String,
 ) {
     private var server: ServerSocket? = null
@@ -92,7 +93,7 @@ class MjpegServer(
                 "/video" -> streamVideo(out, remote)
                 "/snapshot.jpg" -> snapshot(out)
                 "/ping" -> respond(out, "application/json",
-                    """{"app":"runner-cam-phone","version":"0.1.0","port":$port}""".toByteArray())
+                    """{"app":"runner-cam-phone","version":"0.1.0","port":$port,"name":${org.json.JSONObject.quote(name)}}""".toByteArray())
                 "/status" -> respond(out, "application/json", statusJson().toByteArray())
                 "/log" -> respond(out, "text/plain; charset=utf-8", DebugLog.tail(300).toByteArray())
                 "/", "/index.html" -> respond(out, "text/html", INDEX.toByteArray())
