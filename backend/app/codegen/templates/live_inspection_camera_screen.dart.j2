@@ -164,6 +164,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // Live frames are saved as the result only when the app has no OCR (the
   // live ticks skip OCR, and the old full-quality capture is what produces
   // OCR text). OCR builds keep the old takePicture() capture.
+  // Camera size for the live feed. It used to be ResolutionPreset.low
+  // (~320x240): a part even a little far from the phone was only a few pixels
+  // wide, so confidence stayed low until it was close and centred -- while the
+  // still-photo flow (inspection_camera_screen) used medium/high and detected
+  // the same part from far, near and the side. Live now uses the SAME preset
+  // as that screen. Frames are still downscaled to 640px wide per tick, so
+  // the cost is mostly the larger plane copy + conversion; raise to
+  // ResolutionPreset.high for more reach, drop back to low if ticks get slow.
+  static const ResolutionPreset _liveResolution =
+      {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %};
   static const bool _fastLive = {% if ocr_enabled %}false{% else %}true{% endif %};
   bool _isStreaming = false;
   // If the platform camera stream silently never delivers a frame (seen on
@@ -559,7 +569,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           orElse: () => cameras.first);
       final controller = CameraController(
         back,
-        ResolutionPreset.low,
+        _liveResolution,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
@@ -2495,6 +2505,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // Live frames are saved as the result only when the app has no OCR (the
   // live ticks skip OCR, and the old full-quality capture is what produces
   // OCR text). OCR builds keep the old takePicture() capture.
+  // Camera size for the live feed. It used to be ResolutionPreset.low
+  // (~320x240): a part even a little far from the phone was only a few pixels
+  // wide, so confidence stayed low until it was close and centred -- while the
+  // still-photo flow (inspection_camera_screen) used medium/high and detected
+  // the same part from far, near and the side. Live now uses the SAME preset
+  // as that screen. Frames are still downscaled to 640px wide per tick, so
+  // the cost is mostly the larger plane copy + conversion; raise to
+  // ResolutionPreset.high for more reach, drop back to low if ticks get slow.
+  static const ResolutionPreset _liveResolution =
+      {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %};
   static const bool _fastLive = {% if ocr_enabled %}false{% else %}true{% endif %};
   bool _isStreaming = false;
   // If the platform camera stream silently never delivers a frame (seen on
@@ -2826,7 +2846,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           orElse: () => cameras.first);
       final controller = CameraController(
         back,
-        ResolutionPreset.low,
+        _liveResolution,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
