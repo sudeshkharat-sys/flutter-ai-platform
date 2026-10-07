@@ -1211,18 +1211,136 @@ class ModelManager {
   /// float32 conversion here, on the background isolate, instead of the
   /// caller doing it on the UI isolate before compute() is even reached.
   static List<DetectionResult> _runInferencePng(Map<String, dynamic> args) {
-    final Uint8List pngBytes = args['pngBytes'] as Uint8List;
+    // decodeImage, not decodePng -- these bytes are JPEG now (see the encode
+    // side); format-agnostic decoding stays correct either way.
+    final decoded = img.decodeImage(args['pngBytes'] as Uint8List);
+    if (decoded == null) return [];
+    return _inferOnDecoded(decoded, args);
+  }
+
+  /// Live-tick fast path: raw camera planes in, detections out, all inside
+  /// ONE background isolate. The old tick path converted YUV -> RGB, encoded
+  /// a JPEG, copied it to a second isolate, decoded it again, and only then
+  /// resized + ran the model. The JPEG round trip cost time on every tick
+  /// and was lossy; here the RGB image goes straight to the same resize +
+  /// float32 preprocessing the other entry points use. No OCR on ticks.
+  ///
+  /// [frame] = {width, height, planes: [{bytes, bytesPerRow, bytesPerPixel}],
+  /// rotationDegrees, targetWidth} (see [yuvFrameToImage]).
+  Future<List<DetectionResult>> predictFrame(Map<String, dynamic> frame) async {
+    if (!_isLoaded || _interpreter == null) return [];
+    return compute(_runInferenceFrame, {
+      ...frame,
+      'interpreter_address': _interpreter!.address,
+      'labels': _labels,
+      'inputSize': {{ input_size }},
+      'threshold': confidenceThreshold,
+    });
+  }
+
+  static List<DetectionResult> _runInferenceFrame(Map<String, dynamic> args) {
+    final image = yuvFrameToImage(args);
+    if (image == null) return [];
+    return _inferOnDecoded(image, args);
+  }
+
+  /// Converts one raw camera stream frame (YUV420 -- 3 planes on Android, or
+  /// a 2-plane NV12-style frame on iOS) to an upright RGB [img.Image],
+  /// downscaled to ~[targetWidth] wide while sampling (never upscaled) so a
+  /// tick doesn't pay for full sensor resolution. [rotationDegrees] is the
+  /// camera's sensorOrientation. Returns null on a malformed frame.
+  static img.Image? yuvFrameToImage(Map<String, dynamic> args) {
+    try {
+      final int width = args['width'] as int;
+      final int height = args['height'] as int;
+      final List<dynamic> planes = args['planes'] as List<dynamic>;
+      final int rotationDegrees = args['rotationDegrees'] as int;
+      final int targetWidth = args['targetWidth'] as int;
+
+      final Map yPlane = planes[0] as Map;
+      final Uint8List yBytes = yPlane['bytes'] as Uint8List;
+      final int yRowStride = yPlane['bytesPerRow'] as int;
+
+      final Uint8List uBytes;
+      final Uint8List vBytes;
+      final int uvRowStride;
+      final int uvPixelStride;
+      final bool threePlane = planes.length >= 3;
+      if (threePlane) {
+        final Map uPlane = planes[1] as Map;
+        final Map vPlane = planes[2] as Map;
+        uBytes = uPlane['bytes'] as Uint8List;
+        vBytes = vPlane['bytes'] as Uint8List;
+        uvRowStride = uPlane['bytesPerRow'] as int;
+        uvPixelStride = (uPlane['bytesPerPixel'] as int?) ?? 1;
+      } else {
+        final Map uvPlane = planes[1] as Map;
+        final Uint8List uv = uvPlane['bytes'] as Uint8List;
+        uBytes = uv;
+        vBytes = uv;
+        uvRowStride = uvPlane['bytesPerRow'] as int;
+        uvPixelStride = 2;
+      }
+
+      final double scale = width > targetWidth ? targetWidth / width : 1.0;
+      final int outW = (width * scale).round().clamp(1, width);
+      final int outH = (height * scale).round().clamp(1, height);
+
+      final out = img.Image(width: outW, height: outH);
+      for (int oy = 0; oy < outH; oy++) {
+        final int y = (oy / scale).floor().clamp(0, height - 1);
+        final int yRow = y * yRowStride;
+        final int uvRow = (y >> 1) * uvRowStride;
+        for (int ox = 0; ox < outW; ox++) {
+          final int x = (ox / scale).floor().clamp(0, width - 1);
+          final int yIndex = yRow + x;
+          if (yIndex >= yBytes.length) continue;
+          final int uvIndex = uvRow + (x >> 1) * uvPixelStride;
+
+          final int yVal = yBytes[yIndex];
+          int uVal, vVal;
+          if (threePlane) {
+            if (uvIndex >= uBytes.length || uvIndex >= vBytes.length) continue;
+            uVal = uBytes[uvIndex];
+            vVal = vBytes[uvIndex];
+          } else {
+            // NV12: U then V interleaved in the same buffer.
+            if (uvIndex + 1 >= uBytes.length) continue;
+            uVal = uBytes[uvIndex];
+            vVal = uBytes[uvIndex + 1];
+          }
+
+          final double yy = yVal.toDouble();
+          final double uu = uVal.toDouble() - 128.0;
+          final double vv = vVal.toDouble() - 128.0;
+          out.setPixelRgb(
+            ox,
+            oy,
+            (yy + 1.402 * vv).round().clamp(0, 255),
+            (yy - 0.344136 * uu - 0.714136 * vv).round().clamp(0, 255),
+            (yy + 1.772 * uu).round().clamp(0, 255),
+          );
+        }
+      }
+
+      if (rotationDegrees == 90 || rotationDegrees == 180 || rotationDegrees == 270) {
+        return img.copyRotate(out, angle: rotationDegrees);
+      }
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Shared inference body: resize/letterbox + float32 + model + parse, for
+  /// an already-decoded RGB image. Runs inside a background isolate.
+  static List<DetectionResult> _inferOnDecoded(img.Image decoded, Map<String, dynamic> args) {
     final int interpreterAddress = args['interpreter_address'] as int;
     final List<String> labels = List<String>.from(args['labels'] as List);
     final int inputSize = args['inputSize'] as int;
     final double threshold = args['threshold'] as double;
 
     final interpreter = Interpreter.fromAddress(interpreterAddress);
-
-    // decodeImage, not decodePng -- these bytes are JPEG now (see the encode
-    // side); format-agnostic decoding stays correct either way.
-    final decoded = img.decodeImage(pngBytes);
-    if (decoded == null) return [];
 {% if ocr_enabled %}
     final lb = _letterboxToFloat32(decoded, inputSize);
     final input = lb.buffer.reshape([1, inputSize, inputSize, 3]);

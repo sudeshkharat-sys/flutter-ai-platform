@@ -65,116 +65,16 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
 }
 
 /// Runs on a background isolate via compute(). Converts one raw camera
-/// stream frame (YUV420 -- 3 planes on Android, or a 2-plane NV12-style
-/// frame on iOS) into a small RGB JPEG the existing detector pipeline
-/// already knows how to read (ModelManager().predictBytes). Downscaling to
-/// [targetWidth] here (not after) is what keeps each live tick cheap --
-/// converting at full sensor resolution would cost far more than the
-/// inference itself. Called at 640px/quality-90 (bumped up from an earlier
-/// 480px/quality-75) -- the smaller settings were producing confidence
-/// scores that hovered right around the watch threshold for small targets
-/// (a logo/badge occupying a small part of the frame), causing the live
-/// box to flicker in and out tick-to-tick even on a stationary part. If a
-/// device shows tick times creeping past the ~400ms watch interval in the
-/// debug console, that's the tradeoff to re-check before pushing this
-/// higher still.
-///
-/// [rotationDegrees] should be the camera's sensorOrientation (typically
-/// 90 for a phone's back camera held in portrait). If live boxes come out
-/// sideways/upside-down on a given device, that's the constant to check --
-/// this couldn't be verified against real hardware while building it.
+/// stream frame to a JPEG. Per-tick detection no longer goes through JPEG at
+/// all (see ModelManager.predictFrame); this is only used to keep the exact
+/// frame a tick passed on, for saving/showing it. 640px wide, quality 90.
+/// [rotationDegrees] = the camera's sensorOrientation (typically 90 for a
+/// phone's back camera held in portrait) -- if boxes come out sideways on a
+/// device, that's the constant to check.
 Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
-  try {
-    final int width = args['width'] as int;
-    final int height = args['height'] as int;
-    final List<dynamic> planes = args['planes'] as List<dynamic>;
-    final int rotationDegrees = args['rotationDegrees'] as int;
-    final int targetWidth = args['targetWidth'] as int;
-
-    final Map yPlane = planes[0] as Map;
-    final Uint8List yBytes = yPlane['bytes'] as Uint8List;
-    final int yRowStride = yPlane['bytesPerRow'] as int;
-
-    final Uint8List uBytes;
-    final Uint8List vBytes;
-    final int uvRowStride;
-    final int uvPixelStride;
-    // Android's yuv420 format group usually delivers 3 separate planes
-    // (Y, U, V), each with its own pixel stride. iOS's yuv420 group
-    // delivers 2 planes (Y, and interleaved UV -- NV12 order), so treat
-    // anything with fewer than 3 planes as that layout instead.
-    final bool threePlane = planes.length >= 3;
-    if (threePlane) {
-      final Map uPlane = planes[1] as Map;
-      final Map vPlane = planes[2] as Map;
-      uBytes = uPlane['bytes'] as Uint8List;
-      vBytes = vPlane['bytes'] as Uint8List;
-      uvRowStride = uPlane['bytesPerRow'] as int;
-      uvPixelStride = (uPlane['bytesPerPixel'] as int?) ?? 1;
-    } else {
-      final Map uvPlane = planes[1] as Map;
-      final Uint8List uv = uvPlane['bytes'] as Uint8List;
-      uBytes = uv;
-      vBytes = uv;
-      uvRowStride = uvPlane['bytesPerRow'] as int;
-      uvPixelStride = 2;
-    }
-
-    // Sample directly at (approximately) targetWidth instead of building a
-    // full sensor-resolution image first and downscaling after -- a live
-    // tick only ever needs a small frame, and converting every source pixel
-    // just to throw most of them away in a resize step afterward was most
-    // of this function's cost per tick.
-    final double scale = width > targetWidth ? targetWidth / width : 1.0;
-    final int outW = (width * scale).round().clamp(1, width);
-    final int outH = (height * scale).round().clamp(1, height);
-
-    final out = img.Image(width: outW, height: outH);
-    for (int oy = 0; oy < outH; oy++) {
-      final int y = (oy / scale).floor().clamp(0, height - 1);
-      final int yRow = y * yRowStride;
-      final int uvRow = (y >> 1) * uvRowStride;
-      for (int ox = 0; ox < outW; ox++) {
-        final int x = (ox / scale).floor().clamp(0, width - 1);
-        final int yIndex = yRow + x;
-        if (yIndex >= yBytes.length) continue;
-        final int uvIndex = uvRow + (x >> 1) * uvPixelStride;
-
-        final int yVal = yBytes[yIndex];
-        int uVal, vVal;
-        if (threePlane) {
-          if (uvIndex >= uBytes.length || uvIndex >= vBytes.length) continue;
-          uVal = uBytes[uvIndex];
-          vVal = vBytes[uvIndex];
-        } else {
-          // NV12: U then V interleaved in the same buffer.
-          if (uvIndex + 1 >= uBytes.length) continue;
-          uVal = uBytes[uvIndex];
-          vVal = uBytes[uvIndex + 1];
-        }
-
-        final double yy = yVal.toDouble();
-        final double uu = uVal.toDouble() - 128.0;
-        final double vv = vVal.toDouble() - 128.0;
-        final int r = (yy + 1.402 * vv).round().clamp(0, 255);
-        final int g = (yy - 0.344136 * uu - 0.714136 * vv).round().clamp(0, 255);
-        final int b = (yy + 1.772 * uu).round().clamp(0, 255);
-        out.setPixelRgb(ox, oy, r, g, b);
-      }
-    }
-
-    // Rotating the already-small image here is cheap -- this is the same
-    // img.copyRotate call as before, just no longer applied to a
-    // full-resolution frame.
-    img.Image rotated = out;
-    if (rotationDegrees == 90 || rotationDegrees == 180 || rotationDegrees == 270) {
-      rotated = img.copyRotate(out, angle: rotationDegrees);
-    }
-
-    return Uint8List.fromList(img.encodeJpg(rotated, quality: 90));
-  } catch (_) {
-    return null;
-  }
+  final image = ModelManager.yuvFrameToImage(args);
+  if (image == null) return null;
+  return Uint8List.fromList(img.encodeJpg(image, quality: 90));
 }
 
 class LiveInspectionCameraScreen extends StatefulWidget {
@@ -242,7 +142,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // to trigger on partial/fluke frames in practice.
   static const int _holdTarget = 1;
   static const double _watchConfidenceThreshold = 0.55;
-  static const Duration _watchInterval = Duration(milliseconds: 400);
+  static const Duration _watchInterval = Duration(milliseconds: 100);
   static const Duration _watchTimeout = Duration(seconds: 45);
   DateTime? _watchDeadline;
 
@@ -254,6 +154,17 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // background isolate. A tick that finds no frame yet (stream still
   // warming up) just skips itself rather than blocking.
   CameraImage? _latestFrame;
+  // The exact frame the most recent watch tick ran detection on, plus the
+  // confident (>= _watchConfidenceThreshold) detections it produced. When a
+  // tick passes, THAT frame is the inspection result -- no second shutter
+  // and second inference that a shaky hand could flip to NOT OK. At the
+  // deadline the last tick's frame is saved with its verdict too.
+  CameraImage? _lastTickFrame;
+  List<DetectionResult> _lastTickConfident = [];
+  // Live frames are saved as the result only when the app has no OCR (the
+  // live ticks skip OCR, and the old full-quality capture is what produces
+  // OCR text). OCR builds keep the old takePicture() capture.
+  static const bool _fastLive = {% if ocr_enabled %}false{% else %}true{% endif %};
   bool _isStreaming = false;
   // If the platform camera stream silently never delivers a frame (seen on
   // some devices/OEMs -- the very first startImageStream after a fresh
@@ -388,18 +299,34 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   /// manual/sequential flow shows -- this must not interrupt the feed or
   /// block on user input; a blurry auto-capture just lands as whatever
   /// pass/fail it detects, same as any other tick's result would.
-  Future<void> _autoCaptureSimTask(int index) async {
+  Future<void> _autoCaptureSimTask(
+    int index, {
+    Uint8List? frameBytes,
+    List<DetectionResult>? tickDetections,
+    bool timedOut = false,
+  }) async {
     final task = widget.tasks[index];
     try {
-      _addLog('--- Sim auto-capture: ${task['name']} ---');
-      final XFile image = await _takeFullQualityPicture();
-      final bytes = await image.readAsBytes();
+      // With [frameBytes] + [tickDetections] the live tick's own frame and
+      // detections ARE the result (no new photo, no second inference).
+      // Without them (manual button, OCR builds) it takes a full photo.
+      final bool fromFrame = frameBytes != null && tickDetections != null;
+      _addLog('--- Sim auto-capture: ${task['name']}${fromFrame ? ' (live frame)' : ''} ---');
+      final Uint8List bytes;
+      if (fromFrame) {
+        bytes = frameBytes!;
+      } else {
+        final XFile image = await _takeFullQualityPicture();
+        bytes = await image.readAsBytes();
+      }
       final decodedRaw = img.decodeImage(bytes);
       final oriented = decodedRaw != null ? img.bakeOrientation(decodedRaw) : null;
 
-      final allDetections = oriented != null
-          ? await ModelManager().predictImage(oriented)
-          : await ModelManager().predictBytes(bytes);
+      final allDetections = fromFrame
+          ? tickDetections!
+          : (oriented != null
+              ? await ModelManager().predictImage(oriented)
+              : await ModelManager().predictBytes(bytes));
 
       final List<String> allModelClasses = List<String>.from(task['classes'] ?? []);
       final List<String> mandatoryClasses = List<String>.from(task['mandatoryClasses'] ?? []);
@@ -530,7 +457,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         'mandatoryResults': mandatoryResults.map((k, v) => MapEntry(k, v != null ? v.toJson() : null)),
         'detectionsJson': jsonEncode(allDetections.map((d) => d.toJson()).toList()),
       };
-      if (mounted) setState(() => _taskStatus[index] = 'found');
+      if (mounted) setState(() => _taskStatus[index] = (timedOut && !overallPass) ? 'notFound' : 'found');
       _addLog("Sim task done [${task['name']}]: ${overallPass ? 'OK' : 'NOT OK'}");
     } catch (e) {
       _addLog('Sim auto-capture failed for ${task['name']}: $e');
@@ -697,6 +624,25 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
+  /// Plain-data copy of one camera frame, the shape ModelManager.predictFrame
+  /// and _convertCameraFrameToJpeg take across an isolate boundary.
+  Map<String, dynamic> _framePayload(CameraImage frame) => {
+        'width': frame.width,
+        'height': frame.height,
+        'planes': frame.planes
+            .map((p) => {
+                  'bytes': p.bytes,
+                  'bytesPerRow': p.bytesPerRow,
+                  'bytesPerPixel': p.bytesPerPixel ?? 1,
+                })
+            .toList(),
+        'rotationDegrees': _cameraController?.description.sensorOrientation ?? 90,
+        'targetWidth': 640,
+      };
+
+  Future<Uint8List?> _frameToJpeg(CameraImage frame) =>
+      compute(_convertCameraFrameToJpeg, _framePayload(frame));
+
   /// Cheap per-frame callback for CameraController.startImageStream --
   /// just remembers the latest frame. The actual conversion+inference work
   /// happens on the watch/sim tick's own cadence (see _watchLoop /
@@ -736,6 +682,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _holdCount = 0;
     _consecutiveNullFrameTicks = 0;
     _watchDeadline = DateTime.now().add(_watchTimeout);
+    _lastTickFrame = null;
+    _lastTickConfident = [];
     _startImageStream();
     _watchLoop();
   }
@@ -789,6 +737,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _simScanActive = true;
     _consecutiveNullFrameTicks = 0;
     _simDeadline = DateTime.now().add(_watchTimeout);
+    _lastTickFrame = null;
+    _lastTickConfident = [];
     _startImageStream();
     _simWatchLoop();
   }
@@ -808,7 +758,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         continue;
       }
       if (_simDeadline != null && DateTime.now().isAfter(_simDeadline!)) {
-        _finishSimTimeouts();
+        await _finishSimTimeouts();
         return;
       }
       _simTicking = true;
@@ -849,27 +799,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           continue;
         }
         _consecutiveNullFrameTicks = 0;
-        final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
-        final bytes = await compute(_convertCameraFrameToJpeg, {
-          'width': frame.width,
-          'height': frame.height,
-          'planes': frame.planes
-              .map((p) => {
-                    'bytes': p.bytes,
-                    'bytesPerRow': p.bytesPerRow,
-                    'bytesPerPixel': p.bytesPerPixel ?? 1,
-                  })
-              .toList(),
-          'rotationDegrees': sensorOrientation,
-          'targetWidth': 640,
-        });
-        if (bytes == null) continue;
-        final detections = await ModelManager().predictBytes(bytes);
+        final detections = await ModelManager().predictFrame(_framePayload(frame));
+        _lastTickFrame = frame;
         tickStopwatch.stop();
         _addLog("Sim tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections");
 
         if (!mounted || !_simScanActive) return;
         final confident = detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList();
+        _lastTickConfident = confident;
         // Only boxes for still-pending tasks' own target classes are shown
         // -- an already-found task doesn't need to keep drawing, and a
         // confident detection of some unrelated class would otherwise show
@@ -889,15 +826,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             .where((d) => pendingTargetClasses.contains(d.className.toLowerCase().trim()))
             .toList());
 
-        int? matchedTaskIndex;
+        final matchedTaskIndices = <int>[];
         for (var i = 0; i < widget.tasks.length; i++) {
           if (_taskStatus[i] != 'pending') continue;
           final tickPass = _simTaskPasses(widget.tasks[i], confident);
           if (tickPass) {
             _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) + 1;
-            if (_taskHoldCount[i]! >= _holdTarget && matchedTaskIndex == null) {
-              matchedTaskIndex = i;
-            }
+            if (_taskHoldCount[i]! >= _holdTarget) matchedTaskIndices.add(i);
           } else if ((_taskHoldCount[i] ?? 0) != 0) {
             // Decrement instead of a hard reset to 0 -- on an assembly line
             // the part doesn't move, so a miss here is almost always sensor
@@ -910,13 +845,23 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         }
         if (mounted) setState(() {});
 
-        if (matchedTaskIndex != null && !_simCapturingTask) {
-          final idx = matchedTaskIndex;
-          _addLog("Sim: task ${idx + 1} steady -- auto-capturing in background");
+        if (matchedTaskIndices.isNotEmpty && !_simCapturingTask) {
+          // Every task that matched on THIS tick is resolved from THIS frame,
+          // right now: the frame that made the detection is the evidence, so
+          // there is no second shutter/inference to shake or flip the verdict.
+          final toCapture = _fastLive ? matchedTaskIndices : matchedTaskIndices.take(1).toList();
+          _addLog("Sim: task(s) ${toCapture.map((i) => i + 1).join(', ')} matched -- capturing this frame");
           _simCapturingTask = true;
+          final jpegFuture = _fastLive ? _frameToJpeg(frame) : Future<Uint8List?>.value(null);
           // Fire-and-forget: the watch loop keeps ticking for the other
-          // pending tasks while this one's full-quality capture+save runs.
-          unawaited(_autoCaptureSimTask(idx).whenComplete(() {
+          // pending tasks while these are saved.
+          unawaited(() async {
+            final jpeg = await jpegFuture;
+            for (final idx in toCapture) {
+              await _autoCaptureSimTask(idx, frameBytes: jpeg, tickDetections: confident);
+            }
+          }()
+              .whenComplete(() {
             _simCapturingTask = false;
             _maybeFinishSimScan();
           }));
@@ -929,10 +874,22 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  void _finishSimTimeouts() {
+  /// Deadline hit: still-pending tasks get an auto-captured image too -- the
+  /// last frame the watch saw + what it detected on it -- saved with whatever
+  /// verdict that gives (NOT FOUND / NOT OK), instead of no photo at all.
+  Future<void> _finishSimTimeouts() async {
     _simScanActive = false;
+    while (_simCapturingTask) {
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+    final lastFrame = _fastLive ? _lastTickFrame : null;
+    final Uint8List? jpeg = lastFrame != null ? await _frameToJpeg(lastFrame) : null;
     for (var i = 0; i < widget.tasks.length; i++) {
+      if (_taskStatus[i] != 'pending') continue;
+      _addLog("Sim: task ${i + 1} (${widget.tasks[i]['name']}) not found by the deadline -- capturing the last frame");
+      await _autoCaptureSimTask(i, frameBytes: jpeg, tickDetections: _lastTickConfident, timedOut: true);
       if (_taskStatus[i] == 'pending') {
+        // Capture itself failed -- still resolve the task so the scan can finish.
         _taskStatus[i] = 'notFound';
         _results[i] ??= {
           'className': 'None',
@@ -940,7 +897,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           'imagePath': null,
           'detectionsJson': jsonEncode([]),
         };
-        _addLog("Sim: task ${i + 1} (${widget.tasks[i]['name']}) NOT FOUND at 45s deadline");
       }
     }
     if (mounted) setState(() => _simScanDone = true);
@@ -1000,8 +956,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       if (_watchDeadline != null && DateTime.now().isAfter(_watchDeadline!)) {
         _watchActive = false;
         setState(() => _holdCount = 0);
-        _addLog('Live watch: 45s elapsed with no confident match -- auto-capturing anyway');
-        await _handleCapture();
+        _addLog('Live watch: 45s elapsed with no confident match -- capturing the last frame');
+        await _handleCapture(frame: _lastTickFrame, tickDetections: _lastTickConfident);
         return;
       }
       _watching = true;
@@ -1047,22 +1003,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           continue;
         }
         _consecutiveNullFrameTicks = 0;
-        final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
-        final bytes = await compute(_convertCameraFrameToJpeg, {
-          'width': frame.width,
-          'height': frame.height,
-          'planes': frame.planes
-              .map((p) => {
-                    'bytes': p.bytes,
-                    'bytesPerRow': p.bytesPerRow,
-                    'bytesPerPixel': p.bytesPerPixel ?? 1,
-                  })
-              .toList(),
-          'rotationDegrees': sensorOrientation,
-          'targetWidth': 640,
-        });
-        if (bytes == null) continue;
-        final detections = await ModelManager().predictBytes(bytes);
+        final detections = await ModelManager().predictFrame(_framePayload(frame));
+        _lastTickFrame = frame;
         tickStopwatch.stop();
         final tickSummary = detections.isEmpty
             ? 'none'
@@ -1088,6 +1030,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             : [];
 
         final confidentDetections = detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList();
+        _lastTickConfident = confidentDetections;
         final Map<String, DetectionResult?> tickMandatory = {
           for (final tc in targetClasses)
             tc: confidentDetections.where((d) => d.className.toLowerCase().trim() == tc.toLowerCase().trim()).isNotEmpty
@@ -1103,8 +1046,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           if (_holdCount >= _holdTarget) {
             _watchActive = false;
             setState(() => _holdCount = 0);
-            _addLog('Live watch: steady -- auto-capturing');
-            await _handleCapture();
+            _addLog('Live watch: target seen -- capturing this frame');
+            await _handleCapture(frame: frame, tickDetections: _lastTickConfident);
             return;
           }
         } else if (_holdCount != 0) {
@@ -1127,7 +1070,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  Future<void> _handleCapture() async {
+  /// With [frame] + [tickDetections] (a live tick that found the target, or
+  /// the last tick at the deadline) that frame and its detections ARE the
+  /// result: no new photo, no second inference, no blur gate. Without them
+  /// (manual capture button, OCR builds) it takes and analyzes a full photo
+  /// as before.
+  Future<void> _handleCapture({CameraImage? frame, List<DetectionResult>? tickDetections}) async {
     if (_isAnalyzing || !_isModelLoaded || _cameraController == null) {
       _addLog("Capture blocked: analyzing=$_isAnalyzing modelReady=$_isModelLoaded");
       return;
@@ -1135,14 +1083,30 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _watchActive = false;
     setState(() => _isAnalyzing = true);
     try {
-      _addLog('--- Start Inference ---');
-      final XFile image = await _takeFullQualityPicture();
-      final bytes = await image.readAsBytes();
+      Uint8List? liveBytes;
+      if (_fastLive && frame != null && tickDetections != null) {
+        liveBytes = await _frameToJpeg(frame);
+      }
+      final bool live = liveBytes != null;
+      _addLog(live ? '--- Capture live frame ---' : '--- Start Inference ---');
+      final Uint8List bytes;
+      if (live) {
+        bytes = liveBytes!;
+      } else {
+        final XFile image = await _takeFullQualityPicture();
+        bytes = await image.readAsBytes();
+      }
 
       Size? imageSize;
       img.Image? orientedImage;
-      final blurCheck = await compute(_decodeAndCheckBlur, bytes);
-      if (blurCheck.orientedPngBytes != null) {
+      final blurCheck = live ? const _BlurCheckResult() : await compute(_decodeAndCheckBlur, bytes);
+      if (live) {
+        final decodedLive = img.decodeImage(bytes);
+        if (decodedLive != null) {
+          orientedImage = decodedLive;
+          imageSize = Size(decodedLive.width.toDouble(), decodedLive.height.toDouble());
+        }
+      } else if (blurCheck.orientedPngBytes != null) {
         try {
           final oriented = img.decodeImage(blurCheck.orientedPngBytes!);
           if (oriented != null) {
@@ -1210,9 +1174,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       if (mandatoryClasses.isEmpty) _addLog("WARNING: no mandatoryClasses configured — treating all as mandatory");
       _addLog("Pass: ${targetClasses.join(', ')}  Fail: ${failClasses.join(', ')}");
 
-      final allDetections = orientedImage != null
-          ? await ModelManager().predictImage(orientedImage, orientedPngBytes: blurCheck.orientedPngBytes)
-          : await ModelManager().predictBytes(bytes);
+      final allDetections = live
+          ? tickDetections!
+          : (orientedImage != null
+              ? await ModelManager().predictImage(orientedImage, orientedPngBytes: blurCheck.orientedPngBytes)
+              : await ModelManager().predictBytes(bytes));
       setState(() => _allDetections = [
             ...allDetections,
             for (final d in allDetections) ...?d.ocrCharBoxes,
@@ -1372,6 +1338,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         };
         _isAnalyzing = false;
       });
+      // A live capture that passed is already final -- show it briefly, then
+      // go straight to the next task instead of waiting for a tap.
+      if (live && _results[_currentIndex]?['success'] == true) {
+        final doneIdx = _currentIndex;
+        Future.delayed(const Duration(milliseconds: 1000), () {
+          if (mounted && _currentIndex == doneIdx && _capturedImageBytes != null) _onSaveAndContinue();
+        });
+      }
     } catch (e, st) {
       _addLog("ERROR: $e");
       _addLog("  at: ${st.toString().split('\n').take(3).join(' | ')}");
@@ -2428,116 +2402,16 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
 }
 
 /// Runs on a background isolate via compute(). Converts one raw camera
-/// stream frame (YUV420 -- 3 planes on Android, or a 2-plane NV12-style
-/// frame on iOS) into a small RGB JPEG the existing detector pipeline
-/// already knows how to read (ModelManager().predictBytes). Downscaling to
-/// [targetWidth] here (not after) is what keeps each live tick cheap --
-/// converting at full sensor resolution would cost far more than the
-/// inference itself. Called at 640px/quality-90 (bumped up from an earlier
-/// 480px/quality-75) -- the smaller settings were producing confidence
-/// scores that hovered right around the watch threshold for small targets
-/// (a logo/badge occupying a small part of the frame), causing the live
-/// box to flicker in and out tick-to-tick even on a stationary part. If a
-/// device shows tick times creeping past the ~400ms watch interval in the
-/// debug console, that's the tradeoff to re-check before pushing this
-/// higher still.
-///
-/// [rotationDegrees] should be the camera's sensorOrientation (typically
-/// 90 for a phone's back camera held in portrait). If live boxes come out
-/// sideways/upside-down on a given device, that's the constant to check --
-/// this couldn't be verified against real hardware while building it.
+/// stream frame to a JPEG. Per-tick detection no longer goes through JPEG at
+/// all (see ModelManager.predictFrame); this is only used to keep the exact
+/// frame a tick passed on, for saving/showing it. 640px wide, quality 90.
+/// [rotationDegrees] = the camera's sensorOrientation (typically 90 for a
+/// phone's back camera held in portrait) -- if boxes come out sideways on a
+/// device, that's the constant to check.
 Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
-  try {
-    final int width = args['width'] as int;
-    final int height = args['height'] as int;
-    final List<dynamic> planes = args['planes'] as List<dynamic>;
-    final int rotationDegrees = args['rotationDegrees'] as int;
-    final int targetWidth = args['targetWidth'] as int;
-
-    final Map yPlane = planes[0] as Map;
-    final Uint8List yBytes = yPlane['bytes'] as Uint8List;
-    final int yRowStride = yPlane['bytesPerRow'] as int;
-
-    final Uint8List uBytes;
-    final Uint8List vBytes;
-    final int uvRowStride;
-    final int uvPixelStride;
-    // Android's yuv420 format group usually delivers 3 separate planes
-    // (Y, U, V), each with its own pixel stride. iOS's yuv420 group
-    // delivers 2 planes (Y, and interleaved UV -- NV12 order), so treat
-    // anything with fewer than 3 planes as that layout instead.
-    final bool threePlane = planes.length >= 3;
-    if (threePlane) {
-      final Map uPlane = planes[1] as Map;
-      final Map vPlane = planes[2] as Map;
-      uBytes = uPlane['bytes'] as Uint8List;
-      vBytes = vPlane['bytes'] as Uint8List;
-      uvRowStride = uPlane['bytesPerRow'] as int;
-      uvPixelStride = (uPlane['bytesPerPixel'] as int?) ?? 1;
-    } else {
-      final Map uvPlane = planes[1] as Map;
-      final Uint8List uv = uvPlane['bytes'] as Uint8List;
-      uBytes = uv;
-      vBytes = uv;
-      uvRowStride = uvPlane['bytesPerRow'] as int;
-      uvPixelStride = 2;
-    }
-
-    // Sample directly at (approximately) targetWidth instead of building a
-    // full sensor-resolution image first and downscaling after -- a live
-    // tick only ever needs a small frame, and converting every source pixel
-    // just to throw most of them away in a resize step afterward was most
-    // of this function's cost per tick.
-    final double scale = width > targetWidth ? targetWidth / width : 1.0;
-    final int outW = (width * scale).round().clamp(1, width);
-    final int outH = (height * scale).round().clamp(1, height);
-
-    final out = img.Image(width: outW, height: outH);
-    for (int oy = 0; oy < outH; oy++) {
-      final int y = (oy / scale).floor().clamp(0, height - 1);
-      final int yRow = y * yRowStride;
-      final int uvRow = (y >> 1) * uvRowStride;
-      for (int ox = 0; ox < outW; ox++) {
-        final int x = (ox / scale).floor().clamp(0, width - 1);
-        final int yIndex = yRow + x;
-        if (yIndex >= yBytes.length) continue;
-        final int uvIndex = uvRow + (x >> 1) * uvPixelStride;
-
-        final int yVal = yBytes[yIndex];
-        int uVal, vVal;
-        if (threePlane) {
-          if (uvIndex >= uBytes.length || uvIndex >= vBytes.length) continue;
-          uVal = uBytes[uvIndex];
-          vVal = vBytes[uvIndex];
-        } else {
-          // NV12: U then V interleaved in the same buffer.
-          if (uvIndex + 1 >= uBytes.length) continue;
-          uVal = uBytes[uvIndex];
-          vVal = uBytes[uvIndex + 1];
-        }
-
-        final double yy = yVal.toDouble();
-        final double uu = uVal.toDouble() - 128.0;
-        final double vv = vVal.toDouble() - 128.0;
-        final int r = (yy + 1.402 * vv).round().clamp(0, 255);
-        final int g = (yy - 0.344136 * uu - 0.714136 * vv).round().clamp(0, 255);
-        final int b = (yy + 1.772 * uu).round().clamp(0, 255);
-        out.setPixelRgb(ox, oy, r, g, b);
-      }
-    }
-
-    // Rotating the already-small image here is cheap -- this is the same
-    // img.copyRotate call as before, just no longer applied to a
-    // full-resolution frame.
-    img.Image rotated = out;
-    if (rotationDegrees == 90 || rotationDegrees == 180 || rotationDegrees == 270) {
-      rotated = img.copyRotate(out, angle: rotationDegrees);
-    }
-
-    return Uint8List.fromList(img.encodeJpg(rotated, quality: 90));
-  } catch (_) {
-    return null;
-  }
+  final image = ModelManager.yuvFrameToImage(args);
+  if (image == null) return null;
+  return Uint8List.fromList(img.encodeJpg(image, quality: 90));
 }
 
 class LiveInspectionCameraScreen extends StatefulWidget {
@@ -2599,7 +2473,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // to trigger on partial/fluke frames in practice.
   static const int _holdTarget = 1;
   static const double _watchConfidenceThreshold = 0.55;
-  static const Duration _watchInterval = Duration(milliseconds: 400);
+  static const Duration _watchInterval = Duration(milliseconds: 100);
   static const Duration _watchTimeout = Duration(seconds: 45);
   DateTime? _watchDeadline;
 
@@ -2611,6 +2485,17 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // background isolate. A tick that finds no frame yet (stream still
   // warming up) just skips itself rather than blocking.
   CameraImage? _latestFrame;
+  // The exact frame the most recent watch tick ran detection on, plus the
+  // confident (>= _watchConfidenceThreshold) detections it produced. When a
+  // tick passes, THAT frame is the inspection result -- no second shutter
+  // and second inference that a shaky hand could flip to NOT OK. At the
+  // deadline the last tick's frame is saved with its verdict too.
+  CameraImage? _lastTickFrame;
+  List<DetectionResult> _lastTickConfident = [];
+  // Live frames are saved as the result only when the app has no OCR (the
+  // live ticks skip OCR, and the old full-quality capture is what produces
+  // OCR text). OCR builds keep the old takePicture() capture.
+  static const bool _fastLive = {% if ocr_enabled %}false{% else %}true{% endif %};
   bool _isStreaming = false;
   // If the platform camera stream silently never delivers a frame (seen on
   // some devices/OEMs -- the very first startImageStream after a fresh
@@ -2697,18 +2582,34 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   /// manual/sequential flow shows -- this must not interrupt the feed or
   /// block on user input; a blurry auto-capture just lands as whatever
   /// pass/fail it detects, same as any other tick's result would.
-  Future<void> _autoCaptureSimTask(int index) async {
+  Future<void> _autoCaptureSimTask(
+    int index, {
+    Uint8List? frameBytes,
+    List<DetectionResult>? tickDetections,
+    bool timedOut = false,
+  }) async {
     final task = widget.tasks[index];
     try {
-      _addLog('--- Sim auto-capture: ${task['name']} ---');
-      final XFile image = await _takeFullQualityPicture();
-      final bytes = await image.readAsBytes();
+      // With [frameBytes] + [tickDetections] the live tick's own frame and
+      // detections ARE the result (no new photo, no second inference).
+      // Without them (manual button, OCR builds) it takes a full photo.
+      final bool fromFrame = frameBytes != null && tickDetections != null;
+      _addLog('--- Sim auto-capture: ${task['name']}${fromFrame ? ' (live frame)' : ''} ---');
+      final Uint8List bytes;
+      if (fromFrame) {
+        bytes = frameBytes!;
+      } else {
+        final XFile image = await _takeFullQualityPicture();
+        bytes = await image.readAsBytes();
+      }
       final decodedRaw = img.decodeImage(bytes);
       final oriented = decodedRaw != null ? img.bakeOrientation(decodedRaw) : null;
 
-      final allDetections = oriented != null
-          ? await ModelManager().predictImage(oriented)
-          : await ModelManager().predictBytes(bytes);
+      final allDetections = fromFrame
+          ? tickDetections!
+          : (oriented != null
+              ? await ModelManager().predictImage(oriented)
+              : await ModelManager().predictBytes(bytes));
 
       final List<String> targetClasses = List<String>.from(task['classes'] ?? []);
       final filtered = allDetections
@@ -2823,7 +2724,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         'negativeImagePath': savedNegativePath,
         'detectionsJson': winner != null ? jsonEncode([winner.toJson()]) : jsonEncode([]),
       };
-      if (mounted) setState(() => _taskStatus[index] = 'found');
+      if (mounted) setState(() => _taskStatus[index] = (timedOut && !isPass) ? 'notFound' : 'found');
       _addLog("Sim task done [${task['name']}]: ${isPass ? 'OK' : 'NOT OK'}");
     } catch (e) {
       _addLog('Sim auto-capture failed for ${task['name']}: $e');
@@ -2990,6 +2891,25 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
+  /// Plain-data copy of one camera frame, the shape ModelManager.predictFrame
+  /// and _convertCameraFrameToJpeg take across an isolate boundary.
+  Map<String, dynamic> _framePayload(CameraImage frame) => {
+        'width': frame.width,
+        'height': frame.height,
+        'planes': frame.planes
+            .map((p) => {
+                  'bytes': p.bytes,
+                  'bytesPerRow': p.bytesPerRow,
+                  'bytesPerPixel': p.bytesPerPixel ?? 1,
+                })
+            .toList(),
+        'rotationDegrees': _cameraController?.description.sensorOrientation ?? 90,
+        'targetWidth': 640,
+      };
+
+  Future<Uint8List?> _frameToJpeg(CameraImage frame) =>
+      compute(_convertCameraFrameToJpeg, _framePayload(frame));
+
   /// Cheap per-frame callback for CameraController.startImageStream --
   /// just remembers the latest frame. The actual conversion+inference work
   /// happens on the watch/sim tick's own cadence (see _watchLoop /
@@ -3030,6 +2950,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _holdCount = 0;
     _consecutiveNullFrameTicks = 0;
     _watchDeadline = DateTime.now().add(_watchTimeout);
+    _lastTickFrame = null;
+    _lastTickConfident = [];
     _startImageStream();
     _watchLoop();
   }
@@ -3083,6 +3005,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _simScanActive = true;
     _consecutiveNullFrameTicks = 0;
     _simDeadline = DateTime.now().add(_watchTimeout);
+    _lastTickFrame = null;
+    _lastTickConfident = [];
     _startImageStream();
     _simWatchLoop();
   }
@@ -3102,7 +3026,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         continue;
       }
       if (_simDeadline != null && DateTime.now().isAfter(_simDeadline!)) {
-        _finishSimTimeouts();
+        await _finishSimTimeouts();
         return;
       }
       _simTicking = true;
@@ -3143,27 +3067,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           continue;
         }
         _consecutiveNullFrameTicks = 0;
-        final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
-        final bytes = await compute(_convertCameraFrameToJpeg, {
-          'width': frame.width,
-          'height': frame.height,
-          'planes': frame.planes
-              .map((p) => {
-                    'bytes': p.bytes,
-                    'bytesPerRow': p.bytesPerRow,
-                    'bytesPerPixel': p.bytesPerPixel ?? 1,
-                  })
-              .toList(),
-          'rotationDegrees': sensorOrientation,
-          'targetWidth': 640,
-        });
-        if (bytes == null) continue;
-        final detections = await ModelManager().predictBytes(bytes);
+        final detections = await ModelManager().predictFrame(_framePayload(frame));
+        _lastTickFrame = frame;
         tickStopwatch.stop();
         _addLog("Sim tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections");
 
         if (!mounted || !_simScanActive) return;
         final confident = detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList();
+        _lastTickConfident = confident;
         // Only boxes for still-pending tasks' own target classes are shown
         // -- an already-found task doesn't need to keep drawing, and a
         // confident detection of some unrelated class would otherwise show
@@ -3179,15 +3090,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             .where((d) => pendingTargetClasses.contains(d.className.toLowerCase().trim()))
             .toList());
 
-        int? matchedTaskIndex;
+        final matchedTaskIndices = <int>[];
         for (var i = 0; i < widget.tasks.length; i++) {
           if (_taskStatus[i] != 'pending') continue;
           final tickPass = _simTaskPasses(widget.tasks[i], confident);
           if (tickPass) {
             _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) + 1;
-            if (_taskHoldCount[i]! >= _holdTarget && matchedTaskIndex == null) {
-              matchedTaskIndex = i;
-            }
+            if (_taskHoldCount[i]! >= _holdTarget) matchedTaskIndices.add(i);
           } else if ((_taskHoldCount[i] ?? 0) != 0) {
             // Decrement instead of a hard reset to 0 -- on an assembly line
             // the part doesn't move, so a miss here is almost always sensor
@@ -3200,13 +3109,23 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         }
         if (mounted) setState(() {});
 
-        if (matchedTaskIndex != null && !_simCapturingTask) {
-          final idx = matchedTaskIndex;
-          _addLog("Sim: task ${idx + 1} steady -- auto-capturing in background");
+        if (matchedTaskIndices.isNotEmpty && !_simCapturingTask) {
+          // Every task that matched on THIS tick is resolved from THIS frame,
+          // right now: the frame that made the detection is the evidence, so
+          // there is no second shutter/inference to shake or flip the verdict.
+          final toCapture = _fastLive ? matchedTaskIndices : matchedTaskIndices.take(1).toList();
+          _addLog("Sim: task(s) ${toCapture.map((i) => i + 1).join(', ')} matched -- capturing this frame");
           _simCapturingTask = true;
+          final jpegFuture = _fastLive ? _frameToJpeg(frame) : Future<Uint8List?>.value(null);
           // Fire-and-forget: the watch loop keeps ticking for the other
-          // pending tasks while this one's full-quality capture+save runs.
-          unawaited(_autoCaptureSimTask(idx).whenComplete(() {
+          // pending tasks while these are saved.
+          unawaited(() async {
+            final jpeg = await jpegFuture;
+            for (final idx in toCapture) {
+              await _autoCaptureSimTask(idx, frameBytes: jpeg, tickDetections: confident);
+            }
+          }()
+              .whenComplete(() {
             _simCapturingTask = false;
             _maybeFinishSimScan();
           }));
@@ -3219,10 +3138,22 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  void _finishSimTimeouts() {
+  /// Deadline hit: still-pending tasks get an auto-captured image too -- the
+  /// last frame the watch saw + what it detected on it -- saved with whatever
+  /// verdict that gives (NOT FOUND / NOT OK), instead of no photo at all.
+  Future<void> _finishSimTimeouts() async {
     _simScanActive = false;
+    while (_simCapturingTask) {
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+    final lastFrame = _fastLive ? _lastTickFrame : null;
+    final Uint8List? jpeg = lastFrame != null ? await _frameToJpeg(lastFrame) : null;
     for (var i = 0; i < widget.tasks.length; i++) {
+      if (_taskStatus[i] != 'pending') continue;
+      _addLog("Sim: task ${i + 1} (${widget.tasks[i]['name']}) not found by the deadline -- capturing the last frame");
+      await _autoCaptureSimTask(i, frameBytes: jpeg, tickDetections: _lastTickConfident, timedOut: true);
       if (_taskStatus[i] == 'pending') {
+        // Capture itself failed -- still resolve the task so the scan can finish.
         _taskStatus[i] = 'notFound';
         _results[i] ??= {
           'className': 'None',
@@ -3230,7 +3161,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           'imagePath': null,
           'detectionsJson': jsonEncode([]),
         };
-        _addLog("Sim: task ${i + 1} (${widget.tasks[i]['name']}) NOT FOUND at 45s deadline");
       }
     }
     if (mounted) setState(() => _simScanDone = true);
@@ -3290,8 +3220,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       if (_watchDeadline != null && DateTime.now().isAfter(_watchDeadline!)) {
         _watchActive = false;
         setState(() => _holdCount = 0);
-        _addLog('Live watch: 45s elapsed with no confident match -- auto-capturing anyway');
-        await _handleCapture();
+        _addLog('Live watch: 45s elapsed with no confident match -- capturing the last frame');
+        await _handleCapture(frame: _lastTickFrame, tickDetections: _lastTickConfident);
         return;
       }
       _watching = true;
@@ -3337,22 +3267,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           continue;
         }
         _consecutiveNullFrameTicks = 0;
-        final int sensorOrientation = _cameraController?.description.sensorOrientation ?? 90;
-        final bytes = await compute(_convertCameraFrameToJpeg, {
-          'width': frame.width,
-          'height': frame.height,
-          'planes': frame.planes
-              .map((p) => {
-                    'bytes': p.bytes,
-                    'bytesPerRow': p.bytesPerRow,
-                    'bytesPerPixel': p.bytesPerPixel ?? 1,
-                  })
-              .toList(),
-          'rotationDegrees': sensorOrientation,
-          'targetWidth': 640,
-        });
-        if (bytes == null) continue;
-        final detections = await ModelManager().predictBytes(bytes);
+        final detections = await ModelManager().predictFrame(_framePayload(frame));
+        _lastTickFrame = frame;
         tickStopwatch.stop();
         final tickSummary = detections.isEmpty
             ? 'none'
@@ -3361,6 +3277,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         final currentTask = widget.tasks[_currentIndex];
         final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
+        _lastTickConfident = detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList();
         final match = detections.where((d) =>
             d.confidence >= _watchConfidenceThreshold &&
             targetClasses.any((tc) => d.className.toLowerCase().trim() == tc.toLowerCase().trim()) &&
@@ -3382,8 +3299,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           if (_holdCount >= _holdTarget) {
             _watchActive = false;
             setState(() => _holdCount = 0);
-            _addLog('Live watch: steady -- auto-capturing');
-            await _handleCapture();
+            _addLog('Live watch: target seen -- capturing this frame');
+            await _handleCapture(frame: frame, tickDetections: _lastTickConfident);
             return;
           }
         } else if (_holdCount != 0) {
@@ -3406,7 +3323,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  Future<void> _handleCapture() async {
+  /// With [frame] + [tickDetections] (a live tick that found the target, or
+  /// the last tick at the deadline) that frame and its detections ARE the
+  /// result: no new photo, no second inference, no blur gate. Without them
+  /// (manual capture button, OCR builds) it takes and analyzes a full photo
+  /// as before.
+  Future<void> _handleCapture({CameraImage? frame, List<DetectionResult>? tickDetections}) async {
     if (_isAnalyzing || !_isModelLoaded || _cameraController == null) {
       _addLog("Capture blocked: analyzing=$_isAnalyzing modelReady=$_isModelLoaded");
       return;
@@ -3414,14 +3336,30 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _watchActive = false;
     setState(() => _isAnalyzing = true);
     try {
-      _addLog('--- Start Inference ---');
-      final XFile image = await _takeFullQualityPicture();
-      final bytes = await image.readAsBytes();
+      Uint8List? liveBytes;
+      if (_fastLive && frame != null && tickDetections != null) {
+        liveBytes = await _frameToJpeg(frame);
+      }
+      final bool live = liveBytes != null;
+      _addLog(live ? '--- Capture live frame ---' : '--- Start Inference ---');
+      final Uint8List bytes;
+      if (live) {
+        bytes = liveBytes!;
+      } else {
+        final XFile image = await _takeFullQualityPicture();
+        bytes = await image.readAsBytes();
+      }
 
       Size? imageSize;
       img.Image? orientedImage;
-      final blurCheck = await compute(_decodeAndCheckBlur, bytes);
-      if (blurCheck.orientedPngBytes != null) {
+      final blurCheck = live ? const _BlurCheckResult() : await compute(_decodeAndCheckBlur, bytes);
+      if (live) {
+        final decodedLive = img.decodeImage(bytes);
+        if (decodedLive != null) {
+          orientedImage = decodedLive;
+          imageSize = Size(decodedLive.width.toDouble(), decodedLive.height.toDouble());
+        }
+      } else if (blurCheck.orientedPngBytes != null) {
         try {
           final oriented = img.decodeImage(blurCheck.orientedPngBytes!);
           if (oriented != null) {
@@ -3478,9 +3416,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
       _addLog("Target: ${targetClasses.join(', ')}");
 
-      final allDetections = orientedImage != null
-          ? await ModelManager().predictImage(orientedImage, orientedPngBytes: blurCheck.orientedPngBytes)
-          : await ModelManager().predictBytes(bytes);
+      final allDetections = live
+          ? tickDetections!
+          : (orientedImage != null
+              ? await ModelManager().predictImage(orientedImage, orientedPngBytes: blurCheck.orientedPngBytes)
+              : await ModelManager().predictBytes(bytes));
       setState(() => _allDetections = [
             ...allDetections,
             for (final d in allDetections) ...?d.ocrCharBoxes,
@@ -3639,6 +3579,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         }
         _isAnalyzing = false;
       });
+      // A live capture that passed is already final -- show it briefly, then
+      // go straight to the next task instead of waiting for a tap.
+      if (live && _results[_currentIndex]?['success'] == true) {
+        final doneIdx = _currentIndex;
+        Future.delayed(const Duration(milliseconds: 1000), () {
+          if (mounted && _currentIndex == doneIdx && _capturedImageBytes != null) _onSaveAndContinue();
+        });
+      }
     } catch (e, st) {
       _addLog("ERROR: $e");
       _addLog("  at: ${st.toString().split('\n').take(3).join(' | ')}");
