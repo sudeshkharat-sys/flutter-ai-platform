@@ -1,0 +1,12 @@
+/// "Always on" torch, shared by the VIN scan and the inspection (photo + live
+/// video) screens. Double-tap the torch button on any of them to turn it on;
+/// every camera that starts afterwards lights the torch by itself. A single tap
+/// is only for the current camera session (that task), and tapping the torch
+/// off cancels this too.
+///
+/// Held in memory only (not saved to disk): it lasts while the app is running
+/// and is cleared when the app goes to the background, so it never comes back
+/// on its own the next time the app is opened.
+class TorchSession {
+  static bool alwaysOn = false;
+}

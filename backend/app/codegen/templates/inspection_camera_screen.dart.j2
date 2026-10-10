@@ -10,7 +10,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
-import '../services/torch_pref.dart';
+import '../services/torch_session.dart';
 import '../database/database.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
@@ -405,13 +405,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           CameraController(back, {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %}, enableAudio: false);
       _cameraController = controller;
       await controller.initialize();
-      // "Torch stays on": the last torch choice is remembered and re-applied
-      // every time the camera starts (each task, each scan, after a resume).
-      if (await TorchPref.isOn()) {
+      // "Always on" torch (double-tap on the torch button, shared with the VIN scan):
+      // every camera that starts while it is active lights the torch by itself.
+      if (TorchSession.alwaysOn) {
         try {
           await controller.setFlashMode(FlashMode.torch);
           if (mounted) setState(() => _isFlashOn = true);
-          _addLog('Torch kept on');
+          _addLog('Torch on (always-on mode)');
         } catch (e) {
           _addLog('Torch could not be turned on: $e');
         }
@@ -715,6 +715,26 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     }
   }
 
+  /// Double tap on the torch button: toggles "always on" -- the torch then stays on
+  /// for every later task, scan and screen (VIN scan, photo and live inspection)
+  /// until it is turned off again or the app is left.
+  Future<void> _toggleTorchAlwaysOn() async {
+    final bool on = !TorchSession.alwaysOn;
+    TorchSession.alwaysOn = on;
+    final ctrl = _cameraController;
+    if (ctrl != null && _isCameraInitialized) {
+      try {
+        await ctrl.setFlashMode(on ? FlashMode.torch : FlashMode.off);
+        if (mounted) setState(() => _isFlashOn = on);
+      } catch (e) {
+        _addLog('Torch error: $e');
+      }
+    } else if (mounted) {
+      setState(() {});
+    }
+    _addLog(on ? 'Torch ALWAYS ON (all scans and inspections)' : 'Torch always-on cancelled');
+  }
+
   Future<void> _toggleFlash() async {
     if (_cameraController == null || !_isCameraInitialized) return;
     final newOn = !_isFlashOn;
@@ -722,7 +742,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       await _cameraController!
           .setFlashMode(newOn ? FlashMode.torch : FlashMode.off);
       setState(() => _isFlashOn = newOn);
-      await TorchPref.set(newOn);   // remembered: stays on for every later detection
+      // Single tap = this task only. Turning the torch OFF also cancels always-on.
+      if (!newOn && TorchSession.alwaysOn) TorchSession.alwaysOn = false;
       _addLog(newOn ? 'Flash ON' : 'Flash OFF');
     } catch (e) {
       _addLog("Flash error: $e");
@@ -938,6 +959,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                         left: 16,
                         child: GestureDetector(
                           onTap: _toggleFlash,
+                          onDoubleTap: _toggleTorchAlwaysOn,
                           child: Container(
                             width: 48,
                             height: 48,
@@ -947,10 +969,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                   : Colors.black54,
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: _isFlashOn
-                                    ? const Color(0xFFFFD700)
-                                    : Colors.white30,
-                                width: 1.5,
+                                color: TorchSession.alwaysOn
+                                    ? Colors.deepOrangeAccent
+                                    : (_isFlashOn ? const Color(0xFFFFD700) : Colors.white30),
+                                width: TorchSession.alwaysOn ? 3.5 : 1.5,
                               ),
                             ),
                             child: Icon(
@@ -1520,7 +1542,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
-import '../services/torch_pref.dart';
+import '../services/torch_session.dart';
 import '../database/database.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
@@ -1771,13 +1793,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           CameraController(back, {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %}, enableAudio: false);
       _cameraController = controller;
       await controller.initialize();
-      // "Torch stays on": the last torch choice is remembered and re-applied
-      // every time the camera starts (each task, each scan, after a resume).
-      if (await TorchPref.isOn()) {
+      // "Always on" torch (double-tap on the torch button, shared with the VIN scan):
+      // every camera that starts while it is active lights the torch by itself.
+      if (TorchSession.alwaysOn) {
         try {
           await controller.setFlashMode(FlashMode.torch);
           if (mounted) setState(() => _isFlashOn = true);
-          _addLog('Torch kept on');
+          _addLog('Torch on (always-on mode)');
         } catch (e) {
           _addLog('Torch could not be turned on: $e');
         }
@@ -2103,6 +2125,26 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     }
   }
 
+  /// Double tap on the torch button: toggles "always on" -- the torch then stays on
+  /// for every later task, scan and screen (VIN scan, photo and live inspection)
+  /// until it is turned off again or the app is left.
+  Future<void> _toggleTorchAlwaysOn() async {
+    final bool on = !TorchSession.alwaysOn;
+    TorchSession.alwaysOn = on;
+    final ctrl = _cameraController;
+    if (ctrl != null && _isCameraInitialized) {
+      try {
+        await ctrl.setFlashMode(on ? FlashMode.torch : FlashMode.off);
+        if (mounted) setState(() => _isFlashOn = on);
+      } catch (e) {
+        _addLog('Torch error: $e');
+      }
+    } else if (mounted) {
+      setState(() {});
+    }
+    _addLog(on ? 'Torch ALWAYS ON (all scans and inspections)' : 'Torch always-on cancelled');
+  }
+
   Future<void> _toggleFlash() async {
     if (_cameraController == null || !_isCameraInitialized) return;
     final newOn = !_isFlashOn;
@@ -2110,7 +2152,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       await _cameraController!
           .setFlashMode(newOn ? FlashMode.torch : FlashMode.off);
       setState(() => _isFlashOn = newOn);
-      await TorchPref.set(newOn);   // remembered: stays on for every later detection
+      // Single tap = this task only. Turning the torch OFF also cancels always-on.
+      if (!newOn && TorchSession.alwaysOn) TorchSession.alwaysOn = false;
       _addLog(newOn ? 'Flash ON' : 'Flash OFF');
     } catch (e) {
       _addLog("Flash error: $e");
@@ -2324,6 +2367,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                         left: 16,
                         child: GestureDetector(
                           onTap: _toggleFlash,
+                          onDoubleTap: _toggleTorchAlwaysOn,
                           child: Container(
                             width: 48,
                             height: 48,
@@ -2333,10 +2377,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                   : Colors.black54,
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: _isFlashOn
-                                    ? const Color(0xFFFFD700)
-                                    : Colors.white30,
-                                width: 1.5,
+                                color: TorchSession.alwaysOn
+                                    ? Colors.deepOrangeAccent
+                                    : (_isFlashOn ? const Color(0xFFFFD700) : Colors.white30),
+                                width: TorchSession.alwaysOn ? 3.5 : 1.5,
                               ),
                             ),
                             child: Icon(
