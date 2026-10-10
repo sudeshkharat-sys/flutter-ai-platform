@@ -10,6 +10,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
+import '../services/torch_pref.dart';
 import '../database/database.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
@@ -404,6 +405,17 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           CameraController(back, {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %}, enableAudio: false);
       _cameraController = controller;
       await controller.initialize();
+      // "Torch stays on": the last torch choice is remembered and re-applied
+      // every time the camera starts (each task, each scan, after a resume).
+      if (await TorchPref.isOn()) {
+        try {
+          await controller.setFlashMode(FlashMode.torch);
+          if (mounted) setState(() => _isFlashOn = true);
+          _addLog('Torch kept on');
+        } catch (e) {
+          _addLog('Torch could not be turned on: $e');
+        }
+      }
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
     } catch (e) {
@@ -710,6 +722,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       await _cameraController!
           .setFlashMode(newOn ? FlashMode.torch : FlashMode.off);
       setState(() => _isFlashOn = newOn);
+      await TorchPref.set(newOn);   // remembered: stays on for every later detection
       _addLog(newOn ? 'Flash ON' : 'Flash OFF');
     } catch (e) {
       _addLog("Flash error: $e");
@@ -1507,6 +1520,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
+import '../services/torch_pref.dart';
 import '../database/database.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
@@ -1757,6 +1771,17 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           CameraController(back, {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %}, enableAudio: false);
       _cameraController = controller;
       await controller.initialize();
+      // "Torch stays on": the last torch choice is remembered and re-applied
+      // every time the camera starts (each task, each scan, after a resume).
+      if (await TorchPref.isOn()) {
+        try {
+          await controller.setFlashMode(FlashMode.torch);
+          if (mounted) setState(() => _isFlashOn = true);
+          _addLog('Torch kept on');
+        } catch (e) {
+          _addLog('Torch could not be turned on: $e');
+        }
+      }
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
     } catch (e) {
@@ -2085,6 +2110,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       await _cameraController!
           .setFlashMode(newOn ? FlashMode.torch : FlashMode.off);
       setState(() => _isFlashOn = newOn);
+      await TorchPref.set(newOn);   // remembered: stays on for every later detection
       _addLog(newOn ? 'Flash ON' : 'Flash OFF');
     } catch (e) {
       _addLog("Flash error: $e");

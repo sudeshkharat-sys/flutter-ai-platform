@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
+import '../services/torch_pref.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
 
@@ -583,6 +584,17 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       );
       _cameraController = controller;
       await controller.initialize();
+      // "Torch stays on": the last torch choice is remembered and re-applied
+      // every time the camera starts (each task, each scan, after a resume).
+      if (await TorchPref.isOn()) {
+        try {
+          await controller.setFlashMode(FlashMode.torch);
+          if (mounted) setState(() => _isFlashOn = true);
+          _addLog('Torch kept on');
+        } catch (e) {
+          _addLog('Torch could not be turned on: $e');
+        }
+      }
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
       // Model load and camera init race in initState -- _startWatching()
@@ -1388,6 +1400,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     try {
       await _cameraController!.setFlashMode(newOn ? FlashMode.torch : FlashMode.off);
       setState(() => _isFlashOn = newOn);
+      await TorchPref.set(newOn);   // remembered: stays on for every later detection
       _addLog(newOn ? 'Flash ON' : 'Flash OFF');
     } catch (e) {
       _addLog("Flash error: $e");
@@ -2380,6 +2393,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
+import '../services/torch_pref.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
 
@@ -2877,6 +2891,17 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       );
       _cameraController = controller;
       await controller.initialize();
+      // "Torch stays on": the last torch choice is remembered and re-applied
+      // every time the camera starts (each task, each scan, after a resume).
+      if (await TorchPref.isOn()) {
+        try {
+          await controller.setFlashMode(FlashMode.torch);
+          if (mounted) setState(() => _isFlashOn = true);
+          _addLog('Torch kept on');
+        } catch (e) {
+          _addLog('Torch could not be turned on: $e');
+        }
+      }
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
       // Model load and camera init race in initState -- _startWatching()
@@ -3649,6 +3674,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     try {
       await _cameraController!.setFlashMode(newOn ? FlashMode.torch : FlashMode.off);
       setState(() => _isFlashOn = newOn);
+      await TorchPref.set(newOn);   // remembered: stays on for every later detection
       _addLog(newOn ? 'Flash ON' : 'Flash OFF');
     } catch (e) {
       _addLog("Flash error: $e");
