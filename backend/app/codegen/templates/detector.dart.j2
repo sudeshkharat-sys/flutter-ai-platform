@@ -1445,6 +1445,18 @@ class ModelManager {
     // segment model; keyed by identity so they survive NMS reordering.
     final segInfo = Map<DetectionResult, _SegInfo>.identity();
 
+    // End-to-end exports (YOLO26 and other NMS-free models) return
+    // [1, maxDet, 6] = x1, y1, x2, y2, score, classIndex per row, with the
+    // duplicate removal already done inside the model. The grid decoder below
+    // would read the score / class index as class scores and the corners as
+    // centre + size, giving hundreds of bogus boxes, so decode that layout
+    // separately. A classic 2-class export is also 6 wide, so with
+    // exactly two labels the rows are checked for the end-to-end signature.
+    if (shape.length == 3 && shape[2] == 6 && shape[1] > 6 &&
+        (labels.length != 2 || _looksEndToEnd(output))) {
+      return _parseEndToEnd(output, labels, threshold, inputSize, padX, padY, unpadW, unpadH);
+    }
+
     // Check if output is [4+N, 8400] or [8400, 4+N]
     bool isTransposed = shape[1] < shape[2];
     int numElements = isTransposed ? shape[1] : shape[2];
@@ -1696,6 +1708,68 @@ class ModelManager {
     final l = _dp(pts.sublist(0, idx + 1), eps);
     final r = _dp(pts.sublist(idx), eps);
     return [...l.sublist(0, l.length - 1), ...r];
+  }
+
+  /// True when a [rows][6] output looks end-to-end: the class column holds whole
+  /// numbers and the score column is sorted high to low (top-k order).
+  static bool _looksEndToEnd(List<dynamic> output) {
+    final int n = output.length < 20 ? output.length : 20;
+    double prev = double.infinity;
+    for (int i = 0; i < n; i++) {
+      final double score = output[i][4] as double;
+      final double cls = output[i][5] as double;
+      if (cls != cls.roundToDouble() || score > prev) return false;
+      prev = score;
+    }
+    return n > 0;
+  }
+
+  /// Decodes an end-to-end [rows][6] output (x1, y1, x2, y2, score, classIndex).
+  /// Coordinates are either input-size pixels or normalized 0-1; both are handled
+  /// like the grid decoder, including the letterbox correction.
+  static List<DetectionResult> _parseEndToEnd(
+    List<dynamic> output,
+    List<String> labels,
+    double threshold,
+    int inputSize,
+    int padX,
+    int padY,
+    int unpadW,
+    int unpadH,
+  ) {
+    double maxCoord = 0.0;
+    for (int i = 0; i < output.length; i++) {
+      final r = output[i];
+      if ((r[4] as double) < threshold) continue;
+      for (int k = 0; k < 4; k++) {
+        final double v = r[k] as double;
+        if (v > maxCoord) maxCoord = v;
+      }
+    }
+    // Scale to canvas pixels: already pixels when any corner is > 1.5.
+    final double toCanvas = maxCoord > 1.5 ? 1.0 : inputSize.toDouble();
+    final bool letterboxed = unpadW > 0 && unpadH > 0;
+
+    final results = <DetectionResult>[];
+    for (int i = 0; i < output.length; i++) {
+      final r = output[i];
+      final double score = r[4] as double;
+      if (score < threshold) continue;
+      final int classId = (r[5] as double).round();
+      final double x1 = (r[0] as double) * toCanvas;
+      final double y1 = (r[1] as double) * toCanvas;
+      final double x2 = (r[2] as double) * toCanvas;
+      final double y2 = (r[3] as double) * toCanvas;
+      final Rect box = letterboxed
+          ? Rect.fromLTRB((x1 - padX) / unpadW, (y1 - padY) / unpadH, (x2 - padX) / unpadW, (y2 - padY) / unpadH)
+          : Rect.fromLTRB(x1 / inputSize, y1 / inputSize, x2 / inputSize, y2 / inputSize);
+      results.add(DetectionResult(
+        className: (classId >= 0 && classId < labels.length) ? labels[classId] : 'unknown (id:$classId)',
+        confidence: score,
+        bbox: box,
+      ));
+    }
+    return _applyNMS(results, iouThreshold: 0.45);
   }
 
   // Non-Max Suppression: removes duplicate overlapping boxes, keeps highest confidence per object
