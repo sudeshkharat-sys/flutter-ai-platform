@@ -89,8 +89,8 @@ class ModelAssetQueries:
     GET_ALL_MODELS = "SELECT * FROM model_assets ORDER BY created_at DESC"
     GET_MODEL_BY_ID = "SELECT * FROM model_assets WHERE id = :id"
     INSERT_MODEL = """
-        INSERT INTO model_assets (id, vision_project_id, vision_project_name, model_type, classes, pt_path, tflite_path, labels_path, status, error_message, conversion_log, input_size, vision_platform_url, vision_platform_token, created_at)
-        VALUES (:id, :vision_project_id, :vision_project_name, :model_type, :classes, :pt_path, :tflite_path, :labels_path, :status, :error_message, :conversion_log, :input_size, :vision_platform_url, :vision_platform_token, CURRENT_TIMESTAMP)
+        INSERT INTO model_assets (id, vision_project_id, vision_project_name, model_type, model_kind, classes, pt_path, tflite_path, labels_path, charset_path, meta_path, status, error_message, conversion_log, input_size, vision_platform_url, vision_platform_token, created_at)
+        VALUES (:id, :vision_project_id, :vision_project_name, :model_type, :model_kind, :classes, :pt_path, :tflite_path, :labels_path, :charset_path, :meta_path, :status, :error_message, :conversion_log, :input_size, :vision_platform_url, :vision_platform_token, CURRENT_TIMESTAMP)
         RETURNING id
     """
     INSERT_OCR_MODEL = """
