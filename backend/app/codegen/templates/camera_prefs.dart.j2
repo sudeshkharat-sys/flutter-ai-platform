@@ -1,0 +1,22 @@
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// Camera settings remembered on the phone between scans and app restarts.
+/// The zoom is set once for how the phone sits (e.g. inside a bonnet) and is
+/// re-applied every time a camera starts, on the photo and live inspection screens.
+class CameraPrefs {
+  static const String _zoomKey = 'camera_zoom';
+
+  static Future<double> getZoom() async {
+    try {
+      return (await SharedPreferences.getInstance()).getDouble(_zoomKey) ?? 1.0;
+    } catch (_) {
+      return 1.0;
+    }
+  }
+
+  static Future<void> setZoom(double zoom) async {
+    try {
+      await (await SharedPreferences.getInstance()).setDouble(_zoomKey, zoom);
+    } catch (_) {}
+  }
+}

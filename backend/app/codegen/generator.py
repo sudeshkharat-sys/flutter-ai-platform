@@ -544,6 +544,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "lib/services/sync_service.dart": "sync_service.dart.j2",
         "lib/services/wifi_service.dart": "wifi_service.dart.j2",
         "lib/services/torch_session.dart": "torch_session.dart.j2",
+        "lib/services/camera_prefs.dart": "camera_prefs.dart.j2",
         "lib/database/database.dart": "database.dart.j2",
         "lib/ml/detector.dart": "detector.dart.j2",
         "lib/ml/detection_result.dart": "detection_result.dart.j2",

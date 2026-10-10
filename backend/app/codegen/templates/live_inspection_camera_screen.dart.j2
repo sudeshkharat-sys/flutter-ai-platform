@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
 import '../services/torch_session.dart';
+import '../services/camera_prefs.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
 
@@ -111,6 +112,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   List<String> _debugLogs = [];
   bool _showDebugConsole = false;
   bool _isFlashOn = false;
+  double _zoom = 1.0;      // current camera zoom (remembered via CameraPrefs)
+  double _maxZoom = 1.0;   // this phone's maximum zoom
 
   List<DetectionResult> _allDetections = [];
   List<DetectionResult> _detectedNonTargetClasses = [];
@@ -142,12 +145,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // above 1 stays a one-line way to bring steadiness back if 1 turns out
   // to trigger on partial/fluke frames in practice.
   static const int _holdTarget = 1;
-  // Region classifier: decide on agreement, not on one frame. OK needs this many
-  // consecutive confident "expected" ticks; NOT OK needs this many consecutive
-  // confident "wrong state" ticks. Unsure ('uncertain') ticks count for neither.
-  static const int _clsPassTarget = 2;
-  static const int _clsFailTarget = 3;
-  int _clsFailHoldWatch = 0;   // sequential-watch counterpart of _taskClsFailHold
+  // Region classifier: decide on agreement, but fast. Every tick that sees the region
+  // with a confident classifier answer is ONE VOTE (OK or wrong state); the first side
+  // to reach _clsVotesNeeded wins, so it takes 2 frames when they agree and at most 3
+  // when they don't. Votes are never reset: a shaky frame, an unsure answer or a frame
+  // where the region isn't found simply casts no vote. An OK vote must be at least
+  // _clsOkVoteConf sure (stricter than the class minimum) -- a false OK is the costly error.
+  static const int _clsVotesNeeded = 2;
+  static const double _clsOkVoteConf = 0.75;
+  int _okVotesWatch = 0;     // sequential-watch votes
+  int _badVotesWatch = 0;
   static const double _watchConfidenceThreshold = 0.55;
   static const Duration _watchInterval = Duration(milliseconds: 100);
   static const Duration _watchTimeout = Duration(seconds: 45);
@@ -199,8 +206,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   DateTime? _simDeadline;
   final Map<int, String> _taskStatus = {}; // 'pending' | 'found' | 'notFound'
   final Map<int, int> _taskHoldCount = {};
-  // Consecutive ticks where the region classifier was sure of a non-expected state.
-  final Map<int, int> _taskClsFailHold = {};
+  // Region-classifier votes per task (simultaneous mode): confident OK / wrong-state ticks.
+  final Map<int, int> _taskOkVotes = {};
+  final Map<int, int> _taskBadVotes = {};
   List<DetectionResult> _liveTickDetections = [];
 
   @override
@@ -215,7 +223,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     for (var i = 0; i < widget.tasks.length; i++) {
       _taskStatus[i] = 'pending';
       _taskHoldCount[i] = 0;
-      _taskClsFailHold[i] = 0;
+      _taskOkVotes[i] = 0;
+      _taskBadVotes[i] = 0;
     }
     _initializeCamera();
     if (_simultaneousMode) {
@@ -287,6 +296,22 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return true;
     // The region classifier answered, and it is not the expected state (e.g. unlocked).
     return allDetections.any((d) => d.isClassifierPass == false || d.classifierLabel == 'uncertain');
+  }
+
+  /// This tick's classifier vote for [task]: +1 = OK (everything passes and the classifier is
+  /// at least [_clsOkVoteConf] sure of the pass label), -1 = confidently the wrong state,
+  /// 0 = no vote (region not found, unsure, or an OK that is not sure enough).
+  int _clsTickVote(dynamic task, List<DetectionResult> confident, bool tickPass) {
+    if (tickPass) {
+      final mandatory = List<String>.from(task['mandatoryClasses'] ?? []);
+      final names = mandatory.map((c) => c.toLowerCase().trim()).toSet();
+      final bool weak = confident.any((d) =>
+          names.contains(d.className.toLowerCase().trim()) &&
+          d.classifierLabel != null &&
+          (d.classifierConfidence ?? 0) < _clsOkVoteConf);
+      return weak ? 0 : 1;
+    }
+    return _simTaskClassifierFails(task, confident) ? -1 : 0;
   }
 
   /// Does this task have "Classify region" on for one of its mandatory classes?
@@ -609,6 +634,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           _addLog('Torch could not be turned on: $e');
         }
       }
+      // Camera zoom (remembered): read this phone's range and re-apply the saved level.
+      try {
+        _maxZoom = await controller.getMaxZoomLevel();
+        final double minZoom = await controller.getMinZoomLevel();
+        final double saved = await CameraPrefs.getZoom();
+        _zoom = saved < minZoom ? minZoom : (saved > _maxZoom ? _maxZoom : saved);
+        if ((_zoom - 1.0).abs() > 0.01) await controller.setZoomLevel(_zoom);
+      } catch (e) {
+        _addLog('Zoom setup failed: $e');
+      }
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
       // Model load and camera init race in initState -- _startWatching()
@@ -724,6 +759,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (_watchActive) return;
     _watchActive = true;
     _holdCount = 0;
+    _okVotesWatch = 0;
+    _badVotesWatch = 0;
     _consecutiveNullFrameTicks = 0;
     _watchDeadline = DateTime.now().add(_watchTimeout);
     _lastTickFrame = null;
@@ -874,20 +911,20 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         for (var i = 0; i < widget.tasks.length; i++) {
           if (_taskStatus[i] != 'pending') continue;
           final tickPass = _simTaskPasses(widget.tasks[i], confident);
-          final bool usesCls = _taskUsesClassifier(widget.tasks[i]);
+          if (_taskUsesClassifier(widget.tasks[i])) {
+            // Region classifier: first side to _clsVotesNeeded votes wins (see the constants).
+            final int vote = _clsTickVote(widget.tasks[i], confident, tickPass);
+            if (vote > 0) _taskOkVotes[i] = (_taskOkVotes[i] ?? 0) + 1;
+            if (vote < 0) _taskBadVotes[i] = (_taskBadVotes[i] ?? 0) + 1;
+            if ((_taskOkVotes[i] ?? 0) >= _clsVotesNeeded || (_taskBadVotes[i] ?? 0) >= _clsVotesNeeded) {
+              matchedTaskIndices.add(i);
+            }
+            continue;
+          }
           if (tickPass) {
-            _taskClsFailHold[i] = 0;
             _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) + 1;
-            if (_taskHoldCount[i]! >= (usesCls ? _clsPassTarget : _holdTarget)) matchedTaskIndices.add(i);
-          } else if (_simTaskClassifierFails(widget.tasks[i], confident)) {
-            // Region found, classifier confident it is the wrong state: needs
-            // _clsFailTarget agreeing ticks in a row, then it is captured as NOT OK.
-            _taskHoldCount[i] = 0;
-            _taskClsFailHold[i] = (_taskClsFailHold[i] ?? 0) + 1;
-            if (_taskClsFailHold[i]! >= _clsFailTarget) matchedTaskIndices.add(i);
-          } else if ((_taskHoldCount[i] ?? 0) != 0 || (_taskClsFailHold[i] ?? 0) != 0) {
-            _taskClsFailHold[i] = 0;   // an unsure / missed tick breaks a run of wrong-state ticks
-            if ((_taskHoldCount[i] ?? 0) == 0) continue;
+            if (_taskHoldCount[i]! >= _holdTarget) matchedTaskIndices.add(i);
+          } else if ((_taskHoldCount[i] ?? 0) != 0) {
             // Decrement instead of a hard reset to 0 -- on an assembly line
             // the part doesn't move, so a miss here is almost always sensor
             // noise/motion-blur on a single frame, not a genuinely different
@@ -991,7 +1028,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       for (var i = 0; i < widget.tasks.length; i++) {
         _taskStatus[i] = 'pending';
         _taskHoldCount[i] = 0;
-        _taskClsFailHold[i] = 0;
+        _taskOkVotes[i] = 0;
+        _taskBadVotes[i] = 0;
       }
       _results.clear();
       _simScanDone = false;
@@ -1095,35 +1133,34 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         final bool tickPass = _allMandatoryPassed(tickMandatory, confidentDetections, failClasses, ignoredClasses);
 
         if (!mounted || !_watchActive) return;
-        final bool usesCls = _taskUsesClassifier(currentTask);
-        final int passNeeded = usesCls ? _clsPassTarget : _holdTarget;
-        final bool tickClsFail = !tickPass && _simTaskClassifierFails(currentTask, confidentDetections);
-        if (tickPass) {
-          _clsFailHoldWatch = 0;
+        if (_taskUsesClassifier(currentTask)) {
+          // Region classifier: first side to _clsVotesNeeded votes wins (see the constants).
+          final int vote = _clsTickVote(currentTask, confidentDetections, tickPass);
+          if (vote > 0) _okVotesWatch++;
+          if (vote < 0) _badVotesWatch++;
+          _addLog("Live watch: classifier votes OK $_okVotesWatch / wrong $_badVotesWatch (need $_clsVotesNeeded)");
+          if (_okVotesWatch >= _clsVotesNeeded || _badVotesWatch >= _clsVotesNeeded) {
+            final bool ok = _okVotesWatch >= _clsVotesNeeded;
+            _watchActive = false;
+            _okVotesWatch = 0;
+            _badVotesWatch = 0;
+            setState(() => _holdCount = 0);
+            _addLog(ok ? 'Live watch: OK confirmed -- capturing this frame' : 'Live watch: wrong state confirmed -- capturing this frame as NOT OK');
+            await _handleCapture(frame: frame, tickDetections: _lastTickConfident);
+            return;
+          }
+          setState(() {});
+        } else if (tickPass) {
           setState(() => _holdCount++);
-          _addLog("Live watch: all mandatory classes seen (${_holdCount}/$passNeeded)");
-          if (_holdCount >= passNeeded) {
+          _addLog("Live watch: all mandatory classes seen (${_holdCount}/${_holdTarget})");
+          if (_holdCount >= _holdTarget) {
             _watchActive = false;
             setState(() => _holdCount = 0);
             _addLog('Live watch: target seen -- capturing this frame');
             await _handleCapture(frame: frame, tickDetections: _lastTickConfident);
             return;
           }
-        } else if (tickClsFail) {
-          // Region found and the classifier is confident it is the wrong state (e.g.
-          // unlocked): needs _clsFailTarget agreeing ticks in a row, then NOT OK.
-          _clsFailHoldWatch++;
-          setState(() => _holdCount = 0);
-          _addLog("Live watch: classifier says wrong state (${_clsFailHoldWatch}/$_clsFailTarget)");
-          if (_clsFailHoldWatch >= _clsFailTarget) {
-            _watchActive = false;
-            _clsFailHoldWatch = 0;
-            _addLog('Live watch: wrong state confirmed -- capturing this frame as NOT OK');
-            await _handleCapture(frame: frame, tickDetections: _lastTickConfident);
-            return;
-          }
         } else if (_holdCount != 0) {
-          _clsFailHoldWatch = 0;
           // Decrement instead of a hard reset -- see the simultaneous-mode
           // loop's identical comment: on a stationary assembly-line part, a
           // single missed tick is almost always noise, and a full reset
@@ -1131,7 +1168,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // capture than the nominal hold target implies.
           setState(() => _holdCount--);
         } else {
-          _clsFailHoldWatch = 0;   // an unsure / missed tick breaks a run of wrong-state ticks
           // Force a rebuild even with nothing else changing, so the
           // on-screen countdown keeps ticking down.
           setState(() {});
@@ -1451,6 +1487,56 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _addLog(on ? 'Torch ALWAYS ON (all scans and inspections)' : 'Torch always-on cancelled');
   }
 
+  static const List<double> _zoomSteps = [1.0, 1.5, 2.0, 3.0];
+
+  /// Cycles the camera zoom 1x -> 1.5x -> 2x -> 3x -> 1x (steps this phone does not
+  /// support are skipped) and remembers it for every later scan and restart.
+  Future<void> _cycleZoom() async {
+    final ctrl = _cameraController;
+    if (ctrl == null || !_isCameraInitialized) return;
+    final usable = _zoomSteps.where((z) => z <= _maxZoom + 0.001).toList();
+    if (usable.length < 2) return;
+    final int cur = usable.indexWhere((z) => (z - _zoom).abs() < 0.01);
+    final double next = usable[(cur + 1) % usable.length];
+    try {
+      await ctrl.setZoomLevel(next);
+      if (mounted) setState(() => _zoom = next);
+      await CameraPrefs.setZoom(next);
+      _addLog('Zoom ${next}x');
+    } catch (e) {
+      _addLog('Zoom error: $e');
+    }
+  }
+
+  /// Round zoom button shown under the torch button; hidden when the phone has no zoom.
+  Widget _buildZoomButton() {
+    if (_maxZoom < 1.5) return const SizedBox.shrink();
+    final String label = _zoom == _zoom.roundToDouble() ? _zoom.toStringAsFixed(0) : _zoom.toStringAsFixed(1);
+    final bool zoomed = _zoom > 1.01;
+    return GestureDetector(
+      onTap: _cycleZoom,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: zoomed ? const Color(0xFFFFD700) : Colors.black54,
+          shape: BoxShape.circle,
+          border: Border.all(color: zoomed ? const Color(0xFFFFD700) : Colors.white30, width: 1.5),
+        ),
+        child: Center(
+          child: Text(
+            '${label}x',
+            style: TextStyle(
+              color: zoomed ? Colors.black : Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _toggleFlash() async {
     if (_cameraController == null || !_isCameraInitialized) return;
     final newOn = !_isFlashOn;
@@ -1672,7 +1758,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                       Positioned(
                         top: 16,
                         left: 16,
-                        child: GestureDetector(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            GestureDetector(
                           onTap: _toggleFlash,
                           onDoubleTap: _toggleTorchAlwaysOn,
                           child: Container(
@@ -1694,6 +1783,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                               size: 24,
                             ),
                           ),
+                        ),
+                            const SizedBox(height: 10),
+                            _buildZoomButton(),
+                          ],
                         ),
                       ),
                     if (_simScanActive)
@@ -2139,7 +2232,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                       Positioned(
                         top: 16,
                         left: 16,
-                        child: GestureDetector(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            GestureDetector(
                           onTap: _toggleFlash,
                           onDoubleTap: _toggleTorchAlwaysOn,
                           child: Container(
@@ -2161,6 +2257,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                               size: 24,
                             ),
                           ),
+                        ),
+                            const SizedBox(height: 10),
+                            _buildZoomButton(),
+                          ],
                         ),
                       ),
                     // Persistent "LIVE" pill, shown whenever the watch loop
@@ -2458,6 +2558,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
 import '../services/torch_session.dart';
+import '../services/camera_prefs.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
 
@@ -2570,6 +2671,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   List<String> _debugLogs = [];
   bool _showDebugConsole = false;
   bool _isFlashOn = false;
+  double _zoom = 1.0;      // current camera zoom (remembered via CameraPrefs)
+  double _maxZoom = 1.0;   // this phone's maximum zoom
 
   List<DetectionResult> _allDetections = [];
   List<DetectionResult> _detectedNonTargetClasses = [];
@@ -2965,6 +3068,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         } catch (e) {
           _addLog('Torch could not be turned on: $e');
         }
+      }
+      // Camera zoom (remembered): read this phone's range and re-apply the saved level.
+      try {
+        _maxZoom = await controller.getMaxZoomLevel();
+        final double minZoom = await controller.getMinZoomLevel();
+        final double saved = await CameraPrefs.getZoom();
+        _zoom = saved < minZoom ? minZoom : (saved > _maxZoom ? _maxZoom : saved);
+        if ((_zoom - 1.0).abs() > 0.01) await controller.setZoomLevel(_zoom);
+      } catch (e) {
+        _addLog('Zoom setup failed: $e');
       }
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
@@ -3752,6 +3865,56 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _addLog(on ? 'Torch ALWAYS ON (all scans and inspections)' : 'Torch always-on cancelled');
   }
 
+  static const List<double> _zoomSteps = [1.0, 1.5, 2.0, 3.0];
+
+  /// Cycles the camera zoom 1x -> 1.5x -> 2x -> 3x -> 1x (steps this phone does not
+  /// support are skipped) and remembers it for every later scan and restart.
+  Future<void> _cycleZoom() async {
+    final ctrl = _cameraController;
+    if (ctrl == null || !_isCameraInitialized) return;
+    final usable = _zoomSteps.where((z) => z <= _maxZoom + 0.001).toList();
+    if (usable.length < 2) return;
+    final int cur = usable.indexWhere((z) => (z - _zoom).abs() < 0.01);
+    final double next = usable[(cur + 1) % usable.length];
+    try {
+      await ctrl.setZoomLevel(next);
+      if (mounted) setState(() => _zoom = next);
+      await CameraPrefs.setZoom(next);
+      _addLog('Zoom ${next}x');
+    } catch (e) {
+      _addLog('Zoom error: $e');
+    }
+  }
+
+  /// Round zoom button shown under the torch button; hidden when the phone has no zoom.
+  Widget _buildZoomButton() {
+    if (_maxZoom < 1.5) return const SizedBox.shrink();
+    final String label = _zoom == _zoom.roundToDouble() ? _zoom.toStringAsFixed(0) : _zoom.toStringAsFixed(1);
+    final bool zoomed = _zoom > 1.01;
+    return GestureDetector(
+      onTap: _cycleZoom,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: zoomed ? const Color(0xFFFFD700) : Colors.black54,
+          shape: BoxShape.circle,
+          border: Border.all(color: zoomed ? const Color(0xFFFFD700) : Colors.white30, width: 1.5),
+        ),
+        child: Center(
+          child: Text(
+            '${label}x',
+            style: TextStyle(
+              color: zoomed ? Colors.black : Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _toggleFlash() async {
     if (_cameraController == null || !_isCameraInitialized) return;
     final newOn = !_isFlashOn;
@@ -3971,7 +4134,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                       Positioned(
                         top: 16,
                         left: 16,
-                        child: GestureDetector(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            GestureDetector(
                           onTap: _toggleFlash,
                           onDoubleTap: _toggleTorchAlwaysOn,
                           child: Container(
@@ -3993,6 +4159,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                               size: 24,
                             ),
                           ),
+                        ),
+                            const SizedBox(height: 10),
+                            _buildZoomButton(),
+                          ],
                         ),
                       ),
                     if (_simScanActive)
@@ -4437,7 +4607,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                       Positioned(
                         top: 16,
                         left: 16,
-                        child: GestureDetector(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            GestureDetector(
                           onTap: _toggleFlash,
                           onDoubleTap: _toggleTorchAlwaysOn,
                           child: Container(
@@ -4459,6 +4632,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                               size: 24,
                             ),
                           ),
+                        ),
+                            const SizedBox(height: 10),
+                            _buildZoomButton(),
+                          ],
                         ),
                       ),
                     // Persistent "LIVE" pill, shown whenever the watch loop

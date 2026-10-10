@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
 import '../services/torch_session.dart';
+import '../services/camera_prefs.dart';
 import '../database/database.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
@@ -199,6 +200,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   List<String> _debugLogs = [];
   bool _showDebugConsole = false;
   bool _isFlashOn = false;
+  double _zoom = 1.0;      // current camera zoom (remembered via CameraPrefs)
+  double _maxZoom = 1.0;   // this phone's maximum zoom
 
   List<DetectionResult> _allDetections = [];
   List<DetectionResult> _detectedNonTargetClasses = [];
@@ -416,6 +419,16 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         } catch (e) {
           _addLog('Torch could not be turned on: $e');
         }
+      }
+      // Camera zoom (remembered): read this phone's range and re-apply the saved level.
+      try {
+        _maxZoom = await controller.getMaxZoomLevel();
+        final double minZoom = await controller.getMinZoomLevel();
+        final double saved = await CameraPrefs.getZoom();
+        _zoom = saved < minZoom ? minZoom : (saved > _maxZoom ? _maxZoom : saved);
+        if ((_zoom - 1.0).abs() > 0.01) await controller.setZoomLevel(_zoom);
+      } catch (e) {
+        _addLog('Zoom setup failed: $e');
       }
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
@@ -736,6 +749,56 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     _addLog(on ? 'Torch ALWAYS ON (all scans and inspections)' : 'Torch always-on cancelled');
   }
 
+  static const List<double> _zoomSteps = [1.0, 1.5, 2.0, 3.0];
+
+  /// Cycles the camera zoom 1x -> 1.5x -> 2x -> 3x -> 1x (steps this phone does not
+  /// support are skipped) and remembers it for every later scan and restart.
+  Future<void> _cycleZoom() async {
+    final ctrl = _cameraController;
+    if (ctrl == null || !_isCameraInitialized) return;
+    final usable = _zoomSteps.where((z) => z <= _maxZoom + 0.001).toList();
+    if (usable.length < 2) return;
+    final int cur = usable.indexWhere((z) => (z - _zoom).abs() < 0.01);
+    final double next = usable[(cur + 1) % usable.length];
+    try {
+      await ctrl.setZoomLevel(next);
+      if (mounted) setState(() => _zoom = next);
+      await CameraPrefs.setZoom(next);
+      _addLog('Zoom ${next}x');
+    } catch (e) {
+      _addLog('Zoom error: $e');
+    }
+  }
+
+  /// Round zoom button shown under the torch button; hidden when the phone has no zoom.
+  Widget _buildZoomButton() {
+    if (_maxZoom < 1.5) return const SizedBox.shrink();
+    final String label = _zoom == _zoom.roundToDouble() ? _zoom.toStringAsFixed(0) : _zoom.toStringAsFixed(1);
+    final bool zoomed = _zoom > 1.01;
+    return GestureDetector(
+      onTap: _cycleZoom,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: zoomed ? const Color(0xFFFFD700) : Colors.black54,
+          shape: BoxShape.circle,
+          border: Border.all(color: zoomed ? const Color(0xFFFFD700) : Colors.white30, width: 1.5),
+        ),
+        child: Center(
+          child: Text(
+            '${label}x',
+            style: TextStyle(
+              color: zoomed ? Colors.black : Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _toggleFlash() async {
     if (_cameraController == null || !_isCameraInitialized) return;
     final newOn = !_isFlashOn;
@@ -958,7 +1021,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                       Positioned(
                         top: 16,
                         left: 16,
-                        child: GestureDetector(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            GestureDetector(
                           onTap: _toggleFlash,
                           onDoubleTap: _toggleTorchAlwaysOn,
                           child: Container(
@@ -985,6 +1051,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                               size: 24,
                             ),
                           ),
+                        ),
+                            const SizedBox(height: 10),
+                            _buildZoomButton(),
+                          ],
                         ),
                       ),
 {% if ocr_uses_crnn %}
@@ -1546,6 +1616,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../ml/detector.dart';
 import '../ml/detection_result.dart';
 import '../services/torch_session.dart';
+import '../services/camera_prefs.dart';
 import '../database/database.dart';
 import '../widgets/detection_overlay.dart';
 import 'package:flutter/foundation.dart' show compute;
@@ -1652,6 +1723,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   List<String> _debugLogs = [];
   bool _showDebugConsole = false;
   bool _isFlashOn = false;
+  double _zoom = 1.0;      // current camera zoom (remembered via CameraPrefs)
+  double _maxZoom = 1.0;   // this phone's maximum zoom
 
   List<DetectionResult> _allDetections = [];
   // Only the single best non-target detection is kept to avoid showing
@@ -1806,6 +1879,16 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         } catch (e) {
           _addLog('Torch could not be turned on: $e');
         }
+      }
+      // Camera zoom (remembered): read this phone's range and re-apply the saved level.
+      try {
+        _maxZoom = await controller.getMaxZoomLevel();
+        final double minZoom = await controller.getMinZoomLevel();
+        final double saved = await CameraPrefs.getZoom();
+        _zoom = saved < minZoom ? minZoom : (saved > _maxZoom ? _maxZoom : saved);
+        if ((_zoom - 1.0).abs() > 0.01) await controller.setZoomLevel(_zoom);
+      } catch (e) {
+        _addLog('Zoom setup failed: $e');
       }
       if (mounted) setState(() => _isCameraInitialized = true);
       _addLog('Camera initialized');
@@ -2148,6 +2231,56 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     _addLog(on ? 'Torch ALWAYS ON (all scans and inspections)' : 'Torch always-on cancelled');
   }
 
+  static const List<double> _zoomSteps = [1.0, 1.5, 2.0, 3.0];
+
+  /// Cycles the camera zoom 1x -> 1.5x -> 2x -> 3x -> 1x (steps this phone does not
+  /// support are skipped) and remembers it for every later scan and restart.
+  Future<void> _cycleZoom() async {
+    final ctrl = _cameraController;
+    if (ctrl == null || !_isCameraInitialized) return;
+    final usable = _zoomSteps.where((z) => z <= _maxZoom + 0.001).toList();
+    if (usable.length < 2) return;
+    final int cur = usable.indexWhere((z) => (z - _zoom).abs() < 0.01);
+    final double next = usable[(cur + 1) % usable.length];
+    try {
+      await ctrl.setZoomLevel(next);
+      if (mounted) setState(() => _zoom = next);
+      await CameraPrefs.setZoom(next);
+      _addLog('Zoom ${next}x');
+    } catch (e) {
+      _addLog('Zoom error: $e');
+    }
+  }
+
+  /// Round zoom button shown under the torch button; hidden when the phone has no zoom.
+  Widget _buildZoomButton() {
+    if (_maxZoom < 1.5) return const SizedBox.shrink();
+    final String label = _zoom == _zoom.roundToDouble() ? _zoom.toStringAsFixed(0) : _zoom.toStringAsFixed(1);
+    final bool zoomed = _zoom > 1.01;
+    return GestureDetector(
+      onTap: _cycleZoom,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: zoomed ? const Color(0xFFFFD700) : Colors.black54,
+          shape: BoxShape.circle,
+          border: Border.all(color: zoomed ? const Color(0xFFFFD700) : Colors.white30, width: 1.5),
+        ),
+        child: Center(
+          child: Text(
+            '${label}x',
+            style: TextStyle(
+              color: zoomed ? Colors.black : Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _toggleFlash() async {
     if (_cameraController == null || !_isCameraInitialized) return;
     final newOn = !_isFlashOn;
@@ -2368,7 +2501,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                       Positioned(
                         top: 16,
                         left: 16,
-                        child: GestureDetector(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            GestureDetector(
                           onTap: _toggleFlash,
                           onDoubleTap: _toggleTorchAlwaysOn,
                           child: Container(
@@ -2395,6 +2531,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                               size: 24,
                             ),
                           ),
+                        ),
+                            const SizedBox(height: 10),
+                            _buildZoomButton(),
+                          ],
                         ),
                       ),
                     if (!_isAnalyzing && _capturedImageBytes != null)
