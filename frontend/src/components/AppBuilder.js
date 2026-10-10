@@ -640,18 +640,21 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     (existingApp?.model_asset_ids || []).includes(m.id)
   );
 
-  // A trained classifier (model_kind "classifier", uploaded as a YOLO-cls .pt and
-  // converted like a detector) attached to this app. A mandatory class can then
-  // classify its detected region with it (e.g. Max_reg -> locked / unlocked).
-  const attachedClassifier = models.find(m =>
-    m.model_kind === 'classifier' &&
+  // Classifier models (model_kind "classifier": a YOLO-cls .pt converted like a
+  // detector). Any ready classifier in the library can be picked right on the
+  // class row -- it is attached to the app automatically when the profile is
+  // saved, so it doesn't have to be added to the app beforehand.
+  const classifierModels = models.filter(m => m.model_kind === 'classifier');
+  const attachedClassifier = classifierModels.find(m =>
     (existingApp?.model_asset_ids || []).includes(m.id)
-  );
-  const classifierLabels = (() => {
-    const raw = attachedClassifier?.classes;
+  ) || null;
+  const classifierFor = (id) =>
+    classifierModels.find(m => m.id === id) || attachedClassifier || classifierModels[0] || null;
+  const classifierLabelsFor = (id) => {
+    const raw = classifierFor(id)?.classes;
     if (Array.isArray(raw)) return raw;
     try { return JSON.parse(raw || '[]'); } catch { return []; }
-  })();
+  };
 
   // Per-class classifier settings live in the same classOcrConfig entry as the OCR
   // ones (classifyEnabled / classifyPassLabel / classifyMinConf / classifyMargin).
@@ -669,11 +672,21 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = cfg;
     setReviewData(newData);
   };
-  const enableClassify = (cfg) => ({
-    classifyEnabled: !cfg?.classifyEnabled,
-    classifyPassLabel: cfg?.classifyPassLabel || classifierLabels[0] || '',
-    classifyMinConf: cfg?.classifyMinConf ?? 0.6,
-    classifyMargin: cfg?.classifyMargin ?? 0.12,
+  const enableClassify = (cfg) => {
+    const model = classifierFor(cfg?.classifyModelId);
+    const labels = classifierLabelsFor(model?.id);
+    return {
+      classifyEnabled: !cfg?.classifyEnabled,
+      classifyModelId: model?.id || '',
+      classifyPassLabel: cfg?.classifyPassLabel || labels[0] || '',
+      classifyMinConf: cfg?.classifyMinConf ?? 0.6,
+      classifyMargin: cfg?.classifyMargin ?? 0.12,
+    };
+  };
+  // Switching the classifier model also resets the pass label to one it really has.
+  const classifierSwitch = (id) => ({
+    classifyModelId: id,
+    classifyPassLabel: classifierLabelsFor(id)[0] || '',
   });
 
   const handleToggleClassOcr = (index, cls) => {
@@ -922,9 +935,15 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       // would otherwise silently fall out of the app's model list on every save,
       // leaving the build with no recognizer to load and everything falling back
       // to ML Kit.
+      // Classifiers picked on a class row ("Classify region") are attached too.
+      const classifierIds = finalTasks.flatMap(t =>
+        Object.values(t.classOcrConfig || {})
+          .filter(c => c && c.classifyEnabled && c.classifyModelId)
+          .map(c => c.classifyModelId));
       const modelAssetIds = Array.from(new Set([
         ...(existingApp?.model_asset_ids || []),
         ...finalTasks.map(t => t.modelId),
+        ...classifierIds,
       ]));
       let profileSlug = (profileName || 'app').toLowerCase().replace(/[^a-z0-9]/g, '_');
       if (!profileSlug) profileSlug = 'app';
@@ -1259,7 +1278,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                           <label style={labelStyle}>AI Model</label>
                           <select style={inputStyle} value={config.modelId} onChange={(e) => handleUpdateDefaultAI(idx, 'modelId', e.target.value)}>
                             <option value="">Select AI Model...</option>
-                            {models.map(m => <option key={m.id} value={m.id}>{m.vision_project_name}</option>)}
+                            {models.filter(m => m.model_kind !== 'classifier').map(m => <option key={m.id} value={m.id}>{m.vision_project_name}</option>)}
                           </select>
                         </div>
                         <div>
@@ -1356,22 +1375,29 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                           <input
                                             type="checkbox"
                                             checked={!!ocrCfg.classifyEnabled}
-                                            disabled={!attachedClassifier}
+                                            disabled={classifierModels.length === 0}
                                             onChange={() => patchClassClassify(idx, c, enableClassify(ocrCfg))}
-                                            style={{ width: 13, height: 13, accentColor: '#4caf82', cursor: attachedClassifier ? 'pointer' : 'not-allowed' }}
+                                            style={{ width: 13, height: 13, accentColor: '#4caf82', cursor: classifierModels.length ? 'pointer' : 'not-allowed' }}
                                           />
                                           <span style={{ fontSize: 11, color: '#4caf82' }}>
-                                            Classify region{attachedClassifier ? ` (${attachedClassifier.vision_project_name})` : ' (attach a classifier model first)'}
+                                            Classify region{classifierModels.length === 0 ? ' (upload a classifier model first: New App > Convert New Model > Classifier)' : ''}
                                           </span>
-                                          {ocrCfg.classifyEnabled && attachedClassifier && (
+                                          {ocrCfg.classifyEnabled && classifierModels.length > 0 && (
                                             <>
+                                              <select
+                                                style={{ ...miniSelectStyle, fontSize: 11 }}
+                                                value={classifierFor(ocrCfg.classifyModelId)?.id || ''}
+                                                onChange={e => patchClassClassify(idx, c, classifierSwitch(e.target.value))}
+                                              >
+                                                {classifierModels.map(m => <option key={m.id} value={m.id}>{m.vision_project_name}</option>)}
+                                              </select>
                                               <span style={{ fontSize: 11, color: C.muted }}>pass if</span>
                                               <select
                                                 style={{ ...miniSelectStyle, fontSize: 11 }}
                                                 value={ocrCfg.classifyPassLabel || ''}
                                                 onChange={e => patchClassClassify(idx, c, { classifyPassLabel: e.target.value })}
                                               >
-                                                {classifierLabels.map(l => <option key={l} value={l}>{l}</option>)}
+                                                {classifierLabelsFor(ocrCfg.classifyModelId).map(l => <option key={l} value={l}>{l}</option>)}
                                               </select>
                                               <span style={{ fontSize: 11, color: C.muted }}>min conf</span>
                                               <input type="number" min="0" max="1" step="0.05"
@@ -1456,7 +1482,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                   onChange={(e) => handleUpdateRowAI(rowIndex, aiIdx, 'modelId', e.target.value)}
                                 >
                                   <option value="">Select Model...</option>
-                                  {models.map(m => <option key={m.id} value={m.id}>{m.vision_project_name}</option>)}
+                                  {models.filter(m => m.model_kind !== 'classifier').map(m => <option key={m.id} value={m.id}>{m.vision_project_name}</option>)}
                                 </select>
                               </div>
                               <div style={{ padding: '12px 16px' }}>
@@ -1548,22 +1574,29 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                             <input
                                               type="checkbox"
                                               checked={!!ocrCfg.classifyEnabled}
-                                              disabled={!attachedClassifier}
+                                              disabled={classifierModels.length === 0}
                                               onChange={() => patchRowClassClassify(rowIndex, aiIdx, c, enableClassify(ocrCfg))}
-                                              style={{ width: 13, height: 13, accentColor: '#4caf82', cursor: attachedClassifier ? 'pointer' : 'not-allowed' }}
+                                              style={{ width: 13, height: 13, accentColor: '#4caf82', cursor: classifierModels.length ? 'pointer' : 'not-allowed' }}
                                             />
                                             <span style={{ fontSize: 11, color: '#4caf82' }}>
-                                              Classify region{attachedClassifier ? ` (${attachedClassifier.vision_project_name})` : ' (attach a classifier model first)'}
+                                              Classify region{classifierModels.length === 0 ? ' (upload a classifier model first: New App > Convert New Model > Classifier)' : ''}
                                             </span>
-                                            {ocrCfg.classifyEnabled && attachedClassifier && (
+                                            {ocrCfg.classifyEnabled && classifierModels.length > 0 && (
                                               <>
+                                                <select
+                                                  style={{ ...miniSelectStyle, fontSize: 11 }}
+                                                  value={classifierFor(ocrCfg.classifyModelId)?.id || ''}
+                                                  onChange={e => patchRowClassClassify(rowIndex, aiIdx, c, classifierSwitch(e.target.value))}
+                                                >
+                                                  {classifierModels.map(m => <option key={m.id} value={m.id}>{m.vision_project_name}</option>)}
+                                                </select>
                                                 <span style={{ fontSize: 11, color: C.muted }}>pass if</span>
                                                 <select
                                                   style={{ ...miniSelectStyle, fontSize: 11 }}
                                                   value={ocrCfg.classifyPassLabel || ''}
                                                   onChange={e => patchRowClassClassify(rowIndex, aiIdx, c, { classifyPassLabel: e.target.value })}
                                                 >
-                                                  {classifierLabels.map(l => <option key={l} value={l}>{l}</option>)}
+                                                  {classifierLabelsFor(ocrCfg.classifyModelId).map(l => <option key={l} value={l}>{l}</option>)}
                                                 </select>
                                                 <span style={{ fontSize: 11, color: C.muted }}>min conf</span>
                                                 <input type="number" min="0" max="1" step="0.05"

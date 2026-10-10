@@ -481,8 +481,16 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         if (entry.get("classOcrConfig") or {}).get(cls, {}).get("classifyEnabled")
         and (entry.get("classOcrConfig") or {}).get(cls, {}).get("classifyPassLabel")
     }
-    _clf_asset = next(
-        (ma for ma in models_list if get_attr(ma, "model_kind", "detector") == "classifier"), None
+    # The classifier a class row picked (classifyModelId); else the first attached one.
+    _clf_wanted = {
+        (cfg or {}).get("classifyModelId")
+        for entry in models_manifest
+        for cfg in (entry.get("classOcrConfig") or {}).values()
+        if (cfg or {}).get("classifyEnabled") and (cfg or {}).get("classifyModelId")
+    }
+    _clf_assets = [ma for ma in models_list if get_attr(ma, "model_kind", "detector") == "classifier"]
+    _clf_asset = next((ma for ma in _clf_assets if get_attr(ma, "id") in _clf_wanted), None) or (
+        _clf_assets[0] if _clf_assets else None
     )
     ctx["classifier_enabled"] = bool(
         ctx["detection_method"] == "multiclass" and _clf_asset is not None and _classify_on_mandatory
