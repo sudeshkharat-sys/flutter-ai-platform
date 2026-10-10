@@ -298,7 +298,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   ) {
     if (allDetections.any((d) => _isNotOkClass(d.className) && !_isIgnored(d.className, ignoredClasses))) return true;
     final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
-    return allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()));
+    if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return true;
+    // The region classifier answered, and it is not the expected state (e.g. unlocked).
+    return allDetections.any((d) => d.isClassifierPass == false);
   }
 
   Future<void> _loadCurrentModel() async {

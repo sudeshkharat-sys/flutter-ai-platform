@@ -192,6 +192,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   DateTime? _simDeadline;
   final Map<int, String> _taskStatus = {}; // 'pending' | 'found' | 'notFound'
   final Map<int, int> _taskHoldCount = {};
+  // Consecutive ticks where the region classifier was sure of a non-expected state.
+  final Map<int, int> _taskClsFailHold = {};
   List<DetectionResult> _liveTickDetections = [];
 
   @override
@@ -206,6 +208,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     for (var i = 0; i < widget.tasks.length; i++) {
       _taskStatus[i] = 'pending';
       _taskHoldCount[i] = 0;
+      _taskClsFailHold[i] = 0;
     }
     _initializeCamera();
     if (_simultaneousMode) {
@@ -273,7 +276,19 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   ) {
     if (allDetections.any((d) => _isNotOkClass(d.className) && !_isIgnored(d.className, ignoredClasses))) return true;
     final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
-    return allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()));
+    if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return true;
+    // The region classifier answered, and it is not the expected state (e.g. unlocked).
+    return allDetections.any((d) => d.isClassifierPass == false);
+  }
+
+  /// True when a mandatory class of [task] was found on this tick and its region
+  /// classifier is sure it is NOT the expected state -- the scan can resolve as
+  /// NOT OK right away instead of waiting for the deadline.
+  bool _simTaskClassifierFails(dynamic task, List<DetectionResult> confident) {
+    final List<String> mandatory = List<String>.from(task['mandatoryClasses'] ?? []);
+    if (mandatory.isEmpty) return false;
+    final names = mandatory.map((c) => c.toLowerCase().trim()).toSet();
+    return confident.any((d) => names.contains(d.className.toLowerCase().trim()) && d.isClassifierPass == false);
   }
 
   /// Same mandatory/fail/ignored matching _allMandatoryPassed uses, applied
@@ -834,8 +849,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           if (_taskStatus[i] != 'pending') continue;
           final tickPass = _simTaskPasses(widget.tasks[i], confident);
           if (tickPass) {
+            _taskClsFailHold[i] = 0;
             _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) + 1;
             if (_taskHoldCount[i]! >= _holdTarget) matchedTaskIndices.add(i);
+          } else if (_simTaskClassifierFails(widget.tasks[i], confident)) {
+            // Region found, classifier sure it is the wrong state: hold the same
+            // number of ticks, then capture it as NOT OK.
+            _taskClsFailHold[i] = (_taskClsFailHold[i] ?? 0) + 1;
+            if (_taskClsFailHold[i]! >= _holdTarget) matchedTaskIndices.add(i);
           } else if ((_taskHoldCount[i] ?? 0) != 0) {
             // Decrement instead of a hard reset to 0 -- on an assembly line
             // the part doesn't move, so a miss here is almost always sensor
@@ -940,6 +961,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       for (var i = 0; i < widget.tasks.length; i++) {
         _taskStatus[i] = 'pending';
         _taskHoldCount[i] = 0;
+        _taskClsFailHold[i] = 0;
       }
       _results.clear();
       _simScanDone = false;

@@ -1244,19 +1244,34 @@ class ModelManager {
   /// rotationDegrees, targetWidth} (see [yuvFrameToImage]).
   Future<List<DetectionResult>> predictFrame(Map<String, dynamic> frame) async {
     if (!_isLoaded || _interpreter == null) return [];
+{% if classifier_enabled %}
+    // Loaded here (UI isolate) so the tick isolate only needs its address.
+    final clsInterp = await _ensureClassifier();
+{% endif %}
     return compute(_runInferenceFrame, {
       ...frame,
       'interpreter_address': _interpreter!.address,
       'labels': _labels,
       'inputSize': {{ input_size }},
       'threshold': confidenceThreshold,
+{% if classifier_enabled %}
+      'cls_interpreter_address': clsInterp?.address,
+{% endif %}
     });
   }
 
   static List<DetectionResult> _runInferenceFrame(Map<String, dynamic> args) {
     final image = yuvFrameToImage(args);
     if (image == null) return [];
-    return _inferOnDecoded(image, args);
+    final detections = _inferOnDecoded(image, args);
+{% if classifier_enabled %}
+    // Region classifier on the tick's own decoded frame (e.g. Max_reg -> locked / unlocked).
+    final int? clsAddress = args['cls_interpreter_address'] as int?;
+    if (clsAddress != null && detections.isNotEmpty) {
+      return _applyClassifierSync(detections, image, clsAddress);
+    }
+{% endif %}
+    return detections;
   }
 
   /// Converts one raw camera stream frame (YUV420 -- 3 planes on Android, or
@@ -1859,20 +1874,40 @@ class ModelManager {
     return out;
   }
 
-  Future<DetectionResult> _classifyRegion(DetectionResult det, img.Image source, Interpreter interp) async {
-    final String passLabel = _classClassifyPass[det.className]!;
-    final double minConf = _classClassifyMinConf[det.className] ?? 0.6;
+  /// The crop the trainer used: the box grown by the class's margin * its own size.
+  static img.Image _cropForClassifier(DetectionResult det, img.Image source) {
     final double margin = _classClassifyMargin[det.className] ?? 0.12;
-
-    // Same window as the trainer's crop_region: box grown by margin * its own size.
     final double bw = det.bbox.width * source.width;
     final double bh = det.bbox.height * source.height;
     final int x1 = (det.bbox.left * source.width - bw * margin).round().clamp(0, source.width - 1);
     final int y1 = (det.bbox.top * source.height - bh * margin).round().clamp(0, source.height - 1);
     final int x2 = (det.bbox.right * source.width + bw * margin).round().clamp(x1 + 1, source.width);
     final int y2 = (det.bbox.bottom * source.height + bh * margin).round().clamp(y1 + 1, source.height);
-    final crop = img.copyCrop(source, x: x1, y: y1, width: x2 - x1, height: y2 - y1);
+    return img.copyCrop(source, x: x1, y: y1, width: x2 - x1, height: y2 - y1);
+  }
 
+  /// Turns class probabilities into the result fields: the winning label (or
+  /// 'uncertain' below the class's minimum confidence) and whether it is the pass label.
+  static DetectionResult _withClassifierAnswer(DetectionResult det, List<double> probs) {
+    final String passLabel = _classClassifyPass[det.className] ?? '';
+    final double minConf = _classClassifyMinConf[det.className] ?? 0.6;
+    int best = 0;
+    for (int i = 1; i < probs.length; i++) {
+      if (probs[i] > probs[best]) best = i;
+    }
+    final String label = best < _classifierLabels.length ? _classifierLabels[best] : 'unknown (id:$best)';
+    final double conf = probs[best];
+    final bool confident = conf >= minConf;
+    debugPrint('[Classifier] ${det.className}: $label ${(conf * 100).toStringAsFixed(1)}% (min ${(minConf * 100).toStringAsFixed(0)}%)');
+    return det.copyWith(
+      classifierLabel: confident ? label : 'uncertain',
+      classifierConfidence: conf,
+      isClassifierPass: confident && label == passLabel,
+    );
+  }
+
+  Future<DetectionResult> _classifyRegion(DetectionResult det, img.Image source, Interpreter interp) async {
+    final crop = _cropForClassifier(det, source);
     try {
       final probs = await compute(_runClassifierIsolate, {
         'cropPngBytes': Uint8List.fromList(img.encodePng(crop)),
@@ -1880,36 +1915,48 @@ class ModelManager {
         'inputSize': _classifierInputSize,
       });
       if (probs == null || probs.isEmpty) return det;
-      int best = 0;
-      for (int i = 1; i < probs.length; i++) {
-        if (probs[i] > probs[best]) best = i;
-      }
-      final String label = best < _classifierLabels.length ? _classifierLabels[best] : 'unknown (id:$best)';
-      final double conf = probs[best];
-      final bool confident = conf >= minConf;
-      debugPrint('[Classifier] ${det.className}: $label ${(conf * 100).toStringAsFixed(1)}% (min ${(minConf * 100).toStringAsFixed(0)}%)');
-      return det.copyWith(
-        classifierLabel: confident ? label : 'uncertain',
-        classifierConfidence: conf,
-        isClassifierPass: confident && label == passLabel,
-      );
+      return _withClassifierAnswer(det, probs);
     } catch (e) {
       debugPrint('[Classifier] inference failed: $e');
       return det;
     }
   }
 
-  /// Isolate entry-point: Ultralytics classification preprocessing (shorter side
-  /// -> size, centre crop, RGB 0-1) + one interpreter.run(). Returns class
-  /// probabilities, or null on an input-shape mismatch (checked first so a wrong
-  /// model can't hard-abort the app inside the native layer).
-  static List<double>? _runClassifierIsolate(Map<String, dynamic> args) {
-    final Uint8List cropPngBytes = args['cropPngBytes'] as Uint8List;
-    final int interpreterAddress = args['interpreter_address'] as int;
-    final int size = args['inputSize'] as int;
+  /// Same as [_applyClassifier] but synchronous, for code already running in a
+  /// background isolate (the live-feed tick path, which has the decoded frame in
+  /// hand and must not hop isolates or re-encode it).
+  static List<DetectionResult> _applyClassifierSync(List<DetectionResult> dets, img.Image source, int interpreterAddress) {
+    if (dets.isEmpty || _classClassifyPass.isEmpty) return dets;
+    final Map<String, int> bestIdx = {};
+    for (int i = 0; i < dets.length; i++) {
+      final cn = dets[i].className;
+      if (!_classClassifyPass.containsKey(cn)) continue;
+      if (!bestIdx.containsKey(cn) || dets[i].confidence > dets[bestIdx[cn]!].confidence) bestIdx[cn] = i;
+    }
+    final out = List<DetectionResult>.from(dets);
+    for (final e in bestIdx.entries) {
+      try {
+        final probs = _classifyCrop(_cropForClassifier(dets[e.value], source), interpreterAddress, _classifierInputSize);
+        if (probs != null && probs.isNotEmpty) out[e.value] = _withClassifierAnswer(dets[e.value], probs);
+      } catch (e2) {
+        debugPrint('[Classifier] tick inference failed: $e2');
+      }
+    }
+    return out;
+  }
 
-    final crop = img.decodePng(cropPngBytes);
+  /// Isolate entry-point for the single-photo path: decodes the PNG crop, then [_classifyCrop].
+  static List<double>? _runClassifierIsolate(Map<String, dynamic> args) {
+    final crop = img.decodePng(args['cropPngBytes'] as Uint8List);
     if (crop == null) return null;
+    return _classifyCrop(crop, args['interpreter_address'] as int, args['inputSize'] as int);
+  }
+
+  /// Ultralytics classification preprocessing (shorter side -> size, centre
+  /// crop, RGB 0-1) + one interpreter.run(). Returns class probabilities, or
+  /// null on an input-shape mismatch (checked first so a wrong model can't
+  /// hard-abort the app inside the native layer).
+  static List<double>? _classifyCrop(img.Image crop, int interpreterAddress, int size) {
     final interpreter = Interpreter.fromAddress(interpreterAddress);
 
     final inShape = interpreter.getInputTensor(0).shape; // [1, size, size, 3]
