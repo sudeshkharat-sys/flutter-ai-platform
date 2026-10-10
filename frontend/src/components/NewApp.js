@@ -60,6 +60,8 @@ export default function NewApp() {
   const [ptFile, setPtFile] = useState(null);
   const [modelName, setModelName] = useState('');
   const [classes, setClasses] = useState([]);
+  // 'detector' | 'classifier' -- picked automatically from the .pt when it can be read.
+  const [newModelKind, setNewModelKind] = useState('detector');
   const [analyzing, setAnalyzing] = useState(false);
   const [converting, setConverting] = useState(false);
   const [conversionLog, setConversionLog] = useState('');
@@ -115,6 +117,7 @@ export default function NewApp() {
     try {
       const r = await extractClasses(file);
       if (r.data.classes) setClasses(r.data.classes);
+      setNewModelKind(r.data.task === 'classify' ? 'classifier' : 'detector');
     } catch {
       alert('Could not auto-detect classes.');
     } finally {
@@ -127,7 +130,7 @@ export default function NewApp() {
     setConverting(true);
     setConversionLog('Initializing conversion...\n');
     try {
-      const r = await uploadModel(ptFile, modelName || ptFile.name, classes, 640);
+      const r = await uploadModel(ptFile, modelName || ptFile.name, classes, 640, newModelKind);
       const assetId = r.data.id;
       pollRef.current = setInterval(async () => {
         try {
@@ -141,6 +144,7 @@ export default function NewApp() {
             setPtFile(null);
             setModelName('');
             setClasses([]);
+            setNewModelKind('detector');
             setConversionLog('');
           }
           if (s.data.status === 'error') {
@@ -259,7 +263,18 @@ export default function NewApp() {
                       />
                     </div>
                     <div className="model-preview-field">
-                      <label className="section-label">Detected Classes</label>
+                      <label className="section-label">Model Kind</label>
+                      <select
+                        className="field-input"
+                        value={newModelKind}
+                        onChange={e => setNewModelKind(e.target.value)}
+                      >
+                        <option value="detector">Detector (per-class YOLO)</option>
+                        <option value="classifier">Classifier (YOLO-cls, e.g. locked / unlocked)</option>
+                      </select>
+                    </div>
+                    <div className="model-preview-field">
+                      <label className="section-label">{newModelKind === 'classifier' ? 'Classifier Classes' : 'Detected Classes'}</label>
                       <div className="model-classes-wrap">
                         {classes.map(c => (
                           <span key={c} className="class-chip">{c}</span>

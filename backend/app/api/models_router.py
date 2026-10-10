@@ -81,7 +81,8 @@ def extract_classes_from_file(file: UploadFile = File(...)):
             shutil.copyfileobj(file.file, f)
         
         classes = extract_classes_from_pt(str(temp_path))
-        return {"classes": classes}
+        # "classify" lets the New App screen pre-select model kind "Classifier".
+        return {"classes": classes, "task": model_task_of_pt(str(temp_path))}
     finally:
         if temp_path.exists():
             temp_path.unlink()
