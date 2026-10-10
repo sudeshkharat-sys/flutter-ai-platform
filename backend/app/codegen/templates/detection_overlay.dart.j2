@@ -186,13 +186,22 @@ class _BoundingBoxPainter extends CustomPainter {
         final labelColor = color;
 {% endif %}
 
+        // Region classifier answer (e.g. "→ locked 97%"), green when it is the
+        // configured pass label and red otherwise. Null for every other box.
+        final clsText = result.classifierLabel == null
+            ? ''
+            : ' → ${result.classifierLabel}'
+                '${result.classifierConfidence != null ? ' ${(result.classifierConfidence! * 100).toStringAsFixed(0)}%' : ''}';
+        final Color clsLabelColor = result.isClassifierPass == null
+            ? labelColor
+            : (result.isClassifierPass! ? const Color(0xFF43A047) : const Color(0xFFE53935));
         final textSpan = TextSpan(
-          text: ' $displayLabel ',
+          text: ' $displayLabel$clsText ',
           style: TextStyle(
             color: Colors.white,
             fontSize: 12,
             fontWeight: FontWeight.bold,
-            backgroundColor: labelColor.withOpacity(0.85),
+            backgroundColor: clsLabelColor.withOpacity(0.85),
           ),
         );
         final textPainter = TextPainter(

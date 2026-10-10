@@ -28,6 +28,14 @@ class DetectionResult {
   // Outline of the segmented object (normalized 0-1 image coords), only set
   // by segment-task models; null means draw the plain bbox.
   final List<Offset>? polygon;
+  // Region classifier (e.g. Max_reg -> locked / unlocked), only set for a class
+  // configured with "Classify region". classifierLabel is the winning label, or
+  // 'uncertain' when its confidence is below the class's minimum; isClassifierPass
+  // is true only for the configured pass label at/above that confidence. All three
+  // are null for every other detection, and for history saved before this existed.
+  final String? classifierLabel;
+  final double? classifierConfidence;
+  final bool? isClassifierPass;
 
   const DetectionResult({
     required this.className,
@@ -39,6 +47,9 @@ class DetectionResult {
     this.ocrMlKitText,
     this.ocrCharBoxes,
     this.polygon,
+    this.classifierLabel,
+    this.classifierConfidence,
+    this.isClassifierPass,
   });
 
   DetectionResult copyWith({
@@ -48,6 +59,9 @@ class DetectionResult {
     String? ocrMlKitText,
     List<DetectionResult>? ocrCharBoxes,
     List<Offset>? polygon,
+    String? classifierLabel,
+    double? classifierConfidence,
+    bool? isClassifierPass,
   }) => DetectionResult(
     className: className,
     confidence: confidence,
@@ -58,6 +72,9 @@ class DetectionResult {
     ocrMlKitText: ocrMlKitText ?? this.ocrMlKitText,
     ocrCharBoxes: ocrCharBoxes ?? this.ocrCharBoxes,
     polygon: polygon ?? this.polygon,
+    classifierLabel: classifierLabel ?? this.classifierLabel,
+    classifierConfidence: classifierConfidence ?? this.classifierConfidence,
+    isClassifierPass: isClassifierPass ?? this.isClassifierPass,
   );
 
   Map<String, dynamic> toJson() => {
@@ -75,6 +92,9 @@ class DetectionResult {
     'ocrMlKitText': ocrMlKitText,
     'ocrCharBoxes': ocrCharBoxes?.map((c) => c.toJson()).toList(),
     'polygon': polygon?.map((o) => [o.dx, o.dy]).toList(),
+    'classifierLabel': classifierLabel,
+    'classifierConfidence': classifierConfidence,
+    'isClassifierPass': isClassifierPass,
   };
 
   static DetectionResult fromJson(Map<String, dynamic> json) => DetectionResult(
@@ -98,6 +118,10 @@ class DetectionResult {
     polygon: (json['polygon'] as List?)
         ?.map((p) => Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()))
         .toList(),
+    // Absent in rows saved before the classifier existed.
+    classifierLabel: json['classifierLabel'] as String?,
+    classifierConfidence: (json['classifierConfidence'] as num?)?.toDouble(),
+    isClassifierPass: json['isClassifierPass'] as bool?,
   );
 
   /// Burns [polygon] into [image] as a closed outline (saved / uploaded

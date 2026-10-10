@@ -462,6 +462,63 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
     # don't change behavior on a silent rebuild.
     ctx["ocr_class_use_mlkit_fallback"] = bool(settings.get("ocr_use_mlkit_fallback"))
 
+    # ── Region classifier (YOLO-cls, e.g. Max_reg -> locked / unlocked) ────────
+    # A mandatory class can have "Classify region" ticked in its per-class config
+    # (stored beside the OCR keys in classOcrConfig). Like OCR it is an
+    # all-or-nothing gate: it needs multiclass detection, an attached
+    # model_kind="classifier" asset, and the class marked mandatory. Anything
+    # else omits every classifier code path from the build -- so say why.
+    _classify_anywhere = {
+        cls
+        for entry in models_manifest
+        for cls, cfg in (entry.get("classOcrConfig") or {}).items()
+        if (cfg or {}).get("classifyEnabled")
+    }
+    _classify_on_mandatory = {
+        cls
+        for entry in models_manifest
+        for cls in (entry.get("mandatoryClasses") or [])
+        if (entry.get("classOcrConfig") or {}).get(cls, {}).get("classifyEnabled")
+        and (entry.get("classOcrConfig") or {}).get(cls, {}).get("classifyPassLabel")
+    }
+    _clf_asset = next(
+        (ma for ma in models_list if get_attr(ma, "model_kind", "detector") == "classifier"), None
+    )
+    ctx["classifier_enabled"] = bool(
+        ctx["detection_method"] == "multiclass" and _clf_asset is not None and _classify_on_mandatory
+    )
+    if ctx["classifier_enabled"]:
+        _clf_paths = model_id_to_paths.get(get_attr(_clf_asset, "id"), {})
+        _clf_classes = get_attr(_clf_asset, "classes", []) or []
+        if isinstance(_clf_classes, str):
+            import json as _json_clf  # local alias: a bare `json` is a conditional local in this function
+            _clf_classes = _json_clf.loads(_clf_classes)
+        # Dart single-quoted string literals: escape the quote, backslash and $.
+        ctx["classifier_labels"] = [
+            str(c).replace("\\", "\\\\").replace("'", "\\'").replace("$", "\\$") for c in _clf_classes
+        ]
+        ctx["classifier_tflite"] = _clf_paths.get("tflite")
+        ctx["classifier_input_size"] = int(get_attr(_clf_asset, "input_size", 224) or 224)
+    elif _classify_anywhere:
+        if ctx["detection_method"] != "multiclass":
+            print(
+                "[generator] WARNING: 'Classify region' is set on class(es) "
+                f"{sorted(_classify_anywhere)} but detection_method is "
+                f"'{ctx['detection_method']}', not 'multiclass' -- the classifier has been omitted from this build."
+            )
+        elif _clf_asset is None:
+            print(
+                "[generator] WARNING: 'Classify region' is set on class(es) "
+                f"{sorted(_classify_anywhere)} but no classifier model is attached to this app "
+                "(add one with model kind 'Classifier') -- the classifier has been omitted from this build."
+            )
+        else:
+            print(
+                "[generator] WARNING: 'Classify region' is set on class(es) "
+                f"{sorted(_classify_anywhere)}, but none of them are marked mandatory with a pass label "
+                "-- the classifier has been omitted from this build."
+            )
+
     # Map of zip path -> template name
     files = {
         "pubspec.yaml": "pubspec.yaml.j2",

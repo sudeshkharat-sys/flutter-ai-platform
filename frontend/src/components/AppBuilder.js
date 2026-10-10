@@ -640,13 +640,49 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     (existingApp?.model_asset_ids || []).includes(m.id)
   );
 
+  // A trained classifier (model_kind "classifier", uploaded as a YOLO-cls .pt and
+  // converted like a detector) attached to this app. A mandatory class can then
+  // classify its detected region with it (e.g. Max_reg -> locked / unlocked).
+  const attachedClassifier = models.find(m =>
+    m.model_kind === 'classifier' &&
+    (existingApp?.model_asset_ids || []).includes(m.id)
+  );
+  const classifierLabels = (() => {
+    const raw = attachedClassifier?.classes;
+    if (Array.isArray(raw)) return raw;
+    try { return JSON.parse(raw || '[]'); } catch { return []; }
+  })();
+
+  // Per-class classifier settings live in the same classOcrConfig entry as the OCR
+  // ones (classifyEnabled / classifyPassLabel / classifyMinConf / classifyMargin).
+  const patchClassClassify = (index, cls, patch) => {
+    const newConfigs = [...defaultAIConfigs];
+    const cfg = { ...(newConfigs[index].classOcrConfig || {}) };
+    cfg[cls] = { ocrEnabled: false, ocrTargetText: '', ocrEngine: 'mlkit', ...(cfg[cls] || {}), ...patch };
+    newConfigs[index].classOcrConfig = cfg;
+    setDefaultAIConfigs(newConfigs);
+  };
+  const patchRowClassClassify = (rowIndex, aiIdx, cls, patch) => {
+    const newData = [...reviewData];
+    const cfg = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
+    cfg[cls] = { ocrEnabled: false, ocrTargetText: '', ocrEngine: 'mlkit', ...(cfg[cls] || {}), ...patch };
+    newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = cfg;
+    setReviewData(newData);
+  };
+  const enableClassify = (cfg) => ({
+    classifyEnabled: !cfg?.classifyEnabled,
+    classifyPassLabel: cfg?.classifyPassLabel || classifierLabels[0] || '',
+    classifyMinConf: cfg?.classifyMinConf ?? 0.6,
+    classifyMargin: cfg?.classifyMargin ?? 0.12,
+  });
+
   const handleToggleClassOcr = (index, cls) => {
     const newConfigs = [...defaultAIConfigs];
     const ocr = { ...(newConfigs[index].classOcrConfig || {}) };
     if (ocr[cls]?.ocrEnabled) {
-      ocr[cls] = { ocrEnabled: false, ocrTargetText: '', ocrEngine: ocr[cls]?.ocrEngine || 'mlkit' };
+      ocr[cls] = { ...(ocr[cls] || {}), ocrEnabled: false, ocrTargetText: '', ocrEngine: ocr[cls]?.ocrEngine || 'mlkit' };
     } else {
-      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (attachedOcrRecognizer ? 'crnn' : 'mlkit') };
+      ocr[cls] = { ...(ocr[cls] || {}), ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (attachedOcrRecognizer ? 'crnn' : 'mlkit') };
     }
     newConfigs[index].classOcrConfig = ocr;
     setDefaultAIConfigs(newConfigs);
@@ -784,9 +820,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newData = [...reviewData];
     const ocr = { ...(newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig || {}) };
     if (ocr[cls]?.ocrEnabled) {
-      ocr[cls] = { ocrEnabled: false, ocrTargetText: '', ocrEngine: ocr[cls]?.ocrEngine || 'mlkit' };
+      ocr[cls] = { ...(ocr[cls] || {}), ocrEnabled: false, ocrTargetText: '', ocrEngine: ocr[cls]?.ocrEngine || 'mlkit' };
     } else {
-      ocr[cls] = { ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (attachedOcrRecognizer ? 'crnn' : 'mlkit') };
+      ocr[cls] = { ...(ocr[cls] || {}), ocrEnabled: true, ocrTargetText: ocr[cls]?.ocrTargetText || '', ocrEngine: ocr[cls]?.ocrEngine || (attachedOcrRecognizer ? 'crnn' : 'mlkit') };
     }
     newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = ocr;
     setReviewData(newData);
@@ -1315,6 +1351,42 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                           )}
                                         </div>
                                       )}
+                                      {isMandatory && !isNotOk && (
+                                        <div style={{ marginLeft: 100, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={!!ocrCfg.classifyEnabled}
+                                            disabled={!attachedClassifier}
+                                            onChange={() => patchClassClassify(idx, c, enableClassify(ocrCfg))}
+                                            style={{ width: 13, height: 13, accentColor: '#4caf82', cursor: attachedClassifier ? 'pointer' : 'not-allowed' }}
+                                          />
+                                          <span style={{ fontSize: 11, color: '#4caf82' }}>
+                                            Classify region{attachedClassifier ? ` (${attachedClassifier.vision_project_name})` : ' (attach a classifier model first)'}
+                                          </span>
+                                          {ocrCfg.classifyEnabled && attachedClassifier && (
+                                            <>
+                                              <span style={{ fontSize: 11, color: C.muted }}>pass if</span>
+                                              <select
+                                                style={{ ...miniSelectStyle, fontSize: 11 }}
+                                                value={ocrCfg.classifyPassLabel || ''}
+                                                onChange={e => patchClassClassify(idx, c, { classifyPassLabel: e.target.value })}
+                                              >
+                                                {classifierLabels.map(l => <option key={l} value={l}>{l}</option>)}
+                                              </select>
+                                              <span style={{ fontSize: 11, color: C.muted }}>min conf</span>
+                                              <input type="number" min="0" max="1" step="0.05"
+                                                style={{ ...inputStyle, padding: '3px 6px', fontSize: 11, width: 64 }}
+                                                value={ocrCfg.classifyMinConf ?? 0.6}
+                                                onChange={e => patchClassClassify(idx, c, { classifyMinConf: Math.min(1, Math.max(0, parseFloat(e.target.value) || 0)) })} />
+                                              <span style={{ fontSize: 11, color: C.muted }}>crop margin</span>
+                                              <input type="number" min="0" max="0.5" step="0.02"
+                                                style={{ ...inputStyle, padding: '3px 6px', fontSize: 11, width: 64 }}
+                                                value={ocrCfg.classifyMargin ?? 0.12}
+                                                onChange={e => patchClassClassify(idx, c, { classifyMargin: Math.min(0.5, Math.max(0, parseFloat(e.target.value) || 0)) })} />
+                                            </>
+                                          )}
+                                        </div>
+                                      )}
                                     </div>
                                   );
                                 })}
@@ -1467,6 +1539,42 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                     onChange={e => handleRowClassOcrText(rowIndex, aiIdx, c, e.target.value)}
                                                   />
                                                 )}
+                                              </>
+                                            )}
+                                          </div>
+                                        )}
+                                        {isMandatory && !isNotOk && (
+                                          <div style={{ marginLeft: 70, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                            <input
+                                              type="checkbox"
+                                              checked={!!ocrCfg.classifyEnabled}
+                                              disabled={!attachedClassifier}
+                                              onChange={() => patchRowClassClassify(rowIndex, aiIdx, c, enableClassify(ocrCfg))}
+                                              style={{ width: 13, height: 13, accentColor: '#4caf82', cursor: attachedClassifier ? 'pointer' : 'not-allowed' }}
+                                            />
+                                            <span style={{ fontSize: 11, color: '#4caf82' }}>
+                                              Classify region{attachedClassifier ? ` (${attachedClassifier.vision_project_name})` : ' (attach a classifier model first)'}
+                                            </span>
+                                            {ocrCfg.classifyEnabled && attachedClassifier && (
+                                              <>
+                                                <span style={{ fontSize: 11, color: C.muted }}>pass if</span>
+                                                <select
+                                                  style={{ ...miniSelectStyle, fontSize: 11 }}
+                                                  value={ocrCfg.classifyPassLabel || ''}
+                                                  onChange={e => patchRowClassClassify(rowIndex, aiIdx, c, { classifyPassLabel: e.target.value })}
+                                                >
+                                                  {classifierLabels.map(l => <option key={l} value={l}>{l}</option>)}
+                                                </select>
+                                                <span style={{ fontSize: 11, color: C.muted }}>min conf</span>
+                                                <input type="number" min="0" max="1" step="0.05"
+                                                  style={{ ...inputStyle, padding: '3px 6px', fontSize: 11, width: 64 }}
+                                                  value={ocrCfg.classifyMinConf ?? 0.6}
+                                                  onChange={e => patchRowClassClassify(rowIndex, aiIdx, c, { classifyMinConf: Math.min(1, Math.max(0, parseFloat(e.target.value) || 0)) })} />
+                                                <span style={{ fontSize: 11, color: C.muted }}>crop margin</span>
+                                                <input type="number" min="0" max="0.5" step="0.02"
+                                                  style={{ ...inputStyle, padding: '3px 6px', fontSize: 11, width: 64 }}
+                                                  value={ocrCfg.classifyMargin ?? 0.12}
+                                                  onChange={e => patchRowClassClassify(rowIndex, aiIdx, c, { classifyMargin: Math.min(0.5, Math.max(0, parseFloat(e.target.value) || 0)) })} />
                                               </>
                                             )}
                                           </div>
@@ -1731,6 +1839,7 @@ function ModelModal({ id, appIds, onClose }) {
                   <select style={inputStyle} value={newModelKind} onChange={e => setNewModelKind(e.target.value)}>
                     <option value="detector">Detector (per-class YOLO)</option>
                     <option value="detector_char_only">Class-agnostic char detector (localization only)</option>
+                    <option value="classifier">Classifier (YOLO-cls, e.g. locked / unlocked)</option>
                   </select>
                 </div>
                 <button onClick={startConvert} style={{ width: '100%', padding: 14, borderRadius: 10, background: C.accent, color: '#fff', fontWeight: 800, border: 'none', cursor: 'pointer' }}>Convert & Add</button>

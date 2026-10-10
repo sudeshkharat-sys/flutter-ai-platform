@@ -1,4 +1,7 @@
 import 'dart:io';
+{% if classifier_enabled %}
+import 'dart:math' as math;
+{% endif %}
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -1041,6 +1044,11 @@ class ModelManager {
   void dispose() {
     _interpreter?.close();
     _isLoaded = false;
+{% if classifier_enabled %}
+    _clsInterpreter?.close();
+    _clsInterpreter = null;
+    _clsLoadTried = false;
+{% endif %}
 {% if ocr_use_charonly_detector %}
     _charOnlyInterpreter?.close();
     _charOnlyLoaded = false;
@@ -1162,9 +1170,9 @@ class ModelManager {
       // character boxes found inside this region to build its line crops.
       withOcr.add(await _runOcrOnBbox(det, orientedImage, allDetections: detections{% if ocr_use_charonly_detector %}, charOnlyDetections: charOnlyDetections{% endif %}));
     }
-    return withOcr;
+    return {% if classifier_enabled %}await _applyClassifier(withOcr, orientedImage){% else %}withOcr{% endif %};
 {% else %}
-    return detections;
+    return {% if classifier_enabled %}await _applyClassifier(detections, orientedImage){% else %}detections{% endif %};
 {% endif %}
   }
 
@@ -1200,9 +1208,16 @@ class ModelManager {
     for (final det in detections) {
       withOcr.add(await _runOcrOnBbox(det, decoded, allDetections: detections{% if ocr_use_charonly_detector %}, charOnlyDetections: charOnlyDetections{% endif %}));
     }
-    return withOcr;
+    return {% if classifier_enabled %}await _applyClassifier(withOcr, decoded){% else %}withOcr{% endif %};
+{% else %}
+{% if classifier_enabled %}
+    img.Image? decodedForClassifier = img.decodeImage(bytes);
+    if (decodedForClassifier == null) return detections;
+    decodedForClassifier = img.bakeOrientation(decodedForClassifier);
+    return await _applyClassifier(detections, decodedForClassifier);
 {% else %}
     return detections;
+{% endif %}
 {% endif %}
   }
 
@@ -1771,6 +1786,185 @@ class ModelManager {
     }
     return _applyNMS(results, iouThreshold: 0.45);
   }
+
+{% if classifier_enabled %}
+  // ── Region classifier ──────────────────────────────────────────────────────
+  // A class set to "Classify region" in the app builder (e.g. Max_reg) has its
+  // detected box cut out and run through the attached YOLO-cls model, giving a
+  // label such as locked / unlocked. The crop is made exactly like the trainer's:
+  // the box grown by a margin, then (as Ultralytics does for classification)
+  // the shorter side resized to the model size and centre-cropped, RGB 0-1.
+
+  /// className -> the label that counts as PASS.
+  static const Map<String, String> _classClassifyPass = {
+{% set seen_cls = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.classifyEnabled and cfg.classifyPassLabel and cls not in seen_cls.keys %}{% set seen_cls.keys = seen_cls.keys + [cls] %}
+    '{{ cls }}': '{{ cfg.classifyPassLabel }}',
+{% endif %}{% endfor %}{% endfor %}
+  };
+
+  /// className -> minimum confidence; below it the answer is "uncertain" (a fail).
+  static const Map<String, double> _classClassifyMinConf = {
+{% set seen_cls_c = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.classifyEnabled and cfg.classifyPassLabel and cls not in seen_cls_c.keys %}{% set seen_cls_c.keys = seen_cls_c.keys + [cls] %}
+    '{{ cls }}': {{ (cfg.classifyMinConf if cfg.classifyMinConf is number else 0.6) | float }},
+{% endif %}{% endfor %}{% endfor %}
+  };
+
+  /// className -> crop margin (fraction of the box size added on every side).
+  static const Map<String, double> _classClassifyMargin = {
+{% set seen_cls_m = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.classifyEnabled and cfg.classifyPassLabel and cls not in seen_cls_m.keys %}{% set seen_cls_m.keys = seen_cls_m.keys + [cls] %}
+    '{{ cls }}': {{ (cfg.classifyMargin if cfg.classifyMargin is number else 0.12) | float }},
+{% endif %}{% endfor %}{% endfor %}
+  };
+
+  static const String _classifierAsset = '{{ classifier_tflite }}';
+  static const int _classifierInputSize = {{ classifier_input_size }};
+  /// Output-index order of the classifier (its own class names).
+  static const List<String> _classifierLabels = [
+{% for l in classifier_labels %}    '{{ l }}',
+{% endfor %}  ];
+
+  Interpreter? _clsInterpreter;
+  bool _clsLoadTried = false;
+
+  /// Loads the classifier lazily on first use (no screen needs to know about it).
+  Future<Interpreter?> _ensureClassifier() async {
+    if (_clsInterpreter != null || _clsLoadTried) return _clsInterpreter;
+    _clsLoadTried = true;
+    try {
+      _clsInterpreter = await Interpreter.fromAsset(_classifierAsset);
+      debugPrint('[Classifier] loaded $_classifierAsset (${_classifierLabels.length} labels, input $_classifierInputSize)');
+    } catch (e) {
+      debugPrint('[Classifier] could not load $_classifierAsset: $e');
+    }
+    return _clsInterpreter;
+  }
+
+  /// Classifies the best (highest-confidence) box of every configured class.
+  /// Other boxes, and every box of an unconfigured class, come back unchanged.
+  Future<List<DetectionResult>> _applyClassifier(List<DetectionResult> dets, img.Image source) async {
+    if (dets.isEmpty || _classClassifyPass.isEmpty) return dets;
+    final interp = await _ensureClassifier();
+    if (interp == null) return dets;
+
+    final Map<String, int> bestIdx = {};
+    for (int i = 0; i < dets.length; i++) {
+      final cn = dets[i].className;
+      if (!_classClassifyPass.containsKey(cn)) continue;
+      if (!bestIdx.containsKey(cn) || dets[i].confidence > dets[bestIdx[cn]!].confidence) bestIdx[cn] = i;
+    }
+    final out = List<DetectionResult>.from(dets);
+    for (final e in bestIdx.entries) {
+      out[e.value] = await _classifyRegion(dets[e.value], source, interp);
+    }
+    return out;
+  }
+
+  Future<DetectionResult> _classifyRegion(DetectionResult det, img.Image source, Interpreter interp) async {
+    final String passLabel = _classClassifyPass[det.className]!;
+    final double minConf = _classClassifyMinConf[det.className] ?? 0.6;
+    final double margin = _classClassifyMargin[det.className] ?? 0.12;
+
+    // Same window as the trainer's crop_region: box grown by margin * its own size.
+    final double bw = det.bbox.width * source.width;
+    final double bh = det.bbox.height * source.height;
+    final int x1 = (det.bbox.left * source.width - bw * margin).round().clamp(0, source.width - 1);
+    final int y1 = (det.bbox.top * source.height - bh * margin).round().clamp(0, source.height - 1);
+    final int x2 = (det.bbox.right * source.width + bw * margin).round().clamp(x1 + 1, source.width);
+    final int y2 = (det.bbox.bottom * source.height + bh * margin).round().clamp(y1 + 1, source.height);
+    final crop = img.copyCrop(source, x: x1, y: y1, width: x2 - x1, height: y2 - y1);
+
+    try {
+      final probs = await compute(_runClassifierIsolate, {
+        'cropPngBytes': Uint8List.fromList(img.encodePng(crop)),
+        'interpreter_address': interp.address,
+        'inputSize': _classifierInputSize,
+      });
+      if (probs == null || probs.isEmpty) return det;
+      int best = 0;
+      for (int i = 1; i < probs.length; i++) {
+        if (probs[i] > probs[best]) best = i;
+      }
+      final String label = best < _classifierLabels.length ? _classifierLabels[best] : 'unknown (id:$best)';
+      final double conf = probs[best];
+      final bool confident = conf >= minConf;
+      debugPrint('[Classifier] ${det.className}: $label ${(conf * 100).toStringAsFixed(1)}% (min ${(minConf * 100).toStringAsFixed(0)}%)');
+      return det.copyWith(
+        classifierLabel: confident ? label : 'uncertain',
+        classifierConfidence: conf,
+        isClassifierPass: confident && label == passLabel,
+      );
+    } catch (e) {
+      debugPrint('[Classifier] inference failed: $e');
+      return det;
+    }
+  }
+
+  /// Isolate entry-point: Ultralytics classification preprocessing (shorter side
+  /// -> size, centre crop, RGB 0-1) + one interpreter.run(). Returns class
+  /// probabilities, or null on an input-shape mismatch (checked first so a wrong
+  /// model can't hard-abort the app inside the native layer).
+  static List<double>? _runClassifierIsolate(Map<String, dynamic> args) {
+    final Uint8List cropPngBytes = args['cropPngBytes'] as Uint8List;
+    final int interpreterAddress = args['interpreter_address'] as int;
+    final int size = args['inputSize'] as int;
+
+    final crop = img.decodePng(cropPngBytes);
+    if (crop == null) return null;
+    final interpreter = Interpreter.fromAddress(interpreterAddress);
+
+    final inShape = interpreter.getInputTensor(0).shape; // [1, size, size, 3]
+    if (inShape.length != 4 || inShape[1] != size || inShape[2] != size || inShape[3] != 3) {
+      debugPrint('[Classifier] input shape mismatch: model expects $inShape, app feeds [1, $size, $size, 3]');
+      return null;
+    }
+
+    final double scale = size / (crop.width < crop.height ? crop.width : crop.height);
+    final int rw = (crop.width * scale).round() < size ? size : (crop.width * scale).round();
+    final int rh = (crop.height * scale).round() < size ? size : (crop.height * scale).round();
+    final resized = img.copyResize(crop, width: rw, height: rh, interpolation: img.Interpolation.linear);
+    final int left = ((rw - size) / 2).floor();
+    final int top = ((rh - size) / 2).floor();
+
+    final buffer = Float32List(size * size * 3);
+    int idx = 0;
+    for (int y = 0; y < size; y++) {
+      for (int x = 0; x < size; x++) {
+        final p = resized.getPixel(left + x, top + y);
+        buffer[idx++] = p.r.toDouble() / 255.0;
+        buffer[idx++] = p.g.toDouble() / 255.0;
+        buffer[idx++] = p.b.toDouble() / 255.0;
+      }
+    }
+
+    final outShape = interpreter.getOutputTensor(0).shape; // [1, numClasses]
+    if (outShape.length != 2) return null;
+    final output = List.generate(outShape[0], (_) => List.filled(outShape[1], 0.0));
+    interpreter.run(buffer.reshape([1, size, size, 3]), output);
+
+    final raw = List<double>.from(output[0]);
+    // The export already ends in a softmax; apply one only if these aren't probabilities.
+    double sum = 0;
+    bool negative = false;
+    for (final v in raw) {
+      sum += v;
+      if (v < 0) negative = true;
+    }
+    if (negative || (sum - 1.0).abs() > 0.05) {
+      double m = raw[0];
+      for (final v in raw) {
+        if (v > m) m = v;
+      }
+      double total = 0;
+      final exps = raw.map((v) {
+        final e = math.exp(v - m);
+        total += e;
+        return e;
+      }).toList();
+      return exps.map((e) => e / total).toList();
+    }
+    return raw;
+  }
+{% endif %}
 
   // Non-Max Suppression: removes duplicate overlapping boxes, keeps highest confidence per object
   static List<DetectionResult> _applyNMS(List<DetectionResult> detections, {double iouThreshold = 0.45}) {

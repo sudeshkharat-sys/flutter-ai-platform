@@ -256,6 +256,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
     if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return false;
     if (!mandatory.values.every((r) => r != null)) return false;
+    // A class set to "Classify region" must come back as its pass label (e.g. locked).
+    // isClassifierPass is null when no classifier ran for it, which stays passing.
+    if (mandatory.values.any((r) => r != null && r.isClassifierPass == false)) return false;
     return true;
   }
 

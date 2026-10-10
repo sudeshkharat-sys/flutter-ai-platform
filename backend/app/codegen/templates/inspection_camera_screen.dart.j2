@@ -281,6 +281,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     // no target configured (read-and-record only), which stays passing.
     if (mandatory.values.any((r) => r != null && r.isOcrMatch == false)) return false;
 {% endif %}
+    // A class set to "Classify region" must come back as its pass label (e.g. locked).
+    // isClassifierPass is null when no classifier ran for it, which stays passing.
+    if (mandatory.values.any((r) => r != null && r.isClassifierPass == false)) return false;
     return true;
   }
 

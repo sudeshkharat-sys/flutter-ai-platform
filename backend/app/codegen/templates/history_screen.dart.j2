@@ -840,6 +840,20 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                   style: const TextStyle(
                                       fontSize: 11, color: Colors.blueGrey),
                                 ),
+                                // Region classifier answer saved with the scan (e.g. Max_reg: locked 97% ✓).
+                                ...detections
+                                    .where((d) => d.classifierLabel != null)
+                                    .map((d) => Text(
+                                          '${d.className}: ${d.classifierLabel}'
+                                          '${d.classifierConfidence != null ? ' ${(d.classifierConfidence! * 100).toStringAsFixed(0)}%' : ''}'
+                                          '${d.isClassifierPass == true ? ' ✓' : d.isClassifierPass == false ? ' ✗' : ''}',
+                                          style: TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600,
+                                              color: d.isClassifierPass == true
+                                                  ? Colors.green
+                                                  : Colors.red),
+                                        )),
                               ],
                             ),
                           ),

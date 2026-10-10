@@ -43,6 +43,30 @@ def extract_classes_from_pt(pt_path: str) -> list[str]:
         print(f"Error extracting classes: {e}")
     return []
 
+def extract_imgsz_from_pt(pt_path: str) -> int | None:
+    """Training image size recorded in a checkpoint (what a classifier was
+    trained at and must be fed at), or None when it isn't stored."""
+    from ultralytics import YOLO
+    try:
+        v = (getattr(YOLO(pt_path), "overrides", None) or {}).get("imgsz")
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else None
+        return int(v) if v else None
+    except Exception as e:
+        print(f"Error reading imgsz: {e}")
+        return None
+
+
+def model_task_of_pt(pt_path: str) -> str | None:
+    """'detect' / 'segment' / 'classify' ... of a checkpoint, or None."""
+    from ultralytics import YOLO
+    try:
+        return getattr(YOLO(pt_path), "task", None)
+    except Exception as e:
+        print(f"Error reading task: {e}")
+        return None
+
+
 @router.post("/extract-classes")
 def extract_classes_from_file(file: UploadFile = File(...)):
     """Temporary upload to just extract classes from a .pt file."""
@@ -106,8 +130,8 @@ def upload_model(
 ):
     if not file.filename.endswith(".pt"):
         raise HTTPException(status_code=422, detail="Only .pt model files are supported.")
-    if model_kind not in ("detector", "detector_char_only"):
-        raise HTTPException(status_code=422, detail="model_kind must be one of: detector, detector_char_only")
+    if model_kind not in ("detector", "detector_char_only", "classifier"):
+        raise HTTPException(status_code=422, detail="model_kind must be one of: detector, detector_char_only, classifier")
 
     class_list = []
     if classes:
@@ -123,6 +147,20 @@ def upload_model(
 
     with open(pt_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
+
+    task = model_task_of_pt(str(pt_path))
+    if model_kind == "classifier":
+        if task != "classify":
+            shutil.rmtree(model_dir, ignore_errors=True)
+            raise HTTPException(status_code=422, detail=f"This is a '{task}' model, not a classifier. Upload the classifier_best.pt downloaded from ai-vision-platform (Models > Classifier).")
+        # A classifier has to be fed at the size it was trained at; the app
+        # builder has no field for it, so read it from the checkpoint.
+        input_size = extract_imgsz_from_pt(str(pt_path)) or 224
+        # The classes must be the model's own, in output-index order.
+        class_list = extract_classes_from_pt(str(pt_path)) or class_list
+    elif task == "classify":
+        shutil.rmtree(model_dir, ignore_errors=True)
+        raise HTTPException(status_code=422, detail="This is a classifier model. Choose model kind 'Classifier'.")
 
     if not class_list:
         class_list = extract_classes_from_pt(str(pt_path))
