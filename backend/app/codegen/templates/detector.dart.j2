@@ -1899,10 +1899,12 @@ class ModelManager {
     final double conf = probs[best];
     final bool confident = conf >= minConf;
     debugPrint('[Classifier] ${det.className}: $label ${(conf * 100).toStringAsFixed(1)}% (min ${(minConf * 100).toStringAsFixed(0)}%)');
+    // isClassifierPass: true = confidently the pass label, false = confidently some other
+    // state, null = unsure (below the class's minimum confidence) -- neither pass nor fail.
     return det.copyWith(
       classifierLabel: confident ? label : 'uncertain',
       classifierConfidence: conf,
-      isClassifierPass: confident && label == passLabel,
+      isClassifierPass: confident ? label == passLabel : null,
     );
   }
 

@@ -142,6 +142,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // above 1 stays a one-line way to bring steadiness back if 1 turns out
   // to trigger on partial/fluke frames in practice.
   static const int _holdTarget = 1;
+  // Region classifier: decide on agreement, not on one frame. OK needs this many
+  // consecutive confident "expected" ticks; NOT OK needs this many consecutive
+  // confident "wrong state" ticks. Unsure ('uncertain') ticks count for neither.
+  static const int _clsPassTarget = 2;
+  static const int _clsFailTarget = 3;
+  int _clsFailHoldWatch = 0;   // sequential-watch counterpart of _taskClsFailHold
   static const double _watchConfidenceThreshold = 0.55;
   static const Duration _watchInterval = Duration(milliseconds: 100);
   static const Duration _watchTimeout = Duration(seconds: 45);
@@ -260,9 +266,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
     if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return false;
     if (!mandatory.values.every((r) => r != null)) return false;
-    // A class set to "Classify region" must come back as its pass label (e.g. locked).
-    // isClassifierPass is null when no classifier ran for it, which stays passing.
-    if (mandatory.values.any((r) => r != null && r.isClassifierPass == false)) return false;
+    // A class set to "Classify region" must come back CONFIDENTLY as its pass label (e.g.
+    // locked): a different label, or an unsure ('uncertain') answer, both fail. Classifier
+    // not run for the class (classifierLabel == null) stays passing.
+    if (mandatory.values.any((r) => r != null && r.classifierLabel != null && r.isClassifierPass != true)) return false;
     return true;
   }
 
@@ -279,7 +286,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
     if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return true;
     // The region classifier answered, and it is not the expected state (e.g. unlocked).
-    return allDetections.any((d) => d.isClassifierPass == false);
+    return allDetections.any((d) => d.isClassifierPass == false || d.classifierLabel == 'uncertain');
+  }
+
+  /// Does this task have "Classify region" on for one of its mandatory classes?
+  bool _taskUsesClassifier(dynamic task) {
+    final cfgs = (task['classOcrConfig'] as Map?) ?? const {};
+    final mandatory = List<String>.from(task['mandatoryClasses'] ?? []);
+    return mandatory.any((c) => (cfgs[c] as Map?)?['classifyEnabled'] == true);
   }
 
   /// True when a mandatory class of [task] was found on this tick and its region
@@ -860,16 +874,20 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         for (var i = 0; i < widget.tasks.length; i++) {
           if (_taskStatus[i] != 'pending') continue;
           final tickPass = _simTaskPasses(widget.tasks[i], confident);
+          final bool usesCls = _taskUsesClassifier(widget.tasks[i]);
           if (tickPass) {
             _taskClsFailHold[i] = 0;
             _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) + 1;
-            if (_taskHoldCount[i]! >= _holdTarget) matchedTaskIndices.add(i);
+            if (_taskHoldCount[i]! >= (usesCls ? _clsPassTarget : _holdTarget)) matchedTaskIndices.add(i);
           } else if (_simTaskClassifierFails(widget.tasks[i], confident)) {
-            // Region found, classifier sure it is the wrong state: hold the same
-            // number of ticks, then capture it as NOT OK.
+            // Region found, classifier confident it is the wrong state: needs
+            // _clsFailTarget agreeing ticks in a row, then it is captured as NOT OK.
+            _taskHoldCount[i] = 0;
             _taskClsFailHold[i] = (_taskClsFailHold[i] ?? 0) + 1;
-            if (_taskClsFailHold[i]! >= _holdTarget) matchedTaskIndices.add(i);
-          } else if ((_taskHoldCount[i] ?? 0) != 0) {
+            if (_taskClsFailHold[i]! >= _clsFailTarget) matchedTaskIndices.add(i);
+          } else if ((_taskHoldCount[i] ?? 0) != 0 || (_taskClsFailHold[i] ?? 0) != 0) {
+            _taskClsFailHold[i] = 0;   // an unsure / missed tick breaks a run of wrong-state ticks
+            if ((_taskHoldCount[i] ?? 0) == 0) continue;
             // Decrement instead of a hard reset to 0 -- on an assembly line
             // the part doesn't move, so a miss here is almost always sensor
             // noise/motion-blur on a single frame, not a genuinely different
@@ -1077,17 +1095,35 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         final bool tickPass = _allMandatoryPassed(tickMandatory, confidentDetections, failClasses, ignoredClasses);
 
         if (!mounted || !_watchActive) return;
+        final bool usesCls = _taskUsesClassifier(currentTask);
+        final int passNeeded = usesCls ? _clsPassTarget : _holdTarget;
+        final bool tickClsFail = !tickPass && _simTaskClassifierFails(currentTask, confidentDetections);
         if (tickPass) {
+          _clsFailHoldWatch = 0;
           setState(() => _holdCount++);
-          _addLog("Live watch: all mandatory classes seen (${_holdCount}/${_holdTarget})");
-          if (_holdCount >= _holdTarget) {
+          _addLog("Live watch: all mandatory classes seen (${_holdCount}/$passNeeded)");
+          if (_holdCount >= passNeeded) {
             _watchActive = false;
             setState(() => _holdCount = 0);
             _addLog('Live watch: target seen -- capturing this frame');
             await _handleCapture(frame: frame, tickDetections: _lastTickConfident);
             return;
           }
+        } else if (tickClsFail) {
+          // Region found and the classifier is confident it is the wrong state (e.g.
+          // unlocked): needs _clsFailTarget agreeing ticks in a row, then NOT OK.
+          _clsFailHoldWatch++;
+          setState(() => _holdCount = 0);
+          _addLog("Live watch: classifier says wrong state (${_clsFailHoldWatch}/$_clsFailTarget)");
+          if (_clsFailHoldWatch >= _clsFailTarget) {
+            _watchActive = false;
+            _clsFailHoldWatch = 0;
+            _addLog('Live watch: wrong state confirmed -- capturing this frame as NOT OK');
+            await _handleCapture(frame: frame, tickDetections: _lastTickConfident);
+            return;
+          }
         } else if (_holdCount != 0) {
+          _clsFailHoldWatch = 0;
           // Decrement instead of a hard reset -- see the simultaneous-mode
           // loop's identical comment: on a stationary assembly-line part, a
           // single missed tick is almost always noise, and a full reset
@@ -1095,6 +1131,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // capture than the nominal hold target implies.
           setState(() => _holdCount--);
         } else {
+          _clsFailHoldWatch = 0;   // an unsure / missed tick breaks a run of wrong-state ticks
           // Force a rebuild even with nothing else changing, so the
           // on-screen countdown keeps ticking down.
           setState(() {});

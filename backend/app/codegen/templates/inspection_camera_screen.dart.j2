@@ -282,9 +282,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     // no target configured (read-and-record only), which stays passing.
     if (mandatory.values.any((r) => r != null && r.isOcrMatch == false)) return false;
 {% endif %}
-    // A class set to "Classify region" must come back as its pass label (e.g. locked).
-    // isClassifierPass is null when no classifier ran for it, which stays passing.
-    if (mandatory.values.any((r) => r != null && r.isClassifierPass == false)) return false;
+    // A class set to "Classify region" must come back CONFIDENTLY as its pass label (e.g.
+    // locked): a different label, or an unsure ('uncertain') answer, both fail. Classifier
+    // not run for the class (classifierLabel == null) stays passing.
+    if (mandatory.values.any((r) => r != null && r.classifierLabel != null && r.isClassifierPass != true)) return false;
     return true;
   }
 
@@ -301,7 +302,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     final failNamesLower = failClasses.map((c) => c.toLowerCase().trim()).toSet();
     if (allDetections.any((d) => failNamesLower.contains(d.className.toLowerCase().trim()))) return true;
     // The region classifier answered, and it is not the expected state (e.g. unlocked).
-    return allDetections.any((d) => d.isClassifierPass == false);
+    return allDetections.any((d) => d.isClassifierPass == false || d.classifierLabel == 'uncertain');
   }
 
   Future<void> _loadCurrentModel() async {
@@ -1077,7 +1078,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                       .toList();
                                   if (ocrFailed.isNotEmpty) return 'Text did not match on: ${ocrFailed.join(', ')}';
                                   final clsFailed = _mandatoryClassResults.entries
-                                      .where((e) => e.value?.isClassifierPass == false)
+                                      .where((e) => e.value?.classifierLabel != null && e.value?.isClassifierPass != true)
                                       .map((e) => '${e.key} (${e.value?.classifierLabel})')
                                       .toList();
                                   if (clsFailed.isNotEmpty) return 'Classifier result is not the expected one: ${clsFailed.join(', ')}';
@@ -1314,7 +1315,9 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                             ? 'Classifier: not run'
                                                             : (clsPass == true
                                                                 ? 'OK -- matches expected'
-                                                                : 'NOT OK -- does not match expected'),
+                                                                : (clsLabel == 'uncertain'
+                                                                    ? 'NOT OK -- classifier unsure (below min confidence)'
+                                                                    : 'NOT OK -- does not match expected')),
                                                     style: TextStyle(
                                                       fontSize: 12,
                                                       fontWeight: FontWeight.bold,

@@ -30,9 +30,10 @@ class DetectionResult {
   final List<Offset>? polygon;
   // Region classifier (e.g. Max_reg -> locked / unlocked), only set for a class
   // configured with "Classify region". classifierLabel is the winning label, or
-  // 'uncertain' when its confidence is below the class's minimum; isClassifierPass
-  // is true only for the configured pass label at/above that confidence. All three
-  // are null for every other detection, and for history saved before this existed.
+  // 'uncertain' when its confidence is below the class's minimum. isClassifierPass is
+  // true for the configured pass label at/above that confidence, false for any other
+  // confident label, and null when unsure ('uncertain') or when no classifier ran.
+  // All three are null for every other detection, and for history saved before this existed.
   final String? classifierLabel;
   final double? classifierConfidence;
   final bool? isClassifierPass;
