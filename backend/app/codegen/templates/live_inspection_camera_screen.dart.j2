@@ -2149,9 +2149,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                               const SizedBox(height: 10),
                               ..._mandatoryClassResults.entries.map((entry) {
                                 final detected = entry.value != null;
+                                final String? clsLabel = entry.value?.classifierLabel;
+                                final double? clsConf = entry.value?.classifierConfidence;
+                                final bool? clsPass = entry.value?.isClassifierPass;
                                 return Padding(
                                   padding: const EdgeInsets.only(bottom: 6),
-                                  child: Row(children: [
+                                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                    Row(children: [
                                     Icon(
                                       detected ? Icons.check_circle : Icons.cancel,
                                       color: detected ? Colors.green : Colors.red,
@@ -2175,6 +2179,22 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                     if (!detected)
                                       const Text('NOT FOUND',
                                           style: TextStyle(color: Colors.red, fontSize: 11, fontWeight: FontWeight.bold)),
+                                    ]),
+                                    // Region classifier answer (e.g. locked 97%), when this class has one.
+                                    if (detected && clsLabel != null)
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 24, top: 2),
+                                        child: Text(
+                                          'PREDICTED: $clsLabel${clsConf != null ? '  ${(clsConf * 100).toStringAsFixed(0)}%' : ''}'
+                                          '${clsPass == true ? '  OK' : clsPass == false ? '  NOT OK' : ''}',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.bold,
+                                            fontFamily: 'monospace',
+                                            color: clsPass == true ? Colors.greenAccent : Colors.orangeAccent,
+                                          ),
+                                        ),
+                                      ),
                                   ]),
                                 );
                               }),

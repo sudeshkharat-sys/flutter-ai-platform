@@ -546,7 +546,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         mandatoryResults[mc] = matches.isNotEmpty
             ? (matches.toList()..sort((a, b) => b.confidence.compareTo(a.confidence))).first
             : null;
-        _addLog("  [$mc] → ${mandatoryResults[mc]?.className ?? 'NOT FOUND'} | ocrText=${mandatoryResults[mc]?.ocrText} | ocrMatch=${mandatoryResults[mc]?.isOcrMatch}");
+        _addLog("  [$mc] → ${mandatoryResults[mc]?.className ?? 'NOT FOUND'} | ocrText=${mandatoryResults[mc]?.ocrText} | ocrMatch=${mandatoryResults[mc]?.isOcrMatch} | classifier=${mandatoryResults[mc]?.classifierLabel} ${mandatoryResults[mc]?.classifierConfidence} pass=${mandatoryResults[mc]?.isClassifierPass}");
       }
 
       // For each fail class, check if it was detected
@@ -1039,6 +1039,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                       .map((e) => e.key)
                                       .toList();
                                   if (ocrFailed.isNotEmpty) return 'Text did not match on: ${ocrFailed.join(', ')}';
+                                  final clsFailed = _mandatoryClassResults.entries
+                                      .where((e) => e.value?.isClassifierPass == false)
+                                      .map((e) => '${e.key} (${e.value?.classifierLabel})')
+                                      .toList();
+                                  if (clsFailed.isNotEmpty) return 'Classifier result is not the expected one: ${clsFailed.join(', ')}';
                                   return 'Check failed';
                                 }(),
                                 style: TextStyle(
@@ -1056,6 +1061,13 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                 final ocrMlKit = entry.value?.ocrMlKitText;
                                 final ocrCfg = (currentTask['classOcrConfig'] as Map<String, dynamic>? ?? {})[entry.key] as Map<String, dynamic>?;
                                 final hasOcr = ocrCfg != null && ocrCfg['ocrEnabled'] == true;
+                                // Region classifier ("Classify region"): same PREDICTED / expected
+                                // layout as OCR below. Config lives beside the OCR keys.
+                                final bool hasClassify = ocrCfg != null && ocrCfg['classifyEnabled'] == true;
+                                final String? clsLabel = entry.value?.classifierLabel;
+                                final double? clsConf = entry.value?.classifierConfidence;
+                                final bool? clsPass = entry.value?.isClassifierPass;
+                                final String clsExpected = (ocrCfg?['classifyPassLabel'] as String? ?? '');
                                 // What this class's OCR is actually being checked against --
                                 // shown alongside the read text so a mismatch can be verified
                                 // by eye on this screen instead of digging through the debug
@@ -1192,6 +1204,91 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                   const SizedBox(height: 2),
                                                   Text(
                                                     'TRUTH: $ocrTruth',
+                                                    style: const TextStyle(
+                                                      fontSize: 15,
+                                                      fontWeight: FontWeight.bold,
+                                                      fontFamily: 'monospace',
+                                                      letterSpacing: 1.2,
+                                                      color: Colors.lightGreenAccent,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      if (hasClassify)
+                                        Padding(
+                                          padding: const EdgeInsets.only(left: 24, top: 3),
+                                          child: Container(
+                                            width: double.infinity,
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: !detected
+                                                  ? Colors.red.withOpacity(0.15)
+                                                  : clsPass == true
+                                                      ? Colors.green.withOpacity(0.2)
+                                                      : Colors.orange.withOpacity(0.2),
+                                              borderRadius: BorderRadius.circular(4),
+                                              border: Border.all(
+                                                  color: !detected
+                                                      ? Colors.red
+                                                      : clsPass == true
+                                                          ? Colors.greenAccent
+                                                          : Colors.orangeAccent,
+                                                  width: 0.5),
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                if (detected)
+                                                  Container(
+                                                    width: double.infinity,
+                                                    margin: const EdgeInsets.only(bottom: 6),
+                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.black.withOpacity(0.55),
+                                                      borderRadius: BorderRadius.circular(4),
+                                                    ),
+                                                    child: Text(
+                                                      clsLabel != null
+                                                          ? 'PREDICTED: $clsLabel${clsConf != null ? '  ${(clsConf * 100).toStringAsFixed(0)}%' : ''}'
+                                                          : 'PREDICTED: (classifier did not run -- check the app build log / model)',
+                                                      style: TextStyle(
+                                                        fontSize: 17,
+                                                        fontWeight: FontWeight.bold,
+                                                        fontFamily: 'monospace',
+                                                        letterSpacing: 1.2,
+                                                        color: clsLabel != null ? Colors.amberAccent : Colors.orangeAccent,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                Row(children: [
+                                                  Icon(
+                                                    !detected ? Icons.error_outline : clsPass == true ? Icons.check : Icons.warning_amber,
+                                                    size: 13,
+                                                    color: !detected ? Colors.red : clsPass == true ? Colors.greenAccent : Colors.orangeAccent,
+                                                  ),
+                                                  const SizedBox(width: 4),
+                                                  Text(
+                                                    !detected
+                                                        ? 'Classifier: region not detected'
+                                                        : clsLabel == null
+                                                            ? 'Classifier: not run'
+                                                            : (clsPass == true
+                                                                ? 'OK -- matches expected'
+                                                                : 'NOT OK -- does not match expected'),
+                                                    style: TextStyle(
+                                                      fontSize: 12,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: !detected ? Colors.red : clsPass == true ? Colors.greenAccent : Colors.orangeAccent,
+                                                    ),
+                                                  ),
+                                                ]),
+                                                if (detected && clsExpected.isNotEmpty) ...[
+                                                  const SizedBox(height: 2),
+                                                  Text(
+                                                    'EXPECTED: $clsExpected',
                                                     style: const TextStyle(
                                                       fontSize: 15,
                                                       fontWeight: FontWeight.bold,
