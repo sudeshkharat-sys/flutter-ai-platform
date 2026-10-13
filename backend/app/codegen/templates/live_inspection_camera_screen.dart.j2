@@ -147,11 +147,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   static const int _holdTarget = 1;
   // Region classifier: decide on agreement, but fast. Every tick that sees the region
   // with a confident classifier answer is ONE VOTE (OK or wrong state); the first side
-  // to reach _clsVotesNeeded wins, so it takes 2 frames when they agree and at most 3
-  // when they don't. Votes are never reset: a shaky frame, an unsure answer or a frame
+  // to reach _clsVotesNeeded wins. Now 1: the first confident frame decides (fastest; raise
+  // to 2 if single-frame false results show up on site). Votes are never reset: a shaky frame, an unsure answer or a frame
   // where the region isn't found simply casts no vote. An OK vote must be at least
   // _clsOkVoteConf sure (stricter than the class minimum) -- a false OK is the costly error.
-  static const int _clsVotesNeeded = 2;
+  static const int _clsVotesNeeded = 1;
   static const double _clsOkVoteConf = 0.75;
   int _okVotesWatch = 0;     // sequential-watch votes
   int _badVotesWatch = 0;

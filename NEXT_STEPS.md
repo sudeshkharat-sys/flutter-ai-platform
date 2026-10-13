@@ -17,7 +17,7 @@ Hands are in the bonnet (shake, dark, can't watch the screen), so decisions must
   from the library and attached on save.
 - Result panel shows PREDICTED / EXPECTED / status like OCR; label drawn on the box; saved in history + sync.
 - Classifier runs in photo mode and in live mode (inside the tick isolate).
-- Live decision by **votes**: first side to 2 votes wins (<= 3 frames); votes never reset; unsure / region-not-found
+- Live decision by **votes**: first side to `_clsVotesNeeded` (now 1) votes wins; votes never reset; unsure / region-not-found
   frames cast no vote; an OK vote needs classifier confidence >= 0.75. Constants `_clsVotesNeeded`, `_clsOkVoteConf`
   in `live_inspection_camera_screen.dart.j2`.
 - Torch: single tap = this task only; double tap = always on for VIN scan + photo + live (session only).
