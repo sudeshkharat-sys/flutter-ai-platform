@@ -145,17 +145,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // above 1 stays a one-line way to bring steadiness back if 1 turns out
   // to trigger on partial/fluke frames in practice.
   static const int _holdTarget = 1;
-  // Region classifier: decide on agreement, but fast. Every tick that sees the region
-  // with a confident classifier answer is ONE VOTE (OK or wrong state); the first side
-  // to reach _clsVotesNeeded wins. Now 1: the first confident frame decides (fastest; raise
-  // to 2 if single-frame false results show up on site). Votes are never reset: a shaky frame, an unsure answer or a frame
-  // where the region isn't found simply casts no vote. An OK vote must be at least
-  // _clsOkVoteConf sure (stricter than the class minimum) -- a false OK is the costly error.
-  static const int _clsVotesNeeded = 1;
-  static const double _clsOkVoteConf = 0.75;
-  int _okVotesWatch = 0;     // sequential-watch votes
-  int _badVotesWatch = 0;
-  static const double _watchConfidenceThreshold = 0.55;
+  // No voting (classifier or detector): the first tick that gives a confident answer decides.
+  // Everything uses one 50% threshold. Add voting back after on-site testing if needed.
+  int _tickCount = 0;
+  DateTime? _fpsWindowStart;
+  int _fpsWindowTicks = 0;
+  double _fps = 0;
+  static const double _watchConfidenceThreshold = 0.5;
   static const Duration _watchInterval = Duration(milliseconds: 100);
   static const Duration _watchTimeout = Duration(seconds: 45);
   DateTime? _watchDeadline;
@@ -207,8 +203,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   final Map<int, String> _taskStatus = {}; // 'pending' | 'found' | 'notFound'
   final Map<int, int> _taskHoldCount = {};
   // Region-classifier votes per task (simultaneous mode): confident OK / wrong-state ticks.
-  final Map<int, int> _taskOkVotes = {};
-  final Map<int, int> _taskBadVotes = {};
   List<DetectionResult> _liveTickDetections = [];
 
   @override
@@ -223,8 +217,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     for (var i = 0; i < widget.tasks.length; i++) {
       _taskStatus[i] = 'pending';
       _taskHoldCount[i] = 0;
-      _taskOkVotes[i] = 0;
-      _taskBadVotes[i] = 0;
     }
     _initializeCamera();
     if (_simultaneousMode) {
@@ -233,6 +225,23 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _loadCurrentModel();
     }
     _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
+  }
+
+  /// One-line timing/FPS summary of the last tick: ms per stage, frame size, rolling FPS.
+  String _tickTiming(int totalMs) {
+    final now = DateTime.now();
+    _fpsWindowStart ??= now;
+    _fpsWindowTicks++;
+    _tickCount++;
+    final double secs = now.difference(_fpsWindowStart!).inMilliseconds / 1000.0;
+    if (secs >= 2.0) {
+      _fps = _fpsWindowTicks / secs;
+      _fpsWindowStart = now;
+      _fpsWindowTicks = 0;
+    }
+    final t = ModelManager().lastTickTimings;
+    return '#$_tickCount total ${totalMs}ms (decode ${t['decode'] ?? 0} / detect ${t['detect'] ?? 0} / classify ${t['classify'] ?? 0}) '
+        'frame ${t['w'] ?? '?'}x${t['h'] ?? '?'} | ${_fps.toStringAsFixed(1)} FPS';
   }
 
   void _addLog(String msg) {
@@ -299,7 +308,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   }
 
   /// This tick's classifier vote for [task]: +1 = OK (everything passes and the classifier is
-  /// at least [_clsOkVoteConf] sure of the pass label), -1 = confidently the wrong state,
+  /// at least [_watchConfidenceThreshold] sure of the pass label), -1 = confidently the wrong state,
   /// 0 = no vote (region not found, unsure, or an OK that is not sure enough).
   int _clsTickVote(dynamic task, List<DetectionResult> confident, bool tickPass) {
     if (tickPass) {
@@ -308,7 +317,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       final bool weak = confident.any((d) =>
           names.contains(d.className.toLowerCase().trim()) &&
           d.classifierLabel != null &&
-          (d.classifierConfidence ?? 0) < _clsOkVoteConf);
+          (d.classifierConfidence ?? 0) < _watchConfidenceThreshold);
       return weak ? 0 : 1;
     }
     return _simTaskClassifierFails(task, confident) ? -1 : 0;
@@ -759,8 +768,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (_watchActive) return;
     _watchActive = true;
     _holdCount = 0;
-    _okVotesWatch = 0;
-    _badVotesWatch = 0;
     _consecutiveNullFrameTicks = 0;
     _watchDeadline = DateTime.now().add(_watchTimeout);
     _lastTickFrame = null;
@@ -883,7 +890,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         final detections = await ModelManager().predictFrame(_framePayload(frame));
         _lastTickFrame = frame;
         tickStopwatch.stop();
-        _addLog("Sim tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections");
+        _addLog("Sim tick: ${_tickTiming(tickStopwatch.elapsedMilliseconds)} | ${detections.length} detections");
 
         if (!mounted || !_simScanActive) return;
         final confident = detections.where((d) => d.confidence >= _watchConfidenceThreshold).toList();
@@ -912,13 +919,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           if (_taskStatus[i] != 'pending') continue;
           final tickPass = _simTaskPasses(widget.tasks[i], confident);
           if (_taskUsesClassifier(widget.tasks[i])) {
-            // Region classifier: first side to _clsVotesNeeded votes wins (see the constants).
-            final int vote = _clsTickVote(widget.tasks[i], confident, tickPass);
-            if (vote > 0) _taskOkVotes[i] = (_taskOkVotes[i] ?? 0) + 1;
-            if (vote < 0) _taskBadVotes[i] = (_taskBadVotes[i] ?? 0) + 1;
-            if ((_taskOkVotes[i] ?? 0) >= _clsVotesNeeded || (_taskBadVotes[i] ?? 0) >= _clsVotesNeeded) {
-              matchedTaskIndices.add(i);
-            }
+            // Region classifier: the first confident answer (OK or wrong state) decides.
+            if (_clsTickVote(widget.tasks[i], confident, tickPass) != 0) matchedTaskIndices.add(i);
             continue;
           }
           if (tickPass) {
@@ -1028,8 +1030,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       for (var i = 0; i < widget.tasks.length; i++) {
         _taskStatus[i] = 'pending';
         _taskHoldCount[i] = 0;
-        _taskOkVotes[i] = 0;
-        _taskBadVotes[i] = 0;
       }
       _results.clear();
       _simScanDone = false;
@@ -1101,8 +1101,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         tickStopwatch.stop();
         final tickSummary = detections.isEmpty
             ? 'none'
-            : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%').join(', ');
-        _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections ($tickSummary)");
+            : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%'
+                '${d.classifierLabel != null ? ' [cls ${d.classifierLabel} ${((d.classifierConfidence ?? 0) * 100).toStringAsFixed(0)}%]' : ''}').join(', ');
+        _addLog("Watch tick: ${_tickTiming(tickStopwatch.elapsedMilliseconds)} | ${detections.length} detections ($tickSummary)");
         // Drawn live over the preview below -- without this the feed looks
         // static for the whole hold-steady countdown even while it's
         // actually seeing and tracking the part.
@@ -1134,18 +1135,13 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
         if (!mounted || !_watchActive) return;
         if (_taskUsesClassifier(currentTask)) {
-          // Region classifier: first side to _clsVotesNeeded votes wins (see the constants).
+          // Region classifier: the first confident answer (OK or wrong state) decides.
           final int vote = _clsTickVote(currentTask, confidentDetections, tickPass);
-          if (vote > 0) _okVotesWatch++;
-          if (vote < 0) _badVotesWatch++;
-          _addLog("Live watch: classifier votes OK $_okVotesWatch / wrong $_badVotesWatch (need $_clsVotesNeeded)");
-          if (_okVotesWatch >= _clsVotesNeeded || _badVotesWatch >= _clsVotesNeeded) {
-            final bool ok = _okVotesWatch >= _clsVotesNeeded;
+          _addLog("Live watch: classifier ${vote > 0 ? 'OK' : vote < 0 ? 'WRONG STATE' : 'no decision (unsure / region not found)'}");
+          if (vote != 0) {
             _watchActive = false;
-            _okVotesWatch = 0;
-            _badVotesWatch = 0;
             setState(() => _holdCount = 0);
-            _addLog(ok ? 'Live watch: OK confirmed -- capturing this frame' : 'Live watch: wrong state confirmed -- capturing this frame as NOT OK');
+            _addLog(vote > 0 ? 'Live watch: OK -- capturing this frame' : 'Live watch: wrong state -- capturing this frame as NOT OK');
             await _handleCapture(frame: frame, tickDetections: _lastTickConfident);
             return;
           }

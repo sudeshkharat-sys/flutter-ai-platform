@@ -1255,7 +1255,7 @@ class ModelManager {
     // Loaded here (UI isolate) so the tick isolate only needs its address.
     final clsInterp = await _ensureClassifier();
 {% endif %}
-    return compute(_runInferenceFrame, {
+    final Map<String, dynamic> res = await compute(_runInferenceFrame, {
       ...frame,
       'interpreter_address': _interpreter!.address,
       'labels': _labels,
@@ -1265,20 +1265,36 @@ class ModelManager {
       'cls_interpreter_address': clsInterp?.address,
 {% endif %}
     });
+    lastTickTimings = Map<String, int>.from(res['timings'] as Map);
+    return List<DetectionResult>.from(res['dets'] as List);
   }
 
-  static List<DetectionResult> _runInferenceFrame(Map<String, dynamic> args) {
+  /// Per-stage milliseconds of the most recent [predictFrame] call (decode / detect / classify,
+  /// plus the frame size) -- shown in the live debug log.
+  Map<String, int> lastTickTimings = const {};
+
+  static Map<String, dynamic> _runInferenceFrame(Map<String, dynamic> args) {
+    final sw = Stopwatch()..start();
     final image = yuvFrameToImage(args);
-    if (image == null) return [];
-    final detections = _inferOnDecoded(image, args);
+    final int decodeMs = sw.elapsedMilliseconds;
+    if (image == null) return {'dets': <DetectionResult>[], 'timings': {'decode': decodeMs}};
+    sw.reset();
+    var detections = _inferOnDecoded(image, args);
+    final int detectMs = sw.elapsedMilliseconds;
+    int classifyMs = 0;
 {% if classifier_enabled %}
     // Region classifier on the tick's own decoded frame (e.g. Max_reg -> locked / unlocked).
     final int? clsAddress = args['cls_interpreter_address'] as int?;
     if (clsAddress != null && detections.isNotEmpty) {
-      return _applyClassifierSync(detections, image, clsAddress);
+      sw.reset();
+      detections = _applyClassifierSync(detections, image, clsAddress);
+      classifyMs = sw.elapsedMilliseconds;
     }
 {% endif %}
-    return detections;
+    return {
+      'dets': detections,
+      'timings': {'decode': decodeMs, 'detect': detectMs, 'classify': classifyMs, 'w': image.width, 'h': image.height},
+    };
   }
 
   /// Converts one raw camera stream frame (YUV420 -- 3 planes on Android, or
@@ -1827,7 +1843,7 @@ class ModelManager {
   /// className -> minimum confidence; below it the answer is "uncertain" (a fail).
   static const Map<String, double> _classClassifyMinConf = {
 {% set seen_cls_c = namespace(keys=[]) %}{% for task in models_manifest %}{% for cls, cfg in (task.classOcrConfig or {}).items() %}{% if cfg.classifyEnabled and cfg.classifyPassLabel and cls not in seen_cls_c.keys %}{% set seen_cls_c.keys = seen_cls_c.keys + [cls] %}
-    '{{ cls }}': {{ (cfg.classifyMinConf if cfg.classifyMinConf is number else 0.6) | float }},
+    '{{ cls }}': {{ (cfg.classifyMinConf if cfg.classifyMinConf is number else 0.5) | float }},
 {% endif %}{% endfor %}{% endfor %}
   };
 
@@ -1897,7 +1913,7 @@ class ModelManager {
   /// 'uncertain' below the class's minimum confidence) and whether it is the pass label.
   static DetectionResult _withClassifierAnswer(DetectionResult det, List<double> probs) {
     final String passLabel = _classClassifyPass[det.className] ?? '';
-    final double minConf = _classClassifyMinConf[det.className] ?? 0.6;
+    final double minConf = _classClassifyMinConf[det.className] ?? 0.5;
     int best = 0;
     for (int i = 1; i < probs.length; i++) {
       if (probs[i] > probs[best]) best = i;

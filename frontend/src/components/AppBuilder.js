@@ -679,7 +679,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       classifyEnabled: !cfg?.classifyEnabled,
       classifyModelId: model?.id || '',
       classifyPassLabel: cfg?.classifyPassLabel || labels[0] || '',
-      classifyMinConf: cfg?.classifyMinConf ?? 0.6,
+      classifyMinConf: cfg?.classifyMinConf ?? 0.5,
       classifyMargin: cfg?.classifyMargin ?? 0.12,
     };
   };
@@ -1402,7 +1402,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                               <span style={{ fontSize: 11, color: C.muted }}>min conf</span>
                                               <input type="number" min="0" max="1" step="0.05"
                                                 style={{ ...inputStyle, padding: '3px 6px', fontSize: 11, width: 64 }}
-                                                value={ocrCfg.classifyMinConf ?? 0.6}
+                                                value={ocrCfg.classifyMinConf ?? 0.5}
                                                 onChange={e => patchClassClassify(idx, c, { classifyMinConf: Math.min(1, Math.max(0, parseFloat(e.target.value) || 0)) })} />
                                               <span style={{ fontSize: 11, color: C.muted }}>crop margin</span>
                                               <input type="number" min="0" max="0.5" step="0.02"
@@ -1601,7 +1601,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                 <span style={{ fontSize: 11, color: C.muted }}>min conf</span>
                                                 <input type="number" min="0" max="1" step="0.05"
                                                   style={{ ...inputStyle, padding: '3px 6px', fontSize: 11, width: 64 }}
-                                                  value={ocrCfg.classifyMinConf ?? 0.6}
+                                                  value={ocrCfg.classifyMinConf ?? 0.5}
                                                   onChange={e => patchRowClassClassify(rowIndex, aiIdx, c, { classifyMinConf: Math.min(1, Math.max(0, parseFloat(e.target.value) || 0)) })} />
                                                 <span style={{ fontSize: 11, color: C.muted }}>crop margin</span>
                                                 <input type="number" min="0" max="0.5" step="0.02"
