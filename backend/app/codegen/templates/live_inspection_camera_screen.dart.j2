@@ -151,6 +151,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   DateTime? _fpsWindowStart;
   int _fpsWindowTicks = 0;
   double _fps = 0;
+  double _cpuCores = 0;      // cores this app's process kept busy over the last FPS window
+  int? _cpuTicksPrev;
   static const double _watchConfidenceThreshold = 0.5;
   static const Duration _watchInterval = Duration(milliseconds: 100);
   static const Duration _watchTimeout = Duration(seconds: 45);
@@ -227,6 +229,18 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
+  /// This process's cumulative CPU time (user + system) in clock ticks (100/s), from
+  /// /proc/self/stat; null if unreadable.
+  int? _processCpuTicks() {
+    try {
+      final stat = File('/proc/self/stat').readAsStringSync();
+      final f = stat.substring(stat.lastIndexOf(')') + 2).split(' ');
+      return int.parse(f[11]) + int.parse(f[12]); // utime + stime
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// One-line timing/FPS summary of the last tick: ms per stage, frame size, rolling FPS.
   String _tickTiming(int totalMs) {
     final now = DateTime.now();
@@ -236,12 +250,16 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final double secs = now.difference(_fpsWindowStart!).inMilliseconds / 1000.0;
     if (secs >= 2.0) {
       _fps = _fpsWindowTicks / secs;
+      final cpu = _processCpuTicks();
+      if (cpu != null && _cpuTicksPrev != null) _cpuCores = (cpu - _cpuTicksPrev!) / 100.0 / secs;
+      _cpuTicksPrev = cpu;
       _fpsWindowStart = now;
       _fpsWindowTicks = 0;
     }
     final t = ModelManager().lastTickTimings;
     return '#$_tickCount total ${totalMs}ms (decode ${t['decode'] ?? 0} / detect ${t['detect'] ?? 0} / classify ${t['classify'] ?? 0}) '
-        'frame ${t['w'] ?? '?'}x${t['h'] ?? '?'} | ${_fps.toStringAsFixed(1)} FPS';
+        'frame ${t['w'] ?? '?'}x${t['h'] ?? '?'} | ${_fps.toStringAsFixed(1)} FPS | CPU: ${Platform.numberOfProcessors} cores, using ${_cpuCores.toStringAsFixed(1)} '
+        '(${(_cpuCores / Platform.numberOfProcessors * 100).toStringAsFixed(0)}%), TFLite threads ${Platform.numberOfProcessors >= 4 ? 4 : Platform.numberOfProcessors}';
   }
 
   void _addLog(String msg) {
