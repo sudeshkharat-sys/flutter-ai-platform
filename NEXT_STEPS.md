@@ -76,3 +76,5 @@ Field log showed `detect` ~1.3-2.1 s per tick (decode only ~40 ms), only ~2.7 co
   `Float32List` views, so the parsers are unchanged. Segmentation models and any unexpected tensor layout fall back to
   the old nested-list path automatically (look for "flat output path unavailable" in logcat).
 - To verify on device: same boxes/percentages as before on the same scene, and lower `detect` ms.
+- Scope: the faster preprocessing and flat-output path run for LIVE ticks only (`predictFrame`); photo inspection
+  (`predictBytes` / `predictImage`) uses the original per-pixel + nested-list path again.

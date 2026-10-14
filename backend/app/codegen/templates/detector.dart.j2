@@ -1090,7 +1090,7 @@ class ModelManager {
   /// [Float32List] of shape [1, inputSize, inputSize, 3] ready for TFLite.
   /// Using a typed flat buffer instead of nested [List.generate] calls is
   /// ~5-10x faster because it avoids Dart object allocation overhead.
-  static Float32List _imageToFloat32(img.Image image, int inputSize) {
+  static Float32List _imageToFloat32(img.Image image, int inputSize, {bool fast = false}) {
     final resized = img.copyResize(
       image,
       width: inputSize,
@@ -1099,8 +1099,9 @@ class ModelManager {
     );
     final buffer = Float32List(inputSize * inputSize * 3);
     // One pass over the raw RGB bytes instead of a getPixel() call (and Pixel object) per pixel.
-    final Uint8List rgb = resized.getBytes(order: img.ChannelOrder.rgb);
-    if (rgb.length >= buffer.length) {
+    // Live ticks only ([fast]); photo inspection keeps the original per-pixel path.
+    final Uint8List rgb = fast ? resized.getBytes(order: img.ChannelOrder.rgb) : Uint8List(0);
+    if (fast && rgb.length >= buffer.length) {
       const double k = 1.0 / 255.0;
       for (int i = 0; i < buffer.length; i++) {
         buffer[i] = rgb[i] * k;
@@ -1433,7 +1434,7 @@ class ModelManager {
     final lb = _letterboxToFloat32(decoded, inputSize);
     final Float32List input = lb.buffer;
 {% else %}
-    final inputData = _imageToFloat32(decoded, inputSize);
+    final inputData = _imageToFloat32(decoded, inputSize, fast: t != null);
 
     // Reshape flat buffer to [1, inputSize, inputSize, 3]
     final Float32List input = inputData;
@@ -1441,7 +1442,7 @@ class ModelManager {
 
     t?['prep'] = sw.elapsedMilliseconds;
     sw.reset();
-    final raw = _runModel(interpreter, input);
+    final raw = _runModel(interpreter, input, fast: t != null);
     t?['run'] = sw.elapsedMilliseconds;
     if (raw == null) return [];
     sw.reset();
@@ -1525,7 +1526,7 @@ class ModelManager {
   /// segment export has a second rank-4 output (the mask prototypes,
   /// [1, mh, mw, nm] or [1, nm, mh, mw]) that is what turns a box into a
   /// polygon. Returns null for an unusable output layout.
-  static _RawOutput? _runModel(Interpreter interpreter, Float32List input) {
+  static _RawOutput? _runModel(Interpreter interpreter, Float32List input, {bool fast = false}) {
     final outTensors = interpreter.getOutputTensors();
     int detIdx = -1;
     int protoIdx = -1;
@@ -1536,8 +1537,8 @@ class ModelManager {
     }
     if (detIdx < 0) return null;
     final shape = outTensors[detIdx].shape;
-    if (protoIdx < 0) {
-      // Fast path: raw float bytes straight from the output tensor (no nested-list copy).
+    if (fast && protoIdx < 0) {
+      // Fast path (live ticks only): raw float bytes straight from the output tensor (no nested-list copy).
       final fast = _runFlat(interpreter, input, detIdx, shape);
       if (fast != null) return fast;
     }
