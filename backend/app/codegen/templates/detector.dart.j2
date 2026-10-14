@@ -37,6 +37,7 @@ class ModelManager {
   Interpreter? _interpreter;
   List<String> _labels = [];
   String? _currentModelPath;
+  String? _currentLabelsPath;
   bool _isLoaded = false;
 {% if ocr_use_charonly_detector %}
   // Class-agnostic localization-only detector (ai-vision-platform's
@@ -988,11 +989,33 @@ class ModelManager {
   }
 {% endif %}
 
-  /// CPU-only interpreter options using several threads (up to 4) so detection
-  /// and classification ticks are faster. No GPU/NNAPI delegate is added.
-  static InterpreterOptions _cpuOptions() {
-    final int cores = Platform.numberOfProcessors;
-    return InterpreterOptions()..threads = cores >= 4 ? 4 : (cores < 1 ? 1 : cores);
+  /// TFLite CPU threads. 0 = automatic: min(4, cores) -- more threads than that rarely helps a
+  /// small YOLO on big.LITTLE phones (little cores slow the slowest thread, and the camera and UI
+  /// need cores too). Set from the live screen (remembered via CameraPrefs) to compare 2 / 4 / 6.
+  static int cpuThreads = 0;
+
+  static int effectiveThreads() {
+    final int cores = Platform.numberOfProcessors < 1 ? 1 : Platform.numberOfProcessors;
+    if (cpuThreads > 0) return cpuThreads > cores ? cores : cpuThreads;
+    return cores >= 4 ? 4 : cores;
+  }
+
+  /// CPU-only interpreter options (no GPU/NNAPI delegate).
+  static InterpreterOptions _cpuOptions() => InterpreterOptions()..threads = effectiveThreads();
+
+  /// Applies a new thread count: reloads the detector (and classifier) interpreters with it.
+  Future<void> setCpuThreads(int threads) async {
+    cpuThreads = threads;
+    final path = _currentModelPath;
+    final labels = _currentLabelsPath;
+    if (path == null || labels == null) return;
+{% if classifier_enabled %}
+    _clsInterpreter?.close();
+    _clsInterpreter = null;
+    _clsLoadTried = false;
+{% endif %}
+    _currentModelPath = null;
+    await loadModel(path, labels);
   }
 
   Future<void> loadModel(String modelPath, String labelsPath) async {
@@ -1025,6 +1048,7 @@ class ModelManager {
     }
 
     _currentModelPath = modelPath;
+    _currentLabelsPath = labelsPath;
     _isLoaded = true;
     debugPrint('Model loaded: $modelPath with ${_labels.length} labels');
   }
