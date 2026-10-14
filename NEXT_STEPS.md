@@ -50,23 +50,6 @@ Hands are in the bonnet (shake, dark, can't watch the screen), so decisions must
 - [ ] Zoom button cycles and is remembered after restart.
 - [ ] Debug console shows `[Classifier]` lines; no "classifier did not run".
 
-
-## Update: live decision, speed and feedback (untested -- needs an APK rebuild)
-- **Live decision (detector-only tasks):** OK = all mandatory classes seen, no fail class. NOT OK = a fail class
-  (anything neither mandatory nor ignored) seen on `_failTicksNeeded = 2` ticks in a row. Anything else keeps
-  scanning. Tasks with "Classify region" still use the classifier as before.
-- **Timeout (45 s):** the last frame now goes through a full image detection (like a photo); a defect there gives
-  NOT OK, NOT FOUND only if nothing relevant is detected.
-- **Camera:** `ResolutionPreset.high` (720p); detection still runs on a 640-wide downscale. Auto focus + exposure set explicitly.
-- **Blur gate:** `_skipBlurryFrame` skips ticks below `_minSharpness = 2.0` (max 4 in a row). The value is guessed:
-  read the "Skipped blurry frame (sharpness X)" log lines on site and tune it.
-- **Threads:** auto = min(4, cores). Debug console has a `Threads:` button cycling auto/2/4/6/8 (saved, reloads the
-  interpreters). Compare the `detect` ms in the tick log.
-- **Feedback:** vibration + beep on every final result (OK one long buzz; NOT OK three short; NOT FOUND two medium),
-  via Flutter HapticFeedback/SystemSound (no new plugin). Depends on the phone's touch-feedback setting.
-- Only the multiclass live screen got the decision/threads/feedback changes; the non-multiclass variant only got
-  720p, focus mode and the blur gate.
-
 ## Update: detection speed (untested -- needs an APK rebuild)
 Field log showed `detect` ~1.3-2.1 s per tick (decode only ~40 ms), only ~2.7 cores busy. Changes in `detector.dart.j2`:
 - Tick log now splits detect into `[prep / run / post]` ms (prep = resize + float conversion, run = model + output copy,
@@ -78,3 +61,5 @@ Field log showed `detect` ~1.3-2.1 s per tick (decode only ~40 ms), only ~2.7 co
 - To verify on device: same boxes/percentages as before on the same scene, and lower `detect` ms.
 - Scope: the faster preprocessing and flat-output path run for LIVE ticks only (`predictFrame`); photo inspection
   (`predictBytes` / `predictImage`) uses the original per-pixel + nested-list path again.
+
+Note: commit 76b8750 (2-tick NOT OK rule, 720p, blur gate, thread button, vibration) was reverted; it can be re-applied with `git revert` of the revert commit.
