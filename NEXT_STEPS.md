@@ -78,3 +78,11 @@ Field log showed `detect` ~1.3-2.1 s per tick (decode only ~40 ms), only ~2.7 co
 - To verify on device: same boxes/percentages as before on the same scene, and lower `detect` ms.
 - Scope: the faster preprocessing and flat-output path run for LIVE ticks only (`predictFrame`); photo inspection
   (`predictBytes` / `predictImage`) uses the original per-pixel + nested-list path again.
+
+## Update: letterbox + saved model input (untested -- needs an APK rebuild)
+- Live ticks now **letterbox** the frame into the model input (aspect kept, grey 114 padding) like Ultralytics
+  training; before, a portrait 360x640 frame was stretched to a square. Boxes are mapped back by the existing
+  letterbox parser. Photo inspection is unchanged (stretch) unless the app has OCR (already letterboxed).
+- Debug console: **Save input** button. The next live tick writes `model_input_<size>.jpg` (exactly what the network
+  receives) and `frame_<w>x<h>.jpg` to `Pictures/MAI/<app>/DebugInput/`. Run model_input through the Python `.pt`
+  model: detects well there -> the problem is in the app / TFLite export; fails there too -> training data issue.

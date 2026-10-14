@@ -172,6 +172,15 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _addLog('TFLite threads: ${next == 0 ? 'auto' : next} (using ${ModelManager.effectiveThreads()} of $cores cores)');
   }
 
+  /// Debug: the next tick saves the exact model input + its frame to
+  /// Pictures/MAI/<app>/DebugInput (run model_input_*.jpg through the Python model to compare).
+  Future<void> _saveNextModelInput() async {
+    PermissionStatus status = await Permission.photos.request();
+    if (!status.isGranted) status = await Permission.storage.request();
+    ModelManager().saveNextInput = true;
+    _addLog('Save input: the next tick will save the model input and its frame');
+  }
+
   /// Result feedback without looking: vibration + beep.
   void _feedback(String outcome) => ResultFeedback.play(outcome);
 
@@ -1013,6 +1022,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         }
         final detections = await ModelManager().predictFrame(_framePayload(frame));
         _lastTickFrame = frame;
+        final String? savedInput = ModelManager().takeSavedInputPath();
+        if (savedInput != null) _addLog('Model input saved to $savedInput (model_input_*.jpg = what the detector sees)');
         tickStopwatch.stop();
         _addLog("Sim tick: ${_tickTiming(tickStopwatch.elapsedMilliseconds)} | ${detections.length} detections");
 
@@ -1236,6 +1247,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         }
         final detections = await ModelManager().predictFrame(_framePayload(frame));
         _lastTickFrame = frame;
+        final String? savedInput = ModelManager().takeSavedInputPath();
+        if (savedInput != null) _addLog('Model input saved to $savedInput (model_input_*.jpg = what the detector sees)');
         tickStopwatch.stop();
         final tickSummary = detections.isEmpty
             ? 'none'
@@ -2004,6 +2017,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                   const Text('DEBUG CONSOLE',
                                       style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
                                   TextButton(
+                                    onPressed: _saveNextModelInput,
+                                    child: const Text('Save input',
+                                        style: TextStyle(color: Colors.lightGreenAccent, fontSize: 12)),
+                                  ),
+                                  TextButton(
                                     onPressed: _cycleThreads,
                                     child: Text('Threads: ${_threadSetting == 0 ? 'auto' : _threadSetting}',
                                         style: const TextStyle(color: Colors.lightBlueAccent, fontSize: 12)),
@@ -2602,6 +2620,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 children: [
                                   const Text('DEBUG CONSOLE',
                                       style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
+                                  TextButton(
+                                    onPressed: _saveNextModelInput,
+                                    child: const Text('Save input',
+                                        style: TextStyle(color: Colors.lightGreenAccent, fontSize: 12)),
+                                  ),
                                   TextButton(
                                     onPressed: _cycleThreads,
                                     child: Text('Threads: ${_threadSetting == 0 ? 'auto' : _threadSetting}',
@@ -3533,6 +3556,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         }
         final detections = await ModelManager().predictFrame(_framePayload(frame));
         _lastTickFrame = frame;
+        final String? savedInput = ModelManager().takeSavedInputPath();
+        if (savedInput != null) _addLog('Model input saved to $savedInput (model_input_*.jpg = what the detector sees)');
         tickStopwatch.stop();
         _addLog("Sim tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections");
 
@@ -3737,6 +3762,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         }
         final detections = await ModelManager().predictFrame(_framePayload(frame));
         _lastTickFrame = frame;
+        final String? savedInput = ModelManager().takeSavedInputPath();
+        if (savedInput != null) _addLog('Model input saved to $savedInput (model_input_*.jpg = what the detector sees)');
         tickStopwatch.stop();
         final tickSummary = detections.isEmpty
             ? 'none'

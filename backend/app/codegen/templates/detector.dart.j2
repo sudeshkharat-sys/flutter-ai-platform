@@ -19,7 +19,6 @@ import 'ctc_decoder.dart';
 {% endif %}
 import 'detection_result.dart';
 
-{% if ocr_enabled %}
 /// Letterboxed model input plus the mapping needed to undo it when turning
 /// model coordinates back into image coordinates.
 class _LetterboxResult {
@@ -27,7 +26,6 @@ class _LetterboxResult {
   final int padX, padY, unpadW, unpadH;
   const _LetterboxResult(this.buffer, this.padX, this.padY, this.unpadW, this.unpadH);
 }
-{% endif %}
 
 class ModelManager {
   static final ModelManager _instance = ModelManager._internal();
@@ -1120,7 +1118,6 @@ class ModelManager {
     return buffer;
   }
 
-{% if ocr_enabled %}
   /// Ultralytics-style letterbox: aspect-preserving resize, then pad to a
   /// square canvas with Ultralytics' standard gray (114,114,114).
   ///
@@ -1132,7 +1129,7 @@ class ModelManager {
   /// this shared detector, which is why the same photo yields character
   /// boxes there and none here. The exported .tflite has no preprocessing
   /// baked into the graph, so the caller has to reproduce it exactly.
-  static _LetterboxResult _letterboxToFloat32(img.Image image, int inputSize) {
+  static _LetterboxResult _letterboxToFloat32(img.Image image, int inputSize, {bool fast = false}) {
     final ratio = (inputSize / image.width < inputSize / image.height)
         ? inputSize / image.width
         : inputSize / image.height;
@@ -1148,6 +1145,17 @@ class ModelManager {
     img.compositeImage(canvas, resized, dstX: padX, dstY: padY);
 
     final buffer = Float32List(inputSize * inputSize * 3);
+    if (fast) {
+      // Live ticks: one pass over the canvas' raw RGB bytes.
+      final Uint8List rgb = canvas.getBytes(order: img.ChannelOrder.rgb);
+      if (rgb.length >= buffer.length) {
+        const double k = 1.0 / 255.0;
+        for (int i = 0; i < buffer.length; i++) {
+          buffer[i] = rgb[i] * k;
+        }
+        return _LetterboxResult(buffer, padX, padY, unpadW, unpadH);
+      }
+    }
     var idx = 0;
     for (var y = 0; y < inputSize; y++) {
       for (var x = 0; x < inputSize; x++) {
@@ -1159,7 +1167,6 @@ class ModelManager {
     }
     return _LetterboxResult(buffer, padX, padY, unpadW, unpadH);
   }
-{% endif %}
 
   /// Fast path: caller already decoded + EXIF-corrected the image (e.g.
   /// during blur detection), so we skip the redundant decode +
@@ -1283,6 +1290,46 @@ class ModelManager {
   ///
   /// [frame] = {width, height, planes: [{bytes, bytesPerRow, bytesPerPixel}],
   /// rotationDegrees, targetWidth} (see [yuvFrameToImage]).
+  /// One-shot: the next [predictFrame] saves the exact model input (and the frame it came from)
+  /// to Pictures/MAI/<app>/DebugInput so it can be run through the Python model for comparison.
+  bool saveNextInput = false;
+  String? _savedInputPath;
+  static String? _lastSavedInputPath;
+
+  /// Path of the files saved by the last tick that was asked to save, once (then null).
+  String? takeSavedInputPath() {
+    final p = _savedInputPath;
+    _savedInputPath = null;
+    return p;
+  }
+
+  /// Writes the frame as seen by the detector and the model input (letterboxed or stretched,
+  /// exactly what the network receives) as JPEGs. Returns the folder, or null on failure.
+  static String? _saveDebugInput(img.Image frame, Float32List input, int inputSize) {
+    try {
+      final appName = '{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final dir = Directory('/storage/emulated/0/Pictures/MAI/$appName/DebugInput');
+      dir.createSync(recursive: true);
+      final now = DateTime.now();
+      String two(int v) => v.toString().padLeft(2, '0');
+      final stamp = '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}';
+      final bytes = Uint8List(inputSize * inputSize * 3);
+      for (int i = 0; i < bytes.length; i++) {
+        bytes[i] = (input[i] * 255.0).round().clamp(0, 255);
+      }
+      final modelInput = img.Image.fromBytes(
+          width: inputSize, height: inputSize, bytes: bytes.buffer, numChannels: 3);
+      File('${dir.path}/${stamp}_model_input_${inputSize}.jpg')
+          .writeAsBytesSync(img.encodeJpg(modelInput, quality: 95), flush: true);
+      File('${dir.path}/${stamp}_frame_${frame.width}x${frame.height}.jpg')
+          .writeAsBytesSync(img.encodeJpg(frame, quality: 95), flush: true);
+      return dir.path;
+    } catch (e) {
+      debugPrint('[Detector] could not save debug input: $e');
+      return null;
+    }
+  }
+
   Future<List<DetectionResult>> predictFrame(Map<String, dynamic> frame) async {
     if (!_isLoaded || _interpreter == null) return [];
 {% if classifier_enabled %}
@@ -1295,10 +1342,15 @@ class ModelManager {
       'labels': _labels,
       'inputSize': {{ input_size }},
       'threshold': confidenceThreshold,
+      'saveInput': saveNextInput,
 {% if classifier_enabled %}
       'cls_interpreter_address': clsInterp?.address,
 {% endif %}
     });
+    if (saveNextInput) {
+      saveNextInput = false;
+      _savedInputPath = res['savedPath'] as String?;
+    }
     lastTickTimings = Map<String, int>.from(res['timings'] as Map);
     return List<DetectionResult>.from(res['dets'] as List);
   }
@@ -1328,6 +1380,7 @@ class ModelManager {
 {% endif %}
     return {
       'dets': detections,
+      'savedPath': stage.containsKey('saved') ? _lastSavedInputPath : null,
       'timings': {'decode': decodeMs, 'detect': detectMs, 'classify': classifyMs, 'w': image.width, 'h': image.height, ...stage},
     };
   }
@@ -1430,15 +1483,23 @@ class ModelManager {
     final double threshold = args['threshold'] as double;
 
     final interpreter = Interpreter.fromAddress(interpreterAddress);
-{% if ocr_enabled %}
-    final lb = _letterboxToFloat32(decoded, inputSize);
-    final Float32List input = lb.buffer;
-{% else %}
-    final inputData = _imageToFloat32(decoded, inputSize, fast: t != null);
-
-    // Reshape flat buffer to [1, inputSize, inputSize, 3]
-    final Float32List input = inputData;
-{% endif %}
+    // Live ticks (t != null) letterbox like Ultralytics training does: keep the aspect ratio and pad with
+    // grey (114). Stretching a portrait 360x640 frame to a square distorted every object. Photo
+    // inspection keeps its original stretch unless the app has OCR (always letterboxed).
+    final bool useLetterbox = {% if ocr_enabled %}true{% else %}t != null{% endif %};
+    _LetterboxResult? lb;
+    final Float32List input;
+    if (useLetterbox) {
+      lb = _letterboxToFloat32(decoded, inputSize, fast: t != null);
+      input = lb.buffer;
+    } else {
+      input = _imageToFloat32(decoded, inputSize, fast: t != null);
+    }
+    if (t != null && args['saveInput'] == true) {
+      final path = _saveDebugInput(decoded, input, inputSize);
+      if (path != null) t['saved'] = 1;
+      _lastSavedInputPath = path;
+    }
 
     t?['prep'] = sw.elapsedMilliseconds;
     sw.reset();
@@ -1447,8 +1508,8 @@ class ModelManager {
     if (raw == null) return [];
     sw.reset();
     final detections = _parseGenericYolo(raw.output[0], labels, threshold, inputSize, raw.shape,
-        protos: raw.protos, protoShape: raw.protoShape{% if ocr_enabled %},
-        padX: lb.padX, padY: lb.padY, unpadW: lb.unpadW, unpadH: lb.unpadH{% endif %});
+        protos: raw.protos, protoShape: raw.protoShape,
+        padX: lb?.padX ?? 0, padY: lb?.padY ?? 0, unpadW: lb?.unpadW ?? 0, unpadH: lb?.unpadH ?? 0);
     t?['post'] = sw.elapsedMilliseconds;
     debugPrint('[Detector] raw detections: ${detections.length}, first bbox: ${detections.isNotEmpty ? detections.first.bbox : "none"}');
     return detections;
