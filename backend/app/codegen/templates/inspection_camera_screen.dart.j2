@@ -221,10 +221,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
     _loadCurrentModel();
+    ScanLog.begin('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %} ${widget.vin}');
     _addLog("Screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
   void _addLog(String msg) {
+    ScanLog.add("${DateTime.now().toString().split('.').first.split(' ').last} | $msg");
     if (!mounted) return;
     setState(() {
       _debugLogs.insert(
@@ -363,6 +365,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
   @override
   void dispose() {
+    ScanLog.save();
     WidgetsBinding.instance.removeObserver(this);
     if (_isFlashOn) {
       _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});
@@ -1740,10 +1743,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
     _loadCurrentModel();
+    ScanLog.begin('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %} ${widget.vin}');
     _addLog("Screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
   void _addLog(String msg) {
+    ScanLog.add("${DateTime.now().toString().split('.').first.split(' ').last} | $msg");
     if (!mounted) return;
     setState(() {
       _debugLogs.insert(
@@ -1823,6 +1828,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
 
   @override
   void dispose() {
+    ScanLog.save();
     WidgetsBinding.instance.removeObserver(this);
     if (_isFlashOn) {
       _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -66,4 +67,95 @@ class ResultFeedback {
       if (outcome == 'ok') unawaited(SystemSound.play(SystemSoundType.click));
     } catch (_) {}
   }
+}
+
+
+/// The full debug log of the most recent scan (live or photo), kept after the scan screen closes so it
+/// can still be read after "submit". The on-screen debug console only shows the newest 50 lines and
+/// vanishes with the screen; this keeps up to [_max] lines, persisted on the phone.
+class ScanLog {
+  static final List<String> _lines = [];
+  static const int _max = 1500;
+  static const String _key = 'scan_log_last';
+
+  /// A new scan screen opened: start a fresh log (the previous one stays on disk until this one saves).
+  static void begin(String title) {
+    _lines.clear();
+    add('=== $title  ${DateTime.now().toString().split('.').first} ===');
+  }
+
+  static void add(String line) {
+    _lines.add(line);
+    if (_lines.length > _max) _lines.removeAt(0);
+  }
+
+  static Future<void> save() async {
+    if (_lines.isEmpty) return;
+    try {
+      await (await SharedPreferences.getInstance()).setStringList(_key, List<String>.from(_lines));
+    } catch (_) {}
+  }
+
+  static Future<List<String>> load() async {
+    if (_lines.isNotEmpty) return List<String>.from(_lines);
+    try {
+      return (await SharedPreferences.getInstance()).getStringList(_key) ?? <String>[];
+    } catch (_) {
+      return <String>[];
+    }
+  }
+}
+
+/// Opens the last scan's full debug log (oldest first) with Copy, from anywhere in the app.
+Future<void> showLastScanLog(BuildContext context) async {
+  final lines = await ScanLog.load();
+  if (!context.mounted) return;
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: const Color(0xFF111118),
+    builder: (ctx) => SizedBox(
+      height: MediaQuery.of(ctx).size.height * 0.85,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text('Last scan log (${lines.length} lines)',
+                      style: const TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 15)),
+                ),
+                TextButton(
+                  onPressed: lines.isEmpty
+                      ? null
+                      : () {
+                          Clipboard.setData(ClipboardData(text: lines.join('\n')));
+                          ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Log copied')));
+                        },
+                  child: const Text('Copy all'),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => Navigator.pop(ctx),
+                ),
+              ],
+            ),
+          ),
+          const Divider(color: Colors.white24, height: 1),
+          Expanded(
+            child: lines.isEmpty
+                ? const Center(child: Text('No scan has been logged yet.', style: TextStyle(color: Colors.white70)))
+                : SingleChildScrollView(
+                    padding: const EdgeInsets.all(12),
+                    child: SelectableText(
+                      lines.join('\n'),
+                      style: const TextStyle(color: Color(0xFF9FFF9F), fontSize: 11, fontFamily: 'monospace'),
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    ),
+  );
 }

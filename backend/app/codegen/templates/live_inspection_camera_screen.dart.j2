@@ -327,6 +327,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     } else {
       _loadCurrentModel();
     }
+    ScanLog.begin('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %} ${widget.vin}');
     _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
@@ -364,6 +365,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   }
 
   void _addLog(String msg) {
+    ScanLog.add("${DateTime.now().toString().split('.').first.split(' ').last} | $msg");
     if (!mounted) return;
     setState(() {
       _debugLogs.insert(
@@ -680,6 +682,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
   @override
   void dispose() {
+    ScanLog.save();
     _watchActive = false;
     _simScanActive = false;
     WidgetsBinding.instance.removeObserver(this);
@@ -3003,10 +3006,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     } else {
       _loadCurrentModel();
     }
+    ScanLog.begin('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %} ${widget.vin}');
     _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
   void _addLog(String msg) {
+    ScanLog.add("${DateTime.now().toString().split('.').first.split(' ').last} | $msg");
     if (!mounted) return;
     setState(() {
       _debugLogs.insert(
@@ -3215,6 +3220,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
   @override
   void dispose() {
+    ScanLog.save();
     _watchActive = false;
     _simScanActive = false;
     WidgetsBinding.instance.removeObserver(this);

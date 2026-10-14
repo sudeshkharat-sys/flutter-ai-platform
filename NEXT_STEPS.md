@@ -86,3 +86,8 @@ Field log showed `detect` ~1.3-2.1 s per tick (decode only ~40 ms), only ~2.7 co
 - Debug console: **Save input** button. The next live tick writes `model_input_<size>.jpg` (exactly what the network
   receives) and `frame_<w>x<h>.jpg` to `Pictures/MAI/<app>/DebugInput/`. Run model_input through the Python `.pt`
   model: detects well there -> the problem is in the app / TFLite export; fails there too -> training data issue.
+
+## Update: last scan debug log (untested -- needs an APK rebuild)
+- `ScanLog` (camera_prefs.dart) keeps the FULL debug log of the most recent scan (up to 1500 lines; the on-screen
+  console only shows the newest 50 and disappears with the screen), saved to the phone when the scan screen closes.
+- Home bottom bar: **Last scan log** opens it (oldest first, selectable, **Copy all**). Works for live and photo scans.

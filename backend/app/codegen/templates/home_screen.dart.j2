@@ -11,6 +11,7 @@ import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
 import '../services/print_service.dart';
+import '../services/camera_prefs.dart';
 import '../services/sync_service.dart';
 import '../services/wifi_service.dart';
 import '../database/database.dart';
@@ -789,6 +790,9 @@ class _HomeScreenState extends State<HomeScreen> {
           }),
           _navItem(Icons.sync, "Send to PC", false, onTap: () {
             Navigator.push(context, MaterialPageRoute(builder: (_) => const SyncScreen()));
+          }),
+          _navItem(Icons.bug_report, "Last scan log", false, onTap: () {
+            showLastScanLog(context);
           }),
         ],
       ),
