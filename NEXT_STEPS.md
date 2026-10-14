@@ -66,3 +66,13 @@ Hands are in the bonnet (shake, dark, can't watch the screen), so decisions must
   via Flutter HapticFeedback/SystemSound (no new plugin). Depends on the phone's touch-feedback setting.
 - Only the multiclass live screen got the decision/threads/feedback changes; the non-multiclass variant only got
   720p, focus mode and the blur gate.
+
+## Update: detection speed (untested -- needs an APK rebuild)
+Field log showed `detect` ~1.3-2.1 s per tick (decode only ~40 ms), only ~2.7 cores busy. Changes in `detector.dart.j2`:
+- Tick log now splits detect into `[prep / run / post]` ms (prep = resize + float conversion, run = model + output copy,
+  post = box parsing + NMS). Use it to see which stage still dominates.
+- `_imageToFloat32` reads the resized image's raw RGB bytes in one pass (no per-pixel `getPixel`).
+- Detect-only models: input passed as flat floats and output read as raw bytes (`_runFlat`), exposed as per-row
+  `Float32List` views, so the parsers are unchanged. Segmentation models and any unexpected tensor layout fall back to
+  the old nested-list path automatically (look for "flat output path unavailable" in logcat).
+- To verify on device: same boxes/percentages as before on the same scene, and lower `detect` ms.

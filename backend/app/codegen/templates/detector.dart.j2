@@ -1098,6 +1098,15 @@ class ModelManager {
       interpolation: img.Interpolation.linear,
     );
     final buffer = Float32List(inputSize * inputSize * 3);
+    // One pass over the raw RGB bytes instead of a getPixel() call (and Pixel object) per pixel.
+    final Uint8List rgb = resized.getBytes(order: img.ChannelOrder.rgb);
+    if (rgb.length >= buffer.length) {
+      const double k = 1.0 / 255.0;
+      for (int i = 0; i < buffer.length; i++) {
+        buffer[i] = rgb[i] * k;
+      }
+      return buffer;
+    }
     int idx = 0;
     for (int y = 0; y < inputSize; y++) {
       for (int x = 0; x < inputSize; x++) {
@@ -1303,7 +1312,8 @@ class ModelManager {
     final int decodeMs = sw.elapsedMilliseconds;
     if (image == null) return {'dets': <DetectionResult>[], 'timings': {'decode': decodeMs}};
     sw.reset();
-    var detections = _inferOnDecoded(image, args);
+    final Map<String, int> stage = {};
+    var detections = _inferOnDecoded(image, args, stage);
     final int detectMs = sw.elapsedMilliseconds;
     int classifyMs = 0;
 {% if classifier_enabled %}
@@ -1317,7 +1327,7 @@ class ModelManager {
 {% endif %}
     return {
       'dets': detections,
-      'timings': {'decode': decodeMs, 'detect': detectMs, 'classify': classifyMs, 'w': image.width, 'h': image.height},
+      'timings': {'decode': decodeMs, 'detect': detectMs, 'classify': classifyMs, 'w': image.width, 'h': image.height, ...stage},
     };
   }
 
@@ -1411,7 +1421,8 @@ class ModelManager {
 
   /// Shared inference body: resize/letterbox + float32 + model + parse, for
   /// an already-decoded RGB image. Runs inside a background isolate.
-  static List<DetectionResult> _inferOnDecoded(img.Image decoded, Map<String, dynamic> args) {
+  static List<DetectionResult> _inferOnDecoded(img.Image decoded, Map<String, dynamic> args, [Map<String, int>? t]) {
+    final sw = Stopwatch()..start();
     final int interpreterAddress = args['interpreter_address'] as int;
     final List<String> labels = List<String>.from(args['labels'] as List);
     final int inputSize = args['inputSize'] as int;
@@ -1420,19 +1431,24 @@ class ModelManager {
     final interpreter = Interpreter.fromAddress(interpreterAddress);
 {% if ocr_enabled %}
     final lb = _letterboxToFloat32(decoded, inputSize);
-    final input = lb.buffer.reshape([1, inputSize, inputSize, 3]);
+    final Float32List input = lb.buffer;
 {% else %}
     final inputData = _imageToFloat32(decoded, inputSize);
 
     // Reshape flat buffer to [1, inputSize, inputSize, 3]
-    final input = inputData.reshape([1, inputSize, inputSize, 3]);
+    final Float32List input = inputData;
 {% endif %}
 
+    t?['prep'] = sw.elapsedMilliseconds;
+    sw.reset();
     final raw = _runModel(interpreter, input);
+    t?['run'] = sw.elapsedMilliseconds;
     if (raw == null) return [];
+    sw.reset();
     final detections = _parseGenericYolo(raw.output[0], labels, threshold, inputSize, raw.shape,
         protos: raw.protos, protoShape: raw.protoShape{% if ocr_enabled %},
         padX: lb.padX, padY: lb.padY, unpadW: lb.unpadW, unpadH: lb.unpadH{% endif %});
+    t?['post'] = sw.elapsedMilliseconds;
     debugPrint('[Detector] raw detections: ${detections.length}, first bbox: ${detections.isNotEmpty ? detections.first.bbox : "none"}');
     return detections;
   }
@@ -1459,11 +1475,11 @@ class ModelManager {
 
 {% if ocr_enabled %}
     final lb = _letterboxToFloat32(baseImage, inputSize);
-    final input = lb.buffer.reshape([1, inputSize, inputSize, 3]);
+    final Float32List input = lb.buffer;
 {% else %}
     // Use Float32List for fast normalization (avoids nested Dart object alloc).
     final inputData = _imageToFloat32(baseImage, inputSize);
-    final input = inputData.reshape([1, inputSize, inputSize, 3]);
+    final Float32List input = inputData;
 {% endif %}
 
     final raw = _runModel(interpreter, input);
@@ -1475,11 +1491,41 @@ class ModelManager {
     return detections;
   }
 
+  /// Detect-only fast path. Feeds the input as raw float bytes and reads the output tensor's raw
+  /// bytes as one flat Float32List, exposed as per-row zero-copy views so the parsers' output[i][j]
+  /// indexing is unchanged. The nested-list copy of [1, 4+N, 8400] was a large share of a tick.
+  /// Returns null (caller uses the old nested-list path) for anything unexpected.
+  static _RawOutput? _runFlat(Interpreter interpreter, Float32List flatIn, int detIdx, List<int> shape) {
+    try {
+      final inTensor = interpreter.getInputTensor(0);
+      int inElems = 1;
+      for (final d in inTensor.shape) {
+        inElems *= d;
+      }
+      if (flatIn.length != inElems) return null;
+      inTensor.data = flatIn.buffer.asUint8List(flatIn.offsetInBytes, flatIn.lengthInBytes);
+      interpreter.invoke();
+      final Uint8List outBytes = interpreter.getOutputTensor(detIdx).data;
+      final int rows = shape[1];
+      final int cols = shape[2];
+      if (shape[0] != 1 || outBytes.length != rows * cols * 4) return null;
+      final Float32List flat = outBytes.offsetInBytes % 4 == 0
+          ? outBytes.buffer.asFloat32List(outBytes.offsetInBytes, rows * cols)
+          : Uint8List.fromList(outBytes).buffer.asFloat32List();
+      final List<Float32List> rowViews =
+          List.generate(rows, (r) => Float32List.sublistView(flat, r * cols, (r + 1) * cols), growable: false);
+      return _RawOutput(<dynamic>[rowViews], shape, null, null);
+    } catch (e) {
+      debugPrint('[Detector] flat output path unavailable, using nested lists: $e');
+      return null;
+    }
+  }
+
   /// Runs the model. A detect export has one output ([1, 4+N, boxes]); a
   /// segment export has a second rank-4 output (the mask prototypes,
   /// [1, mh, mw, nm] or [1, nm, mh, mw]) that is what turns a box into a
   /// polygon. Returns null for an unusable output layout.
-  static _RawOutput? _runModel(Interpreter interpreter, Object input) {
+  static _RawOutput? _runModel(Interpreter interpreter, Float32List input) {
     final outTensors = interpreter.getOutputTensors();
     int detIdx = -1;
     int protoIdx = -1;
@@ -1490,14 +1536,20 @@ class ModelManager {
     }
     if (detIdx < 0) return null;
     final shape = outTensors[detIdx].shape;
-    final output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
     if (protoIdx < 0) {
-      interpreter.run(input, output);
+      // Fast path: raw float bytes straight from the output tensor (no nested-list copy).
+      final fast = _runFlat(interpreter, input, detIdx, shape);
+      if (fast != null) return fast;
+    }
+    final output = List.generate(shape[0], (_) => List.generate(shape[1], (_) => List.filled(shape[2], 0.0)));
+    final Object shapedInput = input.reshape(interpreter.getInputTensor(0).shape);
+    if (protoIdx < 0) {
+      interpreter.run(shapedInput, output);
       return _RawOutput(output, shape, null, null);
     }
     final ps = outTensors[protoIdx].shape;
     final protos = List.generate(ps[0], (_) => List.generate(ps[1], (_) => List.generate(ps[2], (_) => List.filled(ps[3], 0.0))));
-    interpreter.runForMultipleInputs([input], {detIdx: output, protoIdx: protos});
+    interpreter.runForMultipleInputs([shapedInput], {detIdx: output, protoIdx: protos});
     return _RawOutput(output, shape, protos, ps);
   }
 

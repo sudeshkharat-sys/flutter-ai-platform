@@ -349,7 +349,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _fpsWindowTicks = 0;
     }
     final t = ModelManager().lastTickTimings;
-    return '#$_tickCount total ${totalMs}ms (decode ${t['decode'] ?? 0} / detect ${t['detect'] ?? 0} / classify ${t['classify'] ?? 0}) '
+    return '#$_tickCount total ${totalMs}ms (decode ${t['decode'] ?? 0} / detect ${t['detect'] ?? 0} [prep ${t['prep'] ?? 0} / run ${t['run'] ?? 0} / post ${t['post'] ?? 0}] / classify ${t['classify'] ?? 0}) '
         'frame ${t['w'] ?? '?'}x${t['h'] ?? '?'} | ${_fps.toStringAsFixed(1)} FPS | CPU: ${Platform.numberOfProcessors} cores, using ${_cpuCores.toStringAsFixed(1)} '
         '(${(_cpuCores / Platform.numberOfProcessors * 100).toStringAsFixed(0)}%), TFLite threads ${ModelManager.effectiveThreads()}${_threadSetting == 0 ? ' (auto)' : ''}';
   }
