@@ -145,6 +145,97 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // above 1 stays a one-line way to bring steadiness back if 1 turns out
   // to trigger on partial/fluke frames in practice.
   static const int _holdTarget = 1;
+
+  // NOT OK needs a fail class (neither mandatory nor ignored) on this many ticks IN A ROW, so a
+  // single blurry / shaky frame cannot fail a good part. A real defect stays in view and
+  // resolves one tick later.
+  static const int _failTicksNeeded = 2;
+  int _failCount = 0;
+  final Map<int, int> _taskFailCount = {};
+
+  // TFLite CPU threads: 0 = automatic (min(4, cores)). Cycled from the debug console.
+  int _threadSetting = 0;
+  Future<void> _applySavedThreads() async {
+    final t = await CameraPrefs.getThreads();
+    _threadSetting = t;
+    ModelManager.cpuThreads = t;
+  }
+
+  Future<void> _cycleThreads() async {
+    final int cores = Platform.numberOfProcessors;
+    final options = <int>[0, 2, 4, 6, 8].where((t) => t == 0 || t <= cores).toList();
+    final int cur = options.indexOf(_threadSetting);
+    final int next = options[(cur + 1) % options.length];
+    setState(() => _threadSetting = next);
+    await CameraPrefs.setThreads(next);
+    await ModelManager().setCpuThreads(next);
+    _addLog('TFLite threads: ${next == 0 ? 'auto' : next} (using ${ModelManager.effectiveThreads()} of $cores cores)');
+  }
+
+  /// Result feedback without looking: vibration + beep.
+  void _feedback(String outcome) => ResultFeedback.play(outcome);
+
+  /// True when a fail class (an explicit "not ok" class, or any class that is neither
+  /// mandatory nor ignored) is in this tick's confident detections.
+  bool _simTaskDefect(dynamic task, List<DetectionResult> confident) {
+    final List<String> allModelClasses = List<String>.from(task['classes'] ?? []);
+    final List<String> mandatoryClasses = List<String>.from(task['mandatoryClasses'] ?? []);
+    final List<String> ignoredClasses = List<String>.from(task['ignoredClasses'] ?? []);
+    final List<String> failClasses = mandatoryClasses.isNotEmpty
+        ? allModelClasses.where((c) =>
+            !mandatoryClasses.any((m) => m.toLowerCase().trim() == c.toLowerCase().trim()) &&
+            !ignoredClasses.any((ig) => ig.toLowerCase().trim() == c.toLowerCase().trim())).toList()
+        : [];
+    return _hasDefectDetected(confident, failClasses, ignoredClasses);
+  }
+
+  // Blur gate: a tick whose frame sharpness (see _frameSharpness) is below _minSharpness is
+  // skipped. At most _maxBlurSkips in a row, so a dark / low-texture scene can never stall
+  // the scan -- after that the frames are processed anyway. Sharpness is printed in the log
+  // so the threshold can be tuned on site.
+  static const double _minSharpness = 2.0;
+  static const int _maxBlurSkips = 4;
+  int _blurSkips = 0;
+
+  /// Cheap sharpness of a stream frame: mean absolute difference between pixels 4 apart (right
+  /// and down) on a sparse grid over the centre of the Y (brightness) plane. Low = blurry.
+  /// Null if the frame cannot be read.
+  double? _frameSharpness(CameraImage frame) {
+    try {
+      final plane = frame.planes[0];
+      final bytes = plane.bytes;
+      final stride = plane.bytesPerRow;
+      final w = frame.width;
+      final h = frame.height;
+      int sum = 0;
+      int n = 0;
+      for (int y = h ~/ 4; y < (h * 3) ~/ 4 - 4; y += 8) {
+        final row = y * stride;
+        for (int x = w ~/ 4; x < (w * 3) ~/ 4 - 4; x += 8) {
+          final v = bytes[row + x];
+          sum += (v - bytes[row + x + 4]).abs() + (v - bytes[row + 4 * stride + x]).abs();
+          n += 2;
+        }
+      }
+      return n == 0 ? null : sum / n;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// True when this tick should be skipped as blurry (and says so in the log).
+  bool _skipBlurryFrame(CameraImage frame) {
+    final sharp = _frameSharpness(frame);
+    if (sharp == null) return false;
+    if (sharp >= _minSharpness) {
+      _blurSkips = 0;
+      return false;
+    }
+    if (_blurSkips >= _maxBlurSkips) return false;
+    _blurSkips++;
+    _addLog('Skipped blurry frame (sharpness ${sharp.toStringAsFixed(1)} < $_minSharpness, $_blurSkips/$_maxBlurSkips)');
+    return true;
+  }
   // No voting (classifier or detector): the first tick that gives a confident answer decides.
   // Everything uses one 50% threshold. Add voting back after on-site testing if needed.
   int _tickCount = 0;
@@ -219,6 +310,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     for (var i = 0; i < widget.tasks.length; i++) {
       _taskStatus[i] = 'pending';
       _taskHoldCount[i] = 0;
+      _taskFailCount[i] = 0;
     }
     _initializeCamera();
     if (_simultaneousMode) {
@@ -259,7 +351,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final t = ModelManager().lastTickTimings;
     return '#$_tickCount total ${totalMs}ms (decode ${t['decode'] ?? 0} / detect ${t['detect'] ?? 0} / classify ${t['classify'] ?? 0}) '
         'frame ${t['w'] ?? '?'}x${t['h'] ?? '?'} | ${_fps.toStringAsFixed(1)} FPS | CPU: ${Platform.numberOfProcessors} cores, using ${_cpuCores.toStringAsFixed(1)} '
-        '(${(_cpuCores / Platform.numberOfProcessors * 100).toStringAsFixed(0)}%), TFLite threads ${Platform.numberOfProcessors >= 4 ? 4 : Platform.numberOfProcessors}';
+        '(${(_cpuCores / Platform.numberOfProcessors * 100).toStringAsFixed(0)}%), TFLite threads ${ModelManager.effectiveThreads()}${_threadSetting == 0 ? ' (auto)' : ''}';
   }
 
   void _addLog(String msg) {
@@ -407,7 +499,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       final decodedRaw = img.decodeImage(bytes);
       final oriented = decodedRaw != null ? img.bakeOrientation(decodedRaw) : null;
 
-      final allDetections = fromFrame
+      // At the timeout the last frame goes through the full image detection (as a photo would),
+      // not just the last tick's confident boxes.
+      final allDetections = (fromFrame && !timedOut)
           ? tickDetections!
           : (oriented != null
               ? await ModelManager().predictImage(oriented)
@@ -542,7 +636,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         'mandatoryResults': mandatoryResults.map((k, v) => MapEntry(k, v != null ? v.toJson() : null)),
         'detectionsJson': jsonEncode(allDetections.map((d) => d.toJson()).toList()),
       };
-      if (mounted) setState(() => _taskStatus[index] = (timedOut && !overallPass) ? 'notFound' : 'found');
+      final bool simDefect = _hasDefectDetected(allDetections, failClasses, ignoredClasses);
+      if (mounted) setState(() => _taskStatus[index] = (timedOut && !overallPass && !simDefect) ? 'notFound' : 'found');
+      _feedback(overallPass ? 'ok' : (simDefect ? 'notOk' : 'notFound'));
       _addLog("Sim task done [${task['name']}]: ${overallPass ? 'OK' : 'NOT OK'}");
     } catch (e) {
       _addLog('Sim auto-capture failed for ${task['name']}: $e');
@@ -557,6 +653,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     try {
       final task = widget.tasks[_currentIndex];
       _addLog("Loading Task: ${task['name']}");
+      await _applySavedThreads();
       await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
       if (mounted) {
         setState(() {
@@ -644,12 +741,15 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           orElse: () => cameras.first);
       final controller = CameraController(
         back,
-        ResolutionPreset.low,
+        ResolutionPreset.high, // 720p: detection runs on a 640-wide downscale of it (see targetWidth)
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
       _cameraController = controller;
       await controller.initialize();
+      // Continuous autofocus + auto exposure, explicitly (not left to the platform default).
+      try { await controller.setFocusMode(FocusMode.auto); } catch (_) {}
+      try { await controller.setExposureMode(ExposureMode.auto); } catch (_) {}
       // "Always on" torch (double-tap on the torch button, shared with the VIN scan):
       // every camera that starts while it is active lights the torch by itself.
       if (TorchSession.alwaysOn) {
@@ -786,6 +886,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     if (_watchActive) return;
     _watchActive = true;
     _holdCount = 0;
+    _failCount = 0;
     _consecutiveNullFrameTicks = 0;
     _watchDeadline = DateTime.now().add(_watchTimeout);
     _lastTickFrame = null;
@@ -824,6 +925,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     try {
       final task = widget.tasks[0];
       _addLog("Simultaneous scan: loading shared model for ${widget.tasks.length} tasks");
+      await _applySavedThreads();
       await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
       if (mounted) {
         setState(() {
@@ -905,6 +1007,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           continue;
         }
         _consecutiveNullFrameTicks = 0;
+        if (_skipBlurryFrame(frame)) {
+          tickStopwatch.stop();
+          continue;
+        }
         final detections = await ModelManager().predictFrame(_framePayload(frame));
         _lastTickFrame = frame;
         tickStopwatch.stop();
@@ -941,10 +1047,19 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             if (_clsTickVote(widget.tasks[i], confident, tickPass) != 0) matchedTaskIndices.add(i);
             continue;
           }
+          if (!tickPass && !_simTaskDefect(widget.tasks[i], confident)) _taskFailCount[i] = 0;
           if (tickPass) {
+            _taskFailCount[i] = 0;
             _taskHoldCount[i] = (_taskHoldCount[i] ?? 0) + 1;
             if (_taskHoldCount[i]! >= _holdTarget) matchedTaskIndices.add(i);
+          } else if (_simTaskDefect(widget.tasks[i], confident)) {
+            // A fail class is in view: NOT OK once it has been seen _failTicksNeeded ticks in a row.
+            _taskFailCount[i] = (_taskFailCount[i] ?? 0) + 1;
+            _taskHoldCount[i] = 0;
+            _addLog('Sim: fail class seen (${_taskFailCount[i]}/$_failTicksNeeded)');
+            if (_taskFailCount[i]! >= _failTicksNeeded) matchedTaskIndices.add(i);
           } else if ((_taskHoldCount[i] ?? 0) != 0) {
+            _taskFailCount[i] = 0;
             // Decrement instead of a hard reset to 0 -- on an assembly line
             // the part doesn't move, so a miss here is almost always sensor
             // noise/motion-blur on a single frame, not a genuinely different
@@ -1048,6 +1163,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       for (var i = 0; i < widget.tasks.length; i++) {
         _taskStatus[i] = 'pending';
         _taskHoldCount[i] = 0;
+        _taskFailCount[i] = 0;
       }
       _results.clear();
       _simScanDone = false;
@@ -1068,7 +1184,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         _watchActive = false;
         setState(() => _holdCount = 0);
         _addLog('Live watch: 45s elapsed with no confident match -- capturing the last frame');
-        await _handleCapture(frame: _lastTickFrame, tickDetections: _lastTickConfident);
+        await _handleCapture(frame: _lastTickFrame, tickDetections: _lastTickConfident, timedOut: true);
         return;
       }
       _watching = true;
@@ -1114,6 +1230,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           continue;
         }
         _consecutiveNullFrameTicks = 0;
+        if (_skipBlurryFrame(frame)) {
+          tickStopwatch.stop();
+          continue;
+        }
         final detections = await ModelManager().predictFrame(_framePayload(frame));
         _lastTickFrame = frame;
         tickStopwatch.stop();
@@ -1164,7 +1284,21 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             return;
           }
           setState(() {});
+        } else if (!tickPass && _simTaskDefect(currentTask, confidentDetections)) {
+          // A fail class is in view: NOT OK once it has been seen _failTicksNeeded ticks in a row.
+          _failCount++;
+          _addLog('Live watch: fail class seen ($_failCount/$_failTicksNeeded)');
+          if (_failCount >= _failTicksNeeded) {
+            _watchActive = false;
+            _failCount = 0;
+            setState(() => _holdCount = 0);
+            _addLog('Live watch: fail class confirmed -- capturing this frame as NOT OK');
+            await _handleCapture(frame: frame, tickDetections: _lastTickConfident);
+            return;
+          }
+          setState(() {});
         } else if (tickPass) {
+          _failCount = 0;
           setState(() => _holdCount++);
           _addLog("Live watch: all mandatory classes seen (${_holdCount}/${_holdTarget})");
           if (_holdCount >= _holdTarget) {
@@ -1175,6 +1309,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             return;
           }
         } else if (_holdCount != 0) {
+          _failCount = 0;
           // Decrement instead of a hard reset -- see the simultaneous-mode
           // loop's identical comment: on a stationary assembly-line part, a
           // single missed tick is almost always noise, and a full reset
@@ -1182,6 +1317,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           // capture than the nominal hold target implies.
           setState(() => _holdCount--);
         } else {
+          _failCount = 0;
           // Force a rebuild even with nothing else changing, so the
           // on-screen countdown keeps ticking down.
           setState(() {});
@@ -1199,7 +1335,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   /// result: no new photo, no second inference, no blur gate. Without them
   /// (manual capture button, OCR builds) it takes and analyzes a full photo
   /// as before.
-  Future<void> _handleCapture({CameraImage? frame, List<DetectionResult>? tickDetections}) async {
+  Future<void> _handleCapture({CameraImage? frame, List<DetectionResult>? tickDetections, bool timedOut = false}) async {
     if (_isAnalyzing || !_isModelLoaded || _cameraController == null) {
       _addLog("Capture blocked: analyzing=$_isAnalyzing modelReady=$_isModelLoaded");
       return;
@@ -1298,7 +1434,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       if (mandatoryClasses.isEmpty) _addLog("WARNING: no mandatoryClasses configured — treating all as mandatory");
       _addLog("Pass: ${targetClasses.join(', ')}  Fail: ${failClasses.join(', ')}");
 
-      final allDetections = live
+      // At the timeout the last frame goes through the full image detection (as a photo would).
+      final allDetections = (live && !timedOut)
           ? tickDetections!
           : (orientedImage != null
               ? await ModelManager().predictImage(orientedImage, orientedPngBytes: blurCheck.orientedPngBytes)
@@ -1462,6 +1599,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         };
         _isAnalyzing = false;
       });
+      _feedback(overallPass ? 'ok' : (_hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'notOk' : 'notFound'));
       // A live capture that passed is already final -- show it briefly, then
       // go straight to the next task instead of waiting for a tap.
       if (live && _results[_currentIndex]?['success'] == true) {
@@ -1865,6 +2003,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 children: [
                                   const Text('DEBUG CONSOLE',
                                       style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
+                                  TextButton(
+                                    onPressed: _cycleThreads,
+                                    child: Text('Threads: ${_threadSetting == 0 ? 'auto' : _threadSetting}',
+                                        style: const TextStyle(color: Colors.lightBlueAccent, fontSize: 12)),
+                                  ),
                                   IconButton(
                                     icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 22),
                                     tooltip: 'Clear log',
@@ -2459,6 +2602,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 children: [
                                   const Text('DEBUG CONSOLE',
                                       style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
+                                  TextButton(
+                                    onPressed: _cycleThreads,
+                                    child: Text('Threads: ${_threadSetting == 0 ? 'auto' : _threadSetting}',
+                                        style: const TextStyle(color: Colors.lightBlueAccent, fontSize: 12)),
+                                  ),
                                   IconButton(
                                     icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 22),
                                     tooltip: 'Clear log',
@@ -2712,6 +2860,54 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // above 1 stays a one-line way to bring steadiness back if 1 turns out
   // to trigger on partial/fluke frames in practice.
   static const int _holdTarget = 1;
+
+  // Blur gate: a tick whose frame sharpness (see _frameSharpness) is below _minSharpness is
+  // skipped. At most _maxBlurSkips in a row, so a dark / low-texture scene can never stall
+  // the scan -- after that the frames are processed anyway. Sharpness is printed in the log
+  // so the threshold can be tuned on site.
+  static const double _minSharpness = 2.0;
+  static const int _maxBlurSkips = 4;
+  int _blurSkips = 0;
+
+  /// Cheap sharpness of a stream frame: mean absolute difference between pixels 4 apart (right
+  /// and down) on a sparse grid over the centre of the Y (brightness) plane. Low = blurry.
+  /// Null if the frame cannot be read.
+  double? _frameSharpness(CameraImage frame) {
+    try {
+      final plane = frame.planes[0];
+      final bytes = plane.bytes;
+      final stride = plane.bytesPerRow;
+      final w = frame.width;
+      final h = frame.height;
+      int sum = 0;
+      int n = 0;
+      for (int y = h ~/ 4; y < (h * 3) ~/ 4 - 4; y += 8) {
+        final row = y * stride;
+        for (int x = w ~/ 4; x < (w * 3) ~/ 4 - 4; x += 8) {
+          final v = bytes[row + x];
+          sum += (v - bytes[row + x + 4]).abs() + (v - bytes[row + 4 * stride + x]).abs();
+          n += 2;
+        }
+      }
+      return n == 0 ? null : sum / n;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// True when this tick should be skipped as blurry (and says so in the log).
+  bool _skipBlurryFrame(CameraImage frame) {
+    final sharp = _frameSharpness(frame);
+    if (sharp == null) return false;
+    if (sharp >= _minSharpness) {
+      _blurSkips = 0;
+      return false;
+    }
+    if (_blurSkips >= _maxBlurSkips) return false;
+    _blurSkips++;
+    _addLog('Skipped blurry frame (sharpness ${sharp.toStringAsFixed(1)} < $_minSharpness, $_blurSkips/$_maxBlurSkips)');
+    return true;
+  }
   static const double _watchConfidenceThreshold = 0.55;
   static const Duration _watchInterval = Duration(milliseconds: 100);
   static const Duration _watchTimeout = Duration(seconds: 45);
@@ -3066,12 +3262,15 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           orElse: () => cameras.first);
       final controller = CameraController(
         back,
-        ResolutionPreset.low,
+        ResolutionPreset.high, // 720p: detection runs on a 640-wide downscale of it (see targetWidth)
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
       _cameraController = controller;
       await controller.initialize();
+      // Continuous autofocus + auto exposure, explicitly (not left to the platform default).
+      try { await controller.setFocusMode(FocusMode.auto); } catch (_) {}
+      try { await controller.setExposureMode(ExposureMode.auto); } catch (_) {}
       // "Always on" torch (double-tap on the torch button, shared with the VIN scan):
       // every camera that starts while it is active lights the torch by itself.
       if (TorchSession.alwaysOn) {
@@ -3328,6 +3527,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           continue;
         }
         _consecutiveNullFrameTicks = 0;
+        if (_skipBlurryFrame(frame)) {
+          tickStopwatch.stop();
+          continue;
+        }
         final detections = await ModelManager().predictFrame(_framePayload(frame));
         _lastTickFrame = frame;
         tickStopwatch.stop();
@@ -3528,6 +3731,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           continue;
         }
         _consecutiveNullFrameTicks = 0;
+        if (_skipBlurryFrame(frame)) {
+          tickStopwatch.stop();
+          continue;
+        }
         final detections = await ModelManager().predictFrame(_framePayload(frame));
         _lastTickFrame = frame;
         tickStopwatch.stop();
