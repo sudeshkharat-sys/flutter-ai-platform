@@ -48,6 +48,17 @@ connectivity step below is proven end-to-end.
 `.github/workflows/runner-cam-build.yml`. The app code has not been compiled
 yet -- first CI run will tell.
 
+## Status (step 2: model + stop-on-result) -- written, simulated only
+
+`pc_runner` now runs the YOLO `.pt` on every frame (`inspector.py`) with the phone-app rules (`case_logic.py`):
+OK = all mandatory classes seen and no fail class; NOT OK = a fail class on 2 frames in a row; scan time
+(`scan_seconds`, 45) elapsed = the last frame decides (NOT FOUND if nothing relevant). On a result it STOPS:
+annotated frame frozen on the viewer with a big banner, result + frames saved to `results/`, beep; "Next car"
+button / Space (or `auto_restart_seconds`) starts the next scan. Settings live in `runner_config.json` next to
+the exe (`runner_config.example.json`): model path, imgsz, conf, mandatory, ignored, fail_ticks_needed, ...
+Verified here only with a fake ultralytics (OK / NOT OK / flicker / NOT FOUND / restart paths) and
+`test_case_logic.py`; the real model, the PyInstaller build and a real phone have NOT been run.
+
 ## Staged build order
 
 1. **[CURRENT STEP] Basic connectivity check, phone camera -> PC.**

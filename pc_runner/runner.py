@@ -22,9 +22,13 @@ Endpoints (all on --port):
 UDP broadcast on --beacon-port announces {"app": "runner-cam", ip, port, name}
 every 2 s so the phone can discover this PC without typing an IP.
 
-The only dependencies are fastapi + uvicorn (no OpenCV): JPEG validity and
-size are checked by parsing the JPEG header directly, which keeps the .exe
-small and removes the GUI/threading failures an OpenCV window caused before.
+v0.3: model inference (see inspector.py / case_logic.py). With ultralytics installed and a
+runner_config.json next to the exe, every frame runs through the YOLO .pt model, the case rules
+decide OK / NOT OK / NOT FOUND, and the scan STOPS with the result on screen, saved to results/
+and a beep. Without ultralytics the runner is a plain video viewer. JPEG validity and size are
+still checked by parsing the JPEG header directly; there is no OpenCV window.
+
+    GET  /api/inspection   state / result / detections       POST /api/restart   next car
 """
 
 import argparse
@@ -44,7 +48,9 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
-VERSION = "0.2.0"
+from inspector import Inspector, load_config
+
+VERSION = "0.3.0"
 APP_ID = "runner-cam"
 HOSTNAME = socket.gethostname()
 
@@ -173,6 +179,7 @@ class Camera:
         }
 
 
+INSPECTOR = None  # inspector.Inspector, created in main()
 CAMERAS = {}  # name -> Camera
 FRAME_EVENT = None  # asyncio.Event, set on every new frame (created on loop start)
 PORT = 8090
@@ -193,6 +200,14 @@ def pick_camera(name=None):
         return CAMERAS[name]
     live = [c for c in CAMERAS.values() if c.latest]
     return max(live, key=lambda c: c.last_frame_at) if live else None
+
+
+def display_frame(cam):
+    """What the viewer shows: the annotated frame while the inspector is scanning / done (so the
+    boxes and the result stay on screen), otherwise the phone's raw latest frame."""
+    if INSPECTOR is not None and INSPECTOR.state in ("scanning", "done") and INSPECTOR.display:
+        return INSPECTOR.display
+    return cam.latest if cam else None
 
 
 # ------------------------------------------------------------- websocket --
@@ -283,7 +298,22 @@ async def snapshot(cam: str = None):
     c = pick_camera(cam)
     if not c:
         return Response("no camera has sent a frame yet", status_code=404)
-    return Response(c.latest, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    return Response(display_frame(c), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/inspection")
+async def api_inspection():
+    if INSPECTOR is None:
+        return {"state": "no_model", "message": "inspector not started"}
+    return INSPECTOR.status()
+
+
+@app.post("/api/restart")
+async def api_restart():
+    if INSPECTOR is None:
+        return JSONResponse({"ok": False, "error": "inspector not started"}, status_code=409)
+    INSPECTOR.restart()
+    return {"ok": True}
 
 
 @app.get("/video")
@@ -291,15 +321,12 @@ async def video(cam: str = None):
     async def gen():
         last = None
         while True:
-            c = pick_camera(cam)
-            if c and c.latest is not None and c.latest is not last:
-                last = c.latest
+            frame = display_frame(pick_camera(cam))
+            if frame is not None and frame is not last:
+                last = frame
                 yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
                        + str(len(last)).encode() + b"\r\n\r\n" + last + b"\r\n")
-            try:
-                await asyncio.wait_for(FRAME_EVENT.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                pass
+            await asyncio.sleep(0.03)
 
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
@@ -316,8 +343,12 @@ main{display:flex;flex-wrap:wrap;gap:16px;padding:16px}
 pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-height:340px;font-size:12px;margin:0}
 table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #333;padding:3px 6px;text-align:left}
 .ok{color:#6f6}.bad{color:#f66}button{padding:6px 10px}
+#banner{padding:14px 16px;font-size:28px;font-weight:700;color:#fff;background:#444;display:flex;gap:16px;align-items:center}
+#banner small{font-size:14px;font-weight:400;flex:1}
+#banner button{font-size:18px;padding:8px 18px}
 </style>
 <header>Runner Cam <span id=ver></span></header>
+<div id=banner><span id=res>...</span><small id=insp></small><button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button></div>
 <main>
 <div id=feed><img id=v src="/video"><div id=nofeed class=bad></div></div>
 <div id=side>
@@ -336,12 +367,19 @@ async function tick(){
    '<tr><td>'+c.name+'<td>'+c.fps+'<td>'+(c.size||'-')+'<td>'+c.frames+'<td>'+c.bad_frames+
    '<td class='+(c.online?'ok':'bad')+'>'+(c.online?'live':'offline')).join('');
   nofeed.textContent=s.cameras.length?'':'Waiting for a phone... open Runner Cam on the phone and tap Scan.';
+  const i=await (await fetch('/api/inspection')).json();
+  const col={'OK':'#1a8f3a','NOT OK':'#c62828','NOT FOUND':'#ef6c00'};
+  res.textContent=i.result||(i.state==='scanning'?'SCANNING '+(i.seconds_left??''):(i.state==='waiting'?'READY':(i.state==='no_model'?'VIDEO ONLY':'...')));
+  banner.style.background=col[i.result]||(i.state==='scanning'?'#0b6fa4':'#444');
+  insp.textContent=(i.message||'')+(i.infer_ms?'  |  '+i.infer_ms+' ms':'')+(i.detections&&i.detections.length?'  |  '+i.detections.map(d=>d.name+' '+Math.round(d.conf*100)+'%').join(', '):'');
+  nextbtn.style.display=i.state==='done'?'':'none';
   const l=await (await fetch('/api/log?n=200')).json();
   const atEnd=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
   log.textContent=l.join('\\n'); if(atEnd)log.scrollTop=log.scrollHeight;
  }catch(e){nofeed.textContent='lost connection to runner: '+e}
 }
 setInterval(tick,1000);tick();
+document.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();fetch('/api/restart',{method:'POST'})}});
 </script>"""
 
 
@@ -393,6 +431,8 @@ def main():
     ap.add_argument("--beacon-port", type=int, default=8091)
     ap.add_argument("--no-debug", action="store_true", help="quieter logs")
     ap.add_argument("--no-browser", action="store_true", help="do not open the viewer")
+    ap.add_argument("--config", default=None, help="path to runner_config.json (default: next to the exe)")
+    ap.add_argument("--no-inspect", action="store_true", help="video viewer only, no model")
     args = ap.parse_args()
     DEBUG = not args.no_debug
 
@@ -419,6 +459,12 @@ def main():
         log("  NO NETWORK ADDRESS FOUND -- connect this PC to Wi-Fi / the phone hotspot", "ERROR")
     log("  Windows firewall popup? Click 'Allow' (private networks).")
     log("=" * 56)
+
+    global INSPECTOR
+    if not args.no_inspect:
+        cfg = load_config(args.config or os.path.join(app_dir(), "runner_config.json"), log)
+        INSPECTOR = Inspector(cfg, app_dir(), log, pick_camera)
+        INSPECTOR.start()
 
     threading.Thread(target=beacon_loop, args=(port, args.beacon_port), daemon=True).start()
     if not args.no_browser:

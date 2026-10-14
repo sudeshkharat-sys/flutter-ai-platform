@@ -1,0 +1,21 @@
+{
+  "model": "best.pt",
+  "imgsz": 640,
+  "conf": 0.5,
+  "device": "cpu",
+  "mandatory": [
+    "RHS_Closed",
+    "LHS_Closed"
+  ],
+  "ignored": [
+    "Max_reg"
+  ],
+  "fail_ticks_needed": 2,
+  "pass_ticks_needed": 1,
+  "scan_seconds": 45,
+  "auto_restart_seconds": 0,
+  "results_dir": "results",
+  "save_images": true,
+  "beep": true,
+  "_help": "mandatory = classes that must ALL be seen for OK (empty = every model class). ignored = classes that never count. Any other class seen = NOT OK. model is a path to the .pt file (relative paths are next to runner.exe)."
+}
