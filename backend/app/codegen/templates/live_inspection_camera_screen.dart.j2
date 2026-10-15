@@ -867,10 +867,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // empty scene cannot fill the phone.
   DateTime? _lastMissSave;
   int _missSaves = 0;
-  void _saveMissTickFrame(CameraImage frame) {
+  void _saveMissTickFrame(CameraImage frame, String tag) {
     final now = DateTime.now();
-    if (_missSaves >= 40) return;
-    if (_lastMissSave != null && now.difference(_lastMissSave!).inMilliseconds < 1500) return;
+    // TESTING MODE: every tick frame is saved (no throttle, no cap).
     _lastMissSave = now;
     _missSaves++;
     final String vin = widget.vin;
@@ -886,8 +885,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         final dir = Directory('/storage/emulated/0/Pictures/MAI/$appName/NegativeDataset/$safeVin/$safeTask/Ticks');
         await dir.create(recursive: true);
         final ts = now.toIso8601String().replaceAll(RegExp(r'[^0-9T]'), '').replaceAll('T', '_');
-        await File('${dir.path}/None_tick_$ts.jpg').writeAsBytes(jpeg, flush: true);
-        _addLog('Negative tick frame saved (nothing detected): ${dir.path}');
+        await File('${dir.path}/${tag}_tick_${_missSaves}_$ts.jpg').writeAsBytes(jpeg, flush: true);
+        _addLog('Tick frame saved: ${dir.path}');
       } catch (e) {
         _addLog('Negative tick frame save FAILED: $e');
       }
@@ -1291,7 +1290,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%'
                 '${d.classifierLabel != null ? ' [cls ${d.classifierLabel} ${((d.classifierConfidence ?? 0) * 100).toStringAsFixed(0)}%]' : ''}').join(', ');
         _addLog("Watch tick: ${_tickTiming(tickStopwatch.elapsedMilliseconds)} | ${detections.length} detections ($tickSummary)");
-        if (detections.isEmpty) _saveMissTickFrame(frame);
+        _saveMissTickFrame(frame, detections.isEmpty ? 'None' : 'Seen');
         // Drawn live over the preview below -- without this the feed looks
         // static for the whole hold-steady countdown even while it's
         // actually seeing and tracking the part.
@@ -3439,10 +3438,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // empty scene cannot fill the phone.
   DateTime? _lastMissSave;
   int _missSaves = 0;
-  void _saveMissTickFrame(CameraImage frame) {
+  void _saveMissTickFrame(CameraImage frame, String tag) {
     final now = DateTime.now();
-    if (_missSaves >= 40) return;
-    if (_lastMissSave != null && now.difference(_lastMissSave!).inMilliseconds < 1500) return;
+    // TESTING MODE: every tick frame is saved (no throttle, no cap).
     _lastMissSave = now;
     _missSaves++;
     final String vin = widget.vin;
@@ -3458,8 +3456,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         final dir = Directory('/storage/emulated/0/Pictures/MAI/$appName/NegativeDataset/$safeVin/$safeTask/Ticks');
         await dir.create(recursive: true);
         final ts = now.toIso8601String().replaceAll(RegExp(r'[^0-9T]'), '').replaceAll('T', '_');
-        await File('${dir.path}/None_tick_$ts.jpg').writeAsBytes(jpeg, flush: true);
-        _addLog('Negative tick frame saved (nothing detected): ${dir.path}');
+        await File('${dir.path}/${tag}_tick_${_missSaves}_$ts.jpg').writeAsBytes(jpeg, flush: true);
+        _addLog('Tick frame saved: ${dir.path}');
       } catch (e) {
         _addLog('Negative tick frame save FAILED: $e');
       }
@@ -3842,7 +3840,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             ? 'none'
             : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%').join(', ');
         _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections ($tickSummary)");
-        if (detections.isEmpty) _saveMissTickFrame(frame);
+        _saveMissTickFrame(frame, detections.isEmpty ? 'None' : 'Seen');
 
         final currentTask = widget.tasks[_currentIndex];
         final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
