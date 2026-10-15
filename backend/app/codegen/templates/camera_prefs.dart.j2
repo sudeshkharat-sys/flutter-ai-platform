@@ -26,12 +26,13 @@ class CameraPrefs {
 
   static const String _autofocusKey = 'camera_autofocus';
 
-  /// Continuous autofocus on the inspection cameras (default on).
+  /// Photo inspection autofocus (default off = camera untouched, as before).
+  /// The live inspection always forces autofocus regardless of this.
   static Future<bool> getAutofocus() async {
     try {
-      return (await SharedPreferences.getInstance()).getBool(_autofocusKey) ?? true;
+      return (await SharedPreferences.getInstance()).getBool(_autofocusKey) ?? false;
     } catch (_) {
-      return true;
+      return false;
     }
   }
 
@@ -41,11 +42,10 @@ class CameraPrefs {
     } catch (_) {}
   }
 
-  /// Applies the saved autofocus choice to a started camera.
+  /// Photo camera: autofocus only when the setting is on; off leaves the camera as it was.
   static Future<void> applyFocus(dynamic controller) async {
     try {
-      final on = await getAutofocus();
-      await controller.setFocusMode(on ? FocusMode.auto : FocusMode.locked);
+      if (await getAutofocus()) await controller.setFocusMode(FocusMode.auto);
     } catch (_) {}
   }
 

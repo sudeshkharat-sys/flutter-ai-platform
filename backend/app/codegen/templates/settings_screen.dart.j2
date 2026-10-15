@@ -19,7 +19,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   int _threads = 0;
-  bool _autofocus = true;
+  bool _autofocus = false;
   int _unsynced = 0;
 
   @override
@@ -102,7 +102,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: SwitchListTile(
               secondary: const Icon(Icons.center_focus_strong, color: _crimson),
               title: const Text('Autofocus', style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Off = focus stays locked while inspecting'),
+              subtitle: const Text('Photo inspection. Off = camera works as before. Live always uses autofocus.'),
               value: _autofocus,
               activeColor: _crimson,
               onChanged: (v) async {

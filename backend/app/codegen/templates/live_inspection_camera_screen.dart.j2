@@ -760,7 +760,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _cameraController = controller;
       await controller.initialize();
       // Continuous autofocus + auto exposure, explicitly (not left to the platform default).
-      await CameraPrefs.applyFocus(controller);
+      try { await controller.setFocusMode(FocusMode.auto); } catch (_) {}
       try { await controller.setExposureMode(ExposureMode.auto); } catch (_) {}
       // "Always on" torch (double-tap on the torch button, shared with the VIN scan):
       // every camera that starts while it is active lights the torch by itself.
@@ -3331,7 +3331,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _cameraController = controller;
       await controller.initialize();
       // Continuous autofocus + auto exposure, explicitly (not left to the platform default).
-      await CameraPrefs.applyFocus(controller);
+      try { await controller.setFocusMode(FocusMode.auto); } catch (_) {}
       try { await controller.setExposureMode(ExposureMode.auto); } catch (_) {}
       // "Always on" torch (double-tap on the torch button, shared with the VIN scan):
       // every camera that starts while it is active lights the torch by itself.
