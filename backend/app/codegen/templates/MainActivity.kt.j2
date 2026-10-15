@@ -1,6 +1,12 @@
 package {{ package_name }}
 
 import android.content.Context
+import android.content.Intent
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.net.Uri
+import android.provider.OpenableColumns
+import java.io.File
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
@@ -14,6 +20,36 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity: FlutterActivity() {
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var pendingPick: MethodChannel.Result? = null
+    private var pendingSlot: String = "ok"
+    private var tonePlayer: MediaPlayer? = null
+    private val PICK_TONE = 4711
+
+    /// Copies the picked sound into the app's own storage (a content:// uri may stop
+    /// working later) and returns "path|display name", or null if it could not be read.
+    private fun importTone(uri: Uri, slot: String): String? {
+        val name = contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+        } ?: "tone"
+        val dir = File(filesDir, "tones"); dir.mkdirs()
+        val dest = File(dir, "$slot-" + System.currentTimeMillis())
+        contentResolver.openInputStream(uri)?.use { input -> dest.outputStream().use { input.copyTo(it) } } ?: return null
+        dir.listFiles()?.filter { it.name.startsWith("$slot-") && it != dest }?.forEach { it.delete() }
+        return dest.absolutePath + "|" + name
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == PICK_TONE) {
+            val res = pendingPick; pendingPick = null
+            val uri = data?.data
+            if (resultCode == RESULT_OK && uri != null) {
+                try { res?.success(importTone(uri, pendingSlot)) } catch (e: Exception) { res?.error("pick", e.message, null) }
+            } else res?.success(null)
+            return
+        }
+        super.onActivityResult(requestCode, resultCode, data)
+    }
 
     private fun vibrator(): Vibrator? =
         if (Build.VERSION.SDK_INT >= 31)
@@ -52,6 +88,30 @@ class MainActivity: FlutterActivity() {
                             val tg = ToneGenerator(AudioManager.STREAM_ALARM, 100)
                             tg.startTone(tone, ms)
                             android.os.Handler(mainLooper).postDelayed({ tg.release() }, (ms + 200).toLong())
+                            result.success(null)
+                        }
+                        "pickTone" -> {
+                            pendingSlot = call.argument<String>("slot") ?: "ok"
+                            pendingPick = result
+                            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                                addCategory(Intent.CATEGORY_OPENABLE)
+                                type = "audio/*"
+                            }
+                            startActivityForResult(intent, PICK_TONE)
+                        }
+                        "playFile" -> {
+                            val path = call.argument<String>("path")
+                            tonePlayer?.release()
+                            tonePlayer = MediaPlayer().apply {
+                                setAudioAttributes(AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_ALARM)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                                setDataSource(path)
+                                setVolume(1f, 1f)
+                                setOnCompletionListener { it.release(); if (tonePlayer === it) tonePlayer = null }
+                                prepare()
+                                start()
+                            }
                             result.success(null)
                         }
                         else -> result.notImplemented()

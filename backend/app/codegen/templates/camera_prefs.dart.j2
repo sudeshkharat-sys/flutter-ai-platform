@@ -90,6 +90,41 @@ class ResultFeedback {
     try { await (await SharedPreferences.getInstance()).setBool(_soundKey, on); } catch (_) {}
   }
 
+  // Custom sound per outcome ('ok' / 'notOk'), picked from the phone's storage and copied
+  // into the app. Stored as 'path|display name'.
+  static Future<String?> getCustomTone(String slot) async {
+    try { return (await SharedPreferences.getInstance()).getString('feedback_tone_$slot'); } catch (_) { return null; }
+  }
+  static Future<void> setCustomTone(String slot, String? v) async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      if (v == null) { await sp.remove('feedback_tone_$slot'); } else { await sp.setString('feedback_tone_$slot', v); }
+    } catch (_) {}
+  }
+
+  /// Opens the system file picker for an audio file. Returns 'path|name' or null if cancelled.
+  static Future<String?> pickTone(String slot) async {
+    try {
+      final r = await _ch.invokeMethod<String>('pickTone', {'slot': slot});
+      if (r != null) await setCustomTone(slot, r);
+      return r;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Plays the chosen file for [slot]; returns false if there is none (or it failed).
+  static Future<bool> _playCustom(String slot) async {
+    final v = await getCustomTone(slot);
+    if (v == null) return false;
+    try {
+      await _ch.invokeMethod('playFile', {'path': v.split('|').first});
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // Tone names, mapped to android.media.ToneGenerator constants in MainActivity.
   static const String _toneAck = 'ack';        // OK: happy two-tone
   static const String _toneNack = 'nack';      // not found
@@ -103,10 +138,10 @@ class ResultFeedback {
     try {
       if (outcome == 'ok') {
         if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 600]}));
-        if (snd) await _ch.invokeMethod('tone', {'tone': _toneAck, 'ms': 500});
+        if (snd && !await _playCustom('ok')) await _ch.invokeMethod('tone', {'tone': _toneAck, 'ms': 500});
       } else if (outcome == 'notOk') {
         if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 250, 150, 250, 150, 250]}));
-        if (snd) {
+        if (snd && !await _playCustom('notOk')) {
           for (var i = 0; i < 3; i++) {
             await _ch.invokeMethod('tone', {'tone': _toneAlert, 'ms': 250});
             await Future.delayed(const Duration(milliseconds: 400));
