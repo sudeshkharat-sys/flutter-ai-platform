@@ -90,10 +90,10 @@ class ResultFeedback {
     try { await (await SharedPreferences.getInstance()).setBool(_soundKey, on); } catch (_) {}
   }
 
-  // android.media.ToneGenerator constants.
-  static const int _toneAck = 37;      // TONE_PROP_ACK  (OK: happy two-tone)
-  static const int _toneNack = 38;     // TONE_PROP_NACK (not found)
-  static const int _toneAlert = 97;    // TONE_CDMA_ALERT_CALL_GUARD (not OK: harsh)
+  // Tone names, mapped to android.media.ToneGenerator constants in MainActivity.
+  static const String _toneAck = 'ack';        // OK: happy two-tone
+  static const String _toneNack = 'nack';      // not found
+  static const String _toneAlert = 'alert';    // NOT OK: harsh
 
   /// [outcome]: 'ok' = one long buzz + happy tone, 'notOk' = three short buzzes + harsh tones,
   /// 'notFound' = two medium buzzes + low tones.

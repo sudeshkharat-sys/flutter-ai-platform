@@ -42,7 +42,12 @@ class MainActivity: FlutterActivity() {
                             result.success(null)
                         }
                         "tone" -> {
-                            val tone = call.argument<Int>("tone") ?: ToneGenerator.TONE_PROP_BEEP
+                            val tone = when (call.argument<String>("tone")) {
+                                "ack" -> ToneGenerator.TONE_PROP_ACK
+                                "nack" -> ToneGenerator.TONE_PROP_NACK
+                                "alert" -> ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD
+                                else -> ToneGenerator.TONE_PROP_BEEP
+                            }
                             val ms = call.argument<Int>("ms") ?: 300
                             val tg = ToneGenerator(AudioManager.STREAM_ALARM, 100)
                             tg.startTone(tone, ms)
