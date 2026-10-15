@@ -76,7 +76,7 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
 Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
   final image = ModelManager.yuvFrameToImage(args);
   if (image == null) return null;
-  return Uint8List.fromList(img.encodeJpg(image, quality: 90));
+  return Uint8List.fromList(img.encodeJpg(image, quality: (args['quality'] as int?) ?? 90));
 }
 
 class LiveInspectionCameraScreen extends StatefulWidget {
@@ -877,7 +877,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final String taskName = '${task['name'] ?? task['taskName'] ?? 'task'}';
     unawaited(() async {
       try {
-        final Uint8List? jpeg = await _frameToJpeg(frame);
+        // Full camera resolution (no downscale) at high quality: these are for training.
+        final Map<String, dynamic> payload = _framePayload(frame);
+        payload['targetWidth'] = 100000;
+        payload['quality'] = 95;
+        final Uint8List? jpeg = await compute(_convertCameraFrameToJpeg, payload);
         if (jpeg == null) return;
         final safeVin = vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
         final safeTask = taskName.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
@@ -2856,7 +2860,7 @@ _BlurCheckResult _decodeAndCheckBlur(Uint8List bytes) {
 Uint8List? _convertCameraFrameToJpeg(Map<String, dynamic> args) {
   final image = ModelManager.yuvFrameToImage(args);
   if (image == null) return null;
-  return Uint8List.fromList(img.encodeJpg(image, quality: 90));
+  return Uint8List.fromList(img.encodeJpg(image, quality: (args['quality'] as int?) ?? 90));
 }
 
 class LiveInspectionCameraScreen extends StatefulWidget {
@@ -3448,7 +3452,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final String taskName = '${task['name'] ?? task['taskName'] ?? 'task'}';
     unawaited(() async {
       try {
-        final Uint8List? jpeg = await _frameToJpeg(frame);
+        // Full camera resolution (no downscale) at high quality: these are for training.
+        final Map<String, dynamic> payload = _framePayload(frame);
+        payload['targetWidth'] = 100000;
+        payload['quality'] = 95;
+        final Uint8List? jpeg = await compute(_convertCameraFrameToJpeg, payload);
         if (jpeg == null) return;
         final safeVin = vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
         final safeTask = taskName.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
