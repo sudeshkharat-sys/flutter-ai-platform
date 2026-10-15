@@ -869,7 +869,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   int _missSaves = 0;
   void _saveMissTickFrame(CameraImage frame, String tag) {
     final now = DateTime.now();
-    // TESTING MODE: every tick frame is saved (no throttle, no cap).
+    // Only failed ticks reach here; saved without throttle or cap (testing).
     _lastMissSave = now;
     _missSaves++;
     final String vin = widget.vin;
@@ -1295,7 +1295,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%'
                 '${d.classifierLabel != null ? ' [cls ${d.classifierLabel} ${((d.classifierConfidence ?? 0) * 100).toStringAsFixed(0)}%]' : ''}').join(', ');
         _addLog("Watch tick: ${_tickTiming(tickStopwatch.elapsedMilliseconds)} | ${detections.length} detections ($tickSummary)");
-        _saveMissTickFrame(frame, detections.isEmpty ? 'None' : 'Seen');
         // Drawn live over the preview below -- without this the feed looks
         // static for the whole hold-steady countdown even while it's
         // actually seeing and tracking the part.
@@ -1324,6 +1323,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                 : null,
         };
         final bool tickPass = _allMandatoryPassed(tickMandatory, confidentDetections, failClasses, ignoredClasses);
+        // Negative dataset: only ticks where the model failed (a mandatory class missing, or a
+        // fail class in view), saved as the exact detector frame.
+        if (!tickPass) {
+          final missing = tickMandatory.entries.where((e) => e.value == null).map((e) => e.key).join('+');
+          _saveMissTickFrame(frame, detections.isEmpty ? 'None' : (missing.isEmpty ? 'FailClass' : 'Missing-$missing'));
+        }
 
         if (!mounted || !_watchActive) return;
         if (_taskUsesClassifier(currentTask)) {
@@ -3445,7 +3450,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   int _missSaves = 0;
   void _saveMissTickFrame(CameraImage frame, String tag) {
     final now = DateTime.now();
-    // TESTING MODE: every tick frame is saved (no throttle, no cap).
+    // Only failed ticks reach here; saved without throttle or cap (testing).
     _lastMissSave = now;
     _missSaves++;
     final String vin = widget.vin;
@@ -3850,7 +3855,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             ? 'none'
             : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%').join(', ');
         _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections ($tickSummary)");
-        _saveMissTickFrame(frame, detections.isEmpty ? 'None' : 'Seen');
 
         final currentTask = widget.tasks[_currentIndex];
         final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);
@@ -3868,6 +3872,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         if (mounted) {
           setState(() => _liveTickDetections = match.toList());
         }
+
+        // Negative dataset: ticks where the model did not find the target.
+        if (match.isEmpty) _saveMissTickFrame(frame, detections.isEmpty ? 'None' : 'Miss');
 
         if (!mounted || !_watchActive) return;
         if (match.isNotEmpty) {
