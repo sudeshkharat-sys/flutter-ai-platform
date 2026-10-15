@@ -877,9 +877,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final String taskName = '${task['name'] ?? task['taskName'] ?? 'task'}';
     unawaited(() async {
       try {
-        // Full camera resolution (no downscale) at high quality: these are for training.
+        // The exact picture the detector sees (same payload as predictFrame: camera zoom
+        // applied, same rotation and 640px downscale), at high JPEG quality, so training
+        // images match what the model gets at inference.
         final Map<String, dynamic> payload = _framePayload(frame);
-        payload['targetWidth'] = 100000;
         payload['quality'] = 95;
         final Uint8List? jpeg = await compute(_convertCameraFrameToJpeg, payload);
         if (jpeg == null) return;
@@ -3452,9 +3453,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final String taskName = '${task['name'] ?? task['taskName'] ?? 'task'}';
     unawaited(() async {
       try {
-        // Full camera resolution (no downscale) at high quality: these are for training.
+        // The exact picture the detector sees (same payload as predictFrame: camera zoom
+        // applied, same rotation and 640px downscale), at high JPEG quality, so training
+        // images match what the model gets at inference.
         final Map<String, dynamic> payload = _framePayload(frame);
-        payload['targetWidth'] = 100000;
         payload['quality'] = 95;
         final Uint8List? jpeg = await compute(_convertCameraFrameToJpeg, payload);
         if (jpeg == null) return;
