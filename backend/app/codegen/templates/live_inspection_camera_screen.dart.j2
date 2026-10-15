@@ -861,6 +861,39 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   Future<Uint8List?> _frameToJpeg(CameraImage frame) =>
       compute(_convertCameraFrameToJpeg, _framePayload(frame));
 
+  // Negative-dataset frames from watch ticks that saw nothing: the torch/lighting
+  // can make a part visible to the eye but invisible to the model, and those are
+  // exactly the frames worth training on. Throttled + capped so a long hold on an
+  // empty scene cannot fill the phone.
+  DateTime? _lastMissSave;
+  int _missSaves = 0;
+  void _saveMissTickFrame(CameraImage frame) {
+    final now = DateTime.now();
+    if (_missSaves >= 40) return;
+    if (_lastMissSave != null && now.difference(_lastMissSave!).inMilliseconds < 1500) return;
+    _lastMissSave = now;
+    _missSaves++;
+    final String vin = widget.vin;
+    final Map<String, dynamic> task = widget.tasks[_currentIndex];
+    final String taskName = '${task['name'] ?? task['taskName'] ?? 'task'}';
+    unawaited(() async {
+      try {
+        final Uint8List? jpeg = await _frameToJpeg(frame);
+        if (jpeg == null) return;
+        final safeVin = vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final safeTask = taskName.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final appName = '{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final dir = Directory('/storage/emulated/0/Pictures/MAI/$appName/NegativeDataset/$safeVin/$safeTask/Ticks');
+        await dir.create(recursive: true);
+        final ts = now.toIso8601String().replaceAll(RegExp(r'[^0-9T]'), '').replaceAll('T', '_');
+        await File('${dir.path}/None_tick_$ts.jpg').writeAsBytes(jpeg, flush: true);
+        _addLog('Negative tick frame saved (nothing detected): ${dir.path}');
+      } catch (e) {
+        _addLog('Negative tick frame save FAILED: $e');
+      }
+    }());
+  }
+
   /// Cheap per-frame callback for CameraController.startImageStream --
   /// just remembers the latest frame. The actual conversion+inference work
   /// happens on the watch/sim tick's own cadence (see _watchLoop /
@@ -1258,6 +1291,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%'
                 '${d.classifierLabel != null ? ' [cls ${d.classifierLabel} ${((d.classifierConfidence ?? 0) * 100).toStringAsFixed(0)}%]' : ''}').join(', ');
         _addLog("Watch tick: ${_tickTiming(tickStopwatch.elapsedMilliseconds)} | ${detections.length} detections ($tickSummary)");
+        if (detections.isEmpty) _saveMissTickFrame(frame);
         // Drawn live over the preview below -- without this the feed looks
         // static for the whole hold-steady countdown even while it's
         // actually seeing and tracking the part.
@@ -3399,6 +3433,39 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   Future<Uint8List?> _frameToJpeg(CameraImage frame) =>
       compute(_convertCameraFrameToJpeg, _framePayload(frame));
 
+  // Negative-dataset frames from watch ticks that saw nothing: the torch/lighting
+  // can make a part visible to the eye but invisible to the model, and those are
+  // exactly the frames worth training on. Throttled + capped so a long hold on an
+  // empty scene cannot fill the phone.
+  DateTime? _lastMissSave;
+  int _missSaves = 0;
+  void _saveMissTickFrame(CameraImage frame) {
+    final now = DateTime.now();
+    if (_missSaves >= 40) return;
+    if (_lastMissSave != null && now.difference(_lastMissSave!).inMilliseconds < 1500) return;
+    _lastMissSave = now;
+    _missSaves++;
+    final String vin = widget.vin;
+    final Map<String, dynamic> task = widget.tasks[_currentIndex];
+    final String taskName = '${task['name'] ?? task['taskName'] ?? 'task'}';
+    unawaited(() async {
+      try {
+        final Uint8List? jpeg = await _frameToJpeg(frame);
+        if (jpeg == null) return;
+        final safeVin = vin.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final safeTask = taskName.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final appName = '{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+        final dir = Directory('/storage/emulated/0/Pictures/MAI/$appName/NegativeDataset/$safeVin/$safeTask/Ticks');
+        await dir.create(recursive: true);
+        final ts = now.toIso8601String().replaceAll(RegExp(r'[^0-9T]'), '').replaceAll('T', '_');
+        await File('${dir.path}/None_tick_$ts.jpg').writeAsBytes(jpeg, flush: true);
+        _addLog('Negative tick frame saved (nothing detected): ${dir.path}');
+      } catch (e) {
+        _addLog('Negative tick frame save FAILED: $e');
+      }
+    }());
+  }
+
   /// Cheap per-frame callback for CameraController.startImageStream --
   /// just remembers the latest frame. The actual conversion+inference work
   /// happens on the watch/sim tick's own cadence (see _watchLoop /
@@ -3775,6 +3842,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             ? 'none'
             : detections.map((d) => '${d.className} ${(d.confidence * 100).toStringAsFixed(0)}%').join(', ');
         _addLog("Watch tick: ${tickStopwatch.elapsedMilliseconds}ms, ${detections.length} detections ($tickSummary)");
+        if (detections.isEmpty) _saveMissTickFrame(frame);
 
         final currentTask = widget.tasks[_currentIndex];
         final List<String> targetClasses = List<String>.from(currentTask['classes'] ?? []);

@@ -158,9 +158,25 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       if (mounted) setState(() {});
     }
     if (!_torchWanted) return;
-    await Future.delayed(const Duration(milliseconds: 200));
-    if (mounted && _torchWanted && _scannerController.torchState.value != TorchState.on) {
-      await _scannerController.toggleTorch();
+    // After stop()/start() (e.g. coming back from an inspection for the next VIN)
+    // the camera is physically dark but torchState can still say "on" -- so do
+    // not trust it. Wait for the camera to settle, force the listenable to the
+    // real (off) state, then switch the torch on and verify once.
+    await Future.delayed(const Duration(milliseconds: 600));
+    if (!mounted || !_torchWanted) return;
+    if (_scannerController.torchState.value == TorchState.on) {
+      try {
+        await _scannerController.toggleTorch();   // stale "on" -> off
+        await Future.delayed(const Duration(milliseconds: 150));
+      } catch (_) {}
+    }
+    for (int attempt = 0; attempt < 2; attempt++) {
+      if (!mounted || !_torchWanted) return;
+      if (_scannerController.torchState.value == TorchState.on) return;
+      try {
+        await _scannerController.toggleTorch();
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 400));
     }
   }
 
