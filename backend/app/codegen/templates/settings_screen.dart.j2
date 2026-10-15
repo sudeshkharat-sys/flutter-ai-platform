@@ -1,0 +1,118 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import '../ml/detector.dart';
+import '../services/camera_prefs.dart';
+import '../services/sync_service.dart';
+import 'sync_screen.dart';
+
+const _crimson = Color(0xFFDC143C);
+
+/// App settings: sending data to the PC / shop WiFi, TFLite CPU threads (used by
+/// both the photo and the live inspection) and camera autofocus. Everything is
+/// remembered on the phone and applied the next time a camera / model starts.
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  int _threads = 0;
+  bool _autofocus = true;
+  int _unsynced = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final t = await CameraPrefs.getThreads();
+    final af = await CameraPrefs.getAutofocus();
+    final n = await SyncService.instance.getUnsyncedCount();
+    if (mounted) setState(() { _threads = t; _autofocus = af; _unsynced = n; });
+  }
+
+  Future<void> _setThreads(int t) async {
+    setState(() => _threads = t);
+    await CameraPrefs.setThreads(t);
+    await ModelManager().setCpuThreads(t);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final int cores = Platform.numberOfProcessors;
+    final options = <int>[0, 2, 4, 6, 8].where((t) => t == 0 || t <= cores).toList();
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F7F7),
+      appBar: AppBar(
+        backgroundColor: _crimson,
+        foregroundColor: Colors.white,
+        title: const Text('Settings', style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.wifi, color: _crimson),
+              title: const Text('PC & WiFi', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text(_unsynced > 0
+                  ? '$_unsynced inspection(s) waiting to be sent'
+                  : 'Pair a PC, shop WiFi, send data'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                await Navigator.push(context, MaterialPageRoute(builder: (_) => const SyncScreen()));
+                _load();
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('CPU threads (detection)', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  Text('Photo and live inspection. Auto uses ${ModelManager.cpuThreads == 0 ? ModelManager.effectiveThreads() : 'the chosen number of'} of $cores cores.',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      for (final t in options)
+                        ChoiceChip(
+                          label: Text(t == 0 ? 'Auto' : '$t'),
+                          selected: _threads == t,
+                          selectedColor: _crimson.withOpacity(0.2),
+                          onSelected: (_) => _setThreads(t),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: SwitchListTile(
+              secondary: const Icon(Icons.center_focus_strong, color: _crimson),
+              title: const Text('Autofocus', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Off = focus stays locked while inspecting'),
+              value: _autofocus,
+              activeColor: _crimson,
+              onChanged: (v) async {
+                setState(() => _autofocus = v);
+                await CameraPrefs.setAutofocus(v);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

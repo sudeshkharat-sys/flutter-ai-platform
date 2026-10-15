@@ -12,6 +12,7 @@ import 'home_screen.dart';
 import 'history_screen.dart';
 import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
+import 'settings_screen.dart';
 import '../services/sync_service.dart';
 import '../database/database.dart';
 {% if is_ocr_app %}
@@ -849,7 +850,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
                         // (on top of the QR scanner's own start delay)
                         // makes that race much less likely to be hit at all.
                         await Future.delayed(const Duration(milliseconds: 300));
-                        await Navigator.push(context, MaterialPageRoute(builder: (_) => const SyncScreen()));
+                        await Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
                         if (mounted) {
                           await _restartScanner();
                         }
@@ -860,7 +861,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
                         child: Stack(
                           clipBehavior: Clip.none,
                           children: [
-                            const Icon(Icons.sync, color: Colors.white, size: 26),
+                            const Icon(Icons.settings, color: Colors.white, size: 26),
                             if (_unsyncedCount > 0)
                               Positioned(
                                 right: -4,

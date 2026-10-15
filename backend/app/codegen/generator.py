@@ -540,6 +540,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "lib/screens/history_screen.dart": "history_screen.dart.j2",
         "lib/screens/printer_discovery_screen.dart": "printer_discovery_screen.dart.j2",
         "lib/screens/sync_screen.dart": "sync_screen.dart.j2",
+        "lib/screens/settings_screen.dart": "settings_screen.dart.j2",
         "lib/services/print_service.dart": "print_service.dart.j2",
         "lib/services/sync_service.dart": "sync_service.dart.j2",
         "lib/services/wifi_service.dart": "wifi_service.dart.j2",

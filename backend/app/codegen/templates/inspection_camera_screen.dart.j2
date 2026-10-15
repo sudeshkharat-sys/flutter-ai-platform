@@ -319,6 +319,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       final task = widget.tasks[_currentIndex];
       _addLog("Loading Task: ${task['name']}");
       _addLog("TFLite: ${task['tflite_path']}");
+      ModelManager.cpuThreads = await CameraPrefs.getThreads();
       await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
 {% if ocr_enabled %}
       // Whatever code was scanned to reach this inspection (VIN/engine
@@ -412,6 +413,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           CameraController(back, {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %}, enableAudio: false);
       _cameraController = controller;
       await controller.initialize();
+      await CameraPrefs.applyFocus(controller);
       // "Always on" torch (double-tap on the torch button, shared with the VIN scan):
       // every camera that starts while it is active lights the torch by itself.
       if (TorchSession.alwaysOn) {
@@ -1782,6 +1784,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       final task = widget.tasks[_currentIndex];
       _addLog("Loading Task: ${task['name']}");
       _addLog("TFLite: ${task['tflite_path']}");
+      ModelManager.cpuThreads = await CameraPrefs.getThreads();
       await ModelManager().loadModel(task['tflite_path'], task['labels_path']);
 {% if ocr_enabled %}
       // Whatever code was scanned to reach this inspection (VIN/engine
@@ -1875,6 +1878,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
           CameraController(back, {% if ocr_enabled %}ResolutionPreset.high{% else %}ResolutionPreset.medium{% endif %}, enableAudio: false);
       _cameraController = controller;
       await controller.initialize();
+      await CameraPrefs.applyFocus(controller);
       // "Always on" torch (double-tap on the torch button, shared with the VIN scan):
       // every camera that starts while it is active lights the torch by itself.
       if (TorchSession.alwaysOn) {

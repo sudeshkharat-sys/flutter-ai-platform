@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -20,6 +21,31 @@ class CameraPrefs {
   static Future<void> setZoom(double zoom) async {
     try {
       await (await SharedPreferences.getInstance()).setDouble(_zoomKey, zoom);
+    } catch (_) {}
+  }
+
+  static const String _autofocusKey = 'camera_autofocus';
+
+  /// Continuous autofocus on the inspection cameras (default on).
+  static Future<bool> getAutofocus() async {
+    try {
+      return (await SharedPreferences.getInstance()).getBool(_autofocusKey) ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static Future<void> setAutofocus(bool on) async {
+    try {
+      await (await SharedPreferences.getInstance()).setBool(_autofocusKey, on);
+    } catch (_) {}
+  }
+
+  /// Applies the saved autofocus choice to a started camera.
+  static Future<void> applyFocus(dynamic controller) async {
+    try {
+      final on = await getAutofocus();
+      await controller.setFocusMode(on ? FocusMode.auto : FocusMode.locked);
     } catch (_) {}
   }
 
