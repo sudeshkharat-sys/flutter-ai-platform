@@ -20,6 +20,8 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   int _threads = 0;
   bool _autofocus = false;
+  bool _vibrate = true;
+  bool _sound = true;
   int _unsynced = 0;
 
   @override
@@ -31,8 +33,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _load() async {
     final t = await CameraPrefs.getThreads();
     final af = await CameraPrefs.getAutofocus();
+    final vb = await ResultFeedback.getVibrate();
+    final sd = await ResultFeedback.getSound();
     final n = await SyncService.instance.getUnsyncedCount();
-    if (mounted) setState(() { _threads = t; _autofocus = af; _unsynced = n; });
+    if (mounted) setState(() { _threads = t; _autofocus = af; _vibrate = vb; _sound = sd; _unsynced = n; });
   }
 
   Future<void> _setThreads(int t) async {
@@ -109,6 +113,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 setState(() => _autofocus = v);
                 await CameraPrefs.setAutofocus(v);
               },
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  secondary: const Icon(Icons.vibration, color: _crimson),
+                  title: const Text('Result vibration', style: TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: const Text('Strong buzz: OK long, NOT OK 3 short, not found 2'),
+                  value: _vibrate,
+                  activeColor: _crimson,
+                  onChanged: (v) async {
+                    setState(() => _vibrate = v);
+                    await ResultFeedback.setVibrate(v);
+                    if (v) ResultFeedback.play('notFound');
+                  },
+                ),
+                SwitchListTile(
+                  secondary: const Icon(Icons.volume_up, color: _crimson),
+                  title: const Text('Result sound', style: TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: const Text('Loud tone per result (plays on the alarm volume)'),
+                  value: _sound,
+                  activeColor: _crimson,
+                  onChanged: (v) async {
+                    setState(() => _sound = v);
+                    await ResultFeedback.setSound(v);
+                    if (v) ResultFeedback.play('ok');
+                  },
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Wrap(
+                    spacing: 8,
+                    children: [
+                      OutlinedButton(onPressed: () => ResultFeedback.play('ok'), child: const Text('Test OK')),
+                      OutlinedButton(onPressed: () => ResultFeedback.play('notOk'), child: const Text('Test NOT OK')),
+                      OutlinedButton(onPressed: () => ResultFeedback.play('notFound'), child: const Text('Test not found')),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
         ],

@@ -68,30 +68,66 @@ class CameraPrefs {
 }
 
 /// Eyes-free feedback for a live inspection result (hands are in the bonnet, the screen
-/// cannot be watched): vibration + system beep, a different pattern per outcome.
-/// Uses Flutter's built-in haptics/sounds -- no extra plugin. Never throws.
+/// cannot be watched): strong vibration + a loud tone, a different pattern per outcome.
+/// Uses a native channel (full-amplitude vibration, alarm-stream tone) because Flutter's
+/// HapticFeedback is only a light tick on many phones. Falls back to it if the channel fails.
+/// Both can be switched off in Settings. Never throws.
 class ResultFeedback {
-  /// [outcome]: 'ok' = one long buzz, 'notOk' = three short buzzes,
-  /// 'notFound' = two medium buzzes.
+  static const MethodChannel _ch = MethodChannel('{{ package_name }}/feedback');
+  static const String _vibKey = 'feedback_vibrate';
+  static const String _soundKey = 'feedback_sound';
+
+  static Future<bool> getVibrate() async {
+    try { return (await SharedPreferences.getInstance()).getBool(_vibKey) ?? true; } catch (_) { return true; }
+  }
+  static Future<void> setVibrate(bool on) async {
+    try { await (await SharedPreferences.getInstance()).setBool(_vibKey, on); } catch (_) {}
+  }
+  static Future<bool> getSound() async {
+    try { return (await SharedPreferences.getInstance()).getBool(_soundKey) ?? true; } catch (_) { return true; }
+  }
+  static Future<void> setSound(bool on) async {
+    try { await (await SharedPreferences.getInstance()).setBool(_soundKey, on); } catch (_) {}
+  }
+
+  // android.media.ToneGenerator constants.
+  static const int _toneAck = 37;      // TONE_PROP_ACK  (OK: happy two-tone)
+  static const int _toneNack = 38;     // TONE_PROP_NACK (not found)
+  static const int _toneAlert = 97;    // TONE_CDMA_ALERT_CALL_GUARD (not OK: harsh)
+
+  /// [outcome]: 'ok' = one long buzz + happy tone, 'notOk' = three short buzzes + harsh tones,
+  /// 'notFound' = two medium buzzes + low tones.
   static Future<void> play(String outcome) async {
+    final bool vib = await getVibrate();
+    final bool snd = await getSound();
     try {
-      final int count = outcome == 'ok' ? 1 : (outcome == 'notOk' ? 3 : 2);
-      final int gapMs = outcome == 'ok' ? 0 : (outcome == 'notOk' ? 160 : 300);
       if (outcome == 'ok') {
-        // One long pulse: a heavy impact repeated back to back.
-        for (var i = 0; i < 3; i++) {
-          unawaited(HapticFeedback.vibrate());
-          await Future.delayed(const Duration(milliseconds: 120));
+        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 600]}));
+        if (snd) await _ch.invokeMethod('tone', {'tone': _toneAck, 'ms': 500});
+      } else if (outcome == 'notOk') {
+        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 250, 150, 250, 150, 250]}));
+        if (snd) {
+          for (var i = 0; i < 3; i++) {
+            await _ch.invokeMethod('tone', {'tone': _toneAlert, 'ms': 250});
+            await Future.delayed(const Duration(milliseconds: 400));
+          }
         }
       } else {
-        for (var i = 0; i < count; i++) {
-          unawaited(HapticFeedback.vibrate());
-          unawaited(SystemSound.play(SystemSoundType.alert));
-          await Future.delayed(Duration(milliseconds: gapMs));
+        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 350, 250, 350]}));
+        if (snd) {
+          for (var i = 0; i < 2; i++) {
+            await _ch.invokeMethod('tone', {'tone': _toneNack, 'ms': 350});
+            await Future.delayed(const Duration(milliseconds: 600));
+          }
         }
       }
-      if (outcome == 'ok') unawaited(SystemSound.play(SystemSoundType.click));
-    } catch (_) {}
+    } catch (_) {
+      // Native channel unavailable: fall back to Flutter's built-in (weaker) feedback.
+      try {
+        if (vib) unawaited(HapticFeedback.vibrate());
+        if (snd) unawaited(SystemSound.play(SystemSoundType.alert));
+      } catch (_) {}
+    }
   }
 }
 

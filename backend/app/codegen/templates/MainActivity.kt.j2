@@ -1,6 +1,12 @@
 package {{ package_name }}
 
 import android.content.Context
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.net.wifi.WifiManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -9,8 +15,46 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity: FlutterActivity() {
     private var multicastLock: WifiManager.MulticastLock? = null
 
+    private fun vibrator(): Vibrator? =
+        if (Build.VERSION.SDK_INT >= 31)
+            (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
+        else @Suppress("DEPRECATION") (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        // Result feedback for the live inspection: full-amplitude vibration and a loud tone
+        // (alarm stream, so it does not depend on the media volume). Flutter's HapticFeedback is
+        // a light tick on many phones (e.g. vivo X200) -- far too weak to feel in a bonnet.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "{{ package_name }}/feedback")
+            .setMethodCallHandler { call, result ->
+                try {
+                    when (call.method) {
+                        "vibrate" -> {
+                            // [wait, on, off, on, ...] in ms, full amplitude.
+                            val pattern = (call.argument<List<Int>>("pattern") ?: listOf(0, 400)).map { it.toLong() }.toLongArray()
+                            val v = vibrator()
+                            if (Build.VERSION.SDK_INT >= 26) {
+                                val amps = IntArray(pattern.size) { if (it % 2 == 1) 255 else 0 }
+                                v?.vibrate(VibrationEffect.createWaveform(pattern, amps, -1))
+                            } else {
+                                @Suppress("DEPRECATION") v?.vibrate(pattern, -1)
+                            }
+                            result.success(null)
+                        }
+                        "tone" -> {
+                            val tone = call.argument<Int>("tone") ?: ToneGenerator.TONE_PROP_BEEP
+                            val ms = call.argument<Int>("ms") ?: 300
+                            val tg = ToneGenerator(AudioManager.STREAM_ALARM, 100)
+                            tg.startTone(tone, ms)
+                            android.os.Handler(mainLooper).postDelayed({ tg.release() }, (ms + 200).toLong())
+                            result.success(null)
+                        }
+                        else -> result.notImplemented()
+                    }
+                } catch (e: Exception) {
+                    result.error("feedback", e.message, null)
+                }
+            }
         // The multicast_dns package's PC-discovery lookups get their incoming
         // responses silently dropped by many OEMs' WiFi power-saving (screen
         // off / radio idle) unless a multicast lock is held -- discovery then
