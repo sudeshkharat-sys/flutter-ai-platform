@@ -87,7 +87,12 @@ class MainActivity: FlutterActivity() {
                             val v = vibrator()
                             if (Build.VERSION.SDK_INT >= 26) {
                                 val amps = IntArray(pattern.size) { if (it % 2 == 1) 255 else 0 }
-                                v?.vibrate(VibrationEffect.createWaveform(pattern, amps, -1))
+                                // Alarm usage: Android otherwise drops "unknown" vibrations when the phone's
+                                // touch-vibration / battery saver / focus settings are on (it buzzed only sometimes).
+                                val attrs = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
+                                v?.cancel()
+                                @Suppress("DEPRECATION") v?.vibrate(VibrationEffect.createWaveform(pattern, amps, -1), attrs)
                             } else {
                                 @Suppress("DEPRECATION") v?.vibrate(pattern, -1)
                             }

@@ -148,31 +148,27 @@ class ResultFeedback {
   static const String _toneNack = 'nack';      // not found
   static const String _toneAlert = 'alert';    // NOT OK: harsh
 
-  /// [outcome]: 'ok' = one long buzz + happy tone, 'notOk' = three short buzzes + harsh tones,
-  /// 'notFound' = two medium buzzes + low tones.
+  /// [outcome]: 'ok' = 1 beep + 1 buzz, 'notOk' = 2 beeps + 2 buzzes, 'notFound' = 3 beeps + 3 buzzes.
+  static Future<void> _beeps(String tone, int n, int ms, int gap) async {
+    for (var i = 0; i < n; i++) {
+      await _ch.invokeMethod('tone', {'tone': tone, 'ms': ms});
+      if (i < n - 1) await Future.delayed(Duration(milliseconds: gap));
+    }
+  }
+
   static Future<void> play(String outcome) async {
     final bool vib = await getVibrate();
     final bool snd = await getSound();
     try {
       if (outcome == 'ok') {
-        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 600]}));
-        if (snd && !await _playCustom('ok')) await _ch.invokeMethod('tone', {'tone': _toneAck, 'ms': 500});
+        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 500]}));
+        if (snd && !await _playCustom('ok')) await _beeps(_toneAck, 1, 500, 0);
       } else if (outcome == 'notOk') {
-        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 250, 150, 250, 150, 250]}));
-        if (snd && !await _playCustom('notOk')) {
-          for (var i = 0; i < 3; i++) {
-            await _ch.invokeMethod('tone', {'tone': _toneAlert, 'ms': 250});
-            await Future.delayed(const Duration(milliseconds: 400));
-          }
-        }
+        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 300, 200, 300]}));
+        if (snd && !await _playCustom('notOk')) await _beeps(_toneAlert, 2, 300, 300);
       } else {
-        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 350, 250, 350]}));
-        if (snd) {
-          for (var i = 0; i < 2; i++) {
-            await _ch.invokeMethod('tone', {'tone': _toneNack, 'ms': 350});
-            await Future.delayed(const Duration(milliseconds: 600));
-          }
-        }
+        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 250, 200, 250, 200, 250]}));
+        if (snd) await _beeps(_toneNack, 3, 250, 250);
       }
     } catch (_) {
       // Native channel unavailable: fall back to Flutter's built-in (weaker) feedback.
