@@ -65,6 +65,20 @@ class MainActivity: FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 try {
                     when (call.method) {
+                        "deviceStats" -> {
+                            // Battery temperature (deg C), battery %, charging, and the OS thermal
+                            // status (0 none .. 6 shutdown; -1 = not available below Android 10).
+                            val b = registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                            val temp = (b?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10.0
+                            val lvl = b?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                            val scale = b?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100) ?: 100
+                            val st = b?.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ?: -1
+                            val charging = st == android.os.BatteryManager.BATTERY_STATUS_CHARGING || st == android.os.BatteryManager.BATTERY_STATUS_FULL
+                            val thermal = if (Build.VERSION.SDK_INT >= 29)
+                                (getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).currentThermalStatus else -1
+                            result.success(mapOf("tempC" to temp, "level" to (if (lvl >= 0) lvl * 100 / scale else -1),
+                                "charging" to charging, "thermal" to thermal))
+                        }
                         "vibrate" -> {
                             // [wait, on, off, on, ...] in ms, full amplitude.
                             val pattern = (call.argument<List<Int>>("pattern") ?: listOf(0, 400)).map { it.toLong() }.toLongArray()

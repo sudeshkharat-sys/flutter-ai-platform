@@ -128,6 +128,15 @@ If you want to add new screens or modify existing mobile UI components, navigate
   2. Register the file path and template name in `backend/app/codegen/generator.py` within the `files` dictionary.
   3. Reference the screen in `main.dart.j2` for routing.
 
+## Generated App: Settings Password & Debug Log
+
+- **Settings password (same for every generated app): `Ajai@12345`**
+  The Settings screen (PC & WiFi, CPU threads, autofocus, sounds) asks for it each time it is opened.
+  It is the constant `SettingsScreen.password` in `backend/app/codegen/templates/settings_screen.dart.j2`.
+- **Download debug log** (Settings, default **off**): when on, after every inspection a small `.txt` log is saved to
+  `Pictures/MAI/<app>/DebugLogs/`. It contains the full scan log plus CPU cores in use and phone heat
+  (battery temperature, Android thermal status, battery %) at start, during live ticks and at the end.
+
 ## Environment Variables (.env)
 Create a `.env` file in the `backend/` directory based on `.env.example`:
 ```env

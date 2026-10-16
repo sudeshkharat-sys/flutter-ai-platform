@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -46,6 +47,23 @@ class CameraPrefs {
   static Future<void> applyFocus(dynamic controller) async {
     try {
       if (await getAutofocus()) await controller.setFocusMode(FocusMode.auto);
+    } catch (_) {}
+  }
+
+  static const String _debugDlKey = 'debug_auto_download';
+
+  /// Save a small text debug log file after every inspection (default off, for testing).
+  static Future<bool> getDebugDownload() async {
+    try {
+      return (await SharedPreferences.getInstance()).getBool(_debugDlKey) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> setDebugDownload(bool on) async {
+    try {
+      await (await SharedPreferences.getInstance()).setBool(_debugDlKey, on);
     } catch (_) {}
   }
 
@@ -167,6 +185,27 @@ class ResultFeedback {
 }
 
 
+/// Phone heat / battery for debugging long continuous use: battery temperature, OS thermal
+/// status (Android 10+), battery % and charging. [refresh] is async and cheap; [summary] is the
+/// last value read, ready to append to a log line. Never throws.
+class DeviceStats {
+  static const MethodChannel _ch = MethodChannel('{{ package_name }}/feedback');
+  static String summary = 'heat: n/a';
+  static const _thermal = ['none', 'light', 'moderate', 'severe', 'critical', 'emergency', 'shutdown'];
+
+  static Future<String> refresh() async {
+    try {
+      final m = await _ch.invokeMapMethod<String, dynamic>('deviceStats');
+      if (m != null) {
+        final int th = (m['thermal'] as int?) ?? -1;
+        summary = 'heat: battery ${(m['tempC'] as num).toStringAsFixed(1)}C, thermal ${th >= 0 && th < _thermal.length ? _thermal[th] : 'n/a'}, '
+            'battery ${m['level']}%${m['charging'] == true ? ' charging' : ''}';
+      }
+    } catch (_) {}
+    return summary;
+  }
+}
+
 /// The full debug log of the most recent scan (live or photo), kept after the scan screen closes so it
 /// can still be read after "submit". The on-screen debug console only shows the newest 50 lines and
 /// vanishes with the screen; this keeps up to [_max] lines, persisted on the phone.
@@ -176,9 +215,14 @@ class ScanLog {
   static const String _key = 'scan_log_last';
 
   /// A new scan screen opened: start a fresh log (the previous one stays on disk until this one saves).
+  static String _title = 'scan';
+
   static void begin(String title) {
     _lines.clear();
+    _title = title;
     add('=== $title  ${DateTime.now().toString().split('.').first} ===');
+    add('device: ${Platform.numberOfProcessors} CPU cores');
+    DeviceStats.refresh().then((s) => add('start $s'));
   }
 
   static void add(String line) {
@@ -190,6 +234,16 @@ class ScanLog {
     if (_lines.isEmpty) return;
     try {
       await (await SharedPreferences.getInstance()).setStringList(_key, List<String>.from(_lines));
+    } catch (_) {}
+    // Settings > "Download debug log": also drop a small text file per inspection.
+    try {
+      if (!await CameraPrefs.getDebugDownload()) return;
+      add('end ${await DeviceStats.refresh()}');
+      final stamp = DateTime.now().toString().split('.').first.replaceAll(RegExp(r'[^0-9]'), '');
+      final safe = _title.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final dir = Directory('/storage/emulated/0/Pictures/MAI/${'{{ app_name }}'.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}/DebugLogs');
+      await dir.create(recursive: true);
+      await File('${dir.path}/${safe}_$stamp.txt').writeAsString(_lines.join('\n'));
     } catch (_) {}
   }
 

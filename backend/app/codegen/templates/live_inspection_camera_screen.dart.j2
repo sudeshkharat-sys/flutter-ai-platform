@@ -354,6 +354,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _fps = _fpsWindowTicks / secs;
       final cpu = _processCpuTicks();
       if (cpu != null && _cpuTicksPrev != null) _cpuCores = (cpu - _cpuTicksPrev!) / 100.0 / secs;
+      DeviceStats.refresh();
       _cpuTicksPrev = cpu;
       _fpsWindowStart = now;
       _fpsWindowTicks = 0;
@@ -361,7 +362,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final t = ModelManager().lastTickTimings;
     return '#$_tickCount total ${totalMs}ms (decode ${t['decode'] ?? 0} / detect ${t['detect'] ?? 0} [prep ${t['prep'] ?? 0} / run ${t['run'] ?? 0} / post ${t['post'] ?? 0}] / classify ${t['classify'] ?? 0}) '
         'frame ${t['w'] ?? '?'}x${t['h'] ?? '?'} | ${_fps.toStringAsFixed(1)} FPS | CPU: ${Platform.numberOfProcessors} cores, using ${_cpuCores.toStringAsFixed(1)} '
-        '(${(_cpuCores / Platform.numberOfProcessors * 100).toStringAsFixed(0)}%), TFLite threads ${ModelManager.effectiveThreads()}${_threadSetting == 0 ? ' (auto)' : ''}';
+        '(${(_cpuCores / Platform.numberOfProcessors * 100).toStringAsFixed(0)}%), TFLite threads ${ModelManager.effectiveThreads()}${_threadSetting == 0 ? ' (auto)' : ''} | ${DeviceStats.summary}';
   }
 
   void _addLog(String msg) {

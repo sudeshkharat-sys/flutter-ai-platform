@@ -13,6 +13,9 @@ const _crimson = Color(0xFFDC143C);
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
+  /// Fixed password for all apps (also documented in the README).
+  static const String password = 'Ajai@12345';
+
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -20,6 +23,11 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   int _threads = 0;
   bool _autofocus = false;
+  bool _debugDl = false;
+  bool _unlocked = false;
+  final TextEditingController _pw = TextEditingController();
+  bool _pwWrong = false;
+  bool _pwHide = true;
   bool _vibrate = true;
   bool _sound = true;
   String? _toneOk;
@@ -35,12 +43,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _load() async {
     final t = await CameraPrefs.getThreads();
     final af = await CameraPrefs.getAutofocus();
+    final dd = await CameraPrefs.getDebugDownload();
     final vb = await ResultFeedback.getVibrate();
     final sd = await ResultFeedback.getSound();
     final tOk = await ResultFeedback.getCustomTone('ok');
     final tNo = await ResultFeedback.getCustomTone('notOk');
     final n = await SyncService.instance.getUnsyncedCount();
-    if (mounted) setState(() { _threads = t; _autofocus = af; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; });
+    if (mounted) setState(() { _threads = t; _autofocus = af; _debugDl = dd; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; });
   }
 
   Future<void> _setThreads(int t) async {
@@ -50,7 +59,74 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   @override
+  void dispose() {
+    _pw.dispose();
+    super.dispose();
+  }
+
+  void _tryUnlock() {
+    if (_pw.text == SettingsScreen.password) {
+      setState(() { _unlocked = true; _pwWrong = false; });
+    } else {
+      setState(() => _pwWrong = true);
+    }
+  }
+
+  Widget _lockScreen() {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F7F7),
+      appBar: AppBar(
+        backgroundColor: _crimson,
+        foregroundColor: Colors.white,
+        title: const Text('Settings', style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.lock, size: 48, color: _crimson),
+                const SizedBox(height: 12),
+                const Text('Settings are password protected', style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _pw,
+                  obscureText: _pwHide,
+                  autofocus: true,
+                  onSubmitted: (_) => _tryUnlock(),
+                  decoration: InputDecoration(
+                    labelText: 'Password',
+                    errorText: _pwWrong ? 'Wrong password' : null,
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: Icon(_pwHide ? Icons.visibility : Icons.visibility_off),
+                      onPressed: () => setState(() => _pwHide = !_pwHide),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(backgroundColor: _crimson, foregroundColor: Colors.white),
+                    onPressed: _tryUnlock,
+                    child: const Text('Unlock'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (!_unlocked) return _lockScreen();
     final int cores = Platform.numberOfProcessors;
     final options = <int>[0, 2, 4, 6, 8].where((t) => t == 0 || t <= cores).toList();
     return Scaffold(
@@ -116,6 +192,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (v) async {
                 setState(() => _autofocus = v);
                 await CameraPrefs.setAutofocus(v);
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: SwitchListTile(
+              secondary: const Icon(Icons.bug_report, color: _crimson),
+              title: const Text('Download debug log', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Off by default. On = after every inspection a small .txt debug log (with CPU cores and phone heat) is saved to Pictures/MAI/<app>/DebugLogs.'),
+              value: _debugDl,
+              activeColor: _crimson,
+              onChanged: (v) async {
+                setState(() => _debugDl = v);
+                await CameraPrefs.setDebugDownload(v);
               },
             ),
           ),
