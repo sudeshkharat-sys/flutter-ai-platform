@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../ml/detector.dart';
@@ -60,13 +61,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    _idle?.cancel();
     _pw.dispose();
     super.dispose();
+  }
+
+  // Locks again after a minute without touching the screen.
+  Timer? _idle;
+  void _touch() {
+    _idle?.cancel();
+    if (!_unlocked) return;
+    _idle = Timer(const Duration(minutes: 1), () {
+      if (mounted) setState(() { _unlocked = false; _pw.clear(); });
+    });
   }
 
   void _tryUnlock() {
     if (_pw.text == SettingsScreen.password) {
       setState(() { _unlocked = true; _pwWrong = false; });
+      _touch();
     } else {
       setState(() => _pwWrong = true);
     }
@@ -129,7 +142,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!_unlocked) return _lockScreen();
     final int cores = Platform.numberOfProcessors;
     final options = <int>[0, 2, 4, 6, 8].where((t) => t == 0 || t <= cores).toList();
-    return Scaffold(
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => _touch(),
+      onPointerMove: (_) => _touch(),
+      child: Scaffold(
       backgroundColor: const Color(0xFFF7F7F7),
       appBar: AppBar(
         backgroundColor: _crimson,
@@ -254,6 +271,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ],
+      ),
       ),
     );
   }

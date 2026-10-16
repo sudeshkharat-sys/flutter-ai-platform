@@ -135,7 +135,7 @@ If you want to add new screens or modify existing mobile UI components, navigate
   It is the constant `SettingsScreen.password` in `backend/app/codegen/templates/settings_screen.dart.j2`.
 - **Download debug log** (Settings, default **off**): when on, after every inspection a small `.txt` log is saved to
   `Pictures/MAI/<app>/DebugLogs/`. It contains the full scan log plus CPU cores in use and phone heat
-  (battery temperature, Android thermal status, battery %) at start, during live ticks and at the end.
+  (battery temperature, Android thermal status, battery %) as a timestamped line every 10 s, plus app version, phone model and Android version at the top and an overheating WARNING when the OS reports thermal "severe" or worse. Logs are never auto-deleted; Settings relocks after 1 minute idle.
 
 ## Environment Variables (.env)
 Create a `.env` file in the `backend/` directory based on `.env.example`:

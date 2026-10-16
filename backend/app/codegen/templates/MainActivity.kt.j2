@@ -77,7 +77,9 @@ class MainActivity: FlutterActivity() {
                             val thermal = if (Build.VERSION.SDK_INT >= 29)
                                 (getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).currentThermalStatus else -1
                             result.success(mapOf("tempC" to temp, "level" to (if (lvl >= 0) lvl * 100 / scale else -1),
-                                "charging" to charging, "thermal" to thermal))
+                                "charging" to charging, "thermal" to thermal,
+                                "model" to (Build.MANUFACTURER + " " + Build.MODEL), "android" to Build.VERSION.RELEASE,
+                                "appVersion" to (try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" })))
                         }
                         "vibrate" -> {
                             // [wait, on, off, on, ...] in ms, full amplitude.

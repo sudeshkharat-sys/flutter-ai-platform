@@ -191,15 +191,22 @@ class ResultFeedback {
 class DeviceStats {
   static const MethodChannel _ch = MethodChannel('{{ package_name }}/feedback');
   static String summary = 'heat: n/a';
+  static String info = '';          // app version / phone model / Android version
+  static DateTime? _lastWarn;
   static const _thermal = ['none', 'light', 'moderate', 'severe', 'critical', 'emergency', 'shutdown'];
 
   static Future<String> refresh() async {
     try {
       final m = await _ch.invokeMapMethod<String, dynamic>('deviceStats');
       if (m != null) {
+        info = 'app ${m['appVersion']} | ${m['model']} | Android ${m['android']}';
         final int th = (m['thermal'] as int?) ?? -1;
         summary = 'heat: battery ${(m['tempC'] as num).toStringAsFixed(1)}C, thermal ${th >= 0 && th < _thermal.length ? _thermal[th] : 'n/a'}, '
             'battery ${m['level']}%${m['charging'] == true ? ' charging' : ''}';
+        if (th >= 3 && (_lastWarn == null || DateTime.now().difference(_lastWarn!).inSeconds > 30)) {
+          _lastWarn = DateTime.now();
+          ScanLog.add('${DateTime.now().toString().split('.').first.split(' ').last} | WARNING: phone is overheating (thermal ${_thermal[th]}, ${(m['tempC'] as num).toStringAsFixed(1)}C) - the OS may slow the CPU');
+        }
       }
     } catch (_) {}
     return summary;
@@ -222,8 +229,15 @@ class ScanLog {
     _title = title;
     add('=== $title  ${DateTime.now().toString().split('.').first} ===');
     add('device: ${Platform.numberOfProcessors} CPU cores');
-    DeviceStats.refresh().then((s) => add('start $s'));
+    DeviceStats.refresh().then((s) => add('$s | ${DeviceStats.info}'));
+    // Compact timeline: one heat/battery line every 10 s while the scan screen is open.
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 10), (_) async {
+      add('${DateTime.now().toString().split('.').first.split(' ').last} | ${await DeviceStats.refresh()}');
+    });
   }
+
+  static Timer? _timer;
 
   static void add(String line) {
     _lines.add(line);
@@ -231,6 +245,8 @@ class ScanLog {
   }
 
   static Future<void> save() async {
+    _timer?.cancel();
+    _timer = null;
     if (_lines.isEmpty) return;
     try {
       await (await SharedPreferences.getInstance()).setStringList(_key, List<String>.from(_lines));
