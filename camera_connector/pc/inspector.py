@@ -135,6 +135,8 @@ class Inspector:
         self._pending_vin = None
         self._pending_model = None
         self._last_vin = None
+        self.model = None           # nothing loaded until a .pt is picked / found
+        self.names = {}
         self._models = {}           # resolved path -> (model, names)
         self._codes = {}            # cached cv2 detectors
         self._code_t = 0.0
@@ -252,6 +254,14 @@ class Inspector:
             self.state = "idle"
             self.message = "scan the VIN"
             self.log("VIN mode -- waiting for a VIN (QR in the camera view, typed in the viewer, or POST /api/vin)")
+        else:
+            found = self.list_models()
+            cur = self.base_cfg.get("model") or ""
+            if found and not os.path.exists(cur if os.path.isabs(cur) else os.path.join(self.base_dir, cur)):
+                self.base_cfg = dict(self.base_cfg, model=found[0])  # configured .pt missing: use the one in the folder
+                self.log(f"'{cur}' not found -- using {found[0]}", "WARN")
+        if self.vin_mode:
+            pass
         elif self._activate(self.base_cfg, None):
             self.log("inspector ready -- waiting for frames")
         else:
@@ -294,7 +304,7 @@ class Inspector:
                         self._reset_scan()
                     time.sleep(0.1)
                     continue
-                if self.state not in ("waiting", "scanning"):
+                if self.state not in ("waiting", "scanning") or self.model is None:
                     time.sleep(0.05)
                     continue
                 if frame is None or fid == last_frame_no:
@@ -427,6 +437,8 @@ class Inspector:
         if self.vin_mode:
             self.state, self.message = "idle", "scan the VIN"
             self.vin, self.task_name = None, None
+        elif self.model is None:
+            self.state, self.message = "no_model", "no model loaded -- pick a .pt in the dropdown"
         else:
             self.state, self.message = "waiting", "waiting for the phone camera..."
         self.result = None

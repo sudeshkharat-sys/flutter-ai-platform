@@ -445,8 +445,8 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Runner Cam connector</title>
 <style>body{margin:0;font:14px system-ui,sans-serif;background:#111;color:#ddd}
 header{padding:10px 16px;background:#0b6fa4;color:#fff;font-weight:600}
 main{display:flex;flex-wrap:wrap;gap:16px;padding:16px}#feeds{flex:2 1 480px;display:grid;gap:10px;
-grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-content:start}
-.tile{background:#000;border-radius:6px;overflow:hidden}.tile img{width:100%;display:block;min-height:160px}
+grid-template-columns:repeat(auto-fit,minmax(280px,1fr));align-content:start}
+.tile{background:#000;border-radius:6px;overflow:hidden}.tile img{width:100%;display:block;min-height:160px;max-height:calc(100vh - 230px);object-fit:contain;background:#000}
 .tile div{padding:4px 8px;font-size:12px;display:flex;justify-content:space-between}
 #side{flex:1 1 320px}#qr{background:#fff;padding:6px;border-radius:8px;width:230px}
 pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-height:300px;font-size:12px;margin:0}
