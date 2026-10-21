@@ -315,6 +315,20 @@ async def api_inspection():
     return INSPECTOR.status()
 
 
+@app.get("/api/models")
+async def api_models():
+    if INSPECTOR is None:
+        return {"models": [], "current": None}
+    return {"models": INSPECTOR.list_models(), "current": INSPECTOR.cfg.get("model")}
+
+
+@app.post("/api/model")
+async def api_model(name: str = ""):
+    if INSPECTOR is None or not INSPECTOR.select_model(name):
+        return JSONResponse({"ok": False, "error": "unknown model"}, status_code=400)
+    return {"ok": True}
+
+
 @app.post("/api/vin")
 async def api_vin(vin: str = ""):
     if INSPECTOR is None or not INSPECTOR.vin_mode:
@@ -366,7 +380,7 @@ table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #333;pad
 #banner button{font-size:18px;padding:8px 18px}
 </style>
 <header>Runner Cam <span id=ver></span></header>
-<div id=banner><span id=res>...</span><small id=insp></small><span id=vinbox style="display:none"><input id=vin placeholder="type / scan VIN" style="font-size:18px;padding:6px;width:200px" onkeydown="if(event.key==='Enter')sendVin()"> <button onclick="sendVin()" style="font-size:18px;padding:8px 14px">Start</button></span><button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button></div>
+<div id=banner><span id=res>...</span><small id=insp></small><span id=modelbox><select id=msel style="font-size:16px;padding:6px" onchange="fetch('/api/model?name='+encodeURIComponent(msel.value),{method:'POST'})"></select> <button onclick="loadModels()">refresh</button></span><span id=vinbox style="display:none"><input id=vin placeholder="type / scan VIN" style="font-size:18px;padding:6px;width:200px" onkeydown="if(event.key==='Enter')sendVin()"> <button onclick="sendVin()" style="font-size:18px;padding:8px 14px">Start</button></span><button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button></div>
 <main>
 <div id=feed><img id=v src="/video"><div id=nofeed class=bad></div></div>
 <div id=side>
@@ -377,6 +391,12 @@ table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #333;pad
 </div></main>
 <script>
 function sendVin(){const v=vin.value.trim();if(v){fetch('/api/vin?vin='+encodeURIComponent(v),{method:'POST'});vin.value=''}}
+async function loadModels(){
+ try{const m=await (await fetch('/api/models')).json();
+  msel.innerHTML=(m.models.length?'':'<option value="">no .pt files found next to runner.exe</option>')+m.models.map(n=>'<option'+(n===m.current?' selected':'')+'>'+n+'</option>').join('');
+ }catch(e){}
+}
+loadModels();
 async function tick(){
  try{
   const s=await (await fetch('/api/status')).json();

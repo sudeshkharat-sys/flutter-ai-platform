@@ -136,6 +136,7 @@ class Inspector:
         self.vin = None
         self.task_name = None
         self._pending_vin = None
+        self._pending_model = None
         self._last_vin = None
         self._models = {}           # resolved path -> (model, names)
         self._codes = {}            # cached cv2 detectors
@@ -163,6 +164,35 @@ class Inspector:
             scan_seconds=cfg.get("scan_seconds", 45))
 
     # ------------------------------------------------------------------ api
+    def list_models(self):
+        """*.pt files next to the exe and in its models/ folder (paths relative to it)."""
+        out = []
+        for sub in ("", "models"):
+            d = os.path.join(self.base_dir, sub)
+            if os.path.isdir(d):
+                out += sorted(os.path.join(sub, f) if sub else f for f in os.listdir(d) if f.lower().endswith(".pt"))
+        return out
+
+    def select_model(self, name):
+        if name not in self.list_models():
+            return False
+        self._pending_model = name
+        return True
+
+    def _save_model_choice(self, name):
+        """Remember the choice in runner_config.json so the next start uses it."""
+        path = os.path.join(self.base_dir, "runner_config.json")
+        try:
+            data = {}
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            data["model"] = name
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            self.log(f"could not remember the model choice: {e}", "WARN")
+
     def set_vin(self, vin):
         """Start the task for this VIN (viewer box, POST /api/vin, or a QR read from the frames)."""
         vin = (vin or "").strip()
@@ -185,6 +215,7 @@ class Inspector:
             "state": self.state,
             "vin": self.vin,
             "task": self.task_name,
+            "model": self.cfg.get("model"),
             "vin_mode": self.vin_mode,
             "message": self.message,
             "result": self.result,
@@ -216,15 +247,27 @@ class Inspector:
             self.state = "idle"
             self.message = "scan the VIN"
             self.log("VIN mode -- waiting for a VIN (QR in the camera view, typed in the viewer, or POST /api/vin)")
-        elif not self._activate(self.base_cfg, None):
-            return
-        else:
+        elif self._activate(self.base_cfg, None):
             self.log("inspector ready -- waiting for frames")
+        else:
+            self.state = "no_model"
+            self.message += " -- pick a model in the viewer"
 
         last_frame_no = -1
         fps_t, fps_n = time.monotonic(), 0
         while True:
             try:
+                if self._pending_model:
+                    name, self._pending_model = self._pending_model, None
+                    cfg = dict(self.base_cfg, model=name)
+                    if self._activate(cfg, os.path.basename(name)):
+                        self.base_cfg = cfg
+                        self.message = f"{os.path.basename(name)} -- waiting for the phone camera..."
+                        self.log(f"model selected: {name}")
+                        self._save_model_choice(name)
+                    else:
+                        self.state = "no_model"
+                    last_frame_no = -1
                 if self._restart.is_set():
                     self._restart.clear()
                     self._reset_scan()
