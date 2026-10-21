@@ -334,13 +334,14 @@ async def video(cam: str = None):
 VIEWER_HTML = """<!doctype html><meta charset=utf-8><title>Runner Cam</title>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <style>
-body{margin:0;font:14px system-ui,sans-serif;background:#111;color:#ddd}
+html,body{height:100%}
+body{margin:0;font:14px system-ui,sans-serif;background:#111;color:#ddd;display:flex;flex-direction:column;overflow:hidden}
 header{padding:10px 16px;background:#0b6fa4;color:#fff;font-weight:600}
-main{display:flex;flex-wrap:wrap;gap:16px;padding:16px}
-#feed{flex:2 1 480px;min-width:300px}
-#feed img{width:100%;background:#000;min-height:200px;border-radius:6px}
-#side{flex:1 1 320px;min-width:280px}
-pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-height:340px;font-size:12px;margin:0}
+main{display:flex;gap:16px;padding:12px 16px;flex:1;min-height:0}
+#feed{flex:2 1 480px;min-width:0;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000;border-radius:6px}
+#feed img{max-width:100%;max-height:100%;object-fit:contain;min-height:0}
+#side{flex:1 1 320px;min-width:280px;overflow-y:auto;min-height:0}
+pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-height:30vh;font-size:12px;margin:0}
 table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #333;padding:3px 6px;text-align:left}
 .ok{color:#6f6}.bad{color:#f66}button{padding:6px 10px}
 #banner{padding:14px 16px;font-size:28px;font-weight:700;color:#fff;background:#444;display:flex;gap:16px;align-items:center}

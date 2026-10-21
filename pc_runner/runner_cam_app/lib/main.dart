@@ -221,7 +221,11 @@ class _HomeScreenState extends State<HomeScreen> {
             ? 'no runner found -- same Wi-Fi? runner.exe running? firewall allowed? (see debug log)'
             : 'found ${all.length} runner(s) -- tap one';
       });
-      if (all.length == 1 && _ip.text.isEmpty) _select(all.first);
+      if (all.isNotEmpty) {
+        // Auto-connect: always use the runner just found (a stale typed IP is replaced) and start.
+        _select(all.first);
+        if (!_running && mounted) _start();
+      }
     } catch (e) {
       Log.e('scan failed: $e');
       setState(() => _status = 'scan failed: $e');
