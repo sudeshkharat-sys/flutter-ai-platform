@@ -1,0 +1,17 @@
+{
+  "tasks": [
+    {
+      "name": "Door check",
+      "vins": ["MA1*", "MB2*"],
+      "model": "models/door.pt",
+      "mandatory": ["RHS_Closed", "LHS_Closed"],
+      "ignored": ["Max_reg"],
+      "scan_seconds": 30
+    },
+    {
+      "name": "Default check",
+      "vins": ["*"],
+      "model": "best.pt"
+    }
+  ]
+}

@@ -48,7 +48,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
-from inspector import Inspector, load_config
+from inspector import Inspector, load_config, load_tasks
 
 VERSION = "0.3.0"
 APP_ID = "runner-cam"
@@ -221,6 +221,7 @@ async def stream(ws: WebSocket):
     log(f"phone connected: {name} from {remote}")
     log(f"  headers: {dict(ws.headers)}", debug_only=True)
     cam = Camera(name, remote)
+    last_sig = None
     old = CAMERAS.get(name)
     if old:
         log(f"  replacing stale session for '{name}'", "WARN", debug_only=True)
@@ -245,6 +246,12 @@ async def stream(ws: WebSocket):
                 FRAME_EVENT.set()
                 FRAME_EVENT.clear()
                 await ws.send_text(f"ack:{cam.frames}")
+                if INSPECTOR is not None:
+                    st = INSPECTOR.status()
+                    sig = (st["state"], st["result"], st["vin"], st["task"])
+                    if sig != last_sig:  # tell the phone: VIN/task/result so it can show it + beep/vibrate
+                        last_sig = sig
+                        await ws.send_text("state:" + json.dumps({k: st[k] for k in ("state", "result", "vin", "task", "message")}))
             elif msg.get("text") is not None:
                 try:
                     obj = json.loads(msg["text"])
@@ -308,6 +315,16 @@ async def api_inspection():
     return INSPECTOR.status()
 
 
+@app.post("/api/vin")
+async def api_vin(vin: str = ""):
+    if INSPECTOR is None or not INSPECTOR.vin_mode:
+        return JSONResponse({"ok": False, "error": "no tasks.json -- VIN mode is off"}, status_code=409)
+    if not INSPECTOR.set_vin(vin):
+        return JSONResponse({"ok": False, "error": "empty VIN"}, status_code=400)
+    log(f"VIN received: {vin}")
+    return {"ok": True}
+
+
 @app.post("/api/restart")
 async def api_restart():
     if INSPECTOR is None:
@@ -349,7 +366,7 @@ table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #333;pad
 #banner button{font-size:18px;padding:8px 18px}
 </style>
 <header>Runner Cam <span id=ver></span></header>
-<div id=banner><span id=res>...</span><small id=insp></small><button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button></div>
+<div id=banner><span id=res>...</span><small id=insp></small><span id=vinbox style="display:none"><input id=vin placeholder="type / scan VIN" style="font-size:18px;padding:6px;width:200px" onkeydown="if(event.key==='Enter')sendVin()"> <button onclick="sendVin()" style="font-size:18px;padding:8px 14px">Start</button></span><button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button></div>
 <main>
 <div id=feed><img id=v src="/video"><div id=nofeed class=bad></div></div>
 <div id=side>
@@ -359,6 +376,7 @@ table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #333;pad
 <pre id=log></pre>
 </div></main>
 <script>
+function sendVin(){const v=vin.value.trim();if(v){fetch('/api/vin?vin='+encodeURIComponent(v),{method:'POST'});vin.value=''}}
 async function tick(){
  try{
   const s=await (await fetch('/api/status')).json();
@@ -370,9 +388,10 @@ async function tick(){
   nofeed.textContent=s.cameras.length?'':'Waiting for a phone... open Runner Cam on the phone and tap Scan.';
   const i=await (await fetch('/api/inspection')).json();
   const col={'OK':'#1a8f3a','NOT OK':'#c62828','NOT FOUND':'#ef6c00'};
-  res.textContent=i.result||(i.state==='scanning'?'SCANNING '+(i.seconds_left??''):(i.state==='waiting'?'READY':(i.state==='no_model'?'VIDEO ONLY':'...')));
+  vinbox.style.display=i.vin_mode?'':'none';
+  res.textContent=i.result||(i.state==='idle'?'SCAN VIN':(i.state==='scanning'?'SCANNING '+(i.seconds_left??''):(i.state==='waiting'?'READY':(i.state==='no_model'?'VIDEO ONLY':'...'))));
   banner.style.background=col[i.result]||(i.state==='scanning'?'#0b6fa4':'#444');
-  insp.textContent=(i.message||'')+(i.infer_ms?'  |  '+i.infer_ms+' ms':'')+(i.detections&&i.detections.length?'  |  '+i.detections.map(d=>d.name+' '+Math.round(d.conf*100)+'%').join(', '):'');
+  insp.textContent=(i.vin?'VIN '+i.vin+(i.task?' / '+i.task:'')+'  |  ':'')+(i.message||'')+(i.infer_ms?'  |  '+i.infer_ms+' ms':'')+(i.detections&&i.detections.length?'  |  '+i.detections.map(d=>d.name+' '+Math.round(d.conf*100)+'%').join(', '):'');
   nextbtn.style.display=i.state==='done'?'':'none';
   const l=await (await fetch('/api/log?n=200')).json();
   const atEnd=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
@@ -464,7 +483,8 @@ def main():
     global INSPECTOR
     if not args.no_inspect:
         cfg = load_config(args.config or os.path.join(app_dir(), "runner_config.json"), log)
-        INSPECTOR = Inspector(cfg, app_dir(), log, pick_camera)
+        tasks = load_tasks(os.path.join(app_dir(), "tasks.json"), log)
+        INSPECTOR = Inspector(cfg, app_dir(), log, pick_camera, tasks)
         INSPECTOR.start()
 
     threading.Thread(target=beacon_loop, args=(port, args.beacon_port), daemon=True).start()

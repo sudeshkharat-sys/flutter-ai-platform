@@ -34,3 +34,14 @@ flutter pub get && flutter build apk --release
 If something fails, tap the bug icon / read the DEBUG LOG: it says whether the
 camera, the network scan, the connect (timeout = firewall / wrong Wi-Fi) or the
 frame upload failed.
+
+## VIN -> task -> result (tasks.json)
+
+Put `tasks.json` next to `runner.exe` (see `tasks.example.json`). Each task has `vins`
+(patterns, first match wins, `*` = any), its own `model` (.pt) and optional overrides
+(`mandatory`, `ignored`, `conf`, `scan_seconds`, ...). With this file the runner idles on
+"SCAN VIN"; show the car's VIN QR/barcode to the phone camera (or type the VIN in the viewer,
+or `POST /api/vin?vin=...`). It loads that task's model, scans, shows OK / NOT OK / NOT FOUND
+on the PC and phone (vibration), saves `results/results.csv` + images named with the VIN,
+then returns to "SCAN VIN" after `next_after_seconds` (default 4). The same VIN is ignored for
+`rescan_block_seconds` (default 15). Without `tasks.json` the old single-model mode applies.

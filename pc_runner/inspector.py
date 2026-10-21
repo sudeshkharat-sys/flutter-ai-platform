@@ -7,10 +7,17 @@ is run through the model and fed to case_logic.CaseTracker -> when the case reso
 the annotated frame stays on the viewer, the result is saved and a beep sounds. "Next car" (viewer
 button, POST /api/restart) -- or `auto_restart_seconds` in the config -- starts the next scan.
 
+VIN / task mode (when tasks.json exists next to the exe): the inspector idles in state "idle" until a
+VIN arrives -- read from a QR / barcode in the phone's frames, typed in the viewer, or POST /api/vin. The
+VIN picks a task (its own .pt + rules), the scan runs, the result is saved with the VIN, then after
+`next_after_seconds` the inspector goes back to "idle" for the next VIN. Without tasks.json the original
+single-model behaviour is unchanged.
+
 The model / OpenCV imports are lazy: without ultralytics installed the runner still works as a plain
 video viewer and says so in the log.
 """
 
+import fnmatch
 import json
 import os
 import sys
@@ -65,16 +72,75 @@ def load_config(path, log):
     return cfg
 
 
+def load_tasks(path, log):
+    """Read tasks.json -> list of task dicts ([] if the file is missing). Each task: name, vins (fnmatch
+    patterns on the VIN, e.g. "MA1*"; "*" matches all), model (.pt) and any config key to override
+    (mandatory, ignored, conf, imgsz, scan_seconds, ...)."""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        tasks = data["tasks"] if isinstance(data, dict) else data
+        tasks = [t for t in tasks if isinstance(t, dict) and t.get("model")]
+        log(f"tasks loaded: {path} -> {[t.get('name', t['model']) for t in tasks]}")
+        return tasks
+    except Exception as e:
+        log(f"could not read {path}: {e} -- running in single-model mode", "ERROR")
+        return []
+
+
+def match_task(tasks, vin):
+    v = (vin or "").strip().lower()
+    for t in tasks:
+        pats = t.get("vins") or ["*"]
+        if isinstance(pats, str):
+            pats = [pats]
+        if any(fnmatch.fnmatch(v, str(p).lower()) for p in pats):
+            return t
+    return None
+
+
+def read_codes(cv2, img, detectors):
+    """QR (and barcode when this OpenCV has it) text values found in img."""
+    out = []
+    try:
+        if "qr" not in detectors:
+            detectors["qr"] = cv2.QRCodeDetector()
+        txt, _, _ = detectors["qr"].detectAndDecode(img)
+        if txt:
+            out.append(txt)
+    except Exception:
+        pass
+    try:
+        if "bar" not in detectors:
+            detectors["bar"] = cv2.barcode.BarcodeDetector() if hasattr(cv2, "barcode") else False
+        if detectors["bar"]:
+            ok, infos, _, _ = detectors["bar"].detectAndDecode(img)
+            if ok:
+                out += [i for i in infos if i]
+    except Exception:
+        pass
+    return out
+
+
 class Inspector:
-    def __init__(self, cfg, base_dir, log, get_camera):
+    def __init__(self, cfg, base_dir, log, get_camera, tasks=None):
+        self.base_cfg = cfg
         self.cfg = cfg
         self.base_dir = base_dir
         self.log = log
         self.get_camera = get_camera
-        self.case_cfg = CaseConfig(
-            mandatory=cfg.get("mandatory"), ignored=cfg.get("ignored"), conf=cfg.get("conf", 0.5),
-            fail_ticks_needed=cfg.get("fail_ticks_needed", 2), pass_ticks_needed=cfg.get("pass_ticks_needed", 1),
-            scan_seconds=cfg.get("scan_seconds", 45))
+        self.tasks = tasks or []
+        self.vin_mode = bool(self.tasks)
+        self.vin = None
+        self.task_name = None
+        self._pending_vin = None
+        self._last_vin = None
+        self._models = {}           # resolved path -> (model, names)
+        self._codes = {}            # cached cv2 detectors
+        self._code_t = 0.0
+        self.case_cfg = self._make_case_cfg(cfg)
         self.tracker = None
         self.state = "loading"      # loading | no_model | waiting | scanning | done
         self.message = "loading model..."
@@ -89,7 +155,21 @@ class Inspector:
         self._restart = threading.Event()
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _make_case_cfg(cfg):
+        return CaseConfig(
+            mandatory=cfg.get("mandatory"), ignored=cfg.get("ignored"), conf=cfg.get("conf", 0.5),
+            fail_ticks_needed=cfg.get("fail_ticks_needed", 2), pass_ticks_needed=cfg.get("pass_ticks_needed", 1),
+            scan_seconds=cfg.get("scan_seconds", 45))
+
     # ------------------------------------------------------------------ api
+    def set_vin(self, vin):
+        """Start the task for this VIN (viewer box, POST /api/vin, or a QR read from the frames)."""
+        vin = (vin or "").strip()
+        if not vin:
+            return False
+        self._pending_vin = vin
+        return True
     def start(self):
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -103,6 +183,9 @@ class Inspector:
             left = max(0, round(self.case_cfg.scan_seconds - (time.time() - self.started_at)))
         return {
             "state": self.state,
+            "vin": self.vin,
+            "task": self.task_name,
+            "vin_mode": self.vin_mode,
             "message": self.message,
             "result": self.result,
             "defects": self.result_defects,
@@ -128,39 +211,15 @@ class Inspector:
             self.log(self.message, "WARN")
             return
 
-        model_path = self.cfg.get("model") or ""
-        if not os.path.isabs(model_path):
-            model_path = os.path.join(self.base_dir, model_path)
-        if not os.path.exists(model_path):
-            self.state = "no_model"
-            self.message = f"model file not found: {model_path} -- set 'model' in runner_config.json"
-            self.log(self.message, "ERROR")
+        self.np, self.cv2, self.YOLO = np, cv2, YOLO
+        if self.vin_mode:
+            self.state = "idle"
+            self.message = "scan the VIN"
+            self.log("VIN mode -- waiting for a VIN (QR in the camera view, typed in the viewer, or POST /api/vin)")
+        elif not self._activate(self.base_cfg, None):
             return
-
-        imgsz = int(self.cfg.get("imgsz", 640))
-        device = self.cfg.get("device", "cpu")
-        try:
-            t0 = time.time()
-            model = YOLO(model_path)
-            names = model.names if isinstance(model.names, dict) else dict(enumerate(model.names))
-            model.predict(np.zeros((imgsz, imgsz, 3), np.uint8), imgsz=imgsz, device=device, verbose=False)
-            self.log(f"model loaded + warmed up in {time.time() - t0:.1f}s: {model_path} (imgsz {imgsz}, {device})")
-            self.log(f"model classes: {list(names.values())}")
-        except Exception as e:
-            self.state = "no_model"
-            self.message = f"could not load model: {e}"
-            self.log(self.message, "ERROR")
-            return
-
-        all_classes = list(names.values())
-        missing = [c for c in self.case_cfg.mandatory + self.case_cfg.ignored
-                   if c.lower().strip() not in {n.lower().strip() for n in all_classes}]
-        if missing:
-            self.log(f"config names classes the model does not have: {missing}", "WARN")
-        self.tracker = CaseTracker(self.case_cfg, all_classes)
-        self.state = "waiting"
-        self.message = "waiting for the phone camera..."
-        self.log("inspector ready -- waiting for frames")
+        else:
+            self.log("inspector ready -- waiting for frames")
 
         last_frame_no = -1
         fps_t, fps_n = time.monotonic(), 0
@@ -170,13 +229,26 @@ class Inspector:
                     self._restart.clear()
                     self._reset_scan()
                     last_frame_no = -1
+                cam = self.get_camera()
+                if self.vin_mode and self.state in ("idle", "done"):
+                    vin = self._poll_vin(cam)
+                    if vin:
+                        self._start_vin(vin)
+                        last_frame_no = -1
+                        continue
+                    if self.state == "done" and time.time() - self.done_at >= float(self.base_cfg.get("next_after_seconds", 4)):
+                        self._reset_scan()
+                    time.sleep(0.05)
+                    continue
                 if self.state == "done":
                     auto = float(self.cfg.get("auto_restart_seconds", 0) or 0)
                     if auto > 0 and time.time() - self.done_at >= auto:
                         self._reset_scan()
                     time.sleep(0.1)
                     continue
-                cam = self.get_camera()
+                if self.state not in ("waiting", "scanning"):
+                    time.sleep(0.05)
+                    continue
                 if not cam or cam.latest is None or cam.frames == last_frame_no:
                     time.sleep(0.01)
                     continue
@@ -194,13 +266,13 @@ class Inspector:
                 if img is None:
                     continue
                 t0 = time.perf_counter()
-                res = model.predict(img, imgsz=imgsz, conf=self.case_cfg.conf, device=device, verbose=False)[0]
+                res = self.model.predict(img, imgsz=self.imgsz, conf=self.case_cfg.conf, device=self.device, verbose=False)[0]
                 self.infer_ms = round((time.perf_counter() - t0) * 1000)
                 boxes = []
                 dets = []
                 if res.boxes is not None and len(res.boxes):
                     for cls, p, xyxy in zip(res.boxes.cls.tolist(), res.boxes.conf.tolist(), res.boxes.xyxy.tolist()):
-                        name = names.get(int(cls), str(int(cls)))
+                        name = self.names.get(int(cls), str(int(cls)))
                         dets.append((name, float(p)))
                         boxes.append((name, float(p), xyxy))
                 self.dets = dets
@@ -230,16 +302,95 @@ class Inspector:
                 time.sleep(0.5)
 
     # -------------------------------------------------------------- helpers
-    def _reset_scan(self):
+    def _activate(self, cfg, task_name):
+        """Load (or reuse) cfg's model and arm the case rules. False + message on failure."""
+        np, YOLO = self.np, self.YOLO
+        model_path = cfg.get("model") or ""
+        if not os.path.isabs(model_path):
+            model_path = os.path.join(self.base_dir, model_path)
+        self.imgsz = int(cfg.get("imgsz", 640))
+        self.device = cfg.get("device", "cpu")
+        fail_state = "idle" if self.vin_mode else "no_model"
+        if not os.path.exists(model_path):
+            self.state = fail_state
+            self.message = f"model file not found: {model_path}"
+            self.log(self.message, "ERROR")
+            return False
+        if model_path not in self._models:
+            try:
+                t0 = time.time()
+                self.state, self.message = "loading", f"loading model for {task_name or 'inspection'}..."
+                model = YOLO(model_path)
+                names = model.names if isinstance(model.names, dict) else dict(enumerate(model.names))
+                model.predict(np.zeros((self.imgsz, self.imgsz, 3), np.uint8), imgsz=self.imgsz, device=self.device, verbose=False)
+                self._models[model_path] = (model, names)
+                self.log(f"model loaded + warmed up in {time.time() - t0:.1f}s: {model_path} (imgsz {self.imgsz}, {self.device})")
+                self.log(f"model classes: {list(names.values())}")
+            except Exception as e:
+                self.state = fail_state
+                self.message = f"could not load model: {e}"
+                self.log(self.message, "ERROR")
+                return False
+        self.model, self.names = self._models[model_path]
+        self.cfg = cfg
+        self.case_cfg = self._make_case_cfg(cfg)
+        all_classes = list(self.names.values())
+        known = {n.lower().strip() for n in all_classes}
+        missing = [c for c in self.case_cfg.mandatory + self.case_cfg.ignored if c.lower().strip() not in known]
+        if missing:
+            self.log(f"config names classes the model does not have: {missing}", "WARN")
+        self.tracker = CaseTracker(self.case_cfg, all_classes)
+        self.result, self.result_defects, self.dets, self.display = None, [], [], None
         self.state = "waiting"
         self.message = "waiting for the phone camera..."
+        return True
+
+    def _start_vin(self, vin):
+        """Resolve the VIN to a task and arm it. Unknown VIN -> stay idle with a message."""
+        task = match_task(self.tasks, vin)
+        if task is None:
+            self.vin, self.task_name, self.result = vin, None, None
+            self.state, self.message = "idle", f"no task for VIN {vin}"
+            self.log(f"VIN {vin}: no matching task in tasks.json", "WARN")
+            return
+        cfg = dict(self.base_cfg)
+        cfg.update({k: v for k, v in task.items() if k not in ("vins", "name")})
+        self.vin, self.task_name = vin, task.get("name") or task["model"]
+        self._last_vin = vin
+        self.log(f"VIN {vin} -> task '{self.task_name}' ({cfg['model']})")
+        if self._activate(cfg, self.task_name):
+            self.message = f"{self.task_name} -- waiting for the phone camera..."
+
+    def _poll_vin(self, cam):
+        """idle/done: a pending VIN (typed / API) wins; otherwise look for a QR / barcode in the frame."""
+        if self._pending_vin:
+            vin, self._pending_vin = self._pending_vin, None
+            return vin
+        if cam and cam.latest is not None and time.time() - self._code_t >= 0.4:
+            self._code_t = time.time()
+            img = self.cv2.imdecode(self.np.frombuffer(cam.latest, self.np.uint8), self.cv2.IMREAD_COLOR)
+            if img is not None:
+                for code in read_codes(self.cv2, img, self._codes):
+                    code = code.strip()
+                    # the car's QR stays in view after the result: ignore the same VIN for a while
+                    if code and not (code == self._last_vin and time.time() - self.done_at < float(
+                            self.base_cfg.get("rescan_block_seconds", 15))):
+                        return code
+        return None
+
+    def _reset_scan(self):
+        if self.vin_mode:
+            self.state, self.message = "idle", "scan the VIN"
+            self.vin, self.task_name = None, None
+        else:
+            self.state, self.message = "waiting", "waiting for the phone camera..."
         self.result = None
         self.result_defects = []
         self.dets = []
         self.display = None
         if self.tracker:
             self.tracker.reset()
-        self.log("next car -- ready for a new scan")
+        self.log("next car -- ready for a new " + ("VIN" if self.vin_mode else "scan"))
 
     def _color(self, name):
         n = name.lower().strip()
@@ -297,8 +448,20 @@ class Inspector:
         os.makedirs(out_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         tag = result.replace(" ", "_")
+        if self.vin:
+            stamp = f"{stamp}_{''.join(c if c.isalnum() or c in '-_' else '_' for c in self.vin)}"
+        try:
+            csv_path = os.path.join(out_dir, "results.csv")
+            new = not os.path.exists(csv_path)
+            with open(csv_path, "a", encoding="utf-8") as f:
+                if new:
+                    f.write("time,vin,task,result,defects\n")
+                f.write(f"{datetime.now().isoformat(timespec='seconds')},{self.vin or ''},{self.task_name or ''},"
+                        f"{result},{'|'.join(self.result_defects)}\n")
+        except Exception as e:
+            self.log(f"could not append results.csv: {e}", "WARN")
         with open(os.path.join(out_dir, f"{stamp}_{tag}.json"), "w", encoding="utf-8") as f:
-            json.dump({"result": result, "time": stamp, "defects": self.result_defects,
+            json.dump({"result": result, "vin": self.vin, "task": self.task_name, "time": stamp, "defects": self.result_defects,
                        "detections": [{"name": n, "conf": round(c, 3)} for n, c in dets],
                        "mandatory": self.case_cfg.mandatory, "ignored": self.case_cfg.ignored}, f, indent=2)
         if self.cfg.get("save_images", True):

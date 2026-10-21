@@ -170,6 +170,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _status = 'idle';
   int _sent = 0, _acked = 0, _gen = 0;
   List<Runner> _runners = [];
+  Map<String, dynamic> _insp = {}; // last inspection state pushed by the PC (vin, task, result)
   bool _showLog = true;
 
   @override
@@ -305,6 +306,20 @@ class _HomeScreenState extends State<HomeScreen> {
           (m) {
             if (m is String && m.startsWith('ack:')) {
               if (mounted) setState(() => _acked++);
+            } else if (m is String && m.startsWith('state:')) {
+              try {
+                final st = jsonDecode(m.substring(6)) as Map<String, dynamic>;
+                final prev = _insp['result'];
+                if (mounted) setState(() => _insp = st);
+                if (st['result'] != null && st['result'] != prev) {
+                  Log.i('result: ${st['result']} (VIN ${st['vin']})');
+                  if (st['result'] == 'OK') {
+                    HapticFeedback.heavyImpact();
+                  } else {
+                    HapticFeedback.vibrate();
+                  }
+                }
+              } catch (_) {}
             } else if (m is String && m.startsWith('err:')) {
               Log.w('PC rejected frame: $m');
             }
@@ -370,6 +385,29 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() => _status = 'stopped');
   }
 
+  Widget _inspBanner() {
+    final r = _insp['result'] as String?;
+    final state = _insp['state'] as String? ?? '';
+    final color = r == 'OK'
+        ? Colors.green
+        : r == 'NOT OK'
+            ? Colors.red
+            : r == 'NOT FOUND'
+                ? Colors.orange
+                : (state == 'scanning' ? Colors.blue : Colors.grey);
+    final title = r ?? (state == 'idle' ? 'SHOW VIN QR TO CAMERA' : state.toUpperCase());
+    final sub = [if (_insp['vin'] != null) 'VIN ${_insp['vin']}', if (_insp['task'] != null) '${_insp['task']}'].join('  |  ');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(8)),
+      child: Column(children: [
+        Text(title, style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold)),
+        if (sub.isNotEmpty) Text(sub, style: const TextStyle(color: Colors.white)),
+      ]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final streaming = _running;
@@ -389,6 +427,7 @@ class _HomeScreenState extends State<HomeScreen> {
           Expanded(
             flex: 3,
             child: ListView(padding: const EdgeInsets.all(12), children: [
+              if (_running && _insp.isNotEmpty) _inspBanner(),
               if (_cam != null && _cam!.value.isInitialized)
                 SizedBox(height: 180, child: ClipRRect(borderRadius: BorderRadius.circular(8), child: CameraPreview(_cam!))),
               Row(children: [
