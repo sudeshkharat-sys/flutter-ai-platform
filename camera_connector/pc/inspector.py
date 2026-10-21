@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     "results_dir": "results",
     "save_images": True,
     "beep": True,
+    "preview_only": True,
     "_help": "mandatory = classes that must ALL be seen for OK (empty = every model class). "
              "ignored = classes that never count. Any other class seen = NOT OK. "
              "model is a path to the .pt file (relative paths are next to runner.exe).",
@@ -56,12 +57,7 @@ def load_config(path, log):
     """Read runner_config.json; write a default one next to the exe if it is missing."""
     cfg = dict(DEFAULT_CONFIG)
     if not os.path.exists(path):
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(DEFAULT_CONFIG, f, indent=2)
-            log(f"wrote a default config: {path}  -> set 'model', 'mandatory' and 'ignored', then restart", "WARN")
-        except Exception as e:
-            log(f"could not write default config {path}: {e}", "WARN")
+        log("no runner_config.json -- using defaults (boxes only; pick the .pt in the viewer)")
         return cfg
     try:
         with open(path, "r", encoding="utf-8") as f:
