@@ -38,7 +38,9 @@ from urllib.parse import parse_qs, urlparse
 
 import cv2
 
-VERSION = "0.1.0"
+from inspector import Inspector, load_config, load_tasks
+
+VERSION = "0.2.0"
 PHONE_APP = "runner-cam-phone"
 PC_APP = "runner-cam-pc"
 BEACON_PORT = 8092
@@ -316,7 +318,8 @@ class Reader(threading.Thread):
 
 # ------------------------------------------------------------------ http --
 
-STATE = {"readers": {}, "phones": [], "scanning": False, "port": 8080, "ui_port": 8095}
+STATE = {"readers": {}, "phones": [], "scanning": False, "port": 8080, "ui_port": 8095, "active": None}
+INSPECTOR = None  # inspector.Inspector (YOLO .pt checks on the active phone), created in main()
 STATE_LOCK = threading.Lock()
 
 
@@ -342,6 +345,20 @@ def disconnect(key):
     if r:
         r.stop()
         log(f"disconnected {key}")
+
+
+def active_reader():
+    """The phone being inspected: the one chosen with 'Inspect', else the first connected."""
+    rs = STATE["readers"]
+    return rs.get(STATE["active"]) or next(iter(rs.values()), None)
+
+
+def inspector_frame():
+    r = active_reader()
+    if r is None:
+        return None, -1
+    f, fid = r.get()
+    return f, (r.key, fid)
 
 
 def first_reader(key=None):
@@ -433,8 +450,17 @@ grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-content:start}
 .tile div{padding:4px 8px;font-size:12px;display:flex;justify-content:space-between}
 #side{flex:1 1 320px}#qr{background:#fff;padding:6px;border-radius:8px;width:230px}
 pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-height:300px;font-size:12px;margin:0}
+#banner{padding:12px 16px;font-size:26px;font-weight:700;color:#fff;background:#444;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+#banner small{font-size:13px;font-weight:400;flex:1;min-width:200px}#banner select,#banner input{font-size:15px;padding:5px}
+#banner button{font-size:15px;padding:6px 12px}.tile.act{outline:3px solid #1a8f3a}
 button{padding:5px 10px;margin:2px}td{padding:2px 8px 2px 0}.bad{color:#f66}.ok{color:#6f6}</style>
-<header>Runner Cam connector <span id=ver></span></header><main>
+<header>Runner Cam connector <span id=ver></span></header>
+<div id=banner><span id=res>...</span><small id=insp></small>
+<select id=msel onchange="fetch('/api/model?name='+encodeURIComponent(msel.value),{method:'POST'})"></select>
+<label style="font-size:14px;font-weight:400"><input type=checkbox id=prev onchange="fetch('/api/preview?on='+(prev.checked?1:0),{method:'POST'})"> boxes only</label>
+<span id=vinbox style="display:none"><input id=vin placeholder="VIN" onkeydown="if(event.key==='Enter')sendVin()"> <button onclick="sendVin()">Start</button></span>
+<button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button></div>
+<main>
 <div id=feeds><i id=nofeed>No phone connected yet. On the phone: tap <b>Scan QR</b> and scan the code on the right.</i></div>
 <div id=side>
 <h3>Connect a phone</h3>
@@ -448,6 +474,13 @@ button{padding:5px 10px;margin:2px}td{padding:2px 8px 2px 0}.bad{color:#f66}.ok{
 <h3>Debug log</h3><pre id=log></pre></div></main>
 <script>
 function go(url){fetch('/api/connect?url='+encodeURIComponent(url),{method:'POST'})}
+function sendVin(){const v=vin.value.trim();if(v){fetch('/api/vin?vin='+encodeURIComponent(v),{method:'POST'});vin.value=''}}
+function inspectCam(k){fetch('/api/inspect?cam='+encodeURIComponent(k),{method:'POST'})}
+let modelsShown='';
+async function loadModels(){try{const m=await (await fetch('/api/models')).json();const sig=m.models.join('|')+m.current;
+ if(sig===modelsShown)return;modelsShown=sig;
+ msel.innerHTML=(m.models.length?'':'<option value="">no .pt next to the exe</option>')+m.models.map(n=>'<option'+(n===m.current?' selected':'')+'>'+n+'</option>').join('')}catch(e){}}
+document.addEventListener('keydown',e=>{if(e.code==='Space'&&e.target.tagName!=='INPUT'){e.preventDefault();fetch('/api/restart',{method:'POST'})}});
 function drop(k){fetch('/api/disconnect?cam='+encodeURIComponent(k),{method:'POST'})}
 let shown='';
 async function tick(){try{
@@ -459,11 +492,19 @@ async function tick(){try{
   ' <button onclick="go(\\'http://'+p.ip+':'+p.port+'/video\\')">Connect</button></div>').join('')||'<i>none found yet</i>';
  const keys=s.readers.map(r=>r.key).join(',');
  if(keys!==shown){shown=keys;
-  feeds.innerHTML=s.readers.length?s.readers.map(r=>'<div class=tile><img src="/video?cam='+encodeURIComponent(r.key)+
-   '"><div><span>'+r.name+' ('+r.key+')</span><button onclick="drop(\\''+r.key+'\\')">disconnect</button></div></div>').join(''):
+  feeds.innerHTML=s.readers.length?s.readers.map(r=>'<div class=tile data-k="'+r.key+'"><img src="/video?cam='+encodeURIComponent(r.key)+
+   '"><div><span>'+r.name+' ('+r.key+')</span><span><button onclick="inspectCam(\\''+r.key+'\\')">Inspect</button><button onclick="drop(\\''+r.key+'\\')">disconnect</button></span></div></div>').join(''):
    '<i>No phone connected yet. On the phone: tap <b>Scan QR</b> and scan the code on the right.</i>';}
  st.innerHTML='<tr><th>name<th>state<th>fps<th>size<th>frames<th>reconn</tr>'+s.readers.map(r=>'<tr><td>'+r.name+
   '<td class='+(r.state=='live'?'ok':'bad')+'>'+r.state+'<td>'+r.fps+'<td>'+(r.size||'-')+'<td>'+r.frames+'<td>'+r.reconnects).join('');
+ const i=await (await fetch('/api/inspection')).json();
+ loadModels();prev.checked=!!i.preview;vinbox.style.display=i.vin_mode?'':'none';
+ document.querySelectorAll('.tile').forEach(t=>t.classList.toggle('act',t.dataset.k===i.active));
+ const col={'OK':'#1a8f3a','NOT OK':'#c62828','NOT FOUND':'#ef6c00'};
+ res.textContent=i.result||(i.state==='idle'?'SCAN VIN':(i.state==='scanning'?(i.preview?'PREVIEW':'SCANNING '+(i.seconds_left??'')):(i.state==='waiting'?'READY':(i.state==='no_model'?'NO MODEL':(i.state==='loading'?'LOADING':'...')))));
+ banner.style.background=col[i.result]||(i.state==='scanning'?'#0b6fa4':'#444');
+ insp.textContent=(i.vin?'VIN '+i.vin+(i.task?' / '+i.task:'')+'  |  ':'')+(i.message||'')+(i.infer_ms?'  |  '+i.infer_ms+' ms':'')+(i.detections&&i.detections.length?'  |  '+i.detections.map(d=>d.name+' '+Math.round(d.conf*100)+'%').join(', '):'');
+ nextbtn.style.display=i.state==='done'?'':'none';
  const l=await (await fetch('/api/log')).json();
  const end=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
  log.textContent=l.join('\\n');if(end)log.scrollTop=log.scrollHeight;
@@ -507,6 +548,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps({"version": VERSION, "debug": DEBUG, "scanning": STATE["scanning"],
                                    "phones": STATE["phones"], "ips": local_ips(), "ui_port": STATE["ui_port"],
                                    "readers": [r.status() for r in STATE["readers"].values()]}))
+        elif u.path == "/api/inspection":
+            st = INSPECTOR.status() if INSPECTOR else {"state": "no_model", "message": "inspector not started"}
+            ar = active_reader()
+            st["active"] = ar.key if ar else None
+            self._send(json.dumps(st))
+        elif u.path == "/api/models":
+            self._send(json.dumps({"models": INSPECTOR.list_models() if INSPECTOR else [],
+                                   "current": INSPECTOR.cfg.get("model") if INSPECTOR else None}))
         elif u.path == "/api/log":
             self._send(json.dumps(list(LOG)[-200:]))
         elif u.path == "/snapshot.jpg":
@@ -544,6 +593,31 @@ class Handler(BaseHTTPRequestHandler):
             if url.startswith("http"):
                 connect(url)
             self._send("{}")
+        elif u.path == "/api/model":
+            ok = bool(INSPECTOR and INSPECTOR.select_model(q.get("name", [""])[0]))
+            self._send(json.dumps({"ok": ok}), code=200 if ok else 400)
+        elif u.path == "/api/vin":
+            vin = q.get("vin", [""])[0]
+            ok = bool(INSPECTOR and INSPECTOR.vin_mode and INSPECTOR.set_vin(vin))
+            if ok:
+                log(f"VIN received: {vin}")
+            self._send(json.dumps({"ok": ok}), code=200 if ok else 409)
+        elif u.path == "/api/restart":
+            if INSPECTOR:
+                INSPECTOR.restart()
+            self._send("{}")
+        elif u.path == "/api/preview":
+            if INSPECTOR:
+                INSPECTOR.set_preview(q.get("on", ["1"])[0] == "1")
+            self._send("{}")
+        elif u.path == "/api/inspect":
+            key = q.get("cam", [""])[0]
+            if key in STATE["readers"]:
+                STATE["active"] = key
+                log(f"inspecting phone {key}")
+                if INSPECTOR:
+                    INSPECTOR.restart()
+            self._send("{}")
         elif u.path == "/api/disconnect":
             disconnect(q.get("cam", [""])[0])
             self._send("{}")
@@ -560,11 +634,22 @@ class Handler(BaseHTTPRequestHandler):
             while True:
                 r = first_reader(cam)
                 f, fid = r.get() if r else (None, -1)
-                if f is None or fid == last:
-                    time.sleep(0.01)
-                    continue
-                last = fid
-                jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes()
+                ins = INSPECTOR
+                annotated = (ins is not None and r is active_reader() and ins.state in ("scanning", "done")
+                             and ins.display)
+                if annotated:  # boxes / result of the inspector for the phone being checked
+                    key = ("a", id(annotated))
+                    if key == last:
+                        time.sleep(0.02)
+                        continue
+                    last = key
+                    jpg = annotated
+                else:
+                    if f is None or fid == last:
+                        time.sleep(0.01)
+                        continue
+                    last = fid
+                    jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes()
                 self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
                                  + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -587,6 +672,7 @@ def main():
     ap.add_argument("--no-scan", action="store_true", help="do not scan at start; wait for phones to scan the QR")
     ap.add_argument("--window", action="store_true", help="also show an OpenCV window (first phone)")
     ap.add_argument("--scan-only", action="store_true")
+    ap.add_argument("--no-inspect", action="store_true", help="video viewer only, no model")
     a = ap.parse_args()
     DEBUG = not a.no_debug
     STATE["port"] = a.phone_port
@@ -607,6 +693,11 @@ def main():
         log(f"cannot open viewer port {a.ui_port}: {e} (use --ui-port)", "ERROR")
         return 1
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    global INSPECTOR
+    if not a.no_inspect:
+        cfg = load_config(os.path.join(app_dir(), "runner_config.json"), log)
+        INSPECTOR = Inspector(cfg, app_dir(), log, inspector_frame, load_tasks(os.path.join(app_dir(), "tasks.json"), log))
+        INSPECTOR.start()
     log(f"viewer + QR page: http://127.0.0.1:{a.ui_port}/   (PC addresses: {local_ips() or 'NONE'})")
     log("Windows firewall popup -> Allow (Private AND Public), so phones can reach this PC.")
     print_qr_console(qr_payload())

@@ -58,3 +58,16 @@ connector recovers by itself after the "phone" is killed and restarted.
 The Kotlin/Flutter app has not been compiled or run (no Android SDK where it was
 written). Expect to fix a compile error or two on the first build -- paste the build
 output or the app's debug log. Fps/heat on a real phone is the thing to measure first.
+
+## Inspection (YOLO .pt) in the connector
+Put `runner_connector.exe` and your `.pt` files in one folder (or a `models/` subfolder). In the viewer's top bar:
+- **model dropdown** -- pick the `.pt` (remembered in `runner_config.json`);
+- **boxes only** -- just draw detections on the live feed, never decide (use this to check a model);
+- **Inspect** on a phone tile -- with several phones connected, choose which one is inspected (green outline);
+- result banner OK / NOT OK / NOT FOUND, **Next car** (Space) to start again.
+
+Rules (`mandatory`, `ignored`, `conf`, `scan_seconds`, ...) are in `runner_config.json` (see
+`runner_config.example.json`). Optional `tasks.json` (see `tasks.example.json`) switches on VIN mode:
+the VIN (QR/barcode in the inspected phone's view, typed in the viewer, or `POST /api/vin?vin=`) picks the
+task = its own `.pt` + rules; results go to `results/results.csv` + images named with the VIN, then the
+runner waits for the next VIN. Build with `build_exe.bat` (installs CPU-only torch to keep the exe small).

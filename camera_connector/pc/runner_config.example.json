@@ -1,0 +1,16 @@
+{
+  "model": "best.pt",
+  "imgsz": 640,
+  "conf": 0.5,
+  "device": "cpu",
+  "mandatory": ["RHS_Closed", "LHS_Closed"],
+  "ignored": ["Max_reg"],
+  "fail_ticks_needed": 2,
+  "pass_ticks_needed": 1,
+  "scan_seconds": 45,
+  "next_after_seconds": 4,
+  "results_dir": "results",
+  "save_images": true,
+  "beep": true,
+  "preview_only": false
+}

@@ -3,9 +3,13 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas, binaries, hiddenimports = [], [], []
-for pkg in ["cv2", "qrcode"]:
-    d, b, h = collect_all(pkg)
+for pkg in ["cv2", "qrcode", "ultralytics"]:
+    try:
+        d, b, h = collect_all(pkg)
+    except Exception:
+        continue
     datas += d; binaries += b; hiddenimports += h
+hiddenimports += ["inspector", "case_logic"]
 
 a = Analysis(["connector.py"], pathex=[], binaries=binaries, datas=datas, hiddenimports=hiddenimports,
              hookspath=[], runtime_hooks=[], excludes=["tkinter", "notebook", "IPython"], noarchive=False)
