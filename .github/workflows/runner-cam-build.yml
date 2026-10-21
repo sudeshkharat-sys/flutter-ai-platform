@@ -3,7 +3,7 @@ name: Runner Cam build (exe + apk)
 on:
   workflow_dispatch:
   push:
-    branches: [sudesh/live-feed-runner-experiment]
+    branches: [sudesh/live-feed-runner-experiment, claude/yolo26-end2end-decode]
     paths: ["pc_runner/**", ".github/workflows/runner-cam-build.yml"]
 
 jobs:
