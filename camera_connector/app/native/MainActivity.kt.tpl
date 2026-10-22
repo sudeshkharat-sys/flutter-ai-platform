@@ -92,6 +92,16 @@ class MainActivity : FlutterActivity() {
                         StreamService.instance?.setZoom((call.argument<Double>("ratio") ?: 1.0).toFloat())
                         result.success(null)
                     }
+                    "vibrate" -> {
+                        val ms = (call.argument<List<Int>>("pattern") ?: listOf(0, 500)).map { it.toLong() }.toLongArray()
+                        try {
+                            val v = if (Build.VERSION.SDK_INT >= 31)
+                                (getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager).defaultVibrator
+                            else @Suppress("DEPRECATION") (getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator)
+                            v.vibrate(android.os.VibrationEffect.createWaveform(ms, -1))
+                        } catch (e: Exception) { DebugLog.e("vibrate failed", e) }
+                        result.success(null)
+                    }
                     "status" -> result.success(StreamService.status())
                     "log" -> result.success(DebugLog.tail(300))
                     else -> result.notImplemented()

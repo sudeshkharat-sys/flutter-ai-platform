@@ -213,11 +213,14 @@ class StreamService : LifecycleService() {
 
     fun setTorch(on: Boolean) {
         torchOn = on
+        DebugLog.i("torch ${if (on) "ON" else "OFF"} (flash unit: ${camera?.cameraInfo?.hasFlashUnit()})")
         ContextCompat.getMainExecutor(this).execute { applyTorchZoom() }
     }
 
     fun setZoom(ratio: Float) {
         zoomRatio = ratio
+        val zs = camera?.cameraInfo?.zoomState?.value
+        DebugLog.i("zoom ${ratio}x requested (camera range ${zs?.minZoomRatio}..${zs?.maxZoomRatio})")
         ContextCompat.getMainExecutor(this).execute { applyTorchZoom() }
     }
 

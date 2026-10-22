@@ -57,10 +57,18 @@ class _HomeState extends State<Home> {
   static const _zooms = [1.0, 1.5, 2.0, 3.0];
   int _zoomIdx = 0;
 
+  // PC inspection result (polled from /api/inspection)
+  Map<String, dynamic> _insp = {};
+  String _lastResult = '';
+  bool _inspBusy = false;
+  bool _fullscreen = false;
+  Timer? _inspTimer;
+
   @override
   void initState() {
     super.initState();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _poll());
+    _inspTimer = Timer.periodic(const Duration(milliseconds: 700), (_) => _fetchInsp());
     _previewTimer = Timer.periodic(const Duration(milliseconds: 300), (_) => _fetchPreview());
     _poll();
   }
@@ -69,6 +77,7 @@ class _HomeState extends State<Home> {
   void dispose() {
     _timer?.cancel();
     _previewTimer?.cancel();
+    _inspTimer?.cancel();
     super.dispose();
   }
 
@@ -91,7 +100,7 @@ class _HomeState extends State<Home> {
   /// One snapshot of what the PC shows for this phone (boxes / result included). Skips if one is in flight.
   Future<void> _fetchPreview() async {
     final pc = _pcTarget;
-    if (!_showPreview || pc == null || _s['running'] != true || _previewBusy) return;
+    if ((!_showPreview && !_fullscreen) || pc == null || _s['running'] != true || _previewBusy) return;
     _previewBusy = true;
     final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
     try {
@@ -114,6 +123,149 @@ class _HomeState extends State<Home> {
       c.close(force: true);
       _previewBusy = false;
     }
+  }
+
+  /// Inspection state of the PC (scanning / OK / NOT OK / NOT FOUND). Vibrates once when a result arrives.
+  Future<void> _fetchInsp() async {
+    final pc = _pcTarget;
+    if (pc == null || _s['running'] != true || _inspBusy) return;
+    _inspBusy = true;
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+    try {
+      final req = await c.getUrl(Uri.parse('http://${pc['ip']}:${pc['port']}/api/inspection')).timeout(const Duration(seconds: 3));
+      final res = await req.close().timeout(const Duration(seconds: 3));
+      final j = jsonDecode(await res.transform(utf8.decoder).join());
+      if (j is Map<String, dynamic>) {
+        final r = (j['state'] == 'done' ? (j['result'] ?? '') : '').toString();
+        if (r.isNotEmpty && r != _lastResult) {
+          _dlog('PC result: $r (task ${j['task']})');
+          _ch.invokeMethod('vibrate', {
+            'pattern': r == 'OK'
+                ? [0, 700]
+                : r == 'NOT OK'
+                    ? [0, 250, 120, 250, 120, 250]
+                    : [0, 400, 150, 400],
+          });
+        }
+        if (mounted) {
+          setState(() {
+            _insp = j;
+            _lastResult = r;
+          });
+        }
+      }
+    } catch (_) {
+      // PC unreachable: keep the last banner, the PC VIEW greys out by itself
+    } finally {
+      c.close(force: true);
+      _inspBusy = false;
+    }
+  }
+
+  Future<void> _nextCar() async {
+    final pc = _pcTarget;
+    if (pc == null) return;
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+    try {
+      final req = await c.postUrl(Uri.parse('http://${pc['ip']}:${pc['port']}/api/restart'));
+      await (await req.close()).drain();
+      _dlog('next car requested from the phone');
+    } catch (e) {
+      _dlog('next car failed: ${e.runtimeType}', 'WARN');
+    } finally {
+      c.close(force: true);
+    }
+  }
+
+  Widget _resultBanner({bool big = false}) {
+    final st = '${_insp['state'] ?? ''}';
+    final res = '${_insp['result'] ?? ''}';
+    final task = '${_insp['task'] ?? ''}';
+    String text;
+    Color col;
+    if (_pcTarget == null || _insp.isEmpty) {
+      text = 'PC not connected';
+      col = Colors.grey.shade700;
+    } else if (st == 'done' && res.isNotEmpty) {
+      text = res;
+      col = res == 'OK' ? Colors.green.shade700 : (res == 'NOT OK' ? Colors.red.shade700 : Colors.orange.shade800);
+    } else if (st == 'scanning') {
+      final left = _insp['seconds_left'];
+      text = _insp['preview'] == true ? 'BOXES ONLY' : 'SCANNING${left != null ? '  ${left}s' : ''}';
+      col = _insp['preview'] == true ? Colors.blueGrey : Colors.blue.shade700;
+    } else if (st == 'waiting') {
+      text = 'READY';
+      col = Colors.blueGrey;
+    } else if (st == 'no_model') {
+      text = 'NO MODEL ON PC';
+      col = Colors.grey.shade700;
+    } else {
+      text = st.isEmpty ? '...' : st.toUpperCase();
+      col = Colors.grey.shade700;
+    }
+    final done = st == 'done' && res.isNotEmpty;
+    return Container(
+      width: double.infinity,
+      color: col,
+      padding: EdgeInsets.symmetric(vertical: big ? 14 : 8, horizontal: 12),
+      child: Row(children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(text, style: TextStyle(color: Colors.white, fontSize: big ? 36 : 24, fontWeight: FontWeight.bold)),
+            if (task.isNotEmpty && task != 'null') Text('Task: $task', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+          ]),
+        ),
+        if (done)
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: col),
+            onPressed: _nextCar,
+            child: const Text('Next car'),
+          ),
+      ]),
+    );
+  }
+
+  Widget _previewImage() {
+    final stale = DateTime.now().difference(_previewAt).inSeconds >= 3;
+    return Container(
+      color: Colors.black,
+      alignment: Alignment.center,
+      child: _previewJpg == null
+          ? Text(_pcTarget == null ? 'Scan the PC QR to see what the PC sees' : 'waiting for the PC...',
+              style: const TextStyle(color: Colors.white70))
+          : Opacity(opacity: stale ? 0.35 : 1, child: Image.memory(_previewJpg!, gaplessPlayback: true, fit: BoxFit.contain)),
+    );
+  }
+
+  Widget _fullscreenView() {
+    final torchOn = _s['torch'] == true;
+    final zoom = _zooms[_zoomIdx];
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Column(children: [
+          _resultBanner(big: true),
+          Expanded(child: _previewImage()),
+          Container(
+            color: Colors.black,
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              IconButton.filledTonal(
+                onPressed: _toggleTorch,
+                icon: Icon(torchOn ? Icons.flashlight_on : Icons.flashlight_off),
+                color: torchOn ? Colors.orange : null,
+              ),
+              FilledButton.tonal(onPressed: _cycleZoom, child: Text('${zoom == zoom.roundToDouble() ? zoom.toInt() : zoom}x')),
+              FilledButton.tonalIcon(
+                onPressed: () => setState(() => _fullscreen = false),
+                icon: const Icon(Icons.fullscreen_exit),
+                label: const Text('Exit'),
+              ),
+            ]),
+          ),
+        ]),
+      ),
+    );
   }
 
   Future<void> _toggleTorch() async {
@@ -284,14 +436,15 @@ class _HomeState extends State<Home> {
   }
 
   Widget _livePanel() {
-    final stale = DateTime.now().difference(_previewAt).inSeconds >= 3;
     final torchOn = _s['torch'] == true;
     final zoom = _zooms[_zoomIdx];
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: Column(children: [
-          Row(children: [
+      clipBehavior: Clip.antiAlias,
+      child: Column(children: [
+        _resultBanner(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 4, 0, 0),
+          child: Row(children: [
             const Text('PC VIEW', style: TextStyle(fontWeight: FontWeight.bold)),
             const Spacer(),
             IconButton.filledTonal(
@@ -302,31 +455,19 @@ class _HomeState extends State<Home> {
             ),
             const SizedBox(width: 6),
             FilledButton.tonal(onPressed: _cycleZoom, child: Text('${zoom == zoom.roundToDouble() ? zoom.toInt() : zoom}x')),
+            IconButton(tooltip: 'Full screen', onPressed: () => setState(() => _fullscreen = true), icon: const Icon(Icons.fullscreen)),
             Switch(value: _showPreview, onChanged: (v) => setState(() => _showPreview = v)),
           ]),
-          if (_showPreview)
-            AspectRatio(
-              aspectRatio: 4 / 3,
-              child: Container(
-                color: Colors.black,
-                alignment: Alignment.center,
-                child: _previewJpg == null
-                    ? Text(_pcTarget == null ? 'Scan the PC QR to see what the PC sees' : 'waiting for the PC...',
-                        style: const TextStyle(color: Colors.white70))
-                    : Opacity(
-                        opacity: stale ? 0.35 : 1,
-                        child: Image.memory(_previewJpg!, gaplessPlayback: true, fit: BoxFit.contain),
-                      ),
-              ),
-            ),
-        ]),
-      ),
+        ),
+        if (_showPreview) AspectRatio(aspectRatio: 4 / 3, child: _previewImage()),
+      ]),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final running = _s['running'] == true;
+    if (_fullscreen && running) return _fullscreenView();
     final ips = ((_s['ips'] as List?) ?? []).cast<String>().where((i) => !i.startsWith('192.0.0.')).toList();
     final port = _s['port'] ?? _port.text;
     final err = (_s['error'] as String?) ?? '';

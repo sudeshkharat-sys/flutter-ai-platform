@@ -23,6 +23,7 @@ PERMISSIONS = [
     "android.permission.FOREGROUND_SERVICE",
     "android.permission.FOREGROUND_SERVICE_CAMERA",
     "android.permission.POST_NOTIFICATIONS",
+    "android.permission.VIBRATE",
 ]
 DEPS = [
     "androidx.camera:camera-core:1.3.4",

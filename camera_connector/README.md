@@ -89,4 +89,9 @@ No Pass classes = every class that is not Fail/Ignore must be seen. VIN mode (`t
 While streaming, the app shows **PC VIEW**: a ~3 fps snapshot of what the PC shows for this phone (`/preview.jpg?cam=me`,
 boxes and result included; greys out when stale). Needs the PC to have been found by QR / Find PC. Torch button and a
 1x / 1.5x / 2x / 3x zoom button drive the streaming camera (CameraX). Not yet compiled -- see "Not yet verified".
-Next step: OK / NOT OK result banner + vibrate on the phone, and Region classes.
+The app also polls the PC's `/api/inspection` and shows a banner: SCANNING / OK (green) / NOT OK (red) / NOT FOUND (orange),
+vibrates once per result (OK = one long, NOT OK = three short, NOT FOUND = two) and has a **Next car** button (POST `/api/restart`).
+The **full screen** icon on PC VIEW switches the phone to a full-screen inspection view (banner + picture + torch/zoom/exit).
+When a result arrives the PC inspection stops and freezes the annotated frame; the camera keeps streaming. `auto_restart_seconds`
+in `runner_config.json` (0 = wait for Next car) starts the next scan by itself. Torch / zoom changes are written to the phone debug log.
+Next: Region classes.
