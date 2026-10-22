@@ -94,4 +94,5 @@ vibrates once per result (OK = one long, NOT OK = three short, NOT FOUND = two) 
 The **full screen** icon on PC VIEW switches the phone to a full-screen inspection view (banner + picture + torch/zoom/exit).
 When a result arrives the PC inspection stops and freezes the annotated frame; the camera keeps streaming. `auto_restart_seconds`
 in `runner_config.json` (0 = wait for Next car) starts the next scan by itself. Torch / zoom changes are written to the phone debug log.
+Result rule: OK after 3 consecutive OK frames, NOT OK after 3 consecutive NOT OK frames (`pass_ticks_needed` / `fail_ticks_needed`, default 3 each); then the inspection stops until Next car (phone or PC button / Space).
 Next: Region classes.

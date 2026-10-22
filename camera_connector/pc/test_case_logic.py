@@ -61,4 +61,12 @@ assert defect_classes([("Crack", .9), ("Max_reg", .9)], cfg_f) == ["Crack"]
 cfg_g = CaseConfig(mandatory=[], fail=["Crack"], conf=0.5)   # only a fail list: Crack alone is a defect
 assert tick_state([("Crack", .9)], cfg_g, ["Crack", "Lamp_On"]) == "defect"
 
+# --- 3-in-a-row for OK and NOT OK (the PC Runner default)
+C3 = CaseConfig(mandatory=["RHS_Closed", "LHS_Closed"], ignored=["Max_reg"], pass_ticks_needed=3, fail_ticks_needed=3)
+GOOD, BAD = [("RHS_Closed", .8), ("LHS_Closed", .8)], [("LHS_Open", .8)]
+assert run([GOOD] * 3, C3) == (OK, 3)
+assert run([GOOD, GOOD, [("Max_reg", .9)], GOOD, GOOD], C3)[0] is None    # a gap resets the count
+assert run([BAD] * 3, C3) == (NOT_OK, 3)
+assert run([BAD, BAD, GOOD, BAD, BAD], C3)[0] is None
+
 print("all case_logic tests passed")

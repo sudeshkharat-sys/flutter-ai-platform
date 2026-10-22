@@ -111,7 +111,7 @@ class CaseTracker:
                 return NOT_OK
         else:
             self.fail_count = 0
-            self.ok_count = max(0, self.ok_count - 1)
+            self.ok_count = 0   # OK frames must be consecutive too
         return None
 
     def final(self, dets):
