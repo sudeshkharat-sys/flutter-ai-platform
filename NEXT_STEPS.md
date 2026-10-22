@@ -91,3 +91,37 @@ Field log showed `detect` ~1.3-2.1 s per tick (decode only ~40 ms), only ~2.7 co
 - `ScanLog` (camera_prefs.dart) keeps the FULL debug log of the most recent scan (up to 1500 lines; the on-screen
   console only shows the newest 50 and disappears with the screen), saved to the phone when the scan screen closes.
 - Home bottom bar: **Last scan log** opens it (oldest first, selectable, **Copy all**). Works for live and photo scans.
+
+
+## Next: Task builder inside the PC connector exe (camera_connector) -- planned, not built
+VIN scanning is **out of scope for now** (add later). One task is active at a time, picked in the viewer.
+
+**Where it lives:** the task list is stored in `tasks.json` next to the exe, but is created/edited in the
+viewer page (a "Tasks" panel), never by hand. Nothing is sent to the phone except task name + result.
+
+**Task builder flow (viewer page)**
+1. Pick a `.pt` from the model dropdown -> the exe loads it and lists its class names.
+2. For each class choose a role:
+   - **Pass** (mandatory): must be seen for OK.
+   - **Fail**: seeing it = NOT OK (default for any class not marked pass/ignore).
+   - **Ignore**: never counts.
+   - **Region** (optional extra on a Pass class): the box must be inside a rectangle you draw on the live
+     frame (drag on the preview). "Region" = the part of the screen where that class is allowed to be; a box
+     elsewhere does not count. Saved as fractions 0..1 (x1,y1,x2,y2) so it survives resolution changes.
+3. Set min confidence per class (default 0.5) and scan seconds, name the task, **Save**.
+4. Activate a task from a dropdown (replaces model dropdown + VIN matching for now).
+
+**`tasks.json` shape (per task):** `name, model, scan_seconds, classes: {Name: {role: pass|fail|ignore, conf, region?: [x1,y1,x2,y2]}}`.
+Backward compatible: old `mandatory/ignored` keys are read and converted.
+
+**Rule (extends `case_logic.py`):** OK = every pass class seen (and inside its region, if set) and no fail class;
+NOT OK = fail class on 2 frames in a row; timeout = last frame decides, NOT FOUND if nothing relevant.
+
+**Phone side (same step):**
+- Poll `GET http://<pc>/api/inspection` ~1/s (state `scanning|OK|NOT_OK|NOT_FOUND`, task name) -> big
+  green/red banner + vibrate/beep (1 = OK, 2 = NOT OK, 3 = not found).
+- Small live preview in the app: PC's annotated `/snapshot` polled 3-5 fps (optional toggle, low fps to
+  keep the phone cool) so the user sees what the PC sees, boxes included.
+
+**Build order:** (a) `/api/inspection` fields + phone banner/feedback, (b) phone preview, (c) task builder
+UI + region drawing + `case_logic` region/conf support + tests in `test_case_logic.py`.
