@@ -134,6 +134,13 @@ class Inspector:
         self.task_name = None
         self._pending_vin = None
         self._pending_model = None
+        self._pending_task = None
+        self.task_file = os.path.join(base_dir, "inspection_tasks.json")
+        self.task_list = self._read_task_list()
+        self._load_lock = threading.Lock()
+        self.np = self.cv2 = self.YOLO = None
+        self.imgsz = int(cfg.get("imgsz", 640))
+        self.device = cfg.get("device", "cpu")
         self._last_vin = None
         self.model = None           # nothing loaded until a .pt is picked / found
         self.names = {}
@@ -158,7 +165,7 @@ class Inspector:
     @staticmethod
     def _make_case_cfg(cfg):
         return CaseConfig(
-            mandatory=cfg.get("mandatory"), ignored=cfg.get("ignored"), conf=cfg.get("conf", 0.5),
+            mandatory=cfg.get("mandatory"), ignored=cfg.get("ignored"), fail=cfg.get("fail"), conf=cfg.get("conf", 0.5),
             fail_ticks_needed=cfg.get("fail_ticks_needed", 2), pass_ticks_needed=cfg.get("pass_ticks_needed", 1),
             scan_seconds=cfg.get("scan_seconds", 45))
 
@@ -178,19 +185,102 @@ class Inspector:
         self._pending_model = name
         return True
 
-    def _save_model_choice(self, name):
-        """Remember the choice in runner_config.json so the next start uses it."""
+    def _save_choice(self, key, name):
+        """Remember a choice (model / task) in runner_config.json so the next start uses it."""
         path = os.path.join(self.base_dir, "runner_config.json")
         try:
             data = {}
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-            data["model"] = name
+            data[key] = name
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            self.log(f"could not remember the model choice: {e}", "WARN")
+            self.log(f"could not remember the choice: {e}", "WARN")
+
+    # --- task builder: name + model + Pass / Fail / Ignore class lists, stored in inspection_tasks.json
+    def _read_task_list(self):
+        try:
+            if os.path.exists(self.task_file):
+                with open(self.task_file, "r", encoding="utf-8") as f:
+                    return [t for t in json.load(f).get("tasks", []) if t.get("name") and t.get("model")]
+        except Exception as e:
+            self.log(f"could not read {self.task_file}: {e}", "ERROR")
+        return []
+
+    def list_tasks(self):
+        return self.task_list
+
+    def save_task(self, task):
+        """Create or overwrite (by name) a task: {name, model, pass[], fail[], ignore[], scan_seconds, conf}."""
+        name = str(task.get("name", "")).strip()
+        model = str(task.get("model", "")).strip()
+        if not name or model not in self.list_models():
+            return False, "give the task a name and pick a model"
+        lists = {k: [str(c) for c in task.get(k, [])] for k in ("pass", "fail", "ignore")}
+        seen = set()
+        for k, v in lists.items():
+            if seen & set(v):
+                return False, "a class can be in only one of Pass / Fail / Ignore"
+            seen |= set(v)
+        try:
+            entry = {"name": name, "model": model, **lists,
+                     "scan_seconds": max(1.0, float(task.get("scan_seconds", 45))),
+                     "conf": min(0.99, max(0.05, float(task.get("conf", 0.5))))}
+        except (TypeError, ValueError):
+            return False, "scan seconds and confidence must be numbers"
+        tasks = [t for t in self.task_list if t["name"] != name] + [entry]
+        try:
+            with open(self.task_file, "w", encoding="utf-8") as f:
+                json.dump({"tasks": tasks}, f, indent=2)
+        except Exception as e:
+            return False, f"could not save: {e}"
+        self.task_list = tasks
+        self.log(f"task saved: {name} ({model}) pass={lists['pass']} fail={lists['fail']} ignore={lists['ignore']}")
+        if self.task_name == name and self.state != "scanning":
+            self._pending_task = name  # re-arm the active task with the new rules
+        return True, "saved"
+
+    def delete_task(self, name):
+        tasks = [t for t in self.task_list if t["name"] != name]
+        if len(tasks) == len(self.task_list):
+            return False
+        with open(self.task_file, "w", encoding="utf-8") as f:
+            json.dump({"tasks": tasks}, f, indent=2)
+        self.task_list = tasks
+        if self.task_name == name:
+            self.task_name = None
+        return True
+
+    def select_task(self, name):
+        if not any(t["name"] == name for t in self.task_list):
+            return False
+        self._pending_task = name
+        return True
+
+    def get_classes(self, model_name):
+        """Class names of a .pt (loads + caches it). (names, error)"""
+        if model_name not in self.list_models():
+            return [], "model not found"
+        if self.YOLO is None:
+            return [], "model engine still starting (or ultralytics missing) -- try again in a moment"
+        path = os.path.join(self.base_dir, model_name)
+        try:
+            return list(self._load(path)[1].values()), ""
+        except Exception as e:
+            return [], f"could not load model: {e}"
+
+    def _task_cfg(self, task):
+        """Task -> config overrides. Pass = mandatory, Ignore = ignored, Fail = fail. With no Pass classes,
+        every class that is neither Fail nor Ignore must be seen."""
+        cfg = dict(self.base_cfg, model=task["model"], conf=task.get("conf", 0.5),
+                   scan_seconds=task.get("scan_seconds", 45), fail=task.get("fail", []),
+                   ignored=task.get("ignore", []), mandatory=task.get("pass", []))
+        if not cfg["mandatory"]:
+            _, names = self._models.get(os.path.join(self.base_dir, task["model"]), (None, {}))
+            cfg["mandatory"] = [n for n in names.values() if n not in cfg["fail"] and n not in cfg["ignored"]]
+        return cfg
 
     def set_preview(self, on):
         """Boxes-only mode: keeps detecting and drawing, never decides OK / NOT OK."""
@@ -233,6 +323,7 @@ class Inspector:
             "detections": [{"name": n, "conf": round(c, 2)} for n, c in self.dets],
             "mandatory": self.case_cfg.mandatory,
             "ignored": self.case_cfg.ignored,
+            "fail": self.case_cfg.fail,
             "fail_count": self.tracker.fail_count if self.tracker else 0,
             "fail_ticks_needed": self.case_cfg.fail_ticks_needed,
         }
@@ -279,9 +370,16 @@ class Inspector:
                         self.base_cfg = cfg
                         self.message = f"{os.path.basename(name)} -- waiting for the phone camera..."
                         self.log(f"model selected: {name}")
-                        self._save_model_choice(name)
+                        self.task_name = None  # a plain model pick (boxes only) is not a task
+                        self._save_choice("model", name)
                     else:
                         self.state = "no_model"
+                    last_frame_no = -1
+                if self._pending_task:
+                    name, self._pending_task = self._pending_task, None
+                    task = next((t for t in self.task_list if t["name"] == name), None)
+                    if task and self._activate_task(task):
+                        self._save_choice("task", name)
                     last_frame_no = -1
                 if self._restart.is_set():
                     self._restart.clear()
@@ -373,14 +471,8 @@ class Inspector:
             return False
         if model_path not in self._models:
             try:
-                t0 = time.time()
                 self.state, self.message = "loading", f"loading model for {task_name or 'inspection'}..."
-                model = YOLO(model_path)
-                names = model.names if isinstance(model.names, dict) else dict(enumerate(model.names))
-                model.predict(np.zeros((self.imgsz, self.imgsz, 3), np.uint8), imgsz=self.imgsz, device=self.device, verbose=False)
-                self._models[model_path] = (model, names)
-                self.log(f"model loaded + warmed up in {time.time() - t0:.1f}s: {model_path} (imgsz {self.imgsz}, {self.device})")
-                self.log(f"model classes: {list(names.values())}")
+                self._load(model_path)
             except Exception as e:
                 self.state = fail_state
                 self.message = f"could not load model: {e}"
@@ -398,6 +490,41 @@ class Inspector:
         self.result, self.result_defects, self.dets, self.display = None, [], [], None
         self.state = "waiting"
         self.message = "waiting for the phone camera..."
+        return True
+
+    def _load(self, model_path):
+        """Load + warm up a .pt once; cached by path (shared by the inspector and the task builder)."""
+        with self._load_lock:
+            if model_path not in self._models:
+                t0 = time.time()
+                model = self.YOLO(model_path)
+                names = model.names if isinstance(model.names, dict) else dict(enumerate(model.names))
+                model.predict(self.np.zeros((self.imgsz, self.imgsz, 3), self.np.uint8), imgsz=self.imgsz,
+                              device=self.device, verbose=False)
+                self._models[model_path] = (model, names)
+                self.log(f"model loaded + warmed up in {time.time() - t0:.1f}s: {model_path} (imgsz {self.imgsz}, {self.device})")
+                self.log(f"model classes: {list(names.values())}")
+            return self._models[model_path]
+
+    def _activate_task(self, task):
+        """Arm a builder task (its model + Pass/Fail/Ignore rules)."""
+        path = os.path.join(self.base_dir, task["model"])
+        if path not in self._models:  # classes are needed when Pass is empty
+            try:
+                self.state, self.message = "loading", f"loading model for {task['name']}..."
+                self._load(path)
+            except Exception as e:
+                self.state, self.message = "no_model", f"could not load model: {e}"
+                self.log(self.message, "ERROR")
+                return False
+        cfg = self._task_cfg(task)
+        self.base_cfg = dict(self.base_cfg, model=task["model"])
+        if not self._activate(cfg, task["name"]):
+            return False
+        self.task_name = task["name"]
+        self.message = f"task {self.task_name} -- waiting for the phone camera..."
+        self.log(f"task selected: {self.task_name} ({task['model']}) pass={task.get('pass')} "
+                 f"fail={task.get('fail')} ignore={task.get('ignore')}")
         return True
 
     def _start_vin(self, vin):

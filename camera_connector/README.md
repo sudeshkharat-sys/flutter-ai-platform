@@ -6,7 +6,7 @@ Replaces the still-photo approach of `pc_runner/` (kept untouched as a fallback)
  phone app (native CameraX -> JPEG -> MJPEG HTTP server, like IP Webcam)
         http://<phone-ip>:8080/video
                    |  Wi-Fi / phone hotspot
- PC runner_connector.exe: scan -> cv2.VideoCapture(url) -> viewer + debug log
+ PC pc_runner.exe: scan -> cv2.VideoCapture(url) -> viewer + debug log
 ```
 
 Why smooth: frames never touch Dart. Android's CameraX hands RGBA frames to native
@@ -31,7 +31,7 @@ Same data over HTTP: `/status`, `/log`, `/snapshot.jpg`, `/ping`.
     python connector.py                      # scan, connect, open viewer
     python connector.py --url http://192.168.1.50:8080/video
     python connector.py --window             # also an OpenCV window
-    build_exe.bat                            # -> dist\runner_connector.exe (no install needed)
+    build_exe.bat                            # -> dist\pc_runner.exe (no install needed)
 
 Scan = HTTP `/ping` sweep of the PC's /24 networks + UDP beacon (port 8092). Debug is
 on by default; log goes to the console, the viewer page and `connector_debug.log`.
@@ -60,7 +60,7 @@ written). Expect to fix a compile error or two on the first build -- paste the b
 output or the app's debug log. Fps/heat on a real phone is the thing to measure first.
 
 ## Inspection (YOLO .pt) in the connector
-Put `runner_connector.exe` and your `.pt` files in one folder (or a `models/` subfolder). In the viewer's top bar:
+Put `pc_runner.exe` and your `.pt` files in one folder (or a `models/` subfolder). In the viewer's top bar:
 - **model dropdown** -- pick the `.pt` (remembered in `runner_config.json`);
 - **boxes only** -- just draw detections on the live feed, never decide (use this to check a model);
 - **Inspect** on a phone tile -- with several phones connected, choose which one is inspected (green outline);
@@ -71,3 +71,22 @@ Rules (`mandatory`, `ignored`, `conf`, `scan_seconds`, ...) are in `runner_confi
 the VIN (QR/barcode in the inspected phone's view, typed in the viewer, or `POST /api/vin?vin=`) picks the
 task = its own `.pt` + rules; results go to `results/results.csv` + images named with the VIN, then the
 runner waits for the next VIN. Build with `build_exe.bat` (installs CPU-only torch to keep the exe small).
+
+
+## Tasks (Pass / Fail / Ignore) -- PC Runner viewer
+1. Pick the `.pt` in the top bar, click **+ Create task**, name it (e.g. Headlamp).
+2. The pop-up lists the model's classes. In the **Pass**, **Fail** and **Ignore** dropdowns tick one or more
+   classes (a class can be in only one list). Set **Scan time (seconds)** and **Min confidence**, **Save task**.
+3. Saved to `inspection_tasks.json` next to the exe. **Edit task** re-opens it; saving overwrites by name; Delete removes it.
+4. Choose the task (the dropdown shows only tasks of the selected `.pt`) and press **Start inspection**
+   (**Stop** goes back to boxes-only).
+
+Rules: OK = every Pass class seen and no Fail class; NOT OK = a Fail class (or an unassigned class when Pass is set)
+on 2 frames in a row; Ignore never counts; after the scan time the last frame decides (NOT FOUND if nothing relevant).
+No Pass classes = every class that is not Fail/Ignore must be seen. VIN mode (`tasks.json`) is unchanged and separate.
+
+## Phone app: live window, torch, zoom
+While streaming, the app shows **PC VIEW**: a ~3 fps snapshot of what the PC shows for this phone (`/preview.jpg?cam=me`,
+boxes and result included; greys out when stale). Needs the PC to have been found by QR / Find PC. Torch button and a
+1x / 1.5x / 2x / 3x zoom button drive the streaming camera (CameraX). Not yet compiled -- see "Not yet verified".
+Next step: OK / NOT OK result banner + vibrate on the phone, and Region classes.

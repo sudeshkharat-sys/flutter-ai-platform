@@ -5,6 +5,8 @@ unit-testable anywhere. Mirrors the Flutter live screen's rules:
   OK        every mandatory class is seen (>= conf) and no fail class is seen
   NOT OK    a fail class (neither mandatory nor ignored, or a "not ok" named class) is seen on
             `fail_ticks_needed` frames IN A ROW
+  (task builder) a class listed under Fail is always a fail class; Pass = mandatory; Ignore = ignored;
+            unassigned classes are Fail when Pass is set
   nothing   anything else -> keep scanning
   timeout   after `scan_seconds`: the last frame decides -- defect -> NOT OK, all mandatory -> OK,
             otherwise NOT FOUND
@@ -28,7 +30,8 @@ def _is_not_ok_name(name):
 
 class CaseConfig:
     def __init__(self, mandatory=None, ignored=None, conf=0.5,
-                 fail_ticks_needed=2, pass_ticks_needed=1, scan_seconds=45):
+                 fail_ticks_needed=2, pass_ticks_needed=1, scan_seconds=45, fail=None):
+        self.fail = [str(c) for c in (fail or [])]   # explicit fail classes (task builder)
         self.mandatory = [str(c) for c in (mandatory or [])]
         self.ignored = [str(c) for c in (ignored or [])]
         self.conf = float(conf)
@@ -46,7 +49,9 @@ def tick_state(dets, cfg, all_classes=()):
     ignored = {_norm(c) for c in cfg.ignored}
     seen = {_norm(n) for n, c in dets if c >= cfg.conf}
 
-    defect = False
+    defect = any(name in {_norm(c) for c in cfg.fail} and name not in ignored for name in seen)
+    if defect:
+        return "defect"
     if cfg.mandatory:
         for name in seen:
             if name in ignored:
@@ -67,12 +72,13 @@ def defect_classes(dets, cfg, all_classes=()):
     """Names of the fail classes seen (for logging / the result file)."""
     mandatory = {_norm(c) for c in cfg.mandatory}
     ignored = {_norm(c) for c in cfg.ignored}
+    fail = {_norm(c) for c in cfg.fail}
     out = []
     for n, c in dets:
         k = _norm(n)
         if c < cfg.conf or k in ignored:
             continue
-        if (cfg.mandatory and k not in mandatory) or _is_not_ok_name(n):
+        if k in fail or (cfg.mandatory and k not in mandatory) or _is_not_ok_name(n):
             out.append(n)
     return out
 

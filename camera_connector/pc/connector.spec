@@ -14,5 +14,5 @@ hiddenimports += ["inspector", "case_logic"]
 a = Analysis(["connector.py"], pathex=[], binaries=binaries, datas=datas, hiddenimports=hiddenimports,
              hookspath=[], runtime_hooks=[], excludes=["tkinter", "notebook", "IPython"], noarchive=False)
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, a.binaries, a.zipfiles, a.datas, [], name="runner_connector",
+exe = EXE(pyz, a.scripts, a.binaries, a.zipfiles, a.datas, [], name="pc_runner",
           debug=False, strip=False, upx=False, console=True, icon="icon.ico")

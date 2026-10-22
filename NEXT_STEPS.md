@@ -93,7 +93,8 @@ Field log showed `detect` ~1.3-2.1 s per tick (decode only ~40 ms), only ~2.7 co
 - Home bottom bar: **Last scan log** opens it (oldest first, selectable, **Copy all**). Works for live and photo scans.
 
 
-## Next: Task builder inside the PC connector exe (camera_connector) -- planned, not built
+## Task builder inside the PC Runner exe (camera_connector) -- BUILT (Pass/Fail/Ignore), untested on real hardware
+Built: tasks dialog, `inspection_tasks.json`, phone PC-VIEW window + torch + zoom. Still to do: phone OK/NOT OK banner + vibrate, Region classes. Original plan below.
 VIN scanning is **out of scope for now** (add later). One task is active at a time, picked in the viewer.
 
 **Where it lives:** the task list is stored in `tasks.json` next to the exe, but is created/edited in the

@@ -42,6 +42,9 @@ class StreamService : LifecycleService() {
 
     private var server: MjpegServer? = null
     private var provider: ProcessCameraProvider? = null
+    @Volatile private var camera: androidx.camera.core.Camera? = null
+    @Volatile private var torchOn = false
+    @Volatile private var zoomRatio = 1f
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -185,12 +188,37 @@ class StreamService : LifecycleService() {
                     }
                 }
                 p.unbindAll()
-                p.bindToLifecycle(this, selector, analysis)
+                camera = p.bindToLifecycle(this, selector, analysis)
+                applyTorchZoom()
                 DebugLog.i("camera bound (${if (front) "front" else "back"})")
             } catch (e: Exception) {
                 fail("camera bind failed", e)
             }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    // ---- torch / zoom (set from the app, re-applied after a camera rebind) ----
+
+    private fun applyTorchZoom() {
+        val c = camera ?: return
+        try {
+            if (c.cameraInfo.hasFlashUnit()) c.cameraControl.enableTorch(torchOn)
+            val zs = c.cameraInfo.zoomState.value
+            val r = zoomRatio.coerceIn(zs?.minZoomRatio ?: 1f, zs?.maxZoomRatio ?: 1f)
+            c.cameraControl.setZoomRatio(r)
+        } catch (e: Exception) {
+            DebugLog.e("torch/zoom failed", e)
+        }
+    }
+
+    fun setTorch(on: Boolean) {
+        torchOn = on
+        ContextCompat.getMainExecutor(this).execute { applyTorchZoom() }
+    }
+
+    fun setZoom(ratio: Float) {
+        zoomRatio = ratio
+        ContextCompat.getMainExecutor(this).execute { applyTorchZoom() }
     }
 
     // ---- beacon: tell the PC where we are ----
@@ -299,6 +327,8 @@ class StreamService : LifecycleService() {
         put("thermal", thermal)
         put("cameraAgeMs", if (lastCameraFrameAt == 0L) -1 else SystemClock.elapsedRealtime() - lastCameraFrameAt)
         put("error", lastError)
+        put("torch", torchOn)
+        put("zoom", Math.round(zoomRatio * 10) / 10.0)
     }.toString()
 
     // ---- foreground / locks / teardown ----
@@ -346,6 +376,7 @@ class StreamService : LifecycleService() {
             thermalListener = null
         }
         try { provider?.unbindAll() } catch (_: Exception) {}
+        camera = null
         server?.stop()
         server = null
         try { wakeLock?.takeIf { it.isHeld }?.release() } catch (_: Exception) {}

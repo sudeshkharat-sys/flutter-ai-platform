@@ -440,7 +440,7 @@ def print_qr_console(text):
         log(f"could not print QR in console ({type(e).__name__}); open the viewer page instead", "WARN", debug_only=True)
 
 
-PAGE = """<!doctype html><meta charset=utf-8><title>Runner Cam connector</title>
+PAGE = """<!doctype html><meta charset=utf-8><title>PC Runner</title>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <style>body{margin:0;font:14px system-ui,sans-serif;background:#111;color:#ddd}
 header{padding:10px 16px;background:#0b6fa4;color:#fff;font-weight:600}
@@ -453,13 +453,39 @@ pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-h
 #banner{padding:12px 16px;font-size:26px;font-weight:700;color:#fff;background:#444;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
 #banner small{font-size:13px;font-weight:400;flex:1;min-width:200px}#banner select,#banner input{font-size:15px;padding:5px}
 #banner button{font-size:15px;padding:6px 12px}.tile.act{outline:3px solid #1a8f3a}
-button{padding:5px 10px;margin:2px}td{padding:2px 8px 2px 0}.bad{color:#f66}.ok{color:#6f6}</style>
-<header>Runner Cam connector <span id=ver></span></header>
+button{padding:5px 10px;margin:2px}
+#ov{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:9}#ov.on{display:flex}
+#dlg{background:#1a222d;border:1px solid #2c3848;border-radius:12px;width:min(560px,96vw);max-height:95vh;overflow:auto;padding:18px;color:#e8edf3}
+#dlg h3{margin:0 0 8px}#dlg label{display:block;color:#8b9aab;font-size:12px;margin:12px 0 5px}#dlg small{font-weight:400}
+.drow{display:flex;gap:10px}.drow>*{flex:1}#dlg select,#dlg input{width:100%;box-sizing:border-box;background:#0e131a;color:#e8edf3;border:1px solid #2c3848;border-radius:6px;padding:8px;font:inherit}
+.dfoot{display:flex;justify-content:space-between;margin-top:16px}#dmsg{color:#f88;min-height:18px;margin-top:8px}
+.dd{position:relative}.dd .box{background:#0e131a;border:1px solid #2c3848;border-radius:6px;padding:7px 9px;min-height:38px;cursor:pointer;display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.dd .box:after{content:"\\25BE";margin-left:auto;color:#8b9aab}.dd .box i{color:#8b9aab;font-style:normal}
+.dd .menu{display:none;position:absolute;z-index:5;left:0;right:0;background:#0e131a;border:1px solid #2c3848;border-radius:6px;margin-top:2px;max-height:180px;overflow:auto}
+.dd.open .menu{display:block}.dd .menu label{display:flex;gap:8px;align-items:center;margin:0;padding:8px 10px;color:#e8edf3;font-size:14px;cursor:pointer}
+.dd .menu label:hover{background:#1a222d}.dd .menu label.dis{opacity:.4;cursor:not-allowed}
+.tag{padding:3px 10px;border-radius:99px;font-size:13px;border:1px solid}.tag.pass{background:#12331f;border-color:#2fb86b;color:#7be0a6}
+.tag.fail{background:#3a1618;border-color:#e5484d;color:#ff9a9d}.tag.ignore{background:#242b35;border-color:#8b9aab;color:#8b9aab}td{padding:2px 8px 2px 0}.bad{color:#f66}.ok{color:#6f6}</style>
+<header>PC Runner <span id=ver></span></header>
 <div id=banner><span id=res>...</span><small id=insp></small>
-<select id=msel onchange="fetch('/api/model?name='+encodeURIComponent(msel.value),{method:'POST'})"></select>
-<label style="font-size:14px;font-weight:400"><input type=checkbox id=prev onchange="fetch('/api/preview?on='+(prev.checked?1:0),{method:'POST'})"> boxes only</label>
+<select id=msel onchange="fetch('/api/model?name='+encodeURIComponent(msel.value),{method:'POST'});curTask='';loadTasks(true)"></select>
+<select id=tsel onchange="pickTask(tsel.value)"></select>
+<button onclick="openTask(false)">+ Create task</button><button id=editbtn onclick="openTask(true)">Edit task</button>
+<button id=runbtn onclick="toggleRun()" style="background:#1a8f3a;color:#fff"></button>
 <span id=vinbox style="display:none"><input id=vin placeholder="VIN" onkeydown="if(event.key==='Enter')sendVin()"> <button onclick="sendVin()">Start</button></span>
 <button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button></div>
+<div id=ov><div id=dlg>
+<h3 id=dttl>Create task</h3>
+<div class=drow><div><label>Model (.pt)</label><select id=dmodel onchange="loadClasses()"></select></div>
+<div><label>Task name</label><input id=dname placeholder="e.g. Headlamp"></div></div>
+<label>Pass classes <small>(all selected must be seen for OK)</small></label><div class=dd id=dd_pass></div>
+<label>Fail classes <small>(any one seen = NOT OK)</small></label><div class=dd id=dd_fail></div>
+<label>Ignore classes <small>(never counted)</small></label><div class=dd id=dd_ignore></div>
+<div class=drow><div><label>Scan time (seconds) <small>longest the inspection looks for a result</small></label><input id=dscan type=number min=1 value=45></div>
+<div><label>Min confidence <small>0.05 - 0.99</small></label><input id=dconf type=number min=0.05 max=0.99 step=0.05 value=0.5></div></div>
+<div id=dmsg></div>
+<div class=dfoot><span><button onclick="closeTask()">Cancel</button> <button id=delbtn onclick="delTask()" style="background:#7a1f1f;color:#fff">Delete</button></span>
+<button onclick="saveTask()" style="background:#1a8f3a;color:#fff">Save task</button></div></div></div>
 <main>
 <div id=feeds><i id=nofeed>No phone connected yet. On the phone: tap <b>Scan QR</b> and scan the code on the right.</i></div>
 <div id=side>
@@ -473,6 +499,40 @@ button{padding:5px 10px;margin:2px}td{padding:2px 8px 2px 0}.bad{color:#f66}.ok{
 <button onclick="go(u.value)">Connect</button>
 <h3>Debug log</h3><pre id=log></pre></div></main>
 <script>
+
+let tasks=[],curTask='',editing=false,cls=[],pick={pass:[],fail:[],ignore:[]};
+function taken(c,k){return Object.keys(pick).some(x=>x!==k&&pick[x].includes(c))}
+function renderDD(){for(const k of ['pass','fail','ignore']){const d=document.getElementById('dd_'+k);const open=d.classList.contains('open');
+ d.innerHTML='<div class=box>'+(pick[k].length?pick[k].map(c=>'<span class="tag '+k+'">'+c+'</span>').join(''):'<i>Select classes...</i>')+'</div><div class=menu>'+
+  (cls.length?cls.map(c=>'<label class="'+(taken(c,k)?'dis':'')+'"><input type=checkbox data-c="'+c+'" '+(pick[k].includes(c)?'checked ':'')+(taken(c,k)?'disabled':'')+'>'+c+(taken(c,k)?' <small>(used elsewhere)</small>':'')+'</label>').join(''):'<label>pick a model first</label>')+'</div>';
+ if(open)d.classList.add('open');
+ d.querySelector('.box').onclick=()=>{const o=d.classList.contains('open');document.querySelectorAll('.dd').forEach(x=>x.classList.remove('open'));if(!o)d.classList.add('open')};
+ d.querySelectorAll('input').forEach(i=>i.onchange=()=>{const c=i.dataset.c;pick[k]=i.checked?[...pick[k],c]:pick[k].filter(x=>x!==c);renderDD()})}}
+async function loadClasses(){dmsg.textContent='';cls=[];renderDD();if(!dmodel.value)return;
+ const r=await (await fetch('/api/classes?model='+encodeURIComponent(dmodel.value))).json();
+ cls=r.classes||[];if(r.error)dmsg.textContent=r.error;pick={pass:pick.pass.filter(c=>cls.includes(c)),fail:pick.fail.filter(c=>cls.includes(c)),ignore:pick.ignore.filter(c=>cls.includes(c))};renderDD()}
+async function openTask(edit){editing=edit;let t=null;if(edit){t=tasks.find(x=>x.name===curTask);if(!t){alert('Pick a task to edit first.');return}}
+ const m=await (await fetch('/api/models')).json();
+ dmodel.innerHTML=m.models.map(n=>'<option'+((t?t.model:m.current)===n?' selected':'')+'>'+n+'</option>').join('');
+ dttl.textContent=edit?'Edit task: '+t.name:'Create task';dname.value=t?t.name:'';dname.readOnly=!!t;
+ dscan.value=t?t.scan_seconds:45;dconf.value=t?t.conf:0.5;delbtn.style.display=t?'':'none';
+ pick=t?{pass:[...t.pass],fail:[...t.fail],ignore:[...t.ignore]}:{pass:[],fail:[],ignore:[]};
+ ov.classList.add('on');loadClasses()}
+function closeTask(){ov.classList.remove('on')}
+async function saveTask(){const body={name:dname.value.trim(),model:dmodel.value,pass:pick.pass,fail:pick.fail,ignore:pick.ignore,scan_seconds:+dscan.value,conf:+dconf.value};
+ const r=await (await fetch('/api/task/save',{method:'POST',body:JSON.stringify(body)})).json();
+ if(!r.ok){dmsg.textContent=r.message;return}
+ closeTask();curTask=body.name;await loadTasks(true);pickTask(curTask)}
+async function delTask(){if(!confirm('Delete task '+curTask+'?'))return;await fetch('/api/task/delete?name='+encodeURIComponent(curTask),{method:'POST'});closeTask();curTask='';loadTasks(true)}
+function pickTask(n){curTask=n;if(n)fetch('/api/task?name='+encodeURIComponent(n),{method:'POST'})}
+let tasksShown='';
+async function loadTasks(force){try{const r=await (await fetch('/api/tasks')).json();tasks=r.tasks;const model=msel.value;
+ const mine=tasks.filter(t=>t.model===model);const sig=model+'|'+mine.map(t=>t.name).join(',')+'|'+(r.current||'');
+ if(!force&&sig===tasksShown)return;tasksShown=sig;if(r.current)curTask=r.current;
+ tsel.innerHTML='<option value="">'+(mine.length?'-- choose task --':'no tasks for this model')+'</option>'+mine.map(t=>'<option'+(t.name===curTask?' selected':'')+'>'+t.name+'</option>').join('');
+ if(!mine.some(t=>t.name===curTask))tsel.value=''}catch(e){}}
+let isPrev=true,curHas=false;
+function toggleRun(){if(isPrev){if(!curHas){alert('Choose or create a task first.');return}fetch('/api/preview?on=0',{method:'POST'})}else fetch('/api/preview?on=1',{method:'POST'})}
 function go(url){fetch('/api/connect?url='+encodeURIComponent(url),{method:'POST'})}
 function sendVin(){const v=vin.value.trim();if(v){fetch('/api/vin?vin='+encodeURIComponent(v),{method:'POST'});vin.value=''}}
 function inspectCam(k){fetch('/api/inspect?cam='+encodeURIComponent(k),{method:'POST'})}
@@ -498,12 +558,12 @@ async function tick(){try{
  st.innerHTML='<tr><th>name<th>state<th>fps<th>size<th>frames<th>reconn</tr>'+s.readers.map(r=>'<tr><td>'+r.name+
   '<td class='+(r.state=='live'?'ok':'bad')+'>'+r.state+'<td>'+r.fps+'<td>'+(r.size||'-')+'<td>'+r.frames+'<td>'+r.reconnects).join('');
  const i=await (await fetch('/api/inspection')).json();
- loadModels();prev.checked=!!i.preview;vinbox.style.display=i.vin_mode?'':'none';
+ loadModels();loadTasks();isPrev=!!i.preview;curHas=!!i.task;runbtn.textContent=isPrev?'Start inspection':'Stop (boxes only)';runbtn.style.background=isPrev?'#1a8f3a':'#7a1f1f';vinbox.style.display=i.vin_mode?'':'none';
  document.querySelectorAll('.tile').forEach(t=>t.classList.toggle('act',t.dataset.k===i.active));
  const col={'OK':'#1a8f3a','NOT OK':'#c62828','NOT FOUND':'#ef6c00'};
- res.textContent=i.result||(i.state==='idle'?'SCAN VIN':(i.state==='scanning'?(i.preview?'PREVIEW':'SCANNING '+(i.seconds_left??'')):(i.state==='waiting'?'READY':(i.state==='no_model'?'NO MODEL':(i.state==='loading'?'LOADING':'...')))));
+ res.textContent=i.result||(i.state==='idle'?'SCAN VIN':(i.state==='scanning'?(i.preview?'BOXES ONLY':'SCANNING '+(i.seconds_left??'')):(i.state==='waiting'?'READY':(i.state==='no_model'?'NO MODEL':(i.state==='loading'?'LOADING':'...')))));
  banner.style.background=col[i.result]||(i.state==='scanning'?'#0b6fa4':'#444');
- insp.textContent=(i.vin?'VIN '+i.vin+(i.task?' / '+i.task:'')+'  |  ':'')+(i.message||'')+(i.infer_ms?'  |  '+i.infer_ms+' ms':'')+(i.detections&&i.detections.length?'  |  '+i.detections.map(d=>d.name+' '+Math.round(d.conf*100)+'%').join(', '):'');
+ insp.textContent=(i.vin?'VIN '+i.vin+'  |  ':'')+(i.task?'Task '+i.task+'  |  ':'')+(i.message||'')+(i.infer_ms?'  |  '+i.infer_ms+' ms':'')+(i.detections&&i.detections.length?'  |  '+i.detections.map(d=>d.name+' '+Math.round(d.conf*100)+'%').join(', '):'');
  nextbtn.style.display=i.state==='done'?'':'none';
  const l=await (await fetch('/api/log')).json();
  const end=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
@@ -529,6 +589,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _cam(self, key):
+        """cam=me -> the reader whose phone address is the caller (the phone app asking for its own view)."""
+        if key == "me":
+            ip = self.client_address[0]
+            return next((r for r in STATE["readers"].values() if r.key.split(":")[0] == ip), None)
+        return first_reader(key)
 
     def do_GET(self):
         u = urlparse(self.path)
@@ -556,8 +623,26 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/models":
             self._send(json.dumps({"models": INSPECTOR.list_models() if INSPECTOR else [],
                                    "current": INSPECTOR.cfg.get("model") if INSPECTOR else None}))
+        elif u.path == "/api/tasks":
+            self._send(json.dumps({"tasks": INSPECTOR.list_tasks() if INSPECTOR else [],
+                                   "current": INSPECTOR.task_name if INSPECTOR else None}))
+        elif u.path == "/api/classes":
+            names, err = INSPECTOR.get_classes(q.get("model", [""])[0]) if INSPECTOR else ([], "no inspector")
+            self._send(json.dumps({"classes": names, "error": err}))
         elif u.path == "/api/log":
             self._send(json.dumps(list(LOG)[-200:]))
+        elif u.path == "/preview.jpg":
+            # what the PC shows for this phone (boxes / result when it is the inspected one) -- used by the phone app
+            r = self._cam(q.get("cam", [None])[0])
+            ins = INSPECTOR
+            jpg = ins.display if (ins is not None and r is not None and r is active_reader()
+                                  and ins.state in ("scanning", "done") and ins.display) else None
+            if jpg is None:
+                f = r.get()[0] if r else None
+                if f is None:
+                    return self._send("no frame yet", "text/plain", 404)
+                jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 60])[1].tobytes()
+            self._send(jpg, "image/jpeg")
         elif u.path == "/snapshot.jpg":
             r = first_reader(q.get("cam", [None])[0])
             f = r.get()[0] if r else None
@@ -596,6 +681,19 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/model":
             ok = bool(INSPECTOR and INSPECTOR.select_model(q.get("name", [""])[0]))
             self._send(json.dumps({"ok": ok}), code=200 if ok else 400)
+        elif u.path == "/api/task":
+            ok = bool(INSPECTOR and INSPECTOR.select_task(q.get("name", [""])[0]))
+            self._send(json.dumps({"ok": ok}), code=200 if ok else 400)
+        elif u.path == "/api/task/save":
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                ok, msg = INSPECTOR.save_task(body) if INSPECTOR else (False, "no inspector")
+            except Exception as e:
+                ok, msg = False, f"bad request: {e}"
+            self._send(json.dumps({"ok": ok, "message": msg}))
+        elif u.path == "/api/task/delete":
+            ok = bool(INSPECTOR and INSPECTOR.delete_task(q.get("name", [""])[0]))
+            self._send(json.dumps({"ok": ok}))
         elif u.path == "/api/vin":
             vin = q.get("vin", [""])[0]
             ok = bool(INSPECTOR and INSPECTOR.vin_mode and INSPECTOR.set_vin(vin))

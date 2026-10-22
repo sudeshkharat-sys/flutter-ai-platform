@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -41,22 +42,33 @@ class _HomeState extends State<Home> {
   String _log = '';
   String _msg = '';
   Timer? _timer;
+  Timer? _previewTimer;
   final _pcPort = TextEditingController(text: '8095');
   List<Map<String, dynamic>> _pcs = [];
   bool _scanningPc = false;
   String _pcMsg = '';
   Map<String, dynamic>? _pcTarget; // PC chosen by QR / list; auto-connected after Start
 
+  // live window: what the PC sees (with boxes), polled as JPEG snapshots
+  bool _showPreview = true;
+  Uint8List? _previewJpg;
+  bool _previewBusy = false;
+  DateTime _previewAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _zooms = [1.0, 1.5, 2.0, 3.0];
+  int _zoomIdx = 0;
+
   @override
   void initState() {
     super.initState();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _poll());
+    _previewTimer = Timer.periodic(const Duration(milliseconds: 300), (_) => _fetchPreview());
     _poll();
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _previewTimer?.cancel();
     super.dispose();
   }
 
@@ -74,6 +86,46 @@ class _HomeState extends State<Home> {
     } catch (e) {
       if (mounted) setState(() => _msg = 'status error: $e');
     }
+  }
+
+  /// One snapshot of what the PC shows for this phone (boxes / result included). Skips if one is in flight.
+  Future<void> _fetchPreview() async {
+    final pc = _pcTarget;
+    if (!_showPreview || pc == null || _s['running'] != true || _previewBusy) return;
+    _previewBusy = true;
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+    try {
+      final req = await c.getUrl(Uri.parse('http://${pc['ip']}:${pc['port']}/preview.jpg?cam=me&t=${DateTime.now().millisecondsSinceEpoch}'))
+          .timeout(const Duration(seconds: 3));
+      final res = await req.close().timeout(const Duration(seconds: 3));
+      if (res.statusCode == 200) {
+        final b = BytesBuilder();
+        await for (final chunk in res) {
+          b.add(chunk);
+        }
+        if (mounted) setState(() {
+          _previewJpg = b.takeBytes();
+          _previewAt = DateTime.now();
+        });
+      }
+    } catch (_) {
+      // PC unreachable / no frame yet: the old picture goes stale and is greyed out
+    } finally {
+      c.close(force: true);
+      _previewBusy = false;
+    }
+  }
+
+  Future<void> _toggleTorch() async {
+    final on = !(_s['torch'] == true);
+    await _ch.invokeMethod('setTorch', {'on': on});
+    await _poll();
+  }
+
+  Future<void> _cycleZoom() async {
+    final i = (_zoomIdx + 1) % _zooms.length;
+    await _ch.invokeMethod('setZoom', {'ratio': _zooms[i]});
+    setState(() => _zoomIdx = i);
   }
 
   Future<void> _start() async {
@@ -231,6 +283,47 @@ class _HomeState extends State<Home> {
     setState(() => _msg = 'stopped');
   }
 
+  Widget _livePanel() {
+    final stale = DateTime.now().difference(_previewAt).inSeconds >= 3;
+    final torchOn = _s['torch'] == true;
+    final zoom = _zooms[_zoomIdx];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(children: [
+          Row(children: [
+            const Text('PC VIEW', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Spacer(),
+            IconButton.filledTonal(
+              tooltip: 'Torch',
+              onPressed: _toggleTorch,
+              icon: Icon(torchOn ? Icons.flashlight_on : Icons.flashlight_off),
+              color: torchOn ? Colors.orange : null,
+            ),
+            const SizedBox(width: 6),
+            FilledButton.tonal(onPressed: _cycleZoom, child: Text('${zoom == zoom.roundToDouble() ? zoom.toInt() : zoom}x')),
+            Switch(value: _showPreview, onChanged: (v) => setState(() => _showPreview = v)),
+          ]),
+          if (_showPreview)
+            AspectRatio(
+              aspectRatio: 4 / 3,
+              child: Container(
+                color: Colors.black,
+                alignment: Alignment.center,
+                child: _previewJpg == null
+                    ? Text(_pcTarget == null ? 'Scan the PC QR to see what the PC sees' : 'waiting for the PC...',
+                        style: const TextStyle(color: Colors.white70))
+                    : Opacity(
+                        opacity: stale ? 0.35 : 1,
+                        child: Image.memory(_previewJpg!, gaplessPlayback: true, fit: BoxFit.contain),
+                      ),
+              ),
+            ),
+        ]),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final running = _s['running'] == true;
@@ -260,6 +353,7 @@ class _HomeState extends State<Home> {
               ),
             ),
           ],
+          if (running) _livePanel(),
           if (err.isNotEmpty) Text(err, style: const TextStyle(color: Colors.red)),
           Row(children: [
             Expanded(child: TextField(controller: _port, enabled: !running, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Port'))),

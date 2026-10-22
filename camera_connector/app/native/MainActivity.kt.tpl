@@ -84,6 +84,14 @@ class MainActivity : FlutterActivity() {
                             runOnUiThread { result.success(r) }
                         }.start()
                     }
+                    "setTorch" -> {
+                        StreamService.instance?.setTorch(call.argument<Boolean>("on") ?: false)
+                        result.success(null)
+                    }
+                    "setZoom" -> {
+                        StreamService.instance?.setZoom((call.argument<Double>("ratio") ?: 1.0).toFloat())
+                        result.success(null)
+                    }
                     "status" -> result.success(StreamService.status())
                     "log" -> result.success(DebugLog.tail(300))
                     else -> result.notImplemented()

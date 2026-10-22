@@ -1,5 +1,5 @@
 """Run:  python test_case_logic.py   (no dependencies)"""
-from case_logic import CaseConfig, CaseTracker, OK, NOT_OK, NOT_FOUND, tick_state
+from case_logic import CaseConfig, defect_classes, CaseTracker, OK, NOT_OK, NOT_FOUND, tick_state
 
 CLASSES = ["Max_reg", "RHS_Closed", "LHS_Closed", "LHS_Open", "RHS_Open"]
 CFG = CaseConfig(mandatory=["RHS_Closed", "LHS_Closed"], ignored=["Max_reg"], conf=0.5)
@@ -52,5 +52,13 @@ assert tick_state([("Max_reg", .9)], cfg_all, CLASSES) == "none"
 # --- a class named "not ok" is always a defect unless ignored
 cfg_n = CaseConfig(mandatory=["Clip"], conf=0.5)
 assert tick_state([("Clip", .9), ("Not_OK", .9)], cfg_n, ["Clip", "Not_OK"]) == "defect"
+
+# --- explicit fail list; pass empty => every class not fail/ignored is mandatory (built by the inspector)
+cfg_f = CaseConfig(mandatory=["Lamp_On"], ignored=["Max_reg"], fail=["Crack"], conf=0.5)
+assert tick_state([("Lamp_On", .9), ("Crack", .9)], cfg_f, []) == "defect"
+assert tick_state([("Lamp_On", .9), ("Max_reg", .9)], cfg_f, []) == "ok"
+assert defect_classes([("Crack", .9), ("Max_reg", .9)], cfg_f) == ["Crack"]
+cfg_g = CaseConfig(mandatory=[], fail=["Crack"], conf=0.5)   # only a fail list: Crack alone is a defect
+assert tick_state([("Crack", .9)], cfg_g, ["Crack", "Lamp_On"]) == "defect"
 
 print("all case_logic tests passed")
