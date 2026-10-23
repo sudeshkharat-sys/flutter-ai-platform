@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -139,6 +140,23 @@ Future<List<Map<String, dynamic>>> findPcs(int port) async {
   return (jsonDecode(r) as List).cast<Map<String, dynamic>>();
 }
 
+/// Width/height from a JPEG's SOF marker (so the scan square can be mapped onto the picture).
+Size? _jpegSize(Uint8List b) {
+  var i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] != 0xFF) {
+      i++;
+      continue;
+    }
+    final m = b[i + 1];
+    if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) {
+      return Size(((b[i + 7] << 8) | b[i + 8]).toDouble(), ((b[i + 5] << 8) | b[i + 6]).toDouble());
+    }
+    i += 2 + ((b[i + 2] << 8) | b[i + 3]);
+  }
+  return null;
+}
+
 class Home extends StatefulWidget {
   const Home({super.key});
   @override
@@ -171,6 +189,11 @@ class _HomeState extends State<Home> {
   int _inspFails = 0;
   DateTime _lastRetry = DateTime.fromMillisecondsSinceEpoch(0);
   bool _fullscreen = false;
+  Size? _imgSize; // size of the PC picture (for the scan square)
+  Offset? _dragA, _dragB; // scan square being drawn (fractions of the picture)
+  String _scanMsg = '';
+  DateTime _scanMsgAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _scanBusy = false;
   bool _showLog = false; // debug console overlay (bug icon), like the inspection app
 
   Map<String, dynamic>? get _pc => cfg.pc;
@@ -231,6 +254,7 @@ class _HomeState extends State<Home> {
         }
         if (mounted) setState(() {
           _previewJpg = b.takeBytes();
+          _imgSize = _jpegSize(_previewJpg!) ?? _imgSize;
           _previewAt = DateTime.now();
         });
       }
@@ -284,6 +308,63 @@ class _HomeState extends State<Home> {
       _inspBusy = false;
     }
   }
+
+  Future<String?> _pcPost(String path) async {
+    final pc = _pc;
+    if (pc == null) return null;
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+    try {
+      final req = await c.postUrl(Uri.parse('http://${pc['ip']}:${pc['port']}$path'));
+      final res = await req.close().timeout(const Duration(seconds: 12));
+      return await res.transform(utf8.decoder).join();
+    } catch (e) {
+      _dlog('PC request $path failed: ${e.runtimeType}', 'WARN');
+      return null;
+    } finally {
+      c.close(force: true);
+    }
+  }
+
+  /// Scan button: the PC reads the label in the scan square and says what it found.
+  Future<void> _scanLabel() async {
+    if (_scanBusy) return;
+    setState(() {
+      _scanBusy = true;
+      _scanMsg = 'reading the label...';
+      _scanMsgAt = DateTime.now();
+    });
+    final r = await _pcPost('/api/scanlabel');
+    var msg = 'PC did not answer';
+    var ok = false;
+    if (r != null) {
+      try {
+        final j = jsonDecode(r) as Map<String, dynamic>;
+        ok = j['ok'] == true;
+        msg = '${j['message']}';
+      } catch (_) {}
+    }
+    _dlog('scan label: $msg', ok ? 'INFO' : 'WARN');
+    if (!ok) _ch.invokeMethod('vibrate', {'pattern': [0, 200, 100, 200]});
+    if (mounted) setState(() {
+      _scanBusy = false;
+      _scanMsg = msg;
+      _scanMsgAt = DateTime.now();
+    });
+  }
+
+  Future<void> _startScan() async => _pcPost('/api/start');
+  Future<void> _retry() async {
+    setState(() => _lastResult = '');
+    await _pcPost('/api/retry');
+  }
+
+  Future<void> _setRoi(double x1, double y1, double x2, double y2) async {
+    await _pcPost('/api/roi?x1=$x1&y1=$y1&x2=$x2&y2=$y2');
+    _dlog('scan square set');
+  }
+
+  bool get _packIdle =>
+      '${_insp['state']}' == 'idle' && _insp['mode'] == 'pack' && _insp['pack'] is Map && _insp['pack']['loaded'] == true;
 
   /// Submit: the PC keeps the result (results.csv), then moves on to the next scan.
   Future<void> _submit() async {
@@ -490,6 +571,9 @@ class _HomeState extends State<Home> {
       final left = _insp['seconds_left'];
       text = _insp['preview'] == true ? 'BOXES ONLY' : 'SCANNING${left != null ? '  ${left}s' : ''}';
       col = _insp['preview'] == true ? Colors.blueGrey : Colors.blue.shade700;
+    } else if (st == 'ready') {
+      text = 'PRESS START';
+      col = Colors.green.shade700;
     } else if (st == 'waiting' || st == 'idle') {
       text = st == 'idle' ? ((_insp['pack'] is Map && _insp['pack']['loaded'] == true) ? 'SCAN THE LABEL' : 'SCAN THE VIN') : 'READY';
       col = Colors.blueGrey;
@@ -511,16 +595,39 @@ class _HomeState extends State<Home> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(text, style: TextStyle(color: Colors.white, fontSize: big ? 36 : 28, fontWeight: FontWeight.bold)),
             if (task.isNotEmpty && task != 'null') Text('Task: $task', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+            if (_scanMsg.isNotEmpty && DateTime.now().difference(_scanMsgAt).inSeconds < 10)
+              Text(_scanMsg, style: const TextStyle(color: Colors.yellowAccent, fontSize: 13, fontWeight: FontWeight.bold)),
             if (!done && msg.isNotEmpty && msg != 'null') Text(msg, style: const TextStyle(color: Colors.white70, fontSize: 12)),
             if (stale && !done) const Text('no picture from the PC', style: TextStyle(color: Colors.white70, fontSize: 11)),
           ]),
         ),
-        if (done)
+        if (done) ...[
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(foregroundColor: Colors.white, side: const BorderSide(color: Colors.white), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14)),
+            onPressed: _retry,
+            icon: const Icon(Icons.replay),
+            label: const Text('Retry'),
+          ),
+          const SizedBox(width: 8),
           FilledButton.icon(
             style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: col, padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14)),
             onPressed: _submit,
             icon: const Icon(Icons.check),
             label: const Text('Submit', style: TextStyle(fontSize: 18)),
+          ),
+        ] else if (st == 'ready')
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: col, padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 14)),
+            onPressed: _startScan,
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('START', style: TextStyle(fontSize: 18)),
+          )
+        else if (st == 'idle' && _packIdle)
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: col, padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14)),
+            onPressed: _scanBusy ? null : _scanLabel,
+            icon: _scanBusy ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.qr_code_scanner),
+            label: const Text('Scan', style: TextStyle(fontSize: 18)),
           ),
       ]),
     );
@@ -528,13 +635,52 @@ class _HomeState extends State<Home> {
 
   Widget _pcView() {
     final stale = DateTime.now().difference(_previewAt).inSeconds >= 3;
-    return Container(
+    final base = Container(
       color: Colors.black,
       alignment: Alignment.center,
       child: _previewJpg == null
           ? const Text('waiting for the PC...', style: TextStyle(color: Colors.white70))
           : Opacity(opacity: stale ? 0.35 : 1, child: Image.memory(_previewJpg!, gaplessPlayback: true, fit: BoxFit.contain)),
     );
+    final size = _imgSize;
+    if (!_packIdle || _previewJpg == null || size == null) return base;
+    // waiting for a label: drag a square around the QR code (the PC only reads inside it), then press Scan
+    return LayoutBuilder(builder: (ctx, bc) {
+      final sc = math.min(bc.maxWidth / size.width, bc.maxHeight / size.height);
+      final cw = size.width * sc, ch = size.height * sc;
+      final ox = (bc.maxWidth - cw) / 2, oy = (bc.maxHeight - ch) / 2;
+      Offset frac(Offset p) => Offset(((p.dx - ox) / cw).clamp(0.0, 1.0), ((p.dy - oy) / ch).clamp(0.0, 1.0));
+      final a = _dragA, b = _dragB;
+      return GestureDetector(
+        onPanStart: (d) => setState(() => _dragA = _dragB = frac(d.localPosition)),
+        onPanUpdate: (d) => setState(() => _dragB = frac(d.localPosition)),
+        onPanEnd: (_) {
+          final p = _dragA, q = _dragB;
+          setState(() => _dragA = _dragB = null);
+          if (p == null || q == null) return;
+          final x1 = math.min(p.dx, q.dx), y1 = math.min(p.dy, q.dy), x2 = math.max(p.dx, q.dx), y2 = math.max(p.dy, q.dy);
+          if (x2 - x1 > 0.03 && y2 - y1 > 0.03) _setRoi(x1, y1, x2, y2);
+        },
+        child: Stack(children: [
+          Positioned.fill(child: base),
+          if (a != null && b != null)
+            Positioned(
+              left: ox + math.min(a.dx, b.dx) * cw,
+              top: oy + math.min(a.dy, b.dy) * ch,
+              width: (a.dx - b.dx).abs() * cw,
+              height: (a.dy - b.dy).abs() * ch,
+              child: Container(decoration: BoxDecoration(border: Border.all(color: Colors.greenAccent, width: 3), color: Colors.greenAccent.withOpacity(0.15))),
+            ),
+          const Positioned(
+            bottom: 36,
+            left: 0,
+            right: 0,
+            child: Text('Drag a square around the QR code, then press Scan',
+                textAlign: TextAlign.center, style: TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+        ]),
+      );
+    });
   }
 
   Widget _liveStack() {

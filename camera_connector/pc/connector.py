@@ -383,12 +383,20 @@ def do_scan():
 
 def auto_scan_loop(interval):
     """Phones appear by themselves: rescan now and then, connect to any new one (outbound traffic only)."""
+    empty = 0
     while True:
         time.sleep(interval)
         if STATE["scanning"]:
             continue
         try:
-            for p in scan(STATE["port"], quiet=True):
+            found = scan(STATE["port"], quiet=True)
+            empty = 0 if (found or STATE["readers"]) else empty + 1
+            if empty == 4:
+                log("no phone seen for a minute. If the phone really is on the same Wi-Fi, that Wi-Fi probably blocks "
+                    "device-to-device traffic (client isolation, common on office Wi-Fi). Test: open "
+                    f"http://{(local_ips() or ['<this-pc-ip>'])[0]}:{STATE['ui_port']}/ in the PHONE's browser -- "
+                    "if that fails too, use the phone's hotspot (or a Wi-Fi without isolation).", "WARN")
+            for p in found:
                 key = f"{p['ip']}:{p['port']}"
                 if key not in STATE["readers"] and key not in DISMISSED:
                     log(f"auto-scan found a new phone: {p['name']} {key} -> connecting")
@@ -479,6 +487,12 @@ body.big .tile img{max-height:calc(100vh - 120px);min-height:300px}body.big #ban
 <button id=runbtn onclick="toggleRun()" style="background:#1a8f3a;color:#fff"></button>
 <span id=vinbox style="display:none"><input id=vin placeholder="VIN" onkeydown="if(event.key==='Enter')sendVin()"> <button onclick="sendVin()">Start</button></span>
 <button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button>
+<select id=modesel onchange="fetch('/api/mode?m='+modesel.value,{method:'POST'})" title="Pack = scan a label, tasks come from the app pack. Manual = the task you choose below, repeated for every car"><option value=pack>Mode: scan label (app pack)</option><option value=manual>Mode: manual task</option></select>
+<label style="font-size:13px"><input type=checkbox id=autost onchange="fetch('/api/autostart?on='+(autost.checked?1:0),{method:'POST'})"> auto-start next scan</label>
+<label style="font-size:13px"><input type=checkbox id=autosc onchange="fetch('/api/autoscan?on='+(autosc.checked?1:0),{method:'POST'})"> auto-read label</label>
+<button id=scanbtn onclick="fetch('/api/scanlabel',{method:'POST'}).then(r=>r.json()).then(j=>{insp.textContent=j.message})" style="display:none;background:#0b6fa4;color:#fff">Scan label</button>
+<button id=startbtn onclick="fetch('/api/start',{method:'POST'})" style="display:none;background:#1a8f3a;color:#fff">START</button>
+<button id=retrybtn onclick="fetch('/api/retry',{method:'POST'})" style="display:none">Retry</button>
 <input type=file id=packfile accept=".zip" style="display:none" onchange="importPack(this.files[0])">
 <button onclick="packfile.click()" title="Zip from the Flutter platform: Download for PC">Import app pack</button><span id=packlbl>No app pack imported</span>
 <button id=roibtn onclick="toggleRoi()" title="Draw the square where the QR code is: only that part is read">Set scan square</button><button onclick="clearRoi()">Clear square</button>
@@ -588,10 +602,13 @@ async function tick(){try{
  document.querySelectorAll('.tile').forEach(t=>t.classList.toggle('act',t.dataset.k===i.active));
  roi=i.roi||null;drawRoi();if(!packlbl.dataset.busy)packlbl.textContent=i.pack&&i.pack.loaded?('Pack: '+i.pack.app_name+' ('+(i.pack.scan_types||[]).join('+')+', '+i.pack.tasks.length+' tasks)'):'No app pack imported';
  const col={'OK':'#1a8f3a','NOT OK':'#c62828','NOT FOUND':'#ef6c00'};
- res.textContent=i.result||(i.state==='idle'?(i.pack&&i.pack.loaded?'SCAN LABEL':'SCAN VIN'):(i.state==='scanning'?(i.preview?'BOXES ONLY':'SCANNING '+(i.seconds_left??'')):(i.state==='waiting'?'READY':(i.state==='no_model'?'NO MODEL':(i.state==='loading'?'LOADING':'...')))));
+ res.textContent=i.result||(i.state==='idle'?(i.pack&&i.pack.loaded?'SCAN LABEL':'SCAN VIN'):(i.state==='scanning'?(i.preview?'BOXES ONLY':'SCANNING '+(i.seconds_left??'')):(i.state==='ready'?'PRESS START':i.state==='waiting'?'READY':(i.state==='no_model'?'NO MODEL':(i.state==='loading'?'LOADING':'...')))));
  banner.style.background=col[i.result]||(i.state==='scanning'?'#0b6fa4':'#444');
  insp.textContent=(i.vin?'VIN '+i.vin+'  |  ':'')+(i.task?'Task '+(i.task_n?(i.task_i+'/'+i.task_n+' '):'')+i.task+'  |  ':'')+(i.message||'')+(i.infer_ms?'  |  '+i.infer_ms+' ms':'')+(i.detections&&i.detections.length?'  |  '+i.detections.map(d=>d.name+' '+Math.round(d.conf*100)+'%').join(', '):'');
- nextbtn.style.display=i.state==='done'?'':'none';
+ nextbtn.style.display=i.state==='done'?'':'none';nextbtn.textContent=(i.task_n&&i.task_i<i.task_n)?'Submit - next task (Space)':'Submit - next car (Space)';
+ retrybtn.style.display=i.state==='done'&&i.task&&i.task[0]!=='('?'':'none';startbtn.style.display=i.state==='ready'?'':'none';
+ scanbtn.style.display=(i.mode==='pack'&&i.pack&&i.pack.loaded&&i.state==='idle')?'':'none';if(document.activeElement!==modesel)modesel.value=i.mode||'pack';autost.checked=!!i.auto_start;autosc.checked=!!i.auto_scan;
+
  const l=await (await fetch('/api/log')).json();
  const end=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
  log.textContent=l.join('\\n');if(end)log.scrollTop=log.scrollHeight;
@@ -754,7 +771,7 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
             if ok and INSPECTOR:
-                INSPECTOR.load_pack(pk)
+                INSPECTOR.load_pack(pk, switch=True)
             log(("app pack: " if ok else "app pack FAILED: ") + msg, "INFO" if ok else "ERROR")
             self._send(json.dumps({"ok": ok, "message": msg}))
         elif u.path == "/api/pack/clear":
@@ -773,6 +790,32 @@ class Handler(BaseHTTPRequestHandler):
                     except (KeyError, ValueError):
                         ok = False
             self._send(json.dumps({"ok": ok}), code=200 if ok else 400)
+        elif u.path == "/api/mode":
+            ok = bool(INSPECTOR and INSPECTOR.set_mode(q.get("m", [""])[0]))
+            self._send(json.dumps({"ok": ok}), code=200 if ok else 400)
+        elif u.path == "/api/autostart":
+            if INSPECTOR:
+                INSPECTOR.set_auto_start(q.get("on", ["0"])[0] == "1")
+            self._send("{}")
+        elif u.path == "/api/autoscan":
+            if INSPECTOR:
+                INSPECTOR.set_auto_scan(q.get("on", ["0"])[0] == "1")
+            self._send("{}")
+        elif u.path == "/api/start":
+            ok = bool(INSPECTOR and INSPECTOR.start_scan())
+            self._send(json.dumps({"ok": ok}))
+        elif u.path == "/api/retry":
+            ok = bool(INSPECTOR and INSPECTOR.retry())
+            self._send(json.dumps({"ok": ok}))
+        elif u.path == "/api/scanlabel":
+            # the phone's Scan button: read the label in the scan square, answer with what happened
+            if not INSPECTOR:
+                return self._send(json.dumps({"ok": False, "message": "inspector not running"}))
+            INSPECTOR.request_scan()
+            t0 = time.time()
+            while INSPECTOR.scan_reply is None and time.time() - t0 < 7:
+                time.sleep(0.1)
+            self._send(json.dumps(INSPECTOR.scan_reply or {"ok": False, "message": "no answer from the inspector"}))
         elif u.path == "/api/restart":
             if INSPECTOR:
                 INSPECTOR.restart()

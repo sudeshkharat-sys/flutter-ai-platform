@@ -120,3 +120,16 @@ Next: Region classes.
    other (`Task 1/2`) -> result -> phone **Submit** -> next task -> after the last one the PC waits for the next label.
    Unknown code: rejected, or auto-OK (logged as "unmapped code") when *auto-OK unmapped codes* is on.
 Tests: `python test_pack.py`, `python test_inspector_pack.py`, `python test_case_logic.py`.
+
+### Modes, Start / Retry / Scan (PC page and phone)
+- **Mode: scan label (app pack)** -- tasks come from the imported pack. **Mode: manual task** -- the task you pick
+  in the dropdown (or build with *Create task*) is remembered and repeated for every car; no label needed.
+- **Scan label** (PC page button, or **Scan** on the phone): reads the QR inside the scan square and answers with
+  what happened: found + how many tasks, "not a valid label", "code not in the master data", "no task for code X",
+  or "no QR read". *auto-read label* keeps reading by itself; off by default.
+- After a label (or after **Submit**) the next task waits in **PRESS START** so you can aim the camera; the scan
+  and its time limit begin only when you press START (phone or PC). *auto-start next scan* turns the wait off.
+- A finished task shows **Retry** (recapture the same task, the first result stays in results.csv) and **Submit**.
+- The phone can draw the scan square itself: while waiting for a label, drag on the PC view, then press Scan.
+- Phone and PC on the same Wi-Fi but nothing found? Many office Wi-Fi networks block device-to-device traffic
+  (client isolation). The PC log says so after a minute; use the phone's hotspot instead.
