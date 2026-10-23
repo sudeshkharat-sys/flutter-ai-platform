@@ -30,7 +30,8 @@ def _is_not_ok_name(name):
 
 class CaseConfig:
     def __init__(self, mandatory=None, ignored=None, conf=0.5,
-                 fail_ticks_needed=2, pass_ticks_needed=1, scan_seconds=45, fail=None):
+                 fail_ticks_needed=2, pass_ticks_needed=1, scan_seconds=45, fail=None, explicit=False):
+        self.explicit = bool(explicit)   # app-pack tasks: ONLY the listed fail classes (and "not ok" names) are defects
         self.fail = [str(c) for c in (fail or [])]   # explicit fail classes (task builder)
         self.mandatory = [str(c) for c in (mandatory or [])]
         self.ignored = [str(c) for c in (ignored or [])]
@@ -52,7 +53,7 @@ def tick_state(dets, cfg, all_classes=()):
     defect = any(name in {_norm(c) for c in cfg.fail} and name not in ignored for name in seen)
     if defect:
         return "defect"
-    if cfg.mandatory:
+    if cfg.mandatory and not cfg.explicit:
         for name in seen:
             if name in ignored:
                 continue
@@ -78,7 +79,7 @@ def defect_classes(dets, cfg, all_classes=()):
         k = _norm(n)
         if c < cfg.conf or k in ignored:
             continue
-        if k in fail or (cfg.mandatory and k not in mandatory) or _is_not_ok_name(n):
+        if k in fail or (cfg.mandatory and not cfg.explicit and k not in mandatory) or _is_not_ok_name(n):
             out.append(n)
     return out
 

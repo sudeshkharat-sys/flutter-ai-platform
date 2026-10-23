@@ -195,7 +195,7 @@ class Inspector:
         return CaseConfig(
             mandatory=cfg.get("mandatory"), ignored=cfg.get("ignored"), fail=cfg.get("fail"), conf=cfg.get("conf", 0.5),
             fail_ticks_needed=cfg.get("fail_ticks_needed", 2), pass_ticks_needed=cfg.get("pass_ticks_needed", 1),
-            scan_seconds=cfg.get("scan_seconds", 45))
+            scan_seconds=cfg.get("scan_seconds", 45), explicit=cfg.get("explicit", False))
 
     # ------------------------------------------------------------------ api
     def list_models(self):
@@ -303,6 +303,8 @@ class Inspector:
         """Task -> config overrides. Pass = mandatory, Ignore = ignored, Fail = fail. With no Pass classes,
         every class that is neither Fail nor Ignore must be seen."""
         cfg = dict(self.base_cfg, model=task["model"], conf=task.get("conf", 0.5),
+                   explicit=bool(task.get("explicit")),
+                   only_classes=[str(c) for c in task.get("classes", [])] if task.get("explicit") else [],
                    scan_seconds=task.get("scan_seconds", 45), fail=task.get("fail", []),
                    ignored=task.get("ignore", []), mandatory=task.get("pass", []))
         if not cfg["mandatory"]:
@@ -315,6 +317,13 @@ class Inspector:
         self.preview = bool(on)
         if self.state == "done":
             self._restart.set()
+        elif self.state == "scanning" and not self.preview:
+            # boxes-only had been running since the first frame: Start inspection must begin a FRESH scan
+            # (else the old start time makes the time limit expire at once -> NOT FOUND within seconds)
+            self.state, self.message = "waiting", "waiting for the phone camera..."
+            self.result, self.dets = None, []
+            if self.tracker:
+                self.tracker.reset()
         self.log(f"preview (boxes only) {'ON' if self.preview else 'OFF'}")
 
     def load_pack(self, pk, switch=False):
@@ -566,6 +575,10 @@ class Inspector:
                         name = self.names.get(int(cls), str(int(cls)))
                         dets.append((name, float(p)))
                         boxes.append((name, float(p), xyxy))
+                only = {c.lower().strip() for c in (self.cfg.get("only_classes") or [])}
+                if only:   # app-pack task: classes the task does not list are not part of it (not drawn, never a defect)
+                    dets = [d for d in dets if d[0].lower().strip() in only]
+                    boxes = [b for b in boxes if b[0].lower().strip() in only]
                 self.dets = dets
 
                 fps_n += 1
@@ -858,6 +871,12 @@ class Inspector:
 
     def _color(self, name):
         n = name.lower().strip()
+        if self.case_cfg.explicit:
+            if n in {c.lower().strip() for c in self.case_cfg.ignored}:
+                return COLOR_IGN
+            if n in {c.lower().strip() for c in self.case_cfg.fail}:
+                return COLOR_BAD
+            return COLOR_OK
         if n in {c.lower().strip() for c in self.case_cfg.ignored}:
             return COLOR_IGN
         mand = {c.lower().strip() for c in self.case_cfg.mandatory}

@@ -87,4 +87,10 @@ with tempfile.TemporaryDirectory() as d:
     ins._label_codes = lambda f: ["noise", VIN + "ABCDEFGHIJKLM12XY"]     # several QR codes: the valid one wins
     ins.request_scan(); ins._pack_idle(object())
     assert ins.scan_reply["ok"] and ins.state == "ready" and ins.vin == VIN, (ins.scan_reply, ins.state)
+    # Start inspection while boxes-only had been scanning for a long time: a fresh scan, not an instant timeout
+    from case_logic import CaseConfig, CaseTracker
+    ins.preview, ins.state, ins.started_at = True, "scanning", 1.0     # "scanning" since 1970
+    ins.tracker = CaseTracker(CaseConfig(mandatory=["x"]), ["x"])
+    ins.set_preview(False)
+    assert ins.state == "waiting" and not ins.preview
 print("inspector pack tests passed")

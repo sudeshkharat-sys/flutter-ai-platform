@@ -622,6 +622,13 @@ class _HomeState extends State<Home> {
             icon: const Icon(Icons.play_arrow),
             label: const Text('START', style: TextStyle(fontSize: 18)),
           )
+        else if (st == 'scanning')
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: col, padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14)),
+            onPressed: () => _pcPost('/api/preview?on=${_insp['preview'] == true ? 0 : 1}'),
+            icon: Icon(_insp['preview'] == true ? Icons.play_arrow : Icons.stop),
+            label: Text(_insp['preview'] == true ? 'START' : 'STOP', style: const TextStyle(fontSize: 18)),
+          )
         else if (st == 'idle' && _packIdle)
           FilledButton.icon(
             style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: col, padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14)),

@@ -69,11 +69,14 @@ def build_pack(app, model_assets, master_rows, engine_rows):
         mandatory = [str(c) for c in _j(t.get("mandatoryClasses"), [])]
         ignored = [str(c) for c in _j(t.get("ignoredClasses"), [])]
         selected = [str(c) for c in _j(t.get("classes"), [])]
+        # Same rule as the phone app: the task's own class list is its universe (a class outside it is never a
+        # defect); with Pass classes set, the other listed classes are Fail; with none, every listed class must be seen.
+        universe = selected or model_classes
         if mandatory:
             passes = mandatory
-            fail = [c for c in model_classes if c not in mandatory and c not in ignored]
-        else:                       # no explicit pass list: every selected class must be seen
-            passes = [c for c in (selected or model_classes) if c not in ignored]
+            fail = [c for c in universe if c not in mandatory and c not in ignored]
+        else:
+            passes = [c for c in universe if c not in ignored]
             fail = []
         tasks.append({
             "name": tname,
@@ -82,6 +85,8 @@ def build_pack(app, model_assets, master_rows, engine_rows):
             "pass": passes,
             "fail": fail,
             "ignore": ignored,
+            "classes": universe,
+            "explicit": True,
             "conf": conf,
             "scan_seconds": 45,
         })

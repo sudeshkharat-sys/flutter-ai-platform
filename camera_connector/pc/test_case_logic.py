@@ -69,4 +69,14 @@ assert run([GOOD, GOOD, [("Max_reg", .9)], GOOD, GOOD], C3)[0] is None    # a ga
 assert run([BAD] * 3, C3) == (NOT_OK, 3)
 assert run([BAD, BAD, GOOD, BAD, BAD], C3)[0] is None
 
+# --- app-pack tasks (explicit): classes outside the task's own lists never make a defect
+X = ["Hose_OK", "Hose_Bad", "Clamp", "Cable"]
+strict = CaseConfig(mandatory=["Hose_OK"], conf=0.5)                       # builder rule: unlisted class = fail
+assert tick_state([("Hose_OK", .9), ("Cable", .9)], strict, X) == "defect"
+expl = CaseConfig(mandatory=["Hose_OK"], fail=["Hose_Bad"], conf=0.5, explicit=True)   # pack rule (= phone app)
+assert tick_state([("Hose_OK", .9), ("Cable", .9)], expl, X) == "ok"        # Cable is not part of this task
+assert tick_state([("Hose_OK", .9), ("Hose_Bad", .9)], expl, X) == "defect"
+assert tick_state([("Cable", .9)], expl, X) == "none"
+assert defect_classes([("Hose_OK", .9), ("Cable", .9), ("Hose_Bad", .9)], expl, X) == ["Hose_Bad"]
+
 print("all case_logic tests passed")
