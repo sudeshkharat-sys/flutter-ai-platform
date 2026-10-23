@@ -98,12 +98,27 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "vibrate" -> {
-                        val ms = (call.argument<List<Int>>("pattern") ?: listOf(0, 500)).map { it.toLong() }.toLongArray()
+                        // [wait, on, off, on, ...] in ms at full amplitude, with ALARM usage: Android otherwise
+                        // drops "unknown" vibrations when touch-vibration / battery saver / focus settings are on
+                        // (same fix as the inspection app, where it buzzed only sometimes).
+                        val pattern = (call.argument<List<Int>>("pattern") ?: listOf(0, 500)).map { it.toLong() }.toLongArray()
                         try {
                             val v = if (Build.VERSION.SDK_INT >= 31)
                                 (getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager).defaultVibrator
                             else @Suppress("DEPRECATION") (getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator)
-                            v.vibrate(android.os.VibrationEffect.createWaveform(ms, -1))
+                            if (!v.hasVibrator()) {
+                                DebugLog.w("vibrate: this phone reports no vibrator")
+                            } else if (Build.VERSION.SDK_INT >= 26) {
+                                val amps = IntArray(pattern.size) { if (it % 2 == 1) 255 else 0 }
+                                val attrs = android.media.AudioAttributes.Builder()
+                                    .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
+                                v.cancel()
+                                @Suppress("DEPRECATION") v.vibrate(android.os.VibrationEffect.createWaveform(pattern, amps, -1), attrs)
+                                DebugLog.i("vibrate: ${pattern.joinToString(",")} ms (full amplitude, alarm usage)")
+                            } else {
+                                @Suppress("DEPRECATION") v.vibrate(pattern, -1)
+                            }
                         } catch (e: Exception) { DebugLog.e("vibrate failed", e) }
                         result.success(null)
                     }
