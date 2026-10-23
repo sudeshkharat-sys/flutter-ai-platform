@@ -26,6 +26,7 @@ class MainActivity : FlutterActivity() {
                         for (k in listOf("port", "width", "height", "fps", "quality", "rotation"))
                             i.putExtra(k, call.argument<Int>(k) ?: 0)
                         i.putExtra("front", call.argument<Boolean>("front") ?: false)
+                        i.putExtra("autofocus", call.argument<Boolean>("autofocus") ?: false)
                         i.putExtra("name", call.argument<String>("name") ?: "phone")
                         try {
                             ContextCompat.startForegroundService(this, i)
@@ -90,6 +91,10 @@ class MainActivity : FlutterActivity() {
                     }
                     "setZoom" -> {
                         StreamService.instance?.setZoom((call.argument<Double>("ratio") ?: 1.0).toFloat())
+                        result.success(null)
+                    }
+                    "setAutofocus" -> {
+                        StreamService.instance?.setAutofocus(call.argument<Boolean>("on") ?: false)
                         result.success(null)
                     }
                     "vibrate" -> {

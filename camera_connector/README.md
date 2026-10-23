@@ -96,3 +96,14 @@ When a result arrives the PC inspection stops and freezes the annotated frame; t
 in `runner_config.json` (0 = wait for Next car) starts the next scan by itself. Torch / zoom changes are written to the phone debug log.
 Result rule: OK after 3 consecutive OK frames, NOT OK after 3 consecutive NOT OK frames (`pass_ticks_needed` / `fail_ticks_needed`, default 3 each); then the inspection stops until Next car (phone or PC button / Space).
 Next: Region classes.
+
+
+## Phone app flow (saved PC, Connect, Submit)
+- **Settings (gear):** scan the PC QR or *Find* once -> the PC is saved. Also resolution, fps, JPEG quality,
+  orientation, front/back camera and **Autofocus** (on = refocus on the centre every 3 s, applied live).
+- **Home:** tap **Connect** -> camera server starts, registers with the saved PC, and the screen shows what the PC
+  sees (boxes included), the OK / NOT OK / NOT FOUND banner and the debug log at the bottom.
+- **Torch:** tap = this car only, double tap = stays on for every car (orange ring), same as the inspection app.
+- **Submit** (shown with the result) -> `POST /api/submit` on the PC (logged; the result is already in
+  `results.csv`) -> the PC starts the next scan. Results stay local for now.
+- If the PC stops answering for ~7 s the phone re-registers by itself.

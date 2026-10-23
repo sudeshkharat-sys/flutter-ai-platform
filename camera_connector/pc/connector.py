@@ -704,6 +704,13 @@ class Handler(BaseHTTPRequestHandler):
             if INSPECTOR:
                 INSPECTOR.restart()
             self._send("{}")
+        elif u.path == "/api/submit":
+            # phone's Submit: the result was already written to results.csv when the scan finished;
+            # this records the operator's confirmation and moves on to the next scan
+            if INSPECTOR:
+                log(f"SUBMIT from phone: {INSPECTOR.status().get('result')} (task {INSPECTOR.task_name})")
+                INSPECTOR.restart()
+            self._send("{}")
         elif u.path == "/api/preview":
             if INSPECTOR:
                 INSPECTOR.set_preview(q.get("on", ["1"])[0] == "1")

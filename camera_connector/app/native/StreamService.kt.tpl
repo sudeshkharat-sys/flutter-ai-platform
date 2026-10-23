@@ -45,6 +45,8 @@ class StreamService : LifecycleService() {
     @Volatile private var camera: androidx.camera.core.Camera? = null
     @Volatile private var torchOn = false
     @Volatile private var zoomRatio = 1f
+    @Volatile private var autofocusOn = false
+    @Volatile private var focusLoop = false
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -95,6 +97,7 @@ class StreamService : LifecycleService() {
         rotation = intent?.getIntExtra("rotation", Surface.ROTATION_0) ?: Surface.ROTATION_0
         front = intent?.getBooleanExtra("front", false) ?: false
         name = intent?.getStringExtra("name") ?: "phone"
+        autofocusOn = intent?.getBooleanExtra("autofocus", false) ?: false
         lastError = ""
         DebugLog.i("starting: ${width}x$height @max${maxFps}fps q$quality rot=$rotation front=$front port=$port")
 
@@ -190,6 +193,7 @@ class StreamService : LifecycleService() {
                 p.unbindAll()
                 camera = p.bindToLifecycle(this, selector, analysis)
                 applyTorchZoom()
+                if (autofocusOn) { focusLoop = false; setAutofocus(true) }
                 DebugLog.i("camera bound (${if (front) "front" else "back"})")
             } catch (e: Exception) {
                 fail("camera bind failed", e)
@@ -222,6 +226,39 @@ class StreamService : LifecycleService() {
         val zs = camera?.cameraInfo?.zoomState?.value
         DebugLog.i("zoom ${ratio}x requested (camera range ${zs?.minZoomRatio}..${zs?.maxZoomRatio})")
         ContextCompat.getMainExecutor(this).execute { applyTorchZoom() }
+    }
+
+    // ---- autofocus: on = re-focus on the frame centre every 3 s; off = the camera's own continuous AF ----
+
+    private fun focusCenter() {
+        val c = camera ?: return
+        try {
+            val f = androidx.camera.core.SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f)
+            c.cameraControl.startFocusAndMetering(
+                androidx.camera.core.FocusMeteringAction.Builder(f).build())
+        } catch (e: Exception) {
+            DebugLog.w("autofocus failed: ${e.message}")
+        }
+    }
+
+    fun setAutofocus(on: Boolean) {
+        autofocusOn = on
+        DebugLog.i("autofocus ${if (on) "ON (centre refocus every 3 s)" else "OFF (camera continuous AF)"}")
+        if (!on) {
+            ContextCompat.getMainExecutor(this).execute {
+                try { camera?.cameraControl?.cancelFocusAndMetering() } catch (_: Exception) {}
+            }
+            return
+        }
+        if (focusLoop) return
+        focusLoop = true
+        thread(name = "autofocus", isDaemon = true) {
+            while (autofocusOn && instance != null) {
+                ContextCompat.getMainExecutor(this).execute { focusCenter() }
+                Thread.sleep(3000)
+            }
+            focusLoop = false
+        }
     }
 
     // ---- beacon: tell the PC where we are ----
@@ -332,6 +369,7 @@ class StreamService : LifecycleService() {
         put("error", lastError)
         put("torch", torchOn)
         put("zoom", Math.round(zoomRatio * 10) / 10.0)
+        put("autofocus", autofocusOn)
     }.toString()
 
     // ---- foreground / locks / teardown ----

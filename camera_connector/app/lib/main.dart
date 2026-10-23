@@ -1,5 +1,6 @@
-// Camera Connector UI. All camera/streaming work is native (see native/*.kt.tpl);
-// this screen only configures it, shows live stats and the debug log.
+// Camera Connector UI. All camera/streaming work is native (see native/*.kt.tpl).
+// Home = saved PC + Connect + what the PC sees + OK / NOT OK / NOT FOUND + Submit + debug log.
+// Settings page = camera settings (resolution, fps, JPEG quality, orientation, camera, autofocus) and the saved PC.
 
 import 'dart:async';
 import 'dart:convert';
@@ -8,6 +9,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 const _ch = MethodChannel('camera_connector');
 
@@ -23,6 +25,120 @@ class ConnectorApp extends StatelessWidget {
       );
 }
 
+/// Everything the user can set; saved on the phone.
+class Cfg {
+  int port = 8080;
+  String name = 'phone-1';
+  int w = 1280, h = 720;
+  int fps = 20;
+  int quality = 70;
+  int rotation = 0; // Surface.ROTATION_*
+  bool front = false;
+  bool autofocus = false;
+  int zoomIdx = 0;
+  Map<String, dynamic>? pc; // saved PC {ip, port, name}
+
+  Future<void> load() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      port = p.getInt('port') ?? port;
+      name = p.getString('name') ?? name;
+      w = p.getInt('w') ?? w;
+      h = p.getInt('h') ?? h;
+      fps = p.getInt('fps') ?? fps;
+      quality = p.getInt('quality') ?? quality;
+      rotation = p.getInt('rotation') ?? rotation;
+      front = p.getBool('front') ?? front;
+      autofocus = p.getBool('autofocus') ?? autofocus;
+      zoomIdx = p.getInt('zoomIdx') ?? zoomIdx;
+      final s = p.getString('pc');
+      if (s != null) pc = jsonDecode(s) as Map<String, dynamic>;
+    } catch (_) {}
+  }
+
+  Future<void> save() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setInt('port', port);
+      await p.setString('name', name);
+      await p.setInt('w', w);
+      await p.setInt('h', h);
+      await p.setInt('fps', fps);
+      await p.setInt('quality', quality);
+      await p.setInt('rotation', rotation);
+      await p.setBool('front', front);
+      await p.setBool('autofocus', autofocus);
+      await p.setInt('zoomIdx', zoomIdx);
+      if (pc == null) {
+        await p.remove('pc');
+      } else {
+        await p.setString('pc', jsonEncode(pc));
+      }
+    } catch (_) {}
+  }
+}
+
+Future<void> _dlog(String msg, [String level = 'INFO']) async {
+  try {
+    await _ch.invokeMethod('logLine', {'level': level, 'msg': msg});
+  } catch (_) {}
+}
+
+/// Which of the PC's addresses can this phone actually reach? (HTTP /ping)
+Future<Map<String, dynamic>?> _reach(List<String> ips, int port) async {
+  for (final ip in ips) {
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+    try {
+      final req = await c.getUrl(Uri.parse('http://$ip:$port/ping')).timeout(const Duration(seconds: 3));
+      final res = await req.close().timeout(const Duration(seconds: 3));
+      final j = jsonDecode(await res.transform(utf8.decoder).join());
+      if (j is Map && j['app'] == 'runner-cam-pc') {
+        await _dlog('PC reachable at $ip:$port');
+        return {'ip': ip, 'port': port, 'name': '${j['name']}'};
+      }
+    } catch (e) {
+      await _dlog('cannot reach $ip:$port -> ${e.runtimeType}', 'WARN');
+    } finally {
+      c.close(force: true);
+    }
+  }
+  return null;
+}
+
+/// Scan the PC's QR code. Returns the reachable PC, or a message why not.
+Future<(Map<String, dynamic>?, String)> pairByQr() async {
+  final ok = await _ch.invokeMethod<bool>('requestPermissions') ?? false;
+  if (!ok) return (null, 'Camera permission is needed to scan the QR code.');
+  String text;
+  try {
+    text = await _ch.invokeMethod<String>('scanQr') ?? '';
+  } on PlatformException catch (e) {
+    return (null, 'QR scanner error: ${e.message}');
+  }
+  if (text.isEmpty) return (null, 'QR scan cancelled.');
+  Map<String, dynamic> j;
+  try {
+    j = jsonDecode(text) as Map<String, dynamic>;
+    if (j['app'] != 'runner-cam-pc') throw const FormatException('not a Runner Cam code');
+  } catch (_) {
+    return (null, 'That QR code is not from the Runner Cam PC.');
+  }
+  final ips = ((j['ips'] as List?) ?? []).cast<String>();
+  final port = (j['port'] as int?) ?? 8095;
+  await _dlog('QR read: PC ${j['name']} addresses=$ips port=$port');
+  final pc = await _reach(ips, port);
+  if (pc == null) {
+    // keep the first address so it can still be saved; the PC rescans and finds the phone by itself
+    return (null, 'QR read, but this phone cannot reach the PC at ${ips.join(', ')} port $port (PC firewall? same Wi-Fi?).');
+  }
+  return (pc, 'PC "${pc['name']}" found at ${pc['ip']}.');
+}
+
+Future<List<Map<String, dynamic>>> findPcs(int port) async {
+  final r = await _ch.invokeMethod<String>('scanPc', {'port': port}) ?? '[]';
+  return (jsonDecode(r) as List).cast<Map<String, dynamic>>();
+}
+
 class Home extends StatefulWidget {
   const Home({super.key});
   @override
@@ -30,43 +146,46 @@ class Home extends StatefulWidget {
 }
 
 class _HomeState extends State<Home> {
-  final _port = TextEditingController(text: '8080');
-  final _name = TextEditingController(text: 'phone-1');
-  (int, int) _res = (1280, 720);
-  int _fps = 20;
-  int _quality = 70;
-  int _rotation = 0; // Surface.ROTATION_*
-  bool _front = false;
+  final cfg = Cfg();
+  bool _loaded = false;
 
   Map<String, dynamic> _s = {'running': false};
   String _log = '';
   String _msg = '';
+  bool _connecting = false;
   Timer? _timer;
   Timer? _previewTimer;
-  final _pcPort = TextEditingController(text: '8095');
-  List<Map<String, dynamic>> _pcs = [];
-  bool _scanningPc = false;
-  String _pcMsg = '';
-  Map<String, dynamic>? _pcTarget; // PC chosen by QR / list; auto-connected after Start
+  Timer? _inspTimer;
 
-  // live window: what the PC sees (with boxes), polled as JPEG snapshots
-  bool _showPreview = true;
+  // what the PC sees (with boxes), polled as JPEG snapshots
   Uint8List? _previewJpg;
   bool _previewBusy = false;
   DateTime _previewAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const _zooms = [1.0, 1.5, 2.0, 3.0];
-  int _zoomIdx = 0;
+  bool _torchAlways = false; // double tap = stays on after Submit
 
-  // PC inspection result (polled from /api/inspection)
+  // PC inspection state (polled from /api/inspection)
   Map<String, dynamic> _insp = {};
   String _lastResult = '';
   bool _inspBusy = false;
+  int _inspFails = 0;
+  DateTime _lastRetry = DateTime.fromMillisecondsSinceEpoch(0);
   bool _fullscreen = false;
-  Timer? _inspTimer;
+  bool _showLog = true;
+
+  Map<String, dynamic>? get _pc => cfg.pc;
+  bool get _running => _s['running'] == true;
 
   @override
   void initState() {
     super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    await cfg.load();
+    if (!mounted) return;
+    setState(() => _loaded = true);
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _poll());
     _inspTimer = Timer.periodic(const Duration(milliseconds: 700), (_) => _fetchInsp());
     _previewTimer = Timer.periodic(const Duration(milliseconds: 300), (_) => _fetchPreview());
@@ -85,26 +204,24 @@ class _HomeState extends State<Home> {
     try {
       final s = jsonDecode(await _ch.invokeMethod<String>('status') ?? '{}');
       final l = await _ch.invokeMethod<String>('log') ?? '';
-      if (mounted) {
-        setState(() {
-          _s = s;
-          _log = l;
-          if (s['running'] == true && _msg == 'starting...') _msg = '';
-        });
-      }
+      if (mounted) setState(() {
+        _s = s;
+        _log = l;
+      });
     } catch (e) {
       if (mounted) setState(() => _msg = 'status error: $e');
     }
   }
 
-  /// One snapshot of what the PC shows for this phone (boxes / result included). Skips if one is in flight.
+  /// One snapshot of what the PC shows for this phone (boxes / result included).
   Future<void> _fetchPreview() async {
-    final pc = _pcTarget;
-    if ((!_showPreview && !_fullscreen) || pc == null || _s['running'] != true || _previewBusy) return;
+    final pc = _pc;
+    if (pc == null || !_running || _previewBusy) return;
     _previewBusy = true;
     final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
     try {
-      final req = await c.getUrl(Uri.parse('http://${pc['ip']}:${pc['port']}/preview.jpg?cam=me&t=${DateTime.now().millisecondsSinceEpoch}'))
+      final req = await c
+          .getUrl(Uri.parse('http://${pc['ip']}:${pc['port']}/preview.jpg?cam=me&t=${DateTime.now().millisecondsSinceEpoch}'))
           .timeout(const Duration(seconds: 3));
       final res = await req.close().timeout(const Duration(seconds: 3));
       if (res.statusCode == 200) {
@@ -118,17 +235,17 @@ class _HomeState extends State<Home> {
         });
       }
     } catch (_) {
-      // PC unreachable / no frame yet: the old picture goes stale and is greyed out
+      // the old picture goes stale and is greyed out
     } finally {
       c.close(force: true);
       _previewBusy = false;
     }
   }
 
-  /// Inspection state of the PC (scanning / OK / NOT OK / NOT FOUND). Vibrates once when a result arrives.
+  /// Inspection state of the PC. Vibrates once when a result arrives; re-registers if the PC went quiet.
   Future<void> _fetchInsp() async {
-    final pc = _pcTarget;
-    if (pc == null || _s['running'] != true || _inspBusy) return;
+    final pc = _pc;
+    if (pc == null || !_running || _inspBusy) return;
     _inspBusy = true;
     final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
     try {
@@ -136,6 +253,7 @@ class _HomeState extends State<Home> {
       final res = await req.close().timeout(const Duration(seconds: 3));
       final j = jsonDecode(await res.transform(utf8.decoder).join());
       if (j is Map<String, dynamic>) {
+        _inspFails = 0;
         final r = (j['state'] == 'done' ? (j['result'] ?? '') : '').toString();
         if (r.isNotEmpty && r != _lastResult) {
           _dlog('PC result: $r (task ${j['task']})');
@@ -147,44 +265,188 @@ class _HomeState extends State<Home> {
                     : [0, 400, 150, 400],
           });
         }
-        if (mounted) {
-          setState(() {
-            _insp = j;
-            _lastResult = r;
-          });
-        }
+        if (r.isEmpty) _lastResult = '';
+        if (mounted) setState(() {
+          _insp = j;
+          if (r.isNotEmpty) _lastResult = r;
+        });
       }
     } catch (_) {
-      // PC unreachable: keep the last banner, the PC VIEW greys out by itself
+      _inspFails++;
+      // PC unreachable for ~7 s: try to register again (at most every 20 s)
+      if (_inspFails >= 10 && DateTime.now().difference(_lastRetry).inSeconds >= 20) {
+        _lastRetry = DateTime.now();
+        _dlog('PC not answering -- trying to reconnect', 'WARN');
+        _sendToPc();
+      }
     } finally {
       c.close(force: true);
       _inspBusy = false;
     }
   }
 
-  Future<void> _nextCar() async {
-    final pc = _pcTarget;
+  /// Submit: the PC keeps the result (results.csv), then moves on to the next scan.
+  Future<void> _submit() async {
+    final pc = _pc;
     if (pc == null) return;
     final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
     try {
-      final req = await c.postUrl(Uri.parse('http://${pc['ip']}:${pc['port']}/api/restart'));
+      final req = await c.postUrl(Uri.parse('http://${pc['ip']}:${pc['port']}/api/submit'));
       await (await req.close()).drain();
-      _dlog('next car requested from the phone');
+      _dlog('submitted $_lastResult -> next scan');
+      if (mounted) setState(() {
+        _lastResult = '';
+        _insp = {..._insp, 'state': 'waiting', 'result': ''};
+      });
+      if (!_torchAlways && _s['torch'] == true) await _setTorch(false);
     } catch (e) {
-      _dlog('next car failed: ${e.runtimeType}', 'WARN');
+      _dlog('submit failed: ${e.runtimeType}', 'WARN');
+      if (mounted) setState(() => _msg = 'Submit failed: ${e.runtimeType} -- is the PC reachable?');
     } finally {
       c.close(force: true);
     }
   }
 
-  Widget _resultBanner({bool big = false}) {
+  Future<void> _setTorch(bool on) async {
+    await _ch.invokeMethod('setTorch', {'on': on});
+    await _poll();
+  }
+
+  // Same gesture as the inspection app: tap = this car only, double tap = stays on for every car.
+  Future<void> _torchTap() async {
+    _torchAlways = false;
+    await _setTorch(!(_s['torch'] == true));
+  }
+
+  Future<void> _torchDoubleTap() async {
+    _torchAlways = !_torchAlways;
+    await _setTorch(_torchAlways);
+  }
+
+  Future<void> _cycleZoom() async {
+    final i = (cfg.zoomIdx + 1) % _zooms.length;
+    await _ch.invokeMethod('setZoom', {'ratio': _zooms[i]});
+    setState(() => cfg.zoomIdx = i);
+    cfg.save();
+  }
+
+  Widget _torchButton() {
+    final on = _s['torch'] == true;
+    return GestureDetector(
+      onTap: _torchTap,
+      onDoubleTap: _torchDoubleTap,
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: on ? Colors.orange.withOpacity(0.25) : Colors.white12,
+          border: _torchAlways ? Border.all(color: Colors.orange, width: 3) : null,
+        ),
+        child: Icon(on ? Icons.flashlight_on : Icons.flashlight_off, color: on ? Colors.orange : Colors.white70),
+      ),
+    );
+  }
+
+  // ---- connect ----
+
+  Future<void> _connect() async {
+    if (_pc == null) {
+      setState(() => _msg = 'No PC saved yet: open Settings (gear) and scan the PC QR or Find PC.');
+      return;
+    }
+    setState(() {
+      _connecting = true;
+      _msg = 'starting camera...';
+    });
+    try {
+      final ok = await _ch.invokeMethod<bool>('requestPermissions') ?? false;
+      if (!ok) {
+        setState(() => _msg = 'Camera permission denied. Allow it in Android settings > Apps > Runner Cam.');
+        return;
+      }
+      if (!_running) {
+        await _startCamera();
+        for (var i = 0; i < 20 && !_running; i++) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          await _poll();
+        }
+        if (!_running) {
+          setState(() => _msg = 'Camera server did not start: ${_s['error'] ?? ''} (see the log below)');
+          return;
+        }
+        await Future.delayed(const Duration(seconds: 1)); // let the camera bind first
+      }
+      await _ch.invokeMethod('setZoom', {'ratio': _zooms[cfg.zoomIdx]});
+      await _sendToPc();
+    } on PlatformException catch (e) {
+      setState(() => _msg = 'start failed: ${e.message}');
+    } finally {
+      if (mounted) setState(() => _connecting = false);
+    }
+  }
+
+  Future<void> _startCamera() => _ch.invokeMethod('start', {
+        'port': cfg.port,
+        'width': cfg.w,
+        'height': cfg.h,
+        'fps': cfg.fps,
+        'quality': cfg.quality,
+        'rotation': cfg.rotation,
+        'front': cfg.front,
+        'autofocus': cfg.autofocus,
+        'name': cfg.name.trim(),
+      });
+
+  Future<void> _sendToPc() async {
+    final pc = _pc;
+    if (pc == null || !_running) return;
+    if (mounted) setState(() => _msg = 'asking ${pc['name']} to connect to this phone...');
+    final r = await _ch.invokeMethod<String>('registerPc', {
+          'ip': pc['ip'],
+          'port': pc['port'],
+          'phonePort': cfg.port,
+          'name': cfg.name.trim(),
+        }) ??
+        '';
+    if (mounted) setState(() => _msg = 'PC replied: $r');
+  }
+
+  Future<void> _disconnect() async {
+    await _ch.invokeMethod('stop');
+    setState(() {
+      _msg = 'disconnected';
+      _insp = {};
+      _lastResult = '';
+      _previewJpg = null;
+      _torchAlways = false;
+    });
+    await _poll();
+  }
+
+  Future<void> _openSettings() async {
+    final wasRunning = _running;
+    final changed = await Navigator.of(context).push<bool>(MaterialPageRoute(builder: (_) => SettingsPage(cfg: cfg, running: wasRunning)));
+    if (changed == true && wasRunning) {
+      // camera settings only take effect on a restart of the camera server
+      await _disconnect();
+      await Future.delayed(const Duration(milliseconds: 800));
+      await _connect();
+    } else if (changed == true) {
+      setState(() {});
+    }
+  }
+
+  // ---- UI ----
+
+  Widget _banner({bool big = false}) {
     final st = '${_insp['state'] ?? ''}';
     final res = '${_insp['result'] ?? ''}';
     final task = '${_insp['task'] ?? ''}';
     String text;
     Color col;
-    if (_pcTarget == null || _insp.isEmpty) {
-      text = 'PC not connected';
+    final stale = DateTime.now().difference(_previewAt).inSeconds >= 5;
+    if (_insp.isEmpty || _inspFails >= 4) {
+      text = 'PC not answering...';
       col = Colors.grey.shade700;
     } else if (st == 'done' && res.isNotEmpty) {
       text = res;
@@ -193,8 +455,8 @@ class _HomeState extends State<Home> {
       final left = _insp['seconds_left'];
       text = _insp['preview'] == true ? 'BOXES ONLY' : 'SCANNING${left != null ? '  ${left}s' : ''}';
       col = _insp['preview'] == true ? Colors.blueGrey : Colors.blue.shade700;
-    } else if (st == 'waiting') {
-      text = 'READY';
+    } else if (st == 'waiting' || st == 'idle') {
+      text = st == 'idle' ? 'SCAN THE VIN' : 'READY';
       col = Colors.blueGrey;
     } else if (st == 'no_model') {
       text = 'NO MODEL ON PC';
@@ -204,391 +466,70 @@ class _HomeState extends State<Home> {
       col = Colors.grey.shade700;
     }
     final done = st == 'done' && res.isNotEmpty;
+    final msg = '${_insp['message'] ?? ''}';
     return Container(
       width: double.infinity,
       color: col,
-      padding: EdgeInsets.symmetric(vertical: big ? 14 : 8, horizontal: 12),
+      padding: EdgeInsets.symmetric(vertical: big ? 14 : 10, horizontal: 12),
       child: Row(children: [
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(text, style: TextStyle(color: Colors.white, fontSize: big ? 36 : 24, fontWeight: FontWeight.bold)),
+            Text(text, style: TextStyle(color: Colors.white, fontSize: big ? 36 : 28, fontWeight: FontWeight.bold)),
             if (task.isNotEmpty && task != 'null') Text('Task: $task', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+            if (!done && msg.isNotEmpty && msg != 'null') Text(msg, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+            if (stale && !done) const Text('no picture from the PC', style: TextStyle(color: Colors.white70, fontSize: 11)),
           ]),
         ),
         if (done)
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: col),
-            onPressed: _nextCar,
-            child: const Text('Next car'),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: col, padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14)),
+            onPressed: _submit,
+            icon: const Icon(Icons.check),
+            label: const Text('Submit', style: TextStyle(fontSize: 18)),
           ),
       ]),
     );
   }
 
-  Widget _previewImage() {
+  Widget _pcView() {
     final stale = DateTime.now().difference(_previewAt).inSeconds >= 3;
     return Container(
       color: Colors.black,
       alignment: Alignment.center,
       child: _previewJpg == null
-          ? Text(_pcTarget == null ? 'Scan the PC QR to see what the PC sees' : 'waiting for the PC...',
-              style: const TextStyle(color: Colors.white70))
+          ? const Text('waiting for the PC...', style: TextStyle(color: Colors.white70))
           : Opacity(opacity: stale ? 0.35 : 1, child: Image.memory(_previewJpg!, gaplessPlayback: true, fit: BoxFit.contain)),
     );
   }
 
-  Widget _fullscreenView() {
-    final torchOn = _s['torch'] == true;
-    final zoom = _zooms[_zoomIdx];
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Column(children: [
-          _resultBanner(big: true),
-          Expanded(child: _previewImage()),
-          Container(
-            color: Colors.black,
-            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              IconButton.filledTonal(
-                onPressed: _toggleTorch,
-                icon: Icon(torchOn ? Icons.flashlight_on : Icons.flashlight_off),
-                color: torchOn ? Colors.orange : null,
-              ),
-              FilledButton.tonal(onPressed: _cycleZoom, child: Text('${zoom == zoom.roundToDouble() ? zoom.toInt() : zoom}x')),
-              FilledButton.tonalIcon(
-                onPressed: () => setState(() => _fullscreen = false),
-                icon: const Icon(Icons.fullscreen_exit),
-                label: const Text('Exit'),
-              ),
-            ]),
-          ),
-        ]),
-      ),
-    );
-  }
-
-  Future<void> _toggleTorch() async {
-    final on = !(_s['torch'] == true);
-    await _ch.invokeMethod('setTorch', {'on': on});
-    await _poll();
-  }
-
-  Future<void> _cycleZoom() async {
-    final i = (_zoomIdx + 1) % _zooms.length;
-    await _ch.invokeMethod('setZoom', {'ratio': _zooms[i]});
-    setState(() => _zoomIdx = i);
-  }
-
-  Future<void> _start() async {
-    setState(() => _msg = 'requesting camera permission...');
-    final ok = await _ch.invokeMethod<bool>('requestPermissions') ?? false;
-    if (!ok) {
-      setState(() => _msg = 'Camera permission denied. Allow it in Android settings > Apps > Runner Cam.');
-      return;
-    }
-    try {
-      await _ch.invokeMethod('start', {
-        'port': int.tryParse(_port.text) ?? 8080,
-        'width': _res.$1,
-        'height': _res.$2,
-        'fps': _fps,
-        'quality': _quality,
-        'rotation': _rotation,
-        'front': _front,
-        'name': _name.text.trim(),
-      });
-      setState(() => _msg = 'starting...');
-      if (_pcTarget != null) _autoRegister();
-    } on PlatformException catch (e) {
-      setState(() => _msg = 'start failed: ${e.message}');
-    }
-  }
-
-  Future<void> _dlog(String msg, [String level = 'INFO']) async {
-    try {
-      await _ch.invokeMethod('logLine', {'level': level, 'msg': msg});
-    } catch (_) {}
-  }
-
-  /// Which of the PC's addresses can this phone actually reach? (HTTP /ping)
-  Future<Map<String, dynamic>?> _reach(List<String> ips, int port) async {
-    for (final ip in ips) {
-      final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
-      try {
-        final req = await c.getUrl(Uri.parse('http://$ip:$port/ping')).timeout(const Duration(seconds: 3));
-        final res = await req.close().timeout(const Duration(seconds: 3));
-        final body = await res.transform(utf8.decoder).join();
-        final j = jsonDecode(body);
-        if (j is Map && j['app'] == 'runner-cam-pc') {
-          await _dlog('QR: PC reachable at $ip:$port');
-          return {'ip': ip, 'port': port, 'name': '${j['name']}'};
-        }
-      } catch (e) {
-        await _dlog('QR: cannot reach $ip:$port -> ${e.runtimeType}', 'WARN');
-      } finally {
-        c.close(force: true);
-      }
-    }
-    return null;
-  }
-
-  Future<void> _scanQr() async {
-    if (_s['running'] == true) {
-      setState(() => _pcMsg = 'Stop streaming first (the scanner needs the camera), scan the QR, then start again.');
-      return;
-    }
-    final ok = await _ch.invokeMethod<bool>('requestPermissions') ?? false;
-    if (!ok) {
-      setState(() => _pcMsg = 'Camera permission is needed to scan the QR code.');
-      return;
-    }
-    String text;
-    try {
-      text = await _ch.invokeMethod<String>('scanQr') ?? '';
-    } on PlatformException catch (e) {
-      setState(() => _pcMsg = 'QR scanner error: ${e.message}');
-      return;
-    }
-    if (text.isEmpty) {
-      setState(() => _pcMsg = 'QR scan cancelled.');
-      return;
-    }
-    Map<String, dynamic> j;
-    try {
-      j = jsonDecode(text) as Map<String, dynamic>;
-      if (j['app'] != 'runner-cam-pc') throw const FormatException('not a Runner Cam code');
-    } catch (_) {
-      await _dlog('QR content is not a Runner Cam code: ${text.length > 80 ? text.substring(0, 80) : text}', 'WARN');
-      setState(() => _pcMsg = 'That QR code is not from the Runner Cam PC connector.');
-      return;
-    }
-    final ips = ((j['ips'] as List?) ?? []).cast<String>();
-    final port = (j['port'] as int?) ?? 8095;
-    await _dlog('QR read: PC ${j['name']} addresses=$ips port=$port');
-    setState(() => _pcMsg = 'QR read (${j['name']}). Checking which PC address this phone can reach...');
-    final pc = await _reach(ips, port);
-    if (pc == null) {
-      await _dlog('QR: phone cannot reach the PC (port $port blocked? firewall?). The PC can still find this phone by itself.', 'WARN');
-      setState(() => _pcMsg = 'QR read, but this phone cannot reach the PC at ${ips.join(', ')} port $port '
-          '(the PC firewall is probably blocking incoming connections). You can still tap Start camera server: '
-          'the PC rescans every 15 s and will find this phone by itself.');
-      return;
-    }
-    setState(() {
-      _pcTarget = pc;
-      _pcs = [pc];
-      _pcMsg = 'PC "${pc['name']}" found at ${pc['ip']}. Now tap Start camera server: it connects automatically.';
-    });
-  }
-
-  Future<void> _autoRegister() async {
-    for (var i = 0; i < 20; i++) {
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _poll();
-      if (_s['running'] == true) break;
-    }
-    if (_s['running'] != true || _pcTarget == null) return;
-    await Future.delayed(const Duration(seconds: 1)); // let the camera bind first
-    await _sendToPc(_pcTarget!);
-  }
-
-  Future<void> _scanPc() async {
-    setState(() {
-      _scanningPc = true;
-      _pcMsg = 'scanning the network for the PC connector...';
-    });
-    try {
-      final r = await _ch.invokeMethod<String>('scanPc', {'port': int.tryParse(_pcPort.text) ?? 8095}) ?? '[]';
-      final list = (jsonDecode(r) as List).cast<Map<String, dynamic>>();
-      setState(() {
-        _pcs = list;
-        _pcMsg = list.isEmpty
-            ? 'No PC found. Is connector running on the PC? Same Wi-Fi? See the debug log.'
-            : 'Found ${list.length} PC(s). Tap one to connect.';
-      });
-    } catch (e) {
-      setState(() => _pcMsg = 'scan error: $e');
-    } finally {
-      setState(() => _scanningPc = false);
-    }
-  }
-
-  Future<void> _sendToPc(Map<String, dynamic> pc) async {
-    if (_s['running'] != true) {
-      setState(() => _pcMsg = 'Start the camera server first, then tap the PC.');
-      return;
-    }
-    setState(() => _pcMsg = 'asking ${pc['name']} to connect to this phone...');
-    final r = await _ch.invokeMethod<String>('registerPc', {
-          'ip': pc['ip'],
-          'port': pc['port'],
-          'phonePort': int.tryParse(_port.text) ?? 8080,
-          'name': _name.text.trim(),
-        }) ??
-        '';
-    setState(() => _pcMsg = 'PC replied: $r');
-  }
-
-  Future<void> _stop() async {
-    await _ch.invokeMethod('stop');
-    setState(() => _msg = 'stopped');
-  }
-
-  Widget _livePanel() {
-    final torchOn = _s['torch'] == true;
-    final zoom = _zooms[_zoomIdx];
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: Column(children: [
-        _resultBanner(),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 4, 0, 0),
-          child: Row(children: [
-            const Text('PC VIEW', style: TextStyle(fontWeight: FontWeight.bold)),
-            const Spacer(),
-            IconButton.filledTonal(
-              tooltip: 'Torch',
-              onPressed: _toggleTorch,
-              icon: Icon(torchOn ? Icons.flashlight_on : Icons.flashlight_off),
-              color: torchOn ? Colors.orange : null,
-            ),
-            const SizedBox(width: 6),
-            FilledButton.tonal(onPressed: _cycleZoom, child: Text('${zoom == zoom.roundToDouble() ? zoom.toInt() : zoom}x')),
-            IconButton(tooltip: 'Full screen', onPressed: () => setState(() => _fullscreen = true), icon: const Icon(Icons.fullscreen)),
-            Switch(value: _showPreview, onChanged: (v) => setState(() => _showPreview = v)),
-          ]),
+  Widget _controls() {
+    final zoom = _zooms[cfg.zoomIdx];
+    return Container(
+      color: Colors.black,
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        _torchButton(),
+        FilledButton.tonal(onPressed: _cycleZoom, child: Text('${zoom == zoom.roundToDouble() ? zoom.toInt() : zoom}x')),
+        Text('${_s['fps'] ?? 0} fps  ${_s['size'] ?? ''}', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        IconButton(
+          tooltip: _fullscreen ? 'Exit full screen' : 'Full screen',
+          color: Colors.white70,
+          onPressed: () => setState(() => _fullscreen = !_fullscreen),
+          icon: Icon(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
         ),
-        if (_showPreview) AspectRatio(aspectRatio: 4 / 3, child: _previewImage()),
       ]),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final running = _s['running'] == true;
-    if (_fullscreen && running) return _fullscreenView();
-    final ips = ((_s['ips'] as List?) ?? []).cast<String>().where((i) => !i.startsWith('192.0.0.')).toList();
-    final port = _s['port'] ?? _port.text;
-    final err = (_s['error'] as String?) ?? '';
-    return Scaffold(
-      appBar: AppBar(title: const Text('Runner Cam')),
-      body: SafeArea(
-        child: ListView(padding: const EdgeInsets.all(12), children: [
-          if (running) ...[
-            Card(
-              color: Colors.green.shade50,
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('STREAMING', style: TextStyle(fontWeight: FontWeight.bold)),
-                  for (final ip in ips) SelectableText('http://$ip:$port/video', style: const TextStyle(fontSize: 16)),
-                  const Text('Use this address on the PC (same Wi-Fi or this phone\'s hotspot).', style: TextStyle(fontSize: 11)),
-                  const SizedBox(height: 6),
-                  Text('${_s['fps']} fps   ${_s['size'] ?? ''}   viewers: ${_s['viewers']}'),
-                  Text('encode ${_s['encodeMs']} ms   frames ${_s['encoded']}   skipped ${_s['skipped']}'),
-                  Text('phone heat: ${_s['thermal'] ?? 'n/a'}   camera last frame ${_s['cameraAgeMs']} ms ago'),
-                  const Text('Frames are only encoded while a viewer is connected (keeps the phone cool).',
-                      style: TextStyle(fontSize: 11)),
-                ]),
-              ),
+  Widget _logPanel() => Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          color: Colors.grey.shade900,
+          child: Row(children: [
+            TextButton.icon(
+              onPressed: () => setState(() => _showLog = !_showLog),
+              icon: Icon(_showLog ? Icons.expand_more : Icons.expand_less, color: Colors.white70),
+              label: const Text('DEBUG LOG', style: TextStyle(color: Colors.white70)),
             ),
-          ],
-          if (running) _livePanel(),
-          if (err.isNotEmpty) Text(err, style: const TextStyle(color: Colors.red)),
-          Row(children: [
-            Expanded(child: TextField(controller: _port, enabled: !running, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Port'))),
-            const SizedBox(width: 8),
-            Expanded(child: TextField(controller: _name, enabled: !running, decoration: const InputDecoration(labelText: 'Camera name'))),
-          ]),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(
-              child: DropdownButtonFormField<(int, int)>(
-                value: _res,
-                decoration: const InputDecoration(labelText: 'Resolution'),
-                items: const [(640, 480), (1280, 720), (1920, 1080)]
-                    .map((r) => DropdownMenuItem(value: r, child: Text('${r.$1}x${r.$2}')))
-                    .toList(),
-                onChanged: running ? null : (v) => setState(() => _res = v!),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: DropdownButtonFormField<int>(
-                value: _fps,
-                decoration: const InputDecoration(labelText: 'Max fps'),
-                items: [10, 15, 20, 25, 30].map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
-                onChanged: running ? null : (v) => setState(() => _fps = v!),
-              ),
-            ),
-          ]),
-          Row(children: [
-            Expanded(
-              child: DropdownButtonFormField<int>(
-                value: _quality,
-                decoration: const InputDecoration(labelText: 'JPEG quality'),
-                items: [50, 60, 70, 80, 90].map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
-                onChanged: running ? null : (v) => setState(() => _quality = v!),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: DropdownButtonFormField<int>(
-                value: _rotation,
-                decoration: const InputDecoration(labelText: 'Phone mounted'),
-                items: const [
-                  DropdownMenuItem(value: 0, child: Text('Portrait')),
-                  DropdownMenuItem(value: 1, child: Text('Landscape L')),
-                  DropdownMenuItem(value: 3, child: Text('Landscape R')),
-                  DropdownMenuItem(value: 2, child: Text('Upside down')),
-                ],
-                onChanged: running ? null : (v) => setState(() => _rotation = v!),
-              ),
-            ),
-          ]),
-          SwitchListTile(
-            title: const Text('Front camera'),
-            value: _front,
-            onChanged: running ? null : (v) => setState(() => _front = v),
-            dense: true,
-          ),
-          FilledButton.icon(
-            onPressed: running ? _stop : _start,
-            icon: Icon(running ? Icons.stop : Icons.videocam),
-            label: Text(running ? 'Stop' : 'Start camera server'),
-          ),
-          if (_msg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Text(_msg)),
-          const Divider(height: 24),
-          FilledButton.tonalIcon(
-            onPressed: running ? null : _scanQr,
-            icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Scan QR from PC'),
-          ),
-          const Padding(
-            padding: EdgeInsets.only(top: 4, bottom: 8),
-            child: Text('PC: run the connector, it shows a QR code. Scan it here, then Start camera server.', style: TextStyle(fontSize: 11)),
-          ),
-          Row(children: [
-            SizedBox(width: 90, child: TextField(controller: _pcPort, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'PC port'))),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: _scanningPc ? null : _scanPc,
-                icon: _scanningPc ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.wifi_find),
-                label: const Text('Find PC'),
-              ),
-            ),
-          ]),
-          if (_pcMsg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Text(_pcMsg)),
-          for (final pc in _pcs)
-            ListTile(dense: true, leading: const Icon(Icons.computer), title: Text('${pc['name']}  ${pc['ip']}:${pc['port']}'), subtitle: const Text('tap to connect'), onTap: () {
-              setState(() => _pcTarget = pc);
-              _sendToPc(pc);
-            }),
-          const SizedBox(height: 12),
-          Row(children: [
-            const Text('DEBUG LOG', style: TextStyle(fontWeight: FontWeight.bold)),
             const Spacer(),
             TextButton(
               onPressed: () {
@@ -598,16 +539,270 @@ class _HomeState extends State<Home> {
               child: const Text('Copy'),
             ),
           ]),
+        ),
+        if (_showLog)
           Container(
             color: Colors.black,
+            width: double.infinity,
             padding: const EdgeInsets.all(8),
-            height: 260,
+            height: 150,
             child: SingleChildScrollView(
               reverse: true,
               child: SelectableText(_log.isEmpty ? '(empty)' : _log,
                   style: const TextStyle(color: Colors.lightGreenAccent, fontSize: 11, fontFamily: 'monospace')),
             ),
           ),
+      ]);
+
+  Widget _disconnected() {
+    final pc = _pc;
+    return ListView(padding: const EdgeInsets.all(20), children: [
+      const SizedBox(height: 30),
+      Icon(Icons.computer, size: 64, color: Theme.of(context).colorScheme.primary),
+      const SizedBox(height: 12),
+      Text(pc == null ? 'No PC saved' : 'PC: ${pc['name']}', textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+      if (pc != null) Text('${pc['ip']}:${pc['port']}', textAlign: TextAlign.center),
+      const SizedBox(height: 24),
+      if (pc != null)
+        FilledButton.icon(
+          style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 18)),
+          onPressed: _connecting ? null : _connect,
+          icon: _connecting
+              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.link),
+          label: Text(_connecting ? 'Connecting...' : 'Connect', style: const TextStyle(fontSize: 20)),
+        )
+      else
+        FilledButton.icon(
+          style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 18)),
+          onPressed: _openSettings,
+          icon: const Icon(Icons.settings),
+          label: const Text('Set up the PC (Settings)', style: TextStyle(fontSize: 18)),
+        ),
+      if (_msg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 14), child: Text(_msg, textAlign: TextAlign.center)),
+      if ('${_s['error'] ?? ''}'.isNotEmpty)
+        Padding(padding: const EdgeInsets.only(top: 8), child: Text('${_s['error']}', style: const TextStyle(color: Colors.red))),
+    ]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_loaded) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    final connected = _running && _pc != null;
+    if (connected && _fullscreen) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(child: Column(children: [_banner(big: true), Expanded(child: _pcView()), _controls()])),
+      );
+    }
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Runner Cam'),
+        actions: [
+          if (connected) IconButton(tooltip: 'Disconnect', onPressed: _disconnect, icon: const Icon(Icons.link_off)),
+          IconButton(tooltip: 'Settings', onPressed: _openSettings, icon: const Icon(Icons.settings)),
+        ],
+      ),
+      body: SafeArea(
+        child: Column(children: [
+          Expanded(
+            child: connected
+                ? Column(children: [
+                    _banner(),
+                    Expanded(child: _pcView()),
+                    _controls(),
+                    if (_msg.isNotEmpty)
+                      Container(width: double.infinity, color: Colors.black, padding: const EdgeInsets.fromLTRB(12, 0, 12, 4), child: Text(_msg, style: const TextStyle(color: Colors.white54, fontSize: 11))),
+                  ])
+                : _disconnected(),
+          ),
+          _logPanel(),
+        ]),
+      ),
+    );
+  }
+}
+
+/// Camera settings + saved PC. Pops `true` when something changed.
+class SettingsPage extends StatefulWidget {
+  final Cfg cfg;
+  final bool running;
+  const SettingsPage({super.key, required this.cfg, required this.running});
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  Cfg get c => widget.cfg;
+  late final _port = TextEditingController(text: '${c.port}');
+  late final _name = TextEditingController(text: c.name);
+  final _pcPort = TextEditingController(text: '8095');
+  bool _dirty = false; // needs a camera restart
+  bool _busy = false;
+  String _msg = '';
+  List<Map<String, dynamic>> _found = [];
+
+  void _edit(void Function() f) {
+    setState(() {
+      f();
+      _dirty = true;
+    });
+  }
+
+  Future<void> _save() async {
+    c.port = int.tryParse(_port.text) ?? c.port;
+    c.name = _name.text.trim().isEmpty ? c.name : _name.text.trim();
+    await c.save();
+    if (mounted) Navigator.of(context).pop(_dirty);
+  }
+
+  Future<void> _setAutofocus(bool v) async {
+    setState(() => c.autofocus = v);
+    await c.save();
+    try {
+      await _ch.invokeMethod('setAutofocus', {'on': v}); // live, no restart needed
+    } catch (_) {}
+  }
+
+  void _savePc(Map<String, dynamic> pc) {
+    setState(() {
+      c.pc = pc;
+      _dirty = true;
+    });
+    c.save();
+  }
+
+  Future<void> _scanQr() async {
+    if (widget.running) {
+      setState(() => _msg = 'Disconnect first (the QR scanner needs the camera), then scan.');
+      return;
+    }
+    setState(() => _busy = true);
+    final (pc, msg) = await pairByQr();
+    if (pc != null) _savePc(pc);
+    if (mounted) setState(() {
+      _busy = false;
+      _msg = pc != null ? '$msg Saved.' : msg;
+    });
+  }
+
+  Future<void> _find() async {
+    setState(() {
+      _busy = true;
+      _msg = 'scanning the network for the PC...';
+    });
+    try {
+      final l = await findPcs(int.tryParse(_pcPort.text) ?? 8095);
+      setState(() {
+        _found = l;
+        _msg = l.isEmpty ? 'No PC found. Is pc_runner.exe running? Same Wi-Fi?' : 'Found ${l.length} PC(s). Tap one to save it.';
+      });
+    } catch (e) {
+      setState(() => _msg = 'scan error: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pc = c.pc;
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (!didPop) _save();
+      },
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Settings'), actions: [TextButton(onPressed: _save, child: const Text('Save'))]),
+        body: ListView(padding: const EdgeInsets.all(14), children: [
+          const Text('PC', style: TextStyle(fontWeight: FontWeight.bold)),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.computer),
+              title: Text(pc == null ? 'No PC saved' : '${pc['name']}'),
+              subtitle: Text(pc == null ? 'Scan the QR shown by pc_runner.exe or use Find PC' : '${pc['ip']}:${pc['port']}'),
+              trailing: pc == null ? null : IconButton(tooltip: 'Forget', icon: const Icon(Icons.delete_outline), onPressed: () => setState(() {
+                    c.pc = null;
+                    _dirty = true;
+                    c.save();
+                  })),
+            ),
+          ),
+          Row(children: [
+            Expanded(child: FilledButton.tonalIcon(onPressed: _busy ? null : _scanQr, icon: const Icon(Icons.qr_code_scanner), label: const Text('Scan PC QR'))),
+            const SizedBox(width: 8),
+            SizedBox(width: 80, child: TextField(controller: _pcPort, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'PC port'))),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(onPressed: _busy ? null : _find, icon: const Icon(Icons.wifi_find), label: const Text('Find')),
+          ]),
+          if (_msg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Text(_msg)),
+          for (final f in _found)
+            ListTile(dense: true, leading: const Icon(Icons.computer), title: Text('${f['name']}  ${f['ip']}:${f['port']}'), subtitle: const Text('tap to save'), onTap: () => _savePc(f)),
+          const Divider(height: 28),
+          const Text('Camera', style: TextStyle(fontWeight: FontWeight.bold)),
+          if (widget.running) const Text('Changes restart the camera when you tap Save.', style: TextStyle(fontSize: 11)),
+          Row(children: [
+            Expanded(child: TextField(controller: _port, keyboardType: TextInputType.number, onChanged: (_) => _dirty = true, decoration: const InputDecoration(labelText: 'Camera port'))),
+            const SizedBox(width: 8),
+            Expanded(child: TextField(controller: _name, onChanged: (_) => _dirty = true, decoration: const InputDecoration(labelText: 'Camera name'))),
+          ]),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: DropdownButtonFormField<(int, int)>(
+                value: (c.w, c.h),
+                decoration: const InputDecoration(labelText: 'Resolution'),
+                items: const [(640, 480), (1280, 720), (1920, 1080)].map((r) => DropdownMenuItem(value: r, child: Text('${r.$1}x${r.$2}'))).toList(),
+                onChanged: (v) => _edit(() {
+                  c.w = v!.$1;
+                  c.h = v.$2;
+                }),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                value: c.fps,
+                decoration: const InputDecoration(labelText: 'Max fps'),
+                items: [10, 15, 20, 25, 30].map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
+                onChanged: (v) => _edit(() => c.fps = v!),
+              ),
+            ),
+          ]),
+          Row(children: [
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                value: c.quality,
+                decoration: const InputDecoration(labelText: 'JPEG quality'),
+                items: [50, 60, 70, 80, 90].map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
+                onChanged: (v) => _edit(() => c.quality = v!),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                value: c.rotation,
+                decoration: const InputDecoration(labelText: 'Phone mounted'),
+                items: const [
+                  DropdownMenuItem(value: 0, child: Text('Portrait')),
+                  DropdownMenuItem(value: 1, child: Text('Landscape L')),
+                  DropdownMenuItem(value: 3, child: Text('Landscape R')),
+                  DropdownMenuItem(value: 2, child: Text('Upside down')),
+                ],
+                onChanged: (v) => _edit(() => c.rotation = v!),
+              ),
+            ),
+          ]),
+          SwitchListTile(title: const Text('Front camera'), value: c.front, onChanged: (v) => _edit(() => c.front = v), dense: true),
+          SwitchListTile(
+            title: const Text('Autofocus'),
+            subtitle: const Text('On: refocus on the centre of the picture every 3 s. Off: the camera\'s own continuous focus.'),
+            value: c.autofocus,
+            onChanged: _setAutofocus,
+            dense: true,
+          ),
+          const Divider(height: 28),
+          const Text('Torch: tap = this car only, double tap = stays on for every car (orange ring).', style: TextStyle(fontSize: 12)),
         ]),
       ),
     );
