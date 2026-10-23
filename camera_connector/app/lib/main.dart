@@ -20,7 +20,7 @@ class ConnectorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
         title: 'Runner Cam',
-        theme: ThemeData(colorSchemeSeed: const Color(0xFF0B6FA4), useMaterial3: true),
+        theme: ThemeData(colorSchemeSeed: const Color(0xFFDC143C), useMaterial3: true),
         home: const Home(),
       );
 }
@@ -171,7 +171,7 @@ class _HomeState extends State<Home> {
   int _inspFails = 0;
   DateTime _lastRetry = DateTime.fromMillisecondsSinceEpoch(0);
   bool _fullscreen = false;
-  bool _showLog = true;
+  bool _showLog = false; // debug console overlay (bug icon), like the inspection app
 
   Map<String, dynamic>? get _pc => cfg.pc;
   bool get _running => _s['running'] == true;
@@ -336,13 +336,38 @@ class _HomeState extends State<Home> {
       onTap: _torchTap,
       onDoubleTap: _torchDoubleTap,
       child: Container(
-        padding: const EdgeInsets.all(10),
+        width: 48,
+        height: 48,
         decoration: BoxDecoration(
+          color: on ? const Color(0xFFFFD700) : Colors.black54,
           shape: BoxShape.circle,
-          color: on ? Colors.orange.withOpacity(0.25) : Colors.white12,
-          border: _torchAlways ? Border.all(color: Colors.orange, width: 3) : null,
+          border: Border.all(
+            color: _torchAlways ? Colors.deepOrangeAccent : (on ? const Color(0xFFFFD700) : Colors.white30),
+            width: _torchAlways ? 3.5 : 1.5,
+          ),
         ),
-        child: Icon(on ? Icons.flashlight_on : Icons.flashlight_off, color: on ? Colors.orange : Colors.white70),
+        child: Icon(on ? Icons.flashlight_on : Icons.flashlight_off, color: on ? Colors.black : Colors.white, size: 24),
+      ),
+    );
+  }
+
+  Widget _zoomButton() {
+    final zoom = _zooms[cfg.zoomIdx];
+    final label = zoom == zoom.roundToDouble() ? zoom.toStringAsFixed(0) : zoom.toStringAsFixed(1);
+    final zoomed = zoom > 1.01;
+    return GestureDetector(
+      onTap: _cycleZoom,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: zoomed ? const Color(0xFFFFD700) : Colors.black54,
+          shape: BoxShape.circle,
+          border: Border.all(color: zoomed ? const Color(0xFFFFD700) : Colors.white30, width: 1.5),
+        ),
+        child: Center(
+          child: Text('${label}x', style: TextStyle(color: zoomed ? Colors.black : Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+        ),
       ),
     );
   }
@@ -502,57 +527,107 @@ class _HomeState extends State<Home> {
     );
   }
 
-  Widget _controls() {
-    final zoom = _zooms[cfg.zoomIdx];
-    return Container(
-      color: Colors.black,
-      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
-      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        _torchButton(),
-        FilledButton.tonal(onPressed: _cycleZoom, child: Text('${zoom == zoom.roundToDouble() ? zoom.toInt() : zoom}x')),
-        Text('${_s['fps'] ?? 0} fps  ${_s['size'] ?? ''}', style: const TextStyle(color: Colors.white54, fontSize: 11)),
-        IconButton(
+  Widget _liveStack() {
+    final fresh = DateTime.now().difference(_previewAt).inSeconds < 3;
+    return Stack(children: [
+      Positioned.fill(child: _pcView()),
+      Positioned(
+        top: 16,
+        left: 16,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [_torchButton(), const SizedBox(height: 10), _zoomButton()]),
+      ),
+      Positioned(
+        top: 16,
+        right: 16,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(20)),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Container(width: 8, height: 8, decoration: BoxDecoration(color: fresh ? const Color(0xFFDC143C) : Colors.grey, shape: BoxShape.circle)),
+            const SizedBox(width: 6),
+            Text(fresh ? 'LIVE' : 'NO SIGNAL',
+                style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+          ]),
+        ),
+      ),
+      Positioned(
+        bottom: 12,
+        left: 16,
+        child: Text('${_s['fps'] ?? 0} fps  ${_s['size'] ?? ''}', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+      ),
+      Positioned(
+        bottom: 8,
+        right: 12,
+        child: IconButton(
           tooltip: _fullscreen ? 'Exit full screen' : 'Full screen',
           color: Colors.white70,
           onPressed: () => setState(() => _fullscreen = !_fullscreen),
           icon: Icon(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
         ),
+      ),
+      if (_showLog)
+        Positioned(
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: MediaQuery.of(context).size.height * 0.8,
+          child: Container(
+            color: Colors.black.withOpacity(0.92),
+            padding: const EdgeInsets.all(10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                const Text('DEBUG CONSOLE', style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
+                TextButton(
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: _log));
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('log copied')));
+                  },
+                  child: const Text('Copy', style: TextStyle(color: Colors.lightGreenAccent, fontSize: 12)),
+                ),
+              ]),
+              const Divider(color: Colors.white24),
+              Expanded(
+                child: SingleChildScrollView(
+                  reverse: true,
+                  child: SelectableText(_log.isEmpty ? '(empty)' : _log,
+                      style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 12, height: 1.3)),
+                ),
+              ),
+            ]),
+          ),
+        ),
+    ]);
+  }
+
+  /// Crimson header like the inspection app: back, title + subtitle, bug (debug console), settings.
+  Widget _header(bool connected) {
+    final task = '${_insp['task'] ?? ''}';
+    final sub = connected ? 'PC: ${_pc?['name']}${task.isNotEmpty && task != 'null' ? '  ·  $task' : ''}' : (_pc == null ? 'no PC saved' : 'PC: ${_pc?['name']}');
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+      color: const Color(0xFFDC143C),
+      child: Row(children: [
+        IconButton(
+          icon: Icon(connected ? Icons.link_off : Icons.circle_outlined, color: Colors.white),
+          tooltip: 'Disconnect',
+          onPressed: connected ? _disconnect : null,
+        ),
+        Expanded(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text('LIVE SCAN', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+            Text(sub, style: const TextStyle(color: Colors.white70, fontSize: 10)),
+          ]),
+        ),
+        IconButton(
+          icon: Icon(_showLog ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
+          tooltip: 'Debug console',
+          onPressed: () => setState(() => _showLog = !_showLog),
+        ),
+        IconButton(icon: const Icon(Icons.settings, color: Colors.white), tooltip: 'Settings', onPressed: _openSettings),
       ]),
     );
   }
-
-  Widget _logPanel() => Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(
-          color: Colors.grey.shade900,
-          child: Row(children: [
-            TextButton.icon(
-              onPressed: () => setState(() => _showLog = !_showLog),
-              icon: Icon(_showLog ? Icons.expand_more : Icons.expand_less, color: Colors.white70),
-              label: const Text('DEBUG LOG', style: TextStyle(color: Colors.white70)),
-            ),
-            const Spacer(),
-            TextButton(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: _log));
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('log copied')));
-              },
-              child: const Text('Copy'),
-            ),
-          ]),
-        ),
-        if (_showLog)
-          Container(
-            color: Colors.black,
-            width: double.infinity,
-            padding: const EdgeInsets.all(8),
-            height: 150,
-            child: SingleChildScrollView(
-              reverse: true,
-              child: SelectableText(_log.isEmpty ? '(empty)' : _log,
-                  style: const TextStyle(color: Colors.lightGreenAccent, fontSize: 11, fontFamily: 'monospace')),
-            ),
-          ),
-      ]);
 
   Widget _disconnected() {
     final pc = _pc;
@@ -589,38 +664,53 @@ class _HomeState extends State<Home> {
   Widget build(BuildContext context) {
     if (!_loaded) return const Scaffold(body: Center(child: CircularProgressIndicator()));
     final connected = _running && _pc != null;
-    if (connected && _fullscreen) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: SafeArea(child: Column(children: [_banner(big: true), Expanded(child: _pcView()), _controls()])),
-      );
-    }
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Runner Cam'),
-        actions: [
-          if (connected) IconButton(tooltip: 'Disconnect', onPressed: _disconnect, icon: const Icon(Icons.link_off)),
-          IconButton(tooltip: 'Settings', onPressed: _openSettings, icon: const Icon(Icons.settings)),
-        ],
-      ),
+      backgroundColor: connected ? Colors.black : null,
       body: SafeArea(
         child: Column(children: [
+          if (!(connected && _fullscreen)) _header(connected),
+          _bannerOrNothing(connected),
           Expanded(
             child: connected
-                ? Column(children: [
-                    _banner(),
-                    Expanded(child: _pcView()),
-                    _controls(),
-                    if (_msg.isNotEmpty)
-                      Container(width: double.infinity, color: Colors.black, padding: const EdgeInsets.fromLTRB(12, 0, 12, 4), child: Text(_msg, style: const TextStyle(color: Colors.white54, fontSize: 11))),
-                  ])
-                : _disconnected(),
+                ? _liveStack()
+                : Stack(children: [
+                    Positioned.fill(child: _disconnected()),
+                    if (_showLog) Positioned.fill(child: _logOverlay()),
+                  ]),
           ),
-          _logPanel(),
+          if (connected && _msg.isNotEmpty)
+            Container(width: double.infinity, color: Colors.black, padding: const EdgeInsets.fromLTRB(12, 2, 12, 4), child: Text(_msg, style: const TextStyle(color: Colors.white54, fontSize: 11))),
         ]),
       ),
     );
   }
+
+  Widget _bannerOrNothing(bool connected) => connected ? _banner(big: _fullscreen) : const SizedBox.shrink();
+
+  Widget _logOverlay() => Container(
+        color: Colors.black.withOpacity(0.92),
+        padding: const EdgeInsets.all(10),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            const Text('DEBUG CONSOLE', style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
+            TextButton(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: _log));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('log copied')));
+              },
+              child: const Text('Copy', style: TextStyle(color: Colors.lightGreenAccent, fontSize: 12)),
+            ),
+          ]),
+          const Divider(color: Colors.white24),
+          Expanded(
+            child: SingleChildScrollView(
+              reverse: true,
+              child: SelectableText(_log.isEmpty ? '(empty)' : _log,
+                  style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 12, height: 1.3)),
+            ),
+          ),
+        ]),
+      );
 }
 
 /// Camera settings + saved PC. Pops `true` when something changed.
