@@ -93,4 +93,10 @@ with tempfile.TemporaryDirectory() as d:
     ins.tracker = CaseTracker(CaseConfig(mandatory=["x"]), ["x"])
     ins.set_preview(False)
     assert ins.state == "waiting" and not ins.preview
+    # manual task with an explicit Fail list: classes outside Pass/Fail/Ignore are not part of it
+    mt = {"name": "ATOC HOSE", "model": "x.pt", "pass": ["RHS Closed", "LHS Closed"], "fail": ["LHS Open", "RHS Open"], "ignore": [], "conf": 0.65}
+    c = ins._task_cfg(mt)
+    assert c["explicit"] and c["only_classes"] == ["RHS Closed", "LHS Closed", "LHS Open", "RHS Open"] and c["conf"] == 0.65
+    c = ins._task_cfg({"name": "old", "model": "x.pt", "pass": ["A"], "fail": [], "ignore": []})
+    assert not c["explicit"] and c["only_classes"] == []        # old pass-only task: unassigned class = fail, as before
 print("inspector pack tests passed")

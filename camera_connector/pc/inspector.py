@@ -309,9 +309,14 @@ class Inspector:
     def _task_cfg(self, task):
         """Task -> config overrides. Pass = mandatory, Ignore = ignored, Fail = fail. With no Pass classes,
         every class that is neither Fail nor Ignore must be seen."""
+        # A task with an explicit Fail list follows the phone app: only the classes assigned to the task count
+        # (Pass / Fail / Ignore), any other class the model sees is not part of it. Old pass-only tasks keep the
+        # builder rule "unassigned class = fail".
+        explicit = bool(task.get("explicit", bool(task.get("fail"))))
+        universe = [str(c) for c in (task.get("classes") or (task.get("pass", []) + task.get("fail", []) + task.get("ignore", [])))]
         cfg = dict(self.base_cfg, model=task["model"], conf=task.get("conf", 0.5),
-                   explicit=bool(task.get("explicit")),
-                   only_classes=[str(c) for c in task.get("classes", [])] if task.get("explicit") else [],
+                   explicit=explicit,
+                   only_classes=universe if explicit else [],
                    scan_seconds=task.get("scan_seconds", 45), fail=task.get("fail", []),
                    ignored=task.get("ignore", []), mandatory=task.get("pass", []))
         if not cfg["mandatory"]:
