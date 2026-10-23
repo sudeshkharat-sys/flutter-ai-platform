@@ -108,6 +108,7 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "status" -> result.success(StreamService.status())
+                    "clearLog" -> { DebugLog.clear(); result.success(null) }
                     "log" -> result.success(DebugLog.tail(300))
                     else -> result.notImplemented()
                 }

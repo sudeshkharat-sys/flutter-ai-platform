@@ -454,6 +454,8 @@ pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-h
 #banner small{font-size:13px;font-weight:400;flex:1;min-width:200px}#banner select,#banner input{font-size:15px;padding:5px}
 #banner button{font-size:15px;padding:6px 12px}.tile.act{outline:3px solid #1a8f3a}
 button{padding:5px 10px;margin:2px}
+body.big header,body.big #side{display:none}body.big #feeds{flex:1 1 100%}body.big main{padding:6px}body.big .tile:not(.act){display:none}
+body.big .tile img{max-height:calc(100vh - 120px);min-height:300px}body.big #banner{font-size:34px}
 #ov{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:9}#ov.on{display:flex}
 #dlg{background:#1a222d;border:1px solid #2c3848;border-radius:12px;width:min(560px,96vw);max-height:95vh;overflow:auto;padding:18px;color:#e8edf3}
 #dlg h3{margin:0 0 8px}#dlg label{display:block;color:#8b9aab;font-size:12px;margin:12px 0 5px}#dlg small{font-weight:400}
@@ -473,7 +475,8 @@ button{padding:5px 10px;margin:2px}
 <button onclick="openTask(false)">+ Create task</button><button id=editbtn onclick="openTask(true)">Edit task</button>
 <button id=runbtn onclick="toggleRun()" style="background:#1a8f3a;color:#fff"></button>
 <span id=vinbox style="display:none"><input id=vin placeholder="VIN" onkeydown="if(event.key==='Enter')sendVin()"> <button onclick="sendVin()">Start</button></span>
-<button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button></div>
+<button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button>
+<button id=expbtn onclick="expand()" title="Enlarge the inspection screen (F, Esc to exit)">&#x26F6; Expand</button></div>
 <div id=ov><div id=dlg>
 <h3 id=dttl>Create task</h3>
 <div class=drow><div><label>Model (.pt)</label><select id=dmodel onchange="loadClasses()"></select></div>
@@ -541,6 +544,10 @@ async function loadModels(){try{const m=await (await fetch('/api/models')).json(
  if(sig===modelsShown)return;modelsShown=sig;
  msel.innerHTML=(m.models.length?'':'<option value="">no .pt next to the exe</option>')+m.models.map(n=>'<option'+(n===m.current?' selected':'')+'>'+n+'</option>').join('')}catch(e){}}
 document.addEventListener('keydown',e=>{if(e.code==='Space'&&e.target.tagName!=='INPUT'){e.preventDefault();fetch('/api/restart',{method:'POST'})}});
+function expand(on){const b=document.body.classList;const v=(on===undefined)?!b.contains('big'):on;b.toggle('big',v);expbtn.textContent=v?'\u2715 Exit (Esc)':'\u26F6 Expand';
+ try{if(v&&!document.fullscreenElement)document.documentElement.requestFullscreen();else if(!v&&document.fullscreenElement)document.exitFullscreen()}catch(e){}}
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='f'||e.key==='F')expand();else if(e.key==='Escape')expand(false)});
+document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&document.body.classList.contains('big'))expand(false)});
 function drop(k){fetch('/api/disconnect?cam='+encodeURIComponent(k),{method:'POST'})}
 let shown='';
 async function tick(){try{

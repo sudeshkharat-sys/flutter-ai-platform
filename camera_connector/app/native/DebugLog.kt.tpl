@@ -23,5 +23,8 @@ object DebugLog {
         add("ERROR", if (t == null) msg else "$msg: ${t.javaClass.simpleName}: ${t.message}")
 
     @Synchronized
+    fun clear() = lines.clear()
+
+    @Synchronized
     fun tail(n: Int): String = lines.toList().takeLast(n).joinToString("\n")
 }

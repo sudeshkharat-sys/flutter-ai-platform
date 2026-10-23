@@ -307,6 +307,14 @@ class _HomeState extends State<Home> {
     }
   }
 
+  /// Clears the on-screen console (the native log buffer is emptied too).
+  Future<void> _clearLog() async {
+    try {
+      await _ch.invokeMethod('clearLog');
+    } catch (_) {}
+    setState(() => _log = '');
+  }
+
   Future<void> _setTorch(bool on) async {
     await _ch.invokeMethod('setTorch', {'on': on});
     await _poll();
@@ -578,6 +586,10 @@ class _HomeState extends State<Home> {
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 const Text('DEBUG CONSOLE', style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
                 TextButton(
+                  onPressed: _clearLog,
+                  child: const Text('Clear', style: TextStyle(color: Colors.lightBlueAccent, fontSize: 12)),
+                ),
+                TextButton(
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: _log));
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('log copied')));
@@ -693,6 +705,10 @@ class _HomeState extends State<Home> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             const Text('DEBUG CONSOLE', style: TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold, fontSize: 14)),
+            TextButton(
+              onPressed: _clearLog,
+              child: const Text('Clear', style: TextStyle(color: Colors.lightBlueAccent, fontSize: 12)),
+            ),
             TextButton(
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: _log));
