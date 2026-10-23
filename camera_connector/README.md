@@ -107,3 +107,16 @@ Next: Region classes.
 - **Submit** (shown with the result) -> `POST /api/submit` on the PC (logged; the result is already in
   `results.csv`) -> the PC starts the next scan. Results stay local for now.
 - If the PC stops answering for ~7 s the phone re-registers by itself.
+
+
+## App pack: Flutter "Download for PC" -> pc_runner.exe
+1. Flutter platform, App Builder -> **Download for PC** -> `<app>_pc_pack.zip`: the app's scan type
+   (model code / engine code / chakan), *open scan* and *auto-OK unmapped codes* switches, master + engine data,
+   every task (Pass / Fail / Ignore classes, confidence) and the original **.pt** models (the phone app gets .tflite).
+2. PC page -> **Import app pack** -> pick the zip (models go to `models/`, settings to `pack.json`; remembered on restart).
+3. **Set scan square**: drag a square on the live video where the correct QR is; only that part is read, and only a
+   code the pack understands is accepted (other QR codes in view are ignored). Phone and PC show the square while waiting.
+4. Scan a label -> decoded with the app's scan logic (same rules as the phone app) -> its tasks run one after the
+   other (`Task 1/2`) -> result -> phone **Submit** -> next task -> after the last one the PC waits for the next label.
+   Unknown code: rejected, or auto-OK (logged as "unmapped code") when *auto-OK unmapped codes* is on.
+Tests: `python test_pack.py`, `python test_inspector_pack.py`, `python test_case_logic.py`.

@@ -39,6 +39,7 @@ from urllib.parse import parse_qs, urlparse
 import cv2
 
 from inspector import Inspector, load_config, load_tasks
+import pack as packmod
 
 VERSION = "0.2.0"
 PHONE_APP = "runner-cam-phone"
@@ -454,6 +455,8 @@ pre{background:#000;color:#9f9;padding:8px;border-radius:6px;overflow:auto;max-h
 #banner small{font-size:13px;font-weight:400;flex:1;min-width:200px}#banner select,#banner input{font-size:15px;padding:5px}
 #banner button{font-size:15px;padding:6px 12px}.tile.act{outline:3px solid #1a8f3a}
 button{padding:5px 10px;margin:2px}
+#feeds .tile{position:relative}.roi{position:absolute;border:3px solid #0f0;background:#00ff0022;pointer-events:none;display:none;box-sizing:border-box}
+body.roimode .tile img{cursor:crosshair}#packlbl{font-size:13px;font-weight:400}
 body.big header,body.big #side{display:none}body.big #feeds{flex:1 1 100%}body.big main{padding:6px}body.big .tile:not(.act){display:none}
 body.big .tile img{max-height:calc(100vh - 120px);min-height:300px}body.big #banner{font-size:34px}
 #ov{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:9}#ov.on{display:flex}
@@ -476,6 +479,9 @@ body.big .tile img{max-height:calc(100vh - 120px);min-height:300px}body.big #ban
 <button id=runbtn onclick="toggleRun()" style="background:#1a8f3a;color:#fff"></button>
 <span id=vinbox style="display:none"><input id=vin placeholder="VIN" onkeydown="if(event.key==='Enter')sendVin()"> <button onclick="sendVin()">Start</button></span>
 <button id=nextbtn onclick="fetch('/api/restart',{method:'POST'})" style="display:none">Next car (Space)</button>
+<input type=file id=packfile accept=".zip" style="display:none" onchange="importPack(this.files[0])">
+<button onclick="packfile.click()" title="Zip from the Flutter platform: Download for PC">Import app pack</button><span id=packlbl>No app pack imported</span>
+<button id=roibtn onclick="toggleRoi()" title="Draw the square where the QR code is: only that part is read">Set scan square</button><button onclick="clearRoi()">Clear square</button>
 <button id=expbtn onclick="expand()" title="Enlarge the inspection screen (F, Esc to exit)">&#x26F6; Expand</button></div>
 <div id=ov><div id=dlg>
 <h3 id=dttl>Create task</h3>
@@ -548,6 +554,19 @@ function expand(on){const b=document.body.classList;const v=(on===undefined)?!b.
  try{if(v&&!document.fullscreenElement)document.documentElement.requestFullscreen();else if(!v&&document.fullscreenElement)document.exitFullscreen()}catch(e){}}
 document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='f'||e.key==='F')expand();else if(e.key==='Escape')expand(false)});
 document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&document.body.classList.contains('big'))expand(false)});
+let roiMode=false,roi=null,drag=null;
+function contentRect(img){const w=img.clientWidth,h=img.clientHeight,nw=img.naturalWidth||w,nh=img.naturalHeight||h;const s=Math.min(w/nw,h/nh);const cw=nw*s,ch=nh*s;return{x:(w-cw)/2,y:(h-ch)/2,w:cw,h:ch}}
+function drawRoi(){document.querySelectorAll('.tile').forEach(t=>{let d=t.querySelector('.roi');if(!d){d=document.createElement('div');d.className='roi';t.appendChild(d)}
+ const r=(drag&&drag.r)||(drag?null:roi),img=t.querySelector('img');if(!r||!img||(!drag&&!t.classList.contains('act'))){d.style.display='none';return}
+ const c=contentRect(img);d.style.display='block';d.style.left=(c.x+r[0]*c.w)+'px';d.style.top=(c.y+r[1]*c.h)+'px';d.style.width=((r[2]-r[0])*c.w)+'px';d.style.height=((r[3]-r[1])*c.h)+'px'})}
+function frac(e,img){const b=img.getBoundingClientRect(),c=contentRect(img);return[Math.min(1,Math.max(0,(e.clientX-b.left-c.x)/c.w)),Math.min(1,Math.max(0,(e.clientY-b.top-c.y)/c.h))]}
+feeds.addEventListener('mousedown',e=>{if(roiMode&&e.target.tagName==='IMG'){e.preventDefault();drag={img:e.target,a:frac(e,e.target),r:null}}});
+document.addEventListener('mousemove',e=>{if(!drag)return;const p=frac(e,drag.img);drag.r=[Math.min(drag.a[0],p[0]),Math.min(drag.a[1],p[1]),Math.max(drag.a[0],p[0]),Math.max(drag.a[1],p[1])];drawRoi()});
+document.addEventListener('mouseup',()=>{if(!drag)return;const r=drag.r;drag=null;if(r&&r[2]-r[0]>0.03&&r[3]-r[1]>0.03){roi=r;fetch('/api/roi?x1='+r[0]+'&y1='+r[1]+'&x2='+r[2]+'&y2='+r[3],{method:'POST'})}drawRoi()});
+function toggleRoi(){roiMode=!roiMode;roibtn.textContent=roiMode?'Drag a square on the video (click to stop)':'Set scan square';document.body.classList.toggle('roimode',roiMode)}
+function clearRoi(){fetch('/api/roi?clear=1',{method:'POST'})}
+function importPack(f){if(!f)return;packlbl.dataset.busy=1;packlbl.textContent='importing '+f.name+' ...';
+ fetch('/api/pack/import',{method:'POST',body:f}).then(r=>r.json()).then(j=>{packlbl.textContent=j.message;packfile.value='';setTimeout(()=>delete packlbl.dataset.busy,4000)}).catch(()=>{packlbl.textContent='import failed';delete packlbl.dataset.busy})}
 function drop(k){fetch('/api/disconnect?cam='+encodeURIComponent(k),{method:'POST'})}
 let shown='';
 async function tick(){try{
@@ -567,10 +586,11 @@ async function tick(){try{
  const i=await (await fetch('/api/inspection')).json();
  loadModels();loadTasks();isPrev=!!i.preview;curHas=!!i.task;runbtn.textContent=isPrev?'Start inspection':'Stop (boxes only)';runbtn.style.background=isPrev?'#1a8f3a':'#7a1f1f';vinbox.style.display=i.vin_mode?'':'none';
  document.querySelectorAll('.tile').forEach(t=>t.classList.toggle('act',t.dataset.k===i.active));
+ roi=i.roi||null;drawRoi();if(!packlbl.dataset.busy)packlbl.textContent=i.pack&&i.pack.loaded?('Pack: '+i.pack.app_name+' ('+(i.pack.scan_types||[]).join('+')+', '+i.pack.tasks.length+' tasks)'):'No app pack imported';
  const col={'OK':'#1a8f3a','NOT OK':'#c62828','NOT FOUND':'#ef6c00'};
- res.textContent=i.result||(i.state==='idle'?'SCAN VIN':(i.state==='scanning'?(i.preview?'BOXES ONLY':'SCANNING '+(i.seconds_left??'')):(i.state==='waiting'?'READY':(i.state==='no_model'?'NO MODEL':(i.state==='loading'?'LOADING':'...')))));
+ res.textContent=i.result||(i.state==='idle'?(i.pack&&i.pack.loaded?'SCAN LABEL':'SCAN VIN'):(i.state==='scanning'?(i.preview?'BOXES ONLY':'SCANNING '+(i.seconds_left??'')):(i.state==='waiting'?'READY':(i.state==='no_model'?'NO MODEL':(i.state==='loading'?'LOADING':'...')))));
  banner.style.background=col[i.result]||(i.state==='scanning'?'#0b6fa4':'#444');
- insp.textContent=(i.vin?'VIN '+i.vin+'  |  ':'')+(i.task?'Task '+i.task+'  |  ':'')+(i.message||'')+(i.infer_ms?'  |  '+i.infer_ms+' ms':'')+(i.detections&&i.detections.length?'  |  '+i.detections.map(d=>d.name+' '+Math.round(d.conf*100)+'%').join(', '):'');
+ insp.textContent=(i.vin?'VIN '+i.vin+'  |  ':'')+(i.task?'Task '+(i.task_n?(i.task_i+'/'+i.task_n+' '):'')+i.task+'  |  ':'')+(i.message||'')+(i.infer_ms?'  |  '+i.infer_ms+' ms':'')+(i.detections&&i.detections.length?'  |  '+i.detections.map(d=>d.name+' '+Math.round(d.conf*100)+'%').join(', '):'');
  nextbtn.style.display=i.state==='done'?'':'none';
  const l=await (await fetch('/api/log')).json();
  const end=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
@@ -648,6 +668,13 @@ class Handler(BaseHTTPRequestHandler):
                 f = r.get()[0] if r else None
                 if f is None:
                     return self._send("no frame yet", "text/plain", 404)
+                if ins is not None and ins.scan_roi and ins.state == "idle":
+                    f = f.copy()
+                    h, w = f.shape[:2]
+                    r = ins.scan_roi
+                    cv2.rectangle(f, (int(r[0] * w), int(r[1] * h)), (int(r[2] * w), int(r[3] * h)), (0, 255, 0), 3)
+                    cv2.putText(f, "scan label here", (int(r[0] * w) + 6, max(24, int(r[1] * h) - 8)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 60])[1].tobytes()
             self._send(jpg, "image/jpeg")
         elif u.path == "/snapshot.jpg":
@@ -707,6 +734,45 @@ class Handler(BaseHTTPRequestHandler):
             if ok:
                 log(f"VIN received: {vin}")
             self._send(json.dumps({"ok": ok}), code=200 if ok else 409)
+        elif u.path == "/api/pack/import":
+            tmp = os.path.join(app_dir(), "_pack_upload.zip")
+            try:
+                left = int(self.headers.get("Content-Length") or 0)
+                with open(tmp, "wb") as f:
+                    while left > 0:
+                        chunk = self.rfile.read(min(1 << 20, left))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        left -= len(chunk)
+                ok, msg, pk = packmod.import_pack(tmp, app_dir())
+            except Exception as e:
+                ok, msg, pk = False, f"import failed: {e}", None
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            if ok and INSPECTOR:
+                INSPECTOR.load_pack(pk)
+            log(("app pack: " if ok else "app pack FAILED: ") + msg, "INFO" if ok else "ERROR")
+            self._send(json.dumps({"ok": ok, "message": msg}))
+        elif u.path == "/api/pack/clear":
+            packmod.clear_pack(app_dir())
+            if INSPECTOR:
+                INSPECTOR.load_pack(None)
+            self._send("{}")
+        elif u.path == "/api/roi":
+            ok = False
+            if INSPECTOR:
+                if q.get("clear"):
+                    ok = INSPECTOR.set_roi(None)
+                else:
+                    try:
+                        ok = INSPECTOR.set_roi([float(q[k][0]) for k in ("x1", "y1", "x2", "y2")])
+                    except (KeyError, ValueError):
+                        ok = False
+            self._send(json.dumps({"ok": ok}), code=200 if ok else 400)
         elif u.path == "/api/restart":
             if INSPECTOR:
                 INSPECTOR.restart()
@@ -809,6 +875,12 @@ def main():
     if not a.no_inspect:
         cfg = load_config(os.path.join(app_dir(), "runner_config.json"), log)
         INSPECTOR = Inspector(cfg, app_dir(), log, inspector_frame, load_tasks(os.path.join(app_dir(), "tasks.json"), log))
+        try:
+            pk = packmod.load_pack(app_dir())
+            if pk:
+                INSPECTOR.load_pack(pk)
+        except Exception as e:
+            log(f"could not load pack.json: {e}", "ERROR")
         INSPECTOR.start()
     log(f"viewer + QR page: http://127.0.0.1:{a.ui_port}/   (PC addresses: {local_ips() or 'NONE'})")
     log("Windows firewall popup -> Allow (Private AND Public), so phones can reach this PC.")

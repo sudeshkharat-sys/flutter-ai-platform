@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl, uploadOcrModel } from '../api';
+import { getApp, getModels, buildAPK, downloadAPK, downloadPcPack, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl, uploadOcrModel } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -93,6 +93,23 @@ export default function AppBuilder() {
       a.href = url; a.download = `${app.name.toLowerCase().replace(/ /g, '_')}.apk`;
       a.click(); URL.revokeObjectURL(url);
     } catch { alert('APK download failed.'); }
+  };
+
+  // "Download for PC": tasks + scan logic + the original .pt models, imported by pc_runner.exe
+  const handleDownloadPcPack = async () => {
+    try {
+      const r = await downloadPcPack(id);
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${app.name.toLowerCase().replace(/ /g, '_')}_pc_pack.zip`;
+      a.click(); URL.revokeObjectURL(url);
+      const warn = r.headers && r.headers['x-pack-warnings'];
+      if (warn) alert(`Downloaded, but: ${warn}`);
+    } catch (e) {
+      let msg = 'PC pack download failed.';
+      try { msg = JSON.parse(await e.response.data.text()).detail || msg; } catch { /* keep default */ }
+      alert(msg);
+    }
   };
 
   const removeModel = async (mid) => {
@@ -190,6 +207,24 @@ export default function AppBuilder() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
+           <button
+             onClick={handleDownloadPcPack}
+             title="Tasks, scan logic and .pt models for pc_runner.exe"
+             style={{
+               background: 'transparent',
+               color: 'var(--accent)',
+               border: '1px solid var(--accent)',
+               padding: '10px 20px',
+               borderRadius: 8,
+               fontWeight: 700,
+               cursor: 'pointer',
+               display: 'flex',
+               alignItems: 'center',
+               gap: 8
+             }}
+           >
+             <Download size={18} /> Download for PC
+           </button>
            {isReady && (
              <button 
                onClick={handleDownloadAPK} 

@@ -26,6 +26,7 @@ import time
 from datetime import datetime
 
 from case_logic import CaseConfig, CaseTracker, OK, NOT_OK, NOT_FOUND
+import pack as packmod
 
 DEFAULT_CONFIG = {
     "model": "best.pt",
@@ -103,9 +104,16 @@ def read_codes(cv2, img, detectors):
     try:
         if "qr" not in detectors:
             detectors["qr"] = cv2.QRCodeDetector()
-        txt, _, _ = detectors["qr"].detectAndDecode(img)
-        if txt:
-            out.append(txt)
+        try:  # several QR codes in view: read them all
+            ok, texts, _, _ = detectors["qr"].detectAndDecodeMulti(img)
+            if ok:
+                out += [t for t in texts if t]
+        except Exception:
+            pass
+        if not out:
+            txt, _, _ = detectors["qr"].detectAndDecode(img)
+            if txt:
+                out.append(txt)
     except Exception:
         pass
     try:
@@ -132,6 +140,12 @@ class Inspector:
         self.vin_mode = bool(self.tasks)
         self.vin = None
         self.task_name = None
+        self.pack = None            # imported app pack (scan logic + tasks), see pack.py
+        self.queue = []             # tasks of the scanned code, run one after the other
+        self.queue_i = 0
+        self.code = None
+        self.scan_roi = cfg.get("scan_roi")   # [x1, y1, x2, y2] fractions: only this part of the frame is decoded
+        self._bad_code = None
         self._pending_vin = None
         self._pending_model = None
         self._pending_task = None
@@ -289,6 +303,32 @@ class Inspector:
             self._restart.set()
         self.log(f"preview (boxes only) {'ON' if self.preview else 'OFF'}")
 
+    def load_pack(self, pk):
+        """Use an imported app pack (None = back to the old modes). Waits for a code to scan."""
+        self.pack = pk
+        self.queue, self.queue_i, self.code = [], 0, None
+        if pk:
+            self.vin_mode = True
+            if self.state != "loading" and self.np is not None:
+                self.state, self.message = "idle", "scan the label"
+                self.vin, self.task_name, self.result = None, None, None
+            self.log(f"app pack loaded: {pk.get('app_name')} scan={pk.get('scan_types')} tasks={[t.get('name') for t in pk.get('tasks', [])]}")
+        else:
+            self.vin_mode = bool(self.tasks)
+            self.log("app pack removed")
+
+    def set_roi(self, roi):
+        """The manual square: only this part of the frame is searched for the QR code. None clears it."""
+        if roi is not None:
+            x1, y1, x2, y2 = [min(1.0, max(0.0, float(v))) for v in roi]
+            if x2 - x1 < 0.03 or y2 - y1 < 0.03:
+                return False
+            roi = [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]
+        self.scan_roi = roi
+        self._save_choice("scan_roi", roi)
+        self.log(f"scan square: {roi or 'whole frame'}")
+        return True
+
     def set_vin(self, vin):
         """Start the task for this VIN (viewer box, POST /api/vin, or a QR read from the frames)."""
         vin = (vin or "").strip()
@@ -314,6 +354,11 @@ class Inspector:
             "model": self.cfg.get("model"),
             "preview": self.preview,
             "vin_mode": self.vin_mode,
+            "pack": packmod.summary(self.pack),
+            "code": self.code,
+            "task_i": self.queue_i + 1 if self.queue else 0,
+            "task_n": len(self.queue),
+            "roi": self.scan_roi,
             "message": self.message,
             "result": self.result,
             "defects": self.result_defects,
@@ -386,7 +431,7 @@ class Inspector:
                     self._reset_scan()
                     last_frame_no = -1
                 frame, fid = self.get_frame()
-                if self.vin_mode and self.state in ("idle", "done"):
+                if self.vin_mode and (self.state == "idle" or (self.state == "done" and not self.pack)):
                     vin = self._poll_vin(frame)
                     if vin:
                         self._start_vin(vin)
@@ -529,6 +574,8 @@ class Inspector:
 
     def _start_vin(self, vin):
         """Resolve the VIN to a task and arm it. Unknown VIN -> stay idle with a message."""
+        if self.pack:
+            return self._start_pack(vin)
         task = match_task(self.tasks, vin)
         if task is None:
             self.vin, self.task_name, self.result = vin, None, None
@@ -543,6 +590,60 @@ class Inspector:
         if self._activate(cfg, self.task_name):
             self.message = f"{self.task_name} -- waiting for the phone camera..."
 
+    def _start_pack(self, raw):
+        """A label was scanned: decode it with the pack's scan logic and arm the first task."""
+        plan = packmod.plan_scan(self.pack, raw)
+        self._last_vin = raw
+        if plan["action"] == "reject":
+            self.vin, self.task_name, self.result, self.queue = None, None, None, []
+            self.state, self.message = "idle", plan["message"]
+            self.log(f"scan rejected: {plan['message']}  (raw: {raw[:60]})", "WARN")
+            return
+        self.vin, self.code = plan["id"], plan["code"]
+        if plan["action"] == "unmapped":
+            self.queue, self.queue_i = [], 0
+            self.task_name = "(unmapped code)"
+            self._finish_unmapped(plan["message"])
+            return
+        self.queue, self.queue_i = plan["tasks"], 0
+        self.log(f"scanned {self.vin} / code {self.code}: {len(self.queue)} task(s) {[t['name'] for t in self.queue]}")
+        self._run_queue_task()
+
+    def _run_queue_task(self):
+        task = self.queue[self.queue_i]
+        if self._activate_task(task):
+            self.message = f"{task['name']} ({self.queue_i + 1}/{len(self.queue)}) -- waiting for the phone camera..."
+            return True
+        return False
+
+    def _finish_unmapped(self, message):
+        """Code with no task and 'auto submit unmapped codes' on: OK without inspecting anything."""
+        self.result, self.result_defects = OK, []
+        self.state, self.message, self.done_at = "done", message, time.time()
+        self.display = None
+        self.log(f"RESULT: OK (unmapped) {self.vin} {message}")
+        try:
+            out_dir = self.cfg.get("results_dir") or "results"
+            if not os.path.isabs(out_dir):
+                out_dir = os.path.join(self.base_dir, out_dir)
+            os.makedirs(out_dir, exist_ok=True)
+            csv_path = os.path.join(out_dir, "results.csv")
+            new = not os.path.exists(csv_path)
+            with open(csv_path, "a", encoding="utf-8") as f:
+                if new:
+                    f.write("time,vin,task,result,defects\n")
+                f.write(f"{datetime.now().isoformat(timespec='seconds')},{self.vin},(unmapped code {self.code}),OK,\n")
+        except Exception as e:
+            self.log(f"could not append results.csv: {e}", "WARN")
+
+    def _crop_roi(self, img):
+        r = self.scan_roi
+        if not r:
+            return img
+        h, w = img.shape[:2]
+        c = img[int(r[1] * h):int(r[3] * h), int(r[0] * w):int(r[2] * w)]
+        return c if c.size else img
+
     def _poll_vin(self, frame):
         """idle/done: a pending VIN (typed / API) wins; otherwise look for a QR / barcode in the frame."""
         if self._pending_vin:
@@ -550,17 +651,35 @@ class Inspector:
             return vin
         if frame is not None and time.time() - self._code_t >= 0.4:
             self._code_t = time.time()
-            img = frame
+            img = self._crop_roi(frame)
             if img is not None:
                 for code in read_codes(self.cv2, img, self._codes):
                     code = code.strip()
                     # the car's QR stays in view after the result: ignore the same VIN for a while
                     if code and not (code == self._last_vin and time.time() - self.done_at < float(
                             self.base_cfg.get("rescan_block_seconds", 15))):
+                        if self.pack:
+                            # with several QR codes in view, only take the one this app understands
+                            info, err = packmod.decode_scan(self.pack, code)
+                            if err:
+                                if code != self._bad_code:
+                                    self._bad_code = code
+                                    self.message = f"ignored: {code[:40]} ({err})"
+                                continue
                         return code
         return None
 
     def _reset_scan(self):
+        if self.pack and self.queue and self.state == "done" and self.queue_i + 1 < len(self.queue):
+            self.queue_i += 1
+            self.result, self.result_defects, self.dets, self.display = None, [], [], None
+            if self._run_queue_task():
+                if self.tracker:
+                    self.tracker.reset()
+                self.log(f"next task {self.queue_i + 1}/{len(self.queue)} for {self.vin}")
+                return
+        self.queue, self.queue_i, self.code = [], 0, None
+        self._bad_code = None
         if self.vin_mode:
             self.state, self.message = "idle", "scan the VIN"
             self.vin, self.task_name = None, None

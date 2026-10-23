@@ -4,8 +4,9 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse, FileResponse
 from app.connectors.state_db import StateDBConnector
-from app.queries import ProjectQueries, ModelAssetQueries
+from app.queries import ProjectQueries, ModelAssetQueries, MasterDataQueries, EngineDataQueries
 from app.codegen.generator import generate_flutter_project
+from app.codegen.pc_pack import build_pack
 from app.tasks.build_apk import build_apk_task
 
 router = APIRouter(prefix="/apps", tags=["export"])
@@ -108,6 +109,42 @@ def export_app(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
         io.BytesIO(zip_bytes),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+@router.get("/{app_id}/pc-export")
+def export_pc_pack(app_id: str, db: StateDBConnector = Depends(get_db_connector)):
+    """'Download for PC': tasks + scan logic + master data + the original .pt models, as a zip
+    the PC runner (pc_runner.exe) imports."""
+    rows = db.execute_query(ProjectQueries.GET_PROJECT_BY_ID, {"id": app_id})
+    if not rows:
+        raise HTTPException(status_code=404, detail="App project not found")
+    app = rows[0]
+
+    model_asset_ids = app.get("model_asset_ids", [])
+    if isinstance(model_asset_ids, str):
+        model_asset_ids = json.loads(model_asset_ids)
+    assets = []
+    if model_asset_ids:
+        placeholders = ", ".join([f":id{i}" for i in range(len(model_asset_ids))])
+        assets = db.execute_query(
+            f"SELECT * FROM model_assets WHERE id IN ({placeholders})",
+            {f"id{i}": mid for i, mid in enumerate(model_asset_ids)},
+        )
+    master = db.execute_query(MasterDataQueries.GET_ALL_MAPPINGS)
+    engine = db.execute_query(EngineDataQueries.GET_ALL_MAPPINGS)
+    try:
+        data, warnings = build_pack(app, assets, master, engine)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    safe_name = app["name"].lower().replace(" ", "_")
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}_pc_pack.zip"',
+            "X-Pack-Warnings": " | ".join(warnings)[:1000],
+        },
     )
 
 @router.get("/{app_id}/preview")

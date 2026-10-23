@@ -474,7 +474,9 @@ class _HomeState extends State<Home> {
   Widget _banner({bool big = false}) {
     final st = '${_insp['state'] ?? ''}';
     final res = '${_insp['result'] ?? ''}';
-    final task = '${_insp['task'] ?? ''}';
+    var task = '${_insp['task'] ?? ''}';
+    final n = (_insp['task_n'] as num?)?.toInt() ?? 0;
+    if (n > 1 && task.isNotEmpty && task != 'null') task = '$task  (${_insp['task_i']}/$n)';
     String text;
     Color col;
     final stale = DateTime.now().difference(_previewAt).inSeconds >= 5;
@@ -489,7 +491,7 @@ class _HomeState extends State<Home> {
       text = _insp['preview'] == true ? 'BOXES ONLY' : 'SCANNING${left != null ? '  ${left}s' : ''}';
       col = _insp['preview'] == true ? Colors.blueGrey : Colors.blue.shade700;
     } else if (st == 'waiting' || st == 'idle') {
-      text = st == 'idle' ? 'SCAN THE VIN' : 'READY';
+      text = st == 'idle' ? ((_insp['pack'] is Map && _insp['pack']['loaded'] == true) ? 'SCAN THE LABEL' : 'SCAN THE VIN') : 'READY';
       col = Colors.blueGrey;
     } else if (st == 'no_model') {
       text = 'NO MODEL ON PC';

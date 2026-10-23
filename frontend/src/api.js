@@ -94,6 +94,9 @@ export const buildAPK = (id) => api.post(`/apps/${id}/build`);
 export const downloadAPK = (id) =>
   api.get(`/apps/${id}/apk`, { responseType: 'blob' });
 
+export const downloadPcPack = (id) =>
+  api.get(`/apps/${id}/pc-export`, { responseType: 'blob' });
+
 // ── Reference Images ─────────────────────────────────────────────────────────
 export const uploadReferenceImage = (file) => {
   const form = new FormData();
