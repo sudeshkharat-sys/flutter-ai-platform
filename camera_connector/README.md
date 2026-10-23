@@ -133,3 +133,11 @@ Tests: `python test_pack.py`, `python test_inspector_pack.py`, `python test_case
 - The phone can draw the scan square itself: while waiting for a label, drag on the PC view, then press Scan.
 - Phone and PC on the same Wi-Fi but nothing found? Many office Wi-Fi networks block device-to-device traffic
   (client isolation). The PC log says so after a minute; use the phone's hotspot instead.
+
+### Speed vs accuracy (runner_config.json, next to the exe)
+- `blur_gate` (true): a frame clearly blurrier than the sharpest recent frame is still drawn but does not vote
+  (after 6 in a row the next one is accepted so a low-detail scene cannot stall). The time-out verdict uses the
+  last *sharp* frame. The debug log prints `skipped blurry frame (sharpness X, best recent Y)`.
+- `min_tick_ms` (150): minimum time between two voting frames, so 3-in-a-row takes at least ~0.45 s instead of a few ms.
+- `pass_ticks_needed` / `fail_ticks_needed` (3 / 3): consecutive votes needed; raise to 4-5 for more accuracy.
+- Phone Settings: 1280x720, JPEG quality 70-80, max fps 15-20, Autofocus ON, torch on.

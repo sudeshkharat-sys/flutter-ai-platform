@@ -79,4 +79,13 @@ assert tick_state([("Hose_OK", .9), ("Hose_Bad", .9)], expl, X) == "defect"
 assert tick_state([("Cable", .9)], expl, X) == "none"
 assert defect_classes([("Hose_OK", .9), ("Cable", .9), ("Hose_Bad", .9)], expl, X) == ["Hose_Bad"]
 
+# --- blur gate: a clearly blurrier frame does not vote, but never stalls the scan
+from case_logic import BlurGate
+g = BlurGate(ratio=0.5, max_skip=3)
+assert [g.blurry(v) for v in (100, 95, 30)] == [False, False, True]          # 30 is far below the best (100)
+assert [g.blurry(v) for v in (30, 30, 30)] == [True, True, False]            # after max_skip the scene is accepted
+assert g.blurry(100) is False and g.blurry(90) is False
+g2 = BlurGate(ratio=0.5, max_skip=2); g2.blurry(100)
+assert [g2.blurry(10), g2.blurry(10), g2.blurry(10)] == [True, True, False]
+
 print("all case_logic tests passed")

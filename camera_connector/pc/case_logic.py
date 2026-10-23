@@ -84,6 +84,29 @@ def defect_classes(dets, cfg, all_classes=()):
     return out
 
 
+class BlurGate:
+    """Decides whether a frame is sharp enough to vote. `sharpness` is any "bigger = sharper" number (the PC uses
+    the variance of the Laplacian). A frame is blurry when it is clearly below the sharpest recent frame of this
+    scene (`ratio`); after `max_skip` blurry frames in a row the next one is accepted anyway, so a scene that
+    simply has little detail can never stall the scan."""
+
+    def __init__(self, ratio=0.45, max_skip=6, decay=0.995):
+        self.ratio, self.max_skip, self.decay = ratio, max_skip, decay
+        self.reset()
+
+    def reset(self):
+        self.ref = 0.0
+        self.skipped = 0
+
+    def blurry(self, sharpness):
+        self.ref = max(sharpness, self.ref * self.decay)
+        if self.ref > 0 and sharpness < self.ref * self.ratio and self.skipped < self.max_skip:
+            self.skipped += 1
+            return True
+        self.skipped = 0
+        return False
+
+
 class CaseTracker:
     """Feed it one frame's detections at a time; returns a result string when the case resolves."""
 

@@ -90,6 +90,10 @@ def main():
                    '        android:foregroundServiceType="camera"/>\n')
         x = x.replace("</application>", service + "    </application>", 1)
         print("manifest patched")
+    missing = [p for p in PERMISSIONS if f'android:name="{p}"' not in x]
+    if missing:  # manifest patched by an older version of this script
+        x = x.replace("<application", "".join(f'    <uses-permission android:name="{p}"/>\n' for p in missing) + "    <application", 1)
+        print("manifest: added permissions", missing)
     if "usesCleartextTraffic" not in x:  # the app makes plain http:// calls to the PC (Find PC)
         x = x.replace("<application", '<application android:usesCleartextTraffic="true"', 1)
         print("manifest: cleartext http enabled")

@@ -25,7 +25,7 @@ import threading
 import time
 from datetime import datetime
 
-from case_logic import CaseConfig, CaseTracker, OK, NOT_OK, NOT_FOUND
+from case_logic import CaseConfig, CaseTracker, BlurGate, OK, NOT_OK, NOT_FOUND
 import pack as packmod
 
 DEFAULT_CONFIG = {
@@ -38,6 +38,8 @@ DEFAULT_CONFIG = {
     "fail_ticks_needed": 3,
     "pass_ticks_needed": 3,
     "scan_seconds": 45,
+    "blur_gate": True,          # frames clearly blurrier than the sharpest recent one do not vote
+    "min_tick_ms": 150,         # at least this long between two voting frames (3 in a row then take >= 0.45 s)
     "auto_restart_seconds": 0,
     "results_dir": "results",
     "save_images": True,
@@ -146,6 +148,11 @@ class Inspector:
         self.auto_scan = bool(cfg.get("auto_scan", False))     # off: a label is only read when Scan is pressed
         self._scan_req = None
         self.scan_reply = None
+        self.blur = BlurGate()
+        self.sharp = 0.0
+        self.blur_skipped = 0
+        self._last_good = []        # detections of the last sharp frame (the time-out verdict uses these)
+        self._tick_t = 0.0
         self._mode_pending = False
         self.queue = []             # tasks of the scanned code, run one after the other
         self.queue_i = 0
@@ -445,6 +452,8 @@ class Inspector:
             "auto_start": self.auto_start,
             "auto_scan": self.auto_scan,
             "scan_reply": self.scan_reply,
+            "sharp": round(self.sharp),
+            "blur_skipped": self.blur_skipped,
             "code": self.code,
             "task_i": self.queue_i + 1 if self.queue else 0,
             "task_n": len(self.queue),
@@ -561,10 +570,18 @@ class Inspector:
                     self.message = "scanning"
                     self.started_at = time.time()
                     self.tracker.reset()
+                    self.blur.reset()
+                    self._last_good = []
                     self.result = None
                     self.log("scan started")
 
                 img = frame
+                gap = float(self.cfg.get("min_tick_ms", 150)) / 1000.0
+                if not self.preview and gap > 0 and time.time() - self._tick_t < gap:
+                    time.sleep(max(0.0, gap - (time.time() - self._tick_t)))
+                    last_frame_no = -1          # take the freshest frame next round, not the one that waited
+                    continue
+                self._tick_t = time.time()
                 t0 = time.perf_counter()
                 res = self.model.predict(img, imgsz=self.imgsz, conf=self.case_cfg.conf, device=self.device, verbose=False)[0]
                 self.infer_ms = round((time.perf_counter() - t0) * 1000)
@@ -587,12 +604,23 @@ class Inspector:
                     self.fps = round(fps_n / (now_m - fps_t), 1)
                     fps_n, fps_t = 0, now_m
 
-                result = None if self.preview else self.tracker.update(dets)
+                bad = False
+                if not self.preview and self.cfg.get("blur_gate", True):
+                    g = cv2.cvtColor(cv2.resize(img, (320, max(1, int(img.shape[0] * 320 / img.shape[1])))), cv2.COLOR_BGR2GRAY)
+                    self.sharp = float(cv2.Laplacian(g, cv2.CV_64F).var())
+                    bad = self.blur.blurry(self.sharp)
+                    self.blur_skipped += 1 if bad else 0
+                if bad:
+                    result = None       # blurry frame: shown, but it does not vote (and does not reset the count)
+                    self.log(f"skipped blurry frame (sharpness {self.sharp:.0f}, best recent {self.blur.ref:.0f})", debug_only=True)
+                else:
+                    self._last_good = dets
+                    result = None if self.preview else self.tracker.update(dets)
                 self.log(f"tick {self.infer_ms}ms | {', '.join(f'{n} {int(p * 100)}%' for n, p in dets) or 'none'} "
                          f"| ok {self.tracker.ok_count}/{self.case_cfg.pass_ticks_needed} "
                          f"fail {self.tracker.fail_count}/{self.case_cfg.fail_ticks_needed}", debug_only=True)
                 if result is None and not self.preview and time.time() - self.started_at >= self.case_cfg.scan_seconds:
-                    result = self.tracker.final(dets)
+                    result = self.tracker.final(self._last_good if bad else dets)
                     self.log(f"scan time ({self.case_cfg.scan_seconds:.0f}s) elapsed -- last frame decides: {result}")
 
                 annotated = self._draw(cv2, img, boxes)
@@ -638,6 +666,8 @@ class Inspector:
         if missing:
             self.log(f"config names classes the model does not have: {missing}", "WARN")
         self.tracker = CaseTracker(self.case_cfg, all_classes)
+        self.blur.reset()
+        self._last_good = []
         self.result, self.result_defects, self.dets, self.display = None, [], [], None
         self.state = "waiting"
         self.message = "waiting for the phone camera..."
