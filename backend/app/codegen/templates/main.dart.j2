@@ -26,6 +26,19 @@ Future<void> main() async {
   // printer. Never awaited -- must not delay getting to the scan screen if
   // WiFi is slow, off, or out of range.
   unawaited(WifiService.instance.ensureConnected());
+  // A build error used to leave a blank / grey screen with no clue. Show the real error instead, so it can be reported.
+  ErrorWidget.builder = (FlutterErrorDetails d) => Material(
+        color: Colors.white,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: SingleChildScrollView(
+              child: Text('Something went wrong on this screen. Go back and try again.\n\n${d.exceptionAsString()}',
+                  style: const TextStyle(color: Colors.red, fontSize: 12)),
+            ),
+          ),
+        ),
+      );
   runApp(const MyApp());
 }
 

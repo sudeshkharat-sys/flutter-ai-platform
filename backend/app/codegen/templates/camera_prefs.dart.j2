@@ -67,6 +67,24 @@ class CameraPrefs {
     } catch (_) {}
   }
 
+  static const String _liveTimeoutKey = 'live_timeout_seconds';
+
+  /// How long a live inspection watches before it decides on the last frame (default 45 s).
+  static Future<int> getLiveTimeoutSeconds() async {
+    try {
+      final v = (await SharedPreferences.getInstance()).getInt(_liveTimeoutKey) ?? 45;
+      return v.clamp(10, 300);
+    } catch (_) {
+      return 45;
+    }
+  }
+
+  static Future<void> setLiveTimeoutSeconds(int seconds) async {
+    try {
+      await (await SharedPreferences.getInstance()).setInt(_liveTimeoutKey, seconds.clamp(10, 300));
+    } catch (_) {}
+  }
+
   static const String _liveTasksKey = 'live_task_names';
 
   /// Names of the tasks that use live inspection after the VIN scan (all others use photo).

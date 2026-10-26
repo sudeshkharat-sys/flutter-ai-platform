@@ -36,6 +36,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _toneOk;
   String? _toneNotOk;
   int _unsynced = 0;
+  int _liveTimeout = 45;
   List<String> _taskNames = [];
   Set<String> _liveTasks = {};
 
@@ -55,8 +56,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final tNo = await ResultFeedback.getCustomTone('notOk');
     final n = await SyncService.instance.getUnsyncedCount();
     final live = await CameraPrefs.getLiveTasks();
+    final lt = await CameraPrefs.getLiveTimeoutSeconds();
     final names = await _loadTaskNames();
-    if (mounted) setState(() { _threads = t; _autofocus = af; _debugDl = dd; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; _liveTasks = live; _taskNames = names; });
+    if (mounted) setState(() { _threads = t; _autofocus = af; _debugDl = dd; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; _liveTasks = live; _liveTimeout = lt; _taskNames = names; });
   }
 
   /// Every task name of this app (from the bundled manifest), in order, without duplicates.
@@ -262,6 +264,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       activeColor: _crimson,
                       onChanged: (v) => _setLive(n, v),
                     ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    const Expanded(child: Text('Live inspection timer', style: TextStyle(fontWeight: FontWeight.w600))),
+                    Text('$_liveTimeout s', style: const TextStyle(fontWeight: FontWeight.bold, color: _crimson)),
+                  ]),
+                  const SizedBox(height: 4),
+                  const Text('How long live inspection looks for the part before it decides on the last frame. Default 45 s.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  Slider(
+                    min: 10,
+                    max: 180,
+                    divisions: 34,
+                    value: _liveTimeout.clamp(10, 180).toDouble(),
+                    label: '$_liveTimeout s',
+                    activeColor: _crimson,
+                    onChanged: (v) => setState(() => _liveTimeout = v.round()),
+                    onChangeEnd: (v) => CameraPrefs.setLiveTimeoutSeconds(v.round()),
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () async {
+                        setState(() => _liveTimeout = 45);
+                        await CameraPrefs.setLiveTimeoutSeconds(45);
+                      },
+                      child: const Text('Reset to 45 s'),
+                    ),
+                  ),
                 ],
               ),
             ),

@@ -202,6 +202,7 @@ class StreamService : LifecycleService() {
                 applyTorchZoom()
                 if (autofocusOn) { focusLoop = false; setAutofocus(true) }
                 DebugLog.i("camera bound (${if (front) "front" else "back"})")
+                logLensInfo()
             } catch (e: Exception) {
                 fail("camera bind failed", e)
             }
@@ -241,11 +242,33 @@ class StreamService : LifecycleService() {
         val c = camera ?: return
         try {
             val f = androidx.camera.core.SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f)
-            c.cameraControl.startFocusAndMetering(
+            val fut = c.cameraControl.startFocusAndMetering(
                 androidx.camera.core.FocusMeteringAction.Builder(f).build())
+            fut.addListener({
+                try {
+                    val r = fut.get()
+                    DebugLog.i(if (r.isFocusSuccessful) "focus: locked on the centre" else "focus: FAILED (part too close for this lens, too dark, or no contrast in the centre)")
+                } catch (e: Exception) { DebugLog.w("focus result unavailable: ${e.message}") }
+            }, ContextCompat.getMainExecutor(this))
         } catch (e: Exception) {
             DebugLog.w("autofocus failed: ${e.message}")
         }
+    }
+
+    /** Logs how close the lens can focus: a part nearer than this will always be blurry, whatever autofocus does. */
+    private fun logLensInfo() {
+        try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+            val want = if (front) android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT
+                       else android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK
+            for (id in cm.cameraIdList) {
+                val ch = cm.getCameraCharacteristics(id)
+                if (ch.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) != want) continue
+                val diopter = ch.get(android.hardware.camera2.CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+                val modes = ch.get(android.hardware.camera2.CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.joinToString(",") ?: "?"
+                DebugLog.i("lens $id: closest focus " + (if (diopter > 0f) "${Math.round(100f / diopter)} cm" else "fixed focus (no autofocus!)") + ", AF modes [$modes]")
+            }
+        } catch (e: Exception) { DebugLog.w("lens info unavailable: ${e.message}") }
     }
 
     /** One focus on the frame centre, e.g. when a scan is armed after the camera moved from the label to the part. */

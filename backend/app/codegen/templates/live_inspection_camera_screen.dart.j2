@@ -255,7 +255,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   int? _cpuTicksPrev;
   static const double _watchConfidenceThreshold = 0.5;
   static const Duration _watchInterval = Duration(milliseconds: 100);
-  static const Duration _watchTimeout = Duration(seconds: 45);
+  Duration _watchTimeout = const Duration(seconds: 45); // Settings > Live inspection timer
   DateTime? _watchDeadline;
 
   // Streaming: the watch/sim ticks below no longer call takePicture() per
@@ -307,10 +307,45 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // Region-classifier votes per task (simultaneous mode): confident OK / wrong-state ticks.
   List<DetectionResult> _liveTickDetections = [];
 
+  /// Big banner under the header: which task is being checked right now, and how the previous one ended.
+  Widget _taskBanner({required bool sim}) {
+    try {
+      final n = widget.tasks.length;
+      String nameOf(int i) => '${widget.tasks[i]['name']}';
+      final String title;
+      final String sub;
+      Color color = const Color(0xFF1E3A5F);
+      if (sim) {
+        final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
+        title = pending.isEmpty ? 'ALL TASKS DONE' : 'NOW CHECKING: ${pending.join('  \u2022  ')}';
+        sub = '${n - pending.length} of $n done';
+      } else {
+        final i = _currentIndex.clamp(0, n - 1);
+        title = 'NOW: ${nameOf(i)}';
+        final prev = i > 0 ? _results[i - 1] : null;
+        sub = 'Task ${i + 1} of $n' +
+            (prev != null ? '   |   previous: ${nameOf(i - 1)} ${prev['success'] == true ? 'OK' : 'NOT OK'}' : '');
+      }
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+        color: color,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900)),
+          Text(sub, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        ]),
+      );
+    } catch (_) {
+      return const SizedBox.shrink();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
+    CameraPrefs.getLiveTimeoutSeconds().then((sec) { if (mounted) _watchTimeout = Duration(seconds: sec); });
     WidgetsBinding.instance.addObserver(this);
     _simultaneousMode = widget.tasks.length > 1 &&
         widget.tasks.every((t) =>
@@ -1235,7 +1270,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       if (_watchDeadline != null && DateTime.now().isAfter(_watchDeadline!)) {
         _watchActive = false;
         setState(() => _holdCount = 0);
-        _addLog('Live watch: 45s elapsed with no confident match -- capturing the last frame');
+        _addLog('Live watch: ${_watchTimeout.inSeconds}s elapsed with no confident match -- capturing the last frame');
         await _handleCapture(frame: _lastTickFrame, tickDetections: _lastTickConfident, timedOut: true);
         return;
       }
@@ -1857,6 +1892,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   ],
                 ),
               ),
+              _taskBanner(sim: true),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
@@ -2283,6 +2319,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   ],
                 ),
               ),
+              _taskBanner(sim: false),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
@@ -2980,7 +3017,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   }
   static const double _watchConfidenceThreshold = 0.55;
   static const Duration _watchInterval = Duration(milliseconds: 100);
-  static const Duration _watchTimeout = Duration(seconds: 45);
+  Duration _watchTimeout = const Duration(seconds: 45); // Settings > Live inspection timer
   DateTime? _watchDeadline;
 
   // Streaming: the watch/sim ticks below no longer call takePicture() per
@@ -3031,10 +3068,45 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   final Map<int, int> _taskHoldCount = {};
   List<DetectionResult> _liveTickDetections = [];
 
+  /// Big banner under the header: which task is being checked right now, and how the previous one ended.
+  Widget _taskBanner({required bool sim}) {
+    try {
+      final n = widget.tasks.length;
+      String nameOf(int i) => '${widget.tasks[i]['name']}';
+      final String title;
+      final String sub;
+      Color color = const Color(0xFF1E3A5F);
+      if (sim) {
+        final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
+        title = pending.isEmpty ? 'ALL TASKS DONE' : 'NOW CHECKING: ${pending.join('  \u2022  ')}';
+        sub = '${n - pending.length} of $n done';
+      } else {
+        final i = _currentIndex.clamp(0, n - 1);
+        title = 'NOW: ${nameOf(i)}';
+        final prev = i > 0 ? _results[i - 1] : null;
+        sub = 'Task ${i + 1} of $n' +
+            (prev != null ? '   |   previous: ${nameOf(i - 1)} ${prev['success'] == true ? 'OK' : 'NOT OK'}' : '');
+      }
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+        color: color,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900)),
+          Text(sub, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        ]),
+      );
+    } catch (_) {
+      return const SizedBox.shrink();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
+    CameraPrefs.getLiveTimeoutSeconds().then((sec) { if (mounted) _watchTimeout = Duration(seconds: sec); });
     WidgetsBinding.instance.addObserver(this);
     _simultaneousMode = widget.tasks.length > 1 &&
         widget.tasks.every((t) =>
@@ -3796,7 +3868,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       if (_watchDeadline != null && DateTime.now().isAfter(_watchDeadline!)) {
         _watchActive = false;
         setState(() => _holdCount = 0);
-        _addLog('Live watch: 45s elapsed with no confident match -- capturing the last frame');
+        _addLog('Live watch: ${_watchTimeout.inSeconds}s elapsed with no confident match -- capturing the last frame');
         await _handleCapture(frame: _lastTickFrame, tickDetections: _lastTickConfident);
         return;
       }
@@ -4359,6 +4431,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   ],
                 ),
               ),
+              _taskBanner(sim: true),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
@@ -4773,6 +4846,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   ],
                 ),
               ),
+              _taskBanner(sim: false),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
