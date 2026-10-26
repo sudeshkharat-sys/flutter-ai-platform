@@ -203,6 +203,7 @@ class StreamService : LifecycleService() {
                 if (autofocusOn) { focusLoop = false; setAutofocus(true) }
                 DebugLog.i("camera bound (${if (front) "front" else "back"})")
                 logLensInfo()
+                forceContinuousFocus()
             } catch (e: Exception) {
                 fail("camera bind failed", e)
             }
@@ -253,6 +254,21 @@ class StreamService : LifecycleService() {
         } catch (e: Exception) {
             DebugLog.w("autofocus failed: ${e.message}")
         }
+    }
+
+    /** Some phones do not run continuous autofocus when only an analysis stream is bound (no preview). Ask for it explicitly. */
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun forceContinuousFocus() {
+        try {
+            val c = camera ?: return
+            androidx.camera.camera2.interop.Camera2CameraControl.from(c.cameraControl).setCaptureRequestOptions(
+                androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
+                    .setCaptureRequestOption(
+                        android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE,
+                        android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                    .build())
+            DebugLog.i("continuous autofocus requested explicitly")
+        } catch (e: Exception) { DebugLog.w("could not force continuous autofocus: ${e.message}") }
     }
 
     /** Logs how close the lens can focus: a part nearer than this will always be blurry, whatever autofocus does. */

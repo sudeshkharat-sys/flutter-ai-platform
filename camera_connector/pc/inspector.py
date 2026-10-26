@@ -186,6 +186,7 @@ class Inspector:
         self.infer_ms = 0
         self.dets = []
         self.started_at = 0.0
+        self._last_frame_t = 0.0    # when the loop last got a frame (a long gap = phone disconnected / camera stalled)
         self.done_at = 0.0
         self._restart = threading.Event()
         self._lock = threading.Lock()
@@ -571,6 +572,16 @@ class Inspector:
                     time.sleep(0.01)
                     continue
                 last_frame_no = fid
+                now_f = time.time()
+                if self.state == "scanning" and self._last_frame_t and now_f - self._last_frame_t > 6.0:
+                    # No frames for a while (phone was disconnected / app closed / camera stalled): the time that passed
+                    # was not scanning time. Without this the first frame after reconnecting hit the old deadline -> instant NOT FOUND.
+                    self.log(f"frames resumed after {now_f - self._last_frame_t:.0f}s -- scan timer restarted")
+                    self.started_at = now_f + (0 if self.preview else float(self.cfg.get("settle_seconds", 1.5)))
+                    self.tracker.reset()
+                    self.blur.reset()
+                    self._last_good = []
+                self._last_frame_t = now_f
                 if self.state == "waiting":
                     self.state = "scanning"
                     self.message = "scanning"
