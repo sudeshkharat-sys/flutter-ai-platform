@@ -113,13 +113,24 @@ class MainActivity : FlutterActivity() {
                             if (!v.hasVibrator()) {
                                 DebugLog.w("vibrate: this phone reports no vibrator")
                             } else if (Build.VERSION.SDK_INT >= 26) {
-                                val amps = IntArray(pattern.size) { if (it % 2 == 1) 255 else 0 }
+                                // Many vivo / budget phones have no amplitude control: a waveform with amplitudes is then
+                                // silently ignored or rejected, so fall back to a plain timing waveform there.
+                                val hasAmp = v.hasAmplitudeControl()
+                                val effect = if (hasAmp) {
+                                    val amps = IntArray(pattern.size) { if (it % 2 == 1) 255 else 0 }
+                                    android.os.VibrationEffect.createWaveform(pattern, amps, -1)
+                                } else android.os.VibrationEffect.createWaveform(pattern, -1)
                                 val attrs = android.media.AudioAttributes.Builder()
                                     .setUsage(android.media.AudioAttributes.USAGE_ALARM)
                                     .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
                                 v.cancel()
-                                @Suppress("DEPRECATION") v.vibrate(android.os.VibrationEffect.createWaveform(pattern, amps, -1), attrs)
-                                DebugLog.i("vibrate: ${pattern.joinToString(",")} ms (full amplitude, alarm usage)")
+                                try {
+                                    @Suppress("DEPRECATION") v.vibrate(effect, attrs)
+                                } catch (e: Exception) {   // some ROMs reject the attributes: plain call
+                                    DebugLog.w("vibrate with alarm attributes failed (${e.message}), plain call")
+                                    v.vibrate(effect)
+                                }
+                                DebugLog.i("vibrate: ${pattern.joinToString(",")} ms (amplitude control: $hasAmp, alarm usage)")
                             } else {
                                 @Suppress("DEPRECATION") v.vibrate(pattern, -1)
                             }
