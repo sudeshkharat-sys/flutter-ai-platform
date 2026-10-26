@@ -183,6 +183,7 @@ class _HomeState extends State<Home> {
   bool _torchAlways = false; // double tap = stays on after Submit
 
   // PC inspection state (polled from /api/inspection)
+  String _prevInspState = '';
   Map<String, dynamic> _insp = {};
   String _lastResult = '';
   bool _inspBusy = false;
@@ -290,6 +291,12 @@ class _HomeState extends State<Home> {
           });
         }
         if (r.isEmpty) _lastResult = '';
+        // a scan was just armed (after the label / Start): focus once on the part, the camera was aimed elsewhere
+        final st = (j['state'] ?? '').toString();
+        if ((st == 'waiting' || st == 'scanning') && _prevInspState != 'waiting' && _prevInspState != 'scanning') {
+          try { _ch.invokeMethod('focusNow'); } catch (_) {}
+        }
+        _prevInspState = st;
         if (mounted) setState(() {
           _insp = j;
           if (r.isNotEmpty) _lastResult = r;
@@ -1057,7 +1064,7 @@ class _SettingsPageState extends State<SettingsPage> {
           SwitchListTile(title: const Text('Front camera'), value: c.front, onChanged: (v) => _edit(() => c.front = v), dense: true),
           SwitchListTile(
             title: const Text('Autofocus'),
-            subtitle: const Text('On: refocus on the centre of the picture every 3 s. Off: the camera\'s own continuous focus.'),
+            subtitle: const Text('On: refocus on the centre of the picture every 8 s. Off: the camera\'s own continuous focus.'),
             value: c.autofocus,
             onChanged: _setAutofocus,
             dense: true,

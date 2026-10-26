@@ -90,7 +90,7 @@ class BlurGate:
     scene (`ratio`); after `max_skip` blurry frames in a row the next one is accepted anyway, so a scene that
     simply has little detail can never stall the scan."""
 
-    def __init__(self, ratio=0.45, max_skip=6, decay=0.995):
+    def __init__(self, ratio=0.45, max_skip=20, decay=0.995):
         self.ratio, self.max_skip, self.decay = ratio, max_skip, decay
         self.reset()
 

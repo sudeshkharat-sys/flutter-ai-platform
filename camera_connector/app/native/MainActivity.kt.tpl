@@ -93,6 +93,10 @@ class MainActivity : FlutterActivity() {
                         StreamService.instance?.setZoom((call.argument<Double>("ratio") ?: 1.0).toFloat())
                         result.success(null)
                     }
+                    "focusNow" -> {
+                        StreamService.instance?.focusNow()
+                        result.success(null)
+                    }
                     "setAutofocus" -> {
                         StreamService.instance?.setAutofocus(call.argument<Boolean>("on") ?: false)
                         result.success(null)

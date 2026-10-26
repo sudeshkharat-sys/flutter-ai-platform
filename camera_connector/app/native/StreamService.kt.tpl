@@ -228,7 +228,7 @@ class StreamService : LifecycleService() {
         ContextCompat.getMainExecutor(this).execute { applyTorchZoom() }
     }
 
-    // ---- autofocus: on = re-focus on the frame centre every 3 s; off = the camera's own continuous AF ----
+    // ---- autofocus: on = re-focus on the frame centre every 8 s; off = the camera's own continuous AF ----
 
     private fun focusCenter() {
         val c = camera ?: return
@@ -241,9 +241,14 @@ class StreamService : LifecycleService() {
         }
     }
 
+    /** One focus on the frame centre, e.g. when a scan is armed after the camera moved from the label to the part. */
+    fun focusNow() {
+        ContextCompat.getMainExecutor(this).execute { focusCenter() }
+    }
+
     fun setAutofocus(on: Boolean) {
         autofocusOn = on
-        DebugLog.i("autofocus ${if (on) "ON (centre refocus every 3 s)" else "OFF (camera continuous AF)"}")
+        DebugLog.i("autofocus ${if (on) "ON (centre refocus every 8 s)" else "OFF (camera continuous AF)"}")
         if (!on) {
             ContextCompat.getMainExecutor(this).execute {
                 try { camera?.cameraControl?.cancelFocusAndMetering() } catch (_: Exception) {}
@@ -255,7 +260,7 @@ class StreamService : LifecycleService() {
         thread(name = "autofocus", isDaemon = true) {
             while (autofocusOn && instance != null) {
                 ContextCompat.getMainExecutor(this).execute { focusCenter() }
-                Thread.sleep(3000)
+                Thread.sleep(8000)   // each refocus hunts for a moment and blurs frames: not too often
             }
             focusLoop = false
         }

@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
     "pass_ticks_needed": 3,
     "scan_seconds": 45,
     "blur_gate": True,          # frames clearly blurrier than the sharpest recent one do not vote
+    "settle_seconds": 1.5,      # after a scan starts, wait this long (camera refocusing) before frames may vote; the time limit starts after it
     "min_tick_ms": 150,         # at least this long between two voting frames (3 in a row then take >= 0.45 s)
     "auto_restart_seconds": 0,
     "results_dir": "results",
@@ -444,7 +445,7 @@ class Inspector:
     def status(self):
         left = None
         if self.state == "scanning":
-            left = max(0, round(self.case_cfg.scan_seconds - (time.time() - self.started_at)))
+            left = min(round(self.case_cfg.scan_seconds), max(0, round(self.case_cfg.scan_seconds - (time.time() - self.started_at))))
         return {
             "state": self.state,
             "vin": self.vin,
@@ -573,7 +574,7 @@ class Inspector:
                 if self.state == "waiting":
                     self.state = "scanning"
                     self.message = "scanning"
-                    self.started_at = time.time()
+                    self.started_at = time.time() + (0 if self.preview else float(self.cfg.get('settle_seconds', 1.5)))
                     self.tracker.reset()
                     self.blur.reset()
                     self._last_good = []
@@ -615,7 +616,10 @@ class Inspector:
                     self.sharp = float(cv2.Laplacian(g, cv2.CV_64F).var())
                     bad = self.blur.blurry(self.sharp)
                     self.blur_skipped += 1 if bad else 0
-                if bad:
+                settling = not self.preview and time.time() < self.started_at
+                if settling:
+                    result = None       # camera still settling after the scan armed: shown, but no vote
+                elif bad:
                     result = None       # blurry frame: shown, but it does not vote (and does not reset the count)
                     self.log(f"skipped blurry frame (sharpness {self.sharp:.0f}, best recent {self.blur.ref:.0f})", debug_only=True)
                 else:
@@ -928,7 +932,7 @@ class Inspector:
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             cv2.rectangle(out, (int(x1), int(y1) - th - 8), (int(x1) + tw + 6, int(y1)), col, -1)
             cv2.putText(out, label, (int(x1) + 3, int(y1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        left = max(0, int(self.case_cfg.scan_seconds - (time.time() - self.started_at)))
+        left = min(int(self.case_cfg.scan_seconds), max(0, int(self.case_cfg.scan_seconds - (time.time() - self.started_at))))
         hud = f"PREVIEW | {self.infer_ms} ms" if self.preview else f"scanning {left}s | {self.infer_ms} ms | fail {self.tracker.fail_count}/{self.case_cfg.fail_ticks_needed}"
         cv2.putText(out, hud, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 4)
         cv2.putText(out, hud, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
