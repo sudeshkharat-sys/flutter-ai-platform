@@ -36,6 +36,7 @@ class Cfg {
   int rotation = 0; // Surface.ROTATION_*
   bool front = false;
   bool autofocus = false;
+  bool stopOnScreenOff = false; // false = the camera keeps streaming when the screen turns off
   int zoomIdx = 0;
   Map<String, dynamic>? pc; // saved PC {ip, port, name}
 
@@ -51,6 +52,7 @@ class Cfg {
       rotation = p.getInt('rotation') ?? rotation;
       front = p.getBool('front') ?? front;
       autofocus = p.getBool('autofocus') ?? autofocus;
+      stopOnScreenOff = p.getBool('stopOnScreenOff') ?? stopOnScreenOff;
       zoomIdx = p.getInt('zoomIdx') ?? zoomIdx;
       final s = p.getString('pc');
       if (s != null) pc = jsonDecode(s) as Map<String, dynamic>;
@@ -69,6 +71,7 @@ class Cfg {
       await p.setInt('rotation', rotation);
       await p.setBool('front', front);
       await p.setBool('autofocus', autofocus);
+      await p.setBool('stopOnScreenOff', stopOnScreenOff);
       await p.setInt('zoomIdx', zoomIdx);
       if (pc == null) {
         await p.remove('pc');
@@ -278,10 +281,14 @@ class _HomeState extends State<Home> {
       final res = await req.close().timeout(const Duration(seconds: 3));
       final j = jsonDecode(await res.transform(utf8.decoder).join());
       if (j is Map<String, dynamic>) {
+        if (_inspFails >= 3) _dlog('PC link OK again');
         _inspFails = 0;
         final r = (j['state'] == 'done' ? (j['result'] ?? '') : '').toString();
         if (r.isNotEmpty && r != _lastResult) {
-          _dlog('PC result: $r (task ${j['task']})');
+          final seen = ((j['detections'] as List?) ?? const [])
+              .map((d) => '${d['name']} ${((d['conf'] ?? 0) * 100).round()}%')
+              .join(', ');
+          _dlog('PC result: $r | task ${j['task']} | VIN ${j['vin']} | defects ${j['defects']} | seen: ${seen.isEmpty ? 'nothing' : seen}');
           _ch.invokeMethod('vibrate', {
             'pattern': r == 'OK'
                 ? [0, 700]
@@ -302,8 +309,9 @@ class _HomeState extends State<Home> {
           if (r.isNotEmpty) _lastResult = r;
         });
       }
-    } catch (_) {
+    } catch (e) {
       _inspFails++;
+      if (_inspFails == 3) _dlog('PC not answering at ${pc['ip']}:${pc['port']} -- ${e.runtimeType}: ${e.toString().split('\n').first} (wrong network / PC program closed / firewall?)', 'WARN');
       // PC unreachable for ~7 s: try to register again (at most every 20 s)
       if (_inspFails >= 10 && DateTime.now().difference(_lastRetry).inSeconds >= 20) {
         _lastRetry = DateTime.now();
@@ -515,6 +523,7 @@ class _HomeState extends State<Home> {
         'rotation': cfg.rotation,
         'front': cfg.front,
         'autofocus': cfg.autofocus,
+        'stopOnScreenOff': cfg.stopOnScreenOff,
         'name': cfg.name.trim(),
       });
 
@@ -782,9 +791,10 @@ class _HomeState extends State<Home> {
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
       color: const Color(0xFFDC143C),
       child: Row(children: [
-        IconButton(
-          icon: Icon(connected ? Icons.link_off : Icons.circle_outlined, color: Colors.white),
-          tooltip: 'Disconnect',
+        TextButton.icon(
+          style: TextButton.styleFrom(foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 8)),
+          icon: Icon(connected ? Icons.stop_circle : Icons.circle_outlined, color: connected ? Colors.white : Colors.white38),
+          label: Text('STOP', style: TextStyle(fontWeight: FontWeight.bold, color: connected ? Colors.white : Colors.white38)),
           onPressed: connected ? _disconnect : null,
         ),
         Expanded(
@@ -1061,6 +1071,13 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ]),
+          SwitchListTile(
+            title: const Text('Stop streaming when the screen is off'),
+            subtitle: const Text('Off (default): the camera keeps streaming with the screen off. On: turning the screen off stops the camera (saves battery and heat).'),
+            value: c.stopOnScreenOff,
+            onChanged: (v) => _edit(() => c.stopOnScreenOff = v),
+            dense: true,
+          ),
           SwitchListTile(title: const Text('Front camera'), value: c.front, onChanged: (v) => _edit(() => c.front = v), dense: true),
           SwitchListTile(
             title: const Text('Autofocus'),

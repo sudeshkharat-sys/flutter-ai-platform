@@ -4,7 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -61,6 +64,8 @@ class StreamService : LifecycleService() {
     private var rotation = Surface.ROTATION_0
     private var front = false
     private var name = "phone"
+    @Volatile private var stopOnScreenOff = false
+    private var screenReceiver: BroadcastReceiver? = null
 
     // stats
     @Volatile private var encoded = 0L
@@ -98,6 +103,7 @@ class StreamService : LifecycleService() {
         front = intent?.getBooleanExtra("front", false) ?: false
         name = intent?.getStringExtra("name") ?: "phone"
         autofocusOn = intent?.getBooleanExtra("autofocus", false) ?: false
+        stopOnScreenOff = intent?.getBooleanExtra("stopOnScreenOff", false) ?: false
         lastError = ""
         DebugLog.i("starting: ${width}x$height @max${maxFps}fps q$quality rot=$rotation front=$front port=$port")
 
@@ -114,6 +120,7 @@ class StreamService : LifecycleService() {
             startBeacon()
             startWatchdog()
             watchThermal()
+            watchScreen()
             bindCamera()
         } catch (e: Exception) {
             fail("start failed (port $port busy?)", e)
@@ -300,9 +307,18 @@ class StreamService : LifecycleService() {
         lastCameraFrameAt = SystemClock.elapsedRealtime()
         thread(name = "watchdog", isDaemon = true) {
             var stalled = false
+            var lastViewers = -1
+            var beat = 0
             while (watchdogRunning) {
                 Thread.sleep(2000)
                 val viewers = server?.clients?.get() ?: 0
+                if (viewers != lastViewers) {
+                    DebugLog.i(if (viewers > 0) "PC is pulling the video ($viewers viewer(s))" else "PC is NOT pulling the video (0 viewers) -- not connected, or the PC viewer closed")
+                    lastViewers = viewers
+                }
+                if (++beat % 15 == 0) {   // every 30 s: heat, battery and stream health
+                    DebugLog.i("health: ${batteryLine()} | thermal $thermal | ${Math.round(fps * 10) / 10.0} fps | encode ${Math.round(lastEncodeMs)} ms | $frameSize | viewers $viewers")
+                }
                 val age = SystemClock.elapsedRealtime() - lastCameraFrameAt
                 if (age > 3000 && !stalled) {
                     stalled = true
@@ -313,6 +329,34 @@ class StreamService : LifecycleService() {
                 }
             }
         }
+    }
+
+    /** Screen switched off: either keep streaming (default) or stop, as set in the app. */
+    private fun watchScreen() {
+        val r = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, i: Intent?) {
+                if (stopOnScreenOff) {
+                    DebugLog.w("screen off -- stopping the stream (setting: stop when screen is off)")
+                    shutdown()
+                    stopSelf()
+                } else {
+                    DebugLog.i("screen off -- camera keeps streaming (setting: keep streaming)")
+                }
+            }
+        }
+        screenReceiver = r
+        try { registerReceiver(r, IntentFilter(Intent.ACTION_SCREEN_OFF)) } catch (e: Exception) { DebugLog.w("screen watch failed: ${e.message}") }
+    }
+
+    private fun batteryLine(): String {
+        return try {
+            val b = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val level = b?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = b?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+            val temp = (b?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10.0
+            val plugged = (b?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+            "battery ${if (level >= 0) level * 100 / scale else -1}%${if (plugged) " (charging)" else ""} ${temp}C"
+        } catch (_: Exception) { "battery n/a" }
     }
 
     private fun thermalName(s: Int) = when (s) {
@@ -415,6 +459,8 @@ class StreamService : LifecycleService() {
         DebugLog.i("stopping")
         beaconRunning = false
         watchdogRunning = false
+        try { screenReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) {}
+        screenReceiver = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 thermalListener?.let { (getSystemService(Context.POWER_SERVICE) as PowerManager).removeThermalStatusListener(it) }
