@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../ml/detector.dart';
 import '../services/camera_prefs.dart';
 import '../services/sync_service.dart';
@@ -34,6 +36,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _toneOk;
   String? _toneNotOk;
   int _unsynced = 0;
+  List<String> _taskNames = [];
+  Set<String> _liveTasks = {};
 
   @override
   void initState() {
@@ -50,7 +54,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final tOk = await ResultFeedback.getCustomTone('ok');
     final tNo = await ResultFeedback.getCustomTone('notOk');
     final n = await SyncService.instance.getUnsyncedCount();
-    if (mounted) setState(() { _threads = t; _autofocus = af; _debugDl = dd; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; });
+    final live = await CameraPrefs.getLiveTasks();
+    final names = await _loadTaskNames();
+    if (mounted) setState(() { _threads = t; _autofocus = af; _debugDl = dd; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; _liveTasks = live; _taskNames = names; });
+  }
+
+  /// Every task name of this app (from the bundled manifest), in order, without duplicates.
+  Future<List<String>> _loadTaskNames() async {
+    try {
+      final manifest = json.decode(await rootBundle.loadString('assets/models_manifest.json'));
+      final names = <String>[];
+      if (manifest is List) {
+        for (final t in manifest) {
+          final n = t is Map ? t['name'] : null;
+          if (n is String && !names.contains(n)) names.add(n);
+        }
+      }
+      return names;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _setLive(String name, bool live) async {
+    setState(() { live ? _liveTasks.add(name) : _liveTasks.remove(name); });
+    await CameraPrefs.setLiveTasks(_liveTasks);
+  }
+
+  Future<void> _setAllLive(bool live) async {
+    setState(() { _liveTasks = live ? _taskNames.toSet() : <String>{}; });
+    await CameraPrefs.setLiveTasks(_liveTasks);
   }
 
   Future<void> _setThreads(int t) async {
@@ -194,6 +227,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                     ],
                   ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Live inspection tasks', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  const Text('Tasks switched on use live video detection after the VIN scan; the others use photo detection. The video icon on the task screen still opens live for testing.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      OutlinedButton(onPressed: _taskNames.isEmpty ? null : () => _setAllLive(true), child: const Text('All live')),
+                      OutlinedButton(onPressed: _taskNames.isEmpty ? null : () => _setAllLive(false), child: const Text('All photo')),
+                    ],
+                  ),
+                  if (_taskNames.isEmpty)
+                    const Padding(padding: EdgeInsets.only(top: 8), child: Text('No tasks found in this app.', style: TextStyle(color: Colors.grey))),
+                  for (final n in _taskNames)
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      title: Text(n),
+                      subtitle: Text(_liveTasks.contains(n) ? 'Live video' : 'Photo'),
+                      value: _liveTasks.contains(n),
+                      activeColor: _crimson,
+                      onChanged: (v) => _setLive(n, v),
+                    ),
                 ],
               ),
             ),

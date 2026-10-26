@@ -67,6 +67,23 @@ class CameraPrefs {
     } catch (_) {}
   }
 
+  static const String _liveTasksKey = 'live_task_names';
+
+  /// Names of the tasks that use live inspection after the VIN scan (all others use photo).
+  static Future<Set<String>> getLiveTasks() async {
+    try {
+      return ((await SharedPreferences.getInstance()).getStringList(_liveTasksKey) ?? <String>[]).toSet();
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
+  static Future<void> setLiveTasks(Set<String> names) async {
+    try {
+      await (await SharedPreferences.getInstance()).setStringList(_liveTasksKey, names.toList());
+    } catch (_) {}
+  }
+
   static const String _threadsKey = 'tflite_threads';
 
   /// TFLite CPU threads; 0 = automatic (min(4, cores)).

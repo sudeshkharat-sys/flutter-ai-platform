@@ -28,6 +28,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   List<dynamic> _tasks = [];
+  Set<String> _liveTasks = {}; // tasks set to live video in Settings
   Map<int, dynamic> _taskResults = {}; // Index -> DetectionResult
   bool _loading = true;
 
@@ -97,6 +98,38 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  bool _isLive(int i) => _liveTasks.contains(_tasks[i]['name']);
+
+  /// Runs tasks from [start] (or only [start] on a retake). Each run of consecutive tasks with the
+  /// same mode (live / photo, from Settings) goes to its own screen; stops if the inspector backs out.
+  Future<void> _runTasks(int start, {required bool single}) async {
+    _liveTasks = await CameraPrefs.getLiveTasks();
+    int i = start;
+    final int end = single ? start + 1 : _tasks.length;
+    while (i < end && mounted) {
+      final bool live = _isLive(i);
+      int j = i + 1;
+      while (j < end && _isLive(j) == live) { j++; }
+      final seg = _tasks.sublist(i, j);
+      final result = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => live
+              ? LiveInspectionCameraScreen(vin: widget.vin ?? "MANUAL_SCAN", modelCode: widget.modelCode ?? "", tasks: seg, initialIndex: 0)
+              : InspectionCameraScreen(vin: widget.vin ?? "MANUAL_SCAN", modelCode: widget.modelCode ?? "", tasks: seg, initialIndex: 0),
+        ),
+      );
+      if (!mounted) return;
+      if (result == null || result is! Map<int, dynamic>) return;
+      setState(() {
+        result.forEach((k, v) => _taskResults[i + k] = v);
+      });
+      // inspector left before finishing this segment -> don't continue the chain
+      if (!seg.asMap().keys.every((k) => result.containsKey(k))) return;
+      i = j;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -104,6 +137,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadTasksAndProgress() async {
+    _liveTasks = await CameraPrefs.getLiveTasks();
     try {
       // 1. Load tasks from manifest
       final String manifestStr = await rootBundle.loadString('assets/models_manifest.json');
@@ -632,31 +666,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: ElevatedButton(
                         onPressed: () async {
                           // Retake: only this single task. First time: full chain from this index.
-                          final bool isRetake = _taskResults.containsKey(index);
-                          final result = await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => InspectionCameraScreen(
-                                vin: widget.vin ?? "MANUAL_SCAN",
-                                modelCode: widget.modelCode ?? "",
-                                tasks: isRetake ? [_tasks[index]] : _tasks,
-                                initialIndex: isRetake ? 0 : index,
-                              ),
-                            ),
-                          );
-
-                          if (result != null && result is Map<int, dynamic>) {
-                            setState(() {
-                              if (isRetake) {
-                                // Remap single-task result (key 0) back to original index
-                                if (result.containsKey(0)) {
-                                  _taskResults[index] = result[0];
-                                }
-                              } else {
-                                _taskResults.addAll(result);
-                              }
-                            });
-                          }
+                          await _runTasks(index, single: _taskResults.containsKey(index));
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white,
@@ -702,6 +712,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                   child: const Icon(Icons.remove_red_eye_outlined, size: 18, color: Color(0xFFD4AF37)),
                                 ),
+                              ),
+                            if (_isLive(index))
+                              const Padding(
+                                padding: EdgeInsets.only(right: 8),
+                                child: Icon(Icons.videocam, size: 18, color: Color(0xFFDC143C)),
                               ),
                             if (isDone)
                               Container(
