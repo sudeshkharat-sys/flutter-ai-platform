@@ -728,6 +728,22 @@ class _HomeState extends State<Home> {
           ]),
         ),
       ),
+      if (_insp['state'] == 'scanning' && _insp['preview'] != true && _insp['seconds_left'] is num)
+        Positioned(
+          top: 56,
+          right: 16,
+          child: IgnorePointer(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(color: Colors.black.withOpacity(0.6), borderRadius: BorderRadius.circular(16)),
+              child: Text('-${(_insp['seconds_left'] as num).toInt()}',
+                  style: TextStyle(
+                      color: (_insp['seconds_left'] as num) <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900)),
+            ),
+          ),
+        ),
       Positioned(
         bottom: 12,
         left: 16,
