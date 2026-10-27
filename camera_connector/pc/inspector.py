@@ -464,6 +464,7 @@ class Inspector:
             "code": self.code,
             "task_i": self.queue_i + 1 if self.queue else 0,
             "task_n": len(self.queue),
+            "next_task": self.queue[self.queue_i + 1]["name"] if self.queue and self.queue_i + 1 < len(self.queue) else None,
             "roi": self.scan_roi,
             "message": self.message,
             "result": self.result,

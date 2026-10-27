@@ -605,12 +605,11 @@ class _HomeState extends State<Home> {
     return Container(
       width: double.infinity,
       color: col,
-      padding: EdgeInsets.symmetric(vertical: big ? 14 : 10, horizontal: 12),
+      padding: EdgeInsets.symmetric(vertical: big ? 8 : 4, horizontal: 12),
       child: Row(children: [
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(text, style: TextStyle(color: Colors.white, fontSize: big ? 36 : 28, fontWeight: FontWeight.bold)),
-            if (task.isNotEmpty && task != 'null') Text('Task: $task', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+            Text(text, style: TextStyle(color: Colors.white, fontSize: big ? 28 : 20, fontWeight: FontWeight.bold)),
             if (_scanMsg.isNotEmpty && DateTime.now().difference(_scanMsgAt).inSeconds < 10)
               Text(_scanMsg, style: const TextStyle(color: Colors.yellowAccent, fontSize: 13, fontWeight: FontWeight.bold)),
             if (!done && msg.isNotEmpty && msg != 'null') Text(msg, style: const TextStyle(color: Colors.white70, fontSize: 12)),
@@ -784,8 +783,19 @@ class _HomeState extends State<Home> {
 
   /// Crimson header like the inspection app: back, title + subtitle, bug (debug console), settings.
   Widget _header(bool connected) {
-    final task = '${_insp['task'] ?? ''}';
-    final sub = connected ? 'PC: ${_pc?['name']}${task.isNotEmpty && task != 'null' ? '  ·  $task' : ''}' : (_pc == null ? 'no PC saved' : 'PC: ${_pc?['name']}');
+    String clean(dynamic v) { final t = '${v ?? ''}'; return t == 'null' ? '' : t; }
+    final task = clean(_insp['task']);
+    final next = clean(_insp['next_task']);
+    final vin = clean(_insp['vin']);
+    final n = (_insp['task_n'] as num?)?.toInt() ?? 0;
+    final i = (_insp['task_i'] as num?)?.toInt() ?? 0;
+    final title = connected && n > 0 ? 'LIVE SCAN -- TASK $i OF $n' : 'LIVE SCAN';
+    final sub = connected ? 'PC: ${_pc?['name']}${vin.isNotEmpty ? '  \u00b7  VIN: $vin' : ''}' : (_pc == null ? 'no PC saved' : 'PC: ${_pc?['name']}');
+    // One line each, scaled down to fit so long names never spill or grow the bar sideways.
+    Widget line(String text, double size, Color c, FontWeight w) => Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: FittedBox(fit: BoxFit.scaleDown, child: Text(text, maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w))),
+        );
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
@@ -799,8 +809,10 @@ class _HomeState extends State<Home> {
         ),
         Expanded(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            const Text('LIVE SCAN', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
-            Text(sub, style: const TextStyle(color: Colors.white70, fontSize: 10)),
+            line(title, 13, Colors.white, FontWeight.bold),
+            line(sub, 10, Colors.white70, FontWeight.normal),
+            if (connected && task.isNotEmpty) line('TASK: $task', 15, Colors.white, FontWeight.w900),
+            if (connected && task.isNotEmpty) line('NEXT: ${next.isEmpty ? '\u2014' : next}', 12, Colors.white70, FontWeight.w600),
           ]),
         ),
         IconButton(
