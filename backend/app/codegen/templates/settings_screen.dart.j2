@@ -369,8 +369,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Wrap(
                     spacing: 8,
                     children: [
-                      OutlinedButton(onPressed: () => ResultFeedback.play('ok'), child: const Text('Test OK')),
-                      OutlinedButton(onPressed: () => ResultFeedback.play('notOk'), child: const Text('Test NOT OK')),
+                      OutlinedButton(
+                          onPressed: () async {
+                            await ResultFeedback.play('ok');
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                content: Text(ResultFeedback.lastDiag.isEmpty ? 'No vibration info' : ResultFeedback.lastDiag)));
+                          },
+                          child: const Text('Test OK')),
+                      OutlinedButton(
+                          onPressed: () async {
+                            await ResultFeedback.play('notOk');
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                content: Text(ResultFeedback.lastDiag.isEmpty ? 'No vibration info' : ResultFeedback.lastDiag)));
+                          },
+                          child: const Text('Test NOT OK')),
                       OutlinedButton(onPressed: () => ResultFeedback.play('notFound'), child: const Text('Test not found')),
                     ],
                   ),

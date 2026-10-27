@@ -182,7 +182,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   }
 
   /// Result feedback without looking: vibration + beep.
-  void _feedback(String outcome) => ResultFeedback.play(outcome);
+  void _feedback(String outcome) {
+    ResultFeedback.play(outcome);
+    Future.delayed(const Duration(milliseconds: 400), () {
+      if (mounted) _addLog('Feedback $outcome -> ${ResultFeedback.lastDiag.isEmpty ? 'no vibration info' : ResultFeedback.lastDiag}');
+    });
+  }
 
   /// True when a fail class (an explicit "not ok" class, or any class that is neither
   /// mandatory nor ignored) is in this tick's confident detections.
@@ -3166,7 +3171,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   }
 
   /// Result feedback without looking: vibration + beep (1 = OK, 2 = NOT OK, 3 = not found).
-  void _feedback(String outcome) => ResultFeedback.play(outcome);
+  void _feedback(String outcome) {
+    ResultFeedback.play(outcome);
+    Future.delayed(const Duration(milliseconds: 400), () {
+      if (mounted) _addLog('Feedback $outcome -> ${ResultFeedback.lastDiag.isEmpty ? 'no vibration info' : ResultFeedback.lastDiag}');
+    });
+  }
 
   @override
   void initState() {

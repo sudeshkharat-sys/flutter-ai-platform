@@ -82,21 +82,44 @@ class MainActivity: FlutterActivity() {
                                 "appVersion" to (try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" })))
                         }
                         "vibrate" -> {
-                            // [wait, on, off, on, ...] in ms, full amplitude.
+                            // [wait, on, off, on, ...] in ms. Returns a one-line diagnosis for the debug log.
                             val pattern = (call.argument<List<Int>>("pattern") ?: listOf(0, 400)).map { it.toLong() }.toLongArray()
                             val v = vibrator()
-                            if (Build.VERSION.SDK_INT >= 26) {
-                                val amps = IntArray(pattern.size) { if (it % 2 == 1) 255 else 0 }
-                                // Alarm usage: Android otherwise drops "unknown" vibrations when the phone's
-                                // touch-vibration / battery saver / focus settings are on (it buzzed only sometimes).
-                                val attrs = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
-                                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
-                                v?.cancel()
-                                @Suppress("DEPRECATION") v?.vibrate(VibrationEffect.createWaveform(pattern, amps, -1), attrs)
-                            } else {
-                                @Suppress("DEPRECATION") v?.vibrate(pattern, -1)
+                            val diag = StringBuilder()
+                            try {
+                                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                                diag.append("ringer=${am.ringerMode} dnd=${if (Build.VERSION.SDK_INT >= 23) nm.currentInterruptionFilter else -1}; ")
+                                if (v == null || !v.hasVibrator()) {
+                                    diag.append("this phone reports NO vibrator")
+                                } else if (Build.VERSION.SDK_INT >= 26) {
+                                    // Phones without amplitude control (vivo etc.) ignore or reject a waveform that has
+                                    // amplitudes, so use a plain timing waveform there. No cancel() before it: on some
+                                    // ROMs a cancel right before vibrate() swallows the new vibration (buzzed only sometimes).
+                                    val hasAmp = v.hasAmplitudeControl()
+                                    val effect = if (hasAmp) {
+                                        val amps = IntArray(pattern.size) { if (it % 2 == 1) 255 else 0 }
+                                        VibrationEffect.createWaveform(pattern, amps, -1)
+                                    } else VibrationEffect.createWaveform(pattern, -1)
+                                    diag.append("amplitude=$hasAmp; ")
+                                    val attrs = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
+                                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
+                                    try {
+                                        @Suppress("DEPRECATION") v.vibrate(effect, attrs)
+                                        diag.append("sent with alarm usage")
+                                    } catch (e: Exception) {
+                                        diag.append("alarm usage rejected (${e.message}); ")
+                                        v.vibrate(effect)
+                                        diag.append("sent plain")
+                                    }
+                                } else {
+                                    @Suppress("DEPRECATION") v.vibrate(pattern, -1)
+                                    diag.append("sent legacy")
+                                }
+                            } catch (e: Exception) {
+                                diag.append("vibrate failed: ${e.javaClass.simpleName} ${e.message}")
                             }
-                            result.success(null)
+                            result.success(diag.toString())
                         }
                         "tone" -> {
                             val tone = when (call.argument<String>("tone")) {

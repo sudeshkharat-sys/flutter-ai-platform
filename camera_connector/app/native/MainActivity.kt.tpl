@@ -123,14 +123,16 @@ class MainActivity : FlutterActivity() {
                                 val attrs = android.media.AudioAttributes.Builder()
                                     .setUsage(android.media.AudioAttributes.USAGE_ALARM)
                                     .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
-                                v.cancel()
+                                // no cancel() before vibrate(): on some ROMs it swallows the new vibration
                                 try {
                                     @Suppress("DEPRECATION") v.vibrate(effect, attrs)
                                 } catch (e: Exception) {   // some ROMs reject the attributes: plain call
                                     DebugLog.w("vibrate with alarm attributes failed (${e.message}), plain call")
                                     v.vibrate(effect)
                                 }
-                                DebugLog.i("vibrate: ${pattern.joinToString(",")} ms (amplitude control: $hasAmp, alarm usage)")
+                                val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                                val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                                DebugLog.i("vibrate: ${pattern.joinToString(",")} ms (amplitude control: $hasAmp, alarm usage, ringer=${am.ringerMode}, dnd=${nm.currentInterruptionFilter})")
                             } else {
                                 @Suppress("DEPRECATION") v.vibrate(pattern, -1)
                             }

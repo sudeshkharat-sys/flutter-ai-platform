@@ -191,18 +191,30 @@ class ResultFeedback {
     }
   }
 
+  /// What the native side did for the last vibration (ringer mode, DND, amplitude support, call used).
+  static String lastDiag = '';
+
+  static Future<void> _vibrate(List<int> pattern) async {
+    try {
+      lastDiag = (await _ch.invokeMethod<String>('vibrate', {'pattern': pattern})) ?? '';
+    } catch (e) {
+      lastDiag = 'vibrate call failed: $e';
+      rethrow;
+    }
+  }
+
   static Future<void> play(String outcome) async {
     final bool vib = await getVibrate();
     final bool snd = await getSound();
     try {
       if (outcome == 'ok') {
-        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 500]}));
+        if (vib) unawaited(_vibrate([0, 500]));
         if (snd && !await _playCustom('ok')) await _beeps(_toneAck, 1, 500, 0);
       } else if (outcome == 'notOk') {
-        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 300, 200, 300]}));
+        if (vib) unawaited(_vibrate([0, 300, 200, 300]));
         if (snd && !await _playCustom('notOk')) await _beeps(_toneAlert, 2, 300, 300);
       } else {
-        if (vib) unawaited(_ch.invokeMethod('vibrate', {'pattern': [0, 250, 200, 250, 200, 250]}));
+        if (vib) unawaited(_vibrate([0, 250, 200, 250, 200, 250]));
         if (snd) await _beeps(_toneNack, 3, 250, 250);
       }
     } catch (_) {
