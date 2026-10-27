@@ -3165,6 +3165,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     ]);
   }
 
+  /// Result feedback without looking: vibration + beep (1 = OK, 2 = NOT OK, 3 = not found).
+  void _feedback(String outcome) => ResultFeedback.play(outcome);
+
   @override
   void initState() {
     super.initState();
@@ -3368,6 +3371,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         'detectionsJson': winner != null ? jsonEncode([winner.toJson()]) : jsonEncode([]),
       };
       if (mounted) setState(() => _taskStatus[index] = (timedOut && !isPass) ? 'notFound' : 'found');
+      _feedback(isPass ? 'ok' : (winner != null ? 'notOk' : 'notFound'));
       _addLog("Sim task done [${task['name']}]: ${isPass ? 'OK' : 'NOT OK'}");
     } catch (e) {
       _addLog('Sim auto-capture failed for ${task['name']}: $e');
@@ -4299,6 +4303,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         }
         _isAnalyzing = false;
       });
+      final dynamic doneRes = _results[_currentIndex];
+      _feedback(doneRes?['success'] == true ? 'ok' : (doneRes?['className'] == 'None' ? 'notFound' : 'notOk'));
       // A live capture that passed is already final -- show it briefly, then
       // go straight to the next task instead of waiting for a tap.
       if (live && _results[_currentIndex]?['success'] == true) {
