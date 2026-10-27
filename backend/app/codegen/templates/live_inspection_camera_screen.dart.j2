@@ -307,39 +307,59 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // Region-classifier votes per task (simultaneous mode): confident OK / wrong-state ticks.
   List<DetectionResult> _liveTickDetections = [];
 
-  /// Lines inside the crimson header (under the VIN): the task being checked and the one after it.
-  /// FittedBox scales long names down to the header width instead of spilling or wrapping the bar taller.
+  /// Text block of the crimson header: current task (bold), next task, then VIN. FittedBox scales long
+  /// names down to the header width instead of spilling or growing the bar.
   Widget _taskHeaderLines({required bool sim}) {
     try {
       final n = widget.tasks.length;
       String nameOf(int i) => '${widget.tasks[i]['name']}';
       String now;
       String? next;
+      String progress;
       if (sim) {
         final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
         now = pending.isEmpty ? 'ALL DONE' : pending.join(' \u2022 ');
+        progress = '${n - pending.length} of $n done';
       } else {
         final i = _currentIndex.clamp(0, n - 1);
         now = nameOf(i);
+        progress = 'Task ${i + 1} of $n';
         for (var k = 1; k < n; k++) {
           final j = (i + k) % n;
           if (!_results.containsKey(j)) { next = nameOf(j); break; }
         }
       }
-      Widget line(String label, String text, double size, Color c, FontWeight w) => Padding(
+      Widget line(String text, double size, Color c, FontWeight w) => Padding(
             padding: const EdgeInsets.only(top: 2),
             child: FittedBox(
               fit: BoxFit.scaleDown,
-              child: Text('$label$text', maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w)),
+              child: Text(text, maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w)),
             ),
           );
       return Column(mainAxisSize: MainAxisSize.min, children: [
-        line(sim ? 'NOW: ' : 'TASK: ', now, 15, Colors.white, FontWeight.w900),
-        if (!sim) line('NEXT: ', next ?? '\u2014', 12, Colors.white70, FontWeight.w600),
+        line(now, 20, Colors.white, FontWeight.w900),
+        if (!sim) line('NEXT: ${next ?? '\u2014'}', 14, Colors.white70, FontWeight.w600),
+        line('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  $progress', 12, Colors.white70, FontWeight.normal),
       ]);
     } catch (_) {
       return const SizedBox.shrink();
     }
+  }
+
+  /// Debug button with the scan countdown (-10, -9, ...) under it, inside the red header.
+  Widget _headerDebugButton({required bool sim}) {
+    final bool counting = sim ? _simScanActive : (_capturedImageBytes == null && _watchActive);
+    final int secs = counting ? (sim ? _simSecondsLeft() : _watchSecondsLeft()) : -1;
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      IconButton(
+        icon: Icon(_showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
+        onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
+      ),
+      if (secs >= 0)
+        Text('-$secs',
+            style: TextStyle(
+                color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+    ]);
   }
 
   @override
@@ -1879,22 +1899,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Text('LIVE SCAN -- ALL TASKS',
-                                style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
-                            Text('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
-                                style: const TextStyle(color: Colors.white70, fontSize: 10)),
                             _taskHeaderLines(sim: true),
                           ],
                         ),
                       ),
                     ),
-                    IconButton(
-                      icon: Icon(
-                        _showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined,
-                        color: Colors.white70,
-                      ),
-                      onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
-                    ),
+                    _headerDebugButton(sim: true),
                   ],
                 ),
               ),
@@ -2142,25 +2152,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           ),
                         ),
                       ),
-                    if (_simScanActive)
-                      Positioned(
-                        top: 8,
-                        right: 8,
-                        child: IgnorePointer(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.55),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Text('-${_simSecondsLeft()}',
-                                style: TextStyle(
-                                    color: _simSecondsLeft() <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w900)),
-                          ),
-                        ),
-                      ),
                   ],
                 ),
               ),
@@ -2321,26 +2312,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              'LIVE SCAN -- TASK ${_currentIndex + 1} OF ${widget.tasks.length}',
-                              style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-                            ),
-                            Text(
-                              '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
-                              style: const TextStyle(color: Colors.white70, fontSize: 10),
-                            ),
                             _taskHeaderLines(sim: false),
                           ],
                         ),
                       ),
                     ),
-                    IconButton(
-                      icon: Icon(
-                        _showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined,
-                        color: Colors.white70,
-                      ),
-                      onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
-                    ),
+                    _headerDebugButton(sim: false),
                   ],
                 ),
               ),
@@ -2766,25 +2743,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           ),
                         ),
                       ),
-                    if (_capturedImageBytes == null && _watchActive)
-                      Positioned(
-                        top: 8,
-                        right: 8,
-                        child: IgnorePointer(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.55),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Text('-${_watchSecondsLeft()}',
-                                style: TextStyle(
-                                    color: _watchSecondsLeft() <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w900)),
-                          ),
-                        ),
-                      ),
                   ],
                 ),
               ),
@@ -3111,39 +3069,59 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   final Map<int, int> _taskHoldCount = {};
   List<DetectionResult> _liveTickDetections = [];
 
-  /// Lines inside the crimson header (under the VIN): the task being checked and the one after it.
-  /// FittedBox scales long names down to the header width instead of spilling or wrapping the bar taller.
+  /// Text block of the crimson header: current task (bold), next task, then VIN. FittedBox scales long
+  /// names down to the header width instead of spilling or growing the bar.
   Widget _taskHeaderLines({required bool sim}) {
     try {
       final n = widget.tasks.length;
       String nameOf(int i) => '${widget.tasks[i]['name']}';
       String now;
       String? next;
+      String progress;
       if (sim) {
         final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
         now = pending.isEmpty ? 'ALL DONE' : pending.join(' \u2022 ');
+        progress = '${n - pending.length} of $n done';
       } else {
         final i = _currentIndex.clamp(0, n - 1);
         now = nameOf(i);
+        progress = 'Task ${i + 1} of $n';
         for (var k = 1; k < n; k++) {
           final j = (i + k) % n;
           if (!_results.containsKey(j)) { next = nameOf(j); break; }
         }
       }
-      Widget line(String label, String text, double size, Color c, FontWeight w) => Padding(
+      Widget line(String text, double size, Color c, FontWeight w) => Padding(
             padding: const EdgeInsets.only(top: 2),
             child: FittedBox(
               fit: BoxFit.scaleDown,
-              child: Text('$label$text', maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w)),
+              child: Text(text, maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w)),
             ),
           );
       return Column(mainAxisSize: MainAxisSize.min, children: [
-        line(sim ? 'NOW: ' : 'TASK: ', now, 15, Colors.white, FontWeight.w900),
-        if (!sim) line('NEXT: ', next ?? '\u2014', 12, Colors.white70, FontWeight.w600),
+        line(now, 20, Colors.white, FontWeight.w900),
+        if (!sim) line('NEXT: ${next ?? '\u2014'}', 14, Colors.white70, FontWeight.w600),
+        line('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  $progress', 12, Colors.white70, FontWeight.normal),
       ]);
     } catch (_) {
       return const SizedBox.shrink();
     }
+  }
+
+  /// Debug button with the scan countdown (-10, -9, ...) under it, inside the red header.
+  Widget _headerDebugButton({required bool sim}) {
+    final bool counting = sim ? _simScanActive : (_capturedImageBytes == null && _watchActive);
+    final int secs = counting ? (sim ? _simSecondsLeft() : _watchSecondsLeft()) : -1;
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      IconButton(
+        icon: Icon(_showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
+        onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
+      ),
+      if (secs >= 0)
+        Text('-$secs',
+            style: TextStyle(
+                color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+    ]);
   }
 
   @override
@@ -4461,22 +4439,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Text('LIVE SCAN -- ALL TASKS',
-                                style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
-                            Text('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
-                                style: const TextStyle(color: Colors.white70, fontSize: 10)),
                             _taskHeaderLines(sim: true),
                           ],
                         ),
                       ),
                     ),
-                    IconButton(
-                      icon: Icon(
-                        _showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined,
-                        color: Colors.white70,
-                      ),
-                      onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
-                    ),
+                    _headerDebugButton(sim: true),
                   ],
                 ),
               ),
@@ -4714,25 +4682,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           ),
                         ),
                       ),
-                    if (_simScanActive)
-                      Positioned(
-                        top: 8,
-                        right: 8,
-                        child: IgnorePointer(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.55),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Text('-${_simSecondsLeft()}',
-                                style: TextStyle(
-                                    color: _simSecondsLeft() <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w900)),
-                          ),
-                        ),
-                      ),
                   ],
                 ),
               ),
@@ -4891,26 +4840,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              'LIVE SCAN -- TASK ${_currentIndex + 1} OF ${widget.tasks.length}',
-                              style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-                            ),
-                            Text(
-                              '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
-                              style: const TextStyle(color: Colors.white70, fontSize: 10),
-                            ),
                             _taskHeaderLines(sim: false),
                           ],
                         ),
                       ),
                     ),
-                    IconButton(
-                      icon: Icon(
-                        _showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined,
-                        color: Colors.white70,
-                      ),
-                      onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
-                    ),
+                    _headerDebugButton(sim: false),
                   ],
                 ),
               ),
@@ -5210,25 +5145,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 ),
                               ),
                             ],
-                          ),
-                        ),
-                      ),
-                    if (_capturedImageBytes == null && _watchActive)
-                      Positioned(
-                        top: 8,
-                        right: 8,
-                        child: IgnorePointer(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.55),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Text('-${_watchSecondsLeft()}',
-                                style: TextStyle(
-                                    color: _watchSecondsLeft() <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w900)),
                           ),
                         ),
                       ),

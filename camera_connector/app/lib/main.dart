@@ -728,22 +728,6 @@ class _HomeState extends State<Home> {
           ]),
         ),
       ),
-      if (_insp['state'] == 'scanning' && _insp['preview'] != true && _insp['seconds_left'] is num)
-        Positioned(
-          top: 56,
-          right: 16,
-          child: IgnorePointer(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              decoration: BoxDecoration(color: Colors.black.withOpacity(0.6), borderRadius: BorderRadius.circular(16)),
-              child: Text('-${(_insp['seconds_left'] as num).toInt()}',
-                  style: TextStyle(
-                      color: (_insp['seconds_left'] as num) <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900)),
-            ),
-          ),
-        ),
       Positioned(
         bottom: 12,
         left: 16,
@@ -805,8 +789,15 @@ class _HomeState extends State<Home> {
     final vin = clean(_insp['vin']);
     final n = (_insp['task_n'] as num?)?.toInt() ?? 0;
     final i = (_insp['task_i'] as num?)?.toInt() ?? 0;
-    final title = connected && n > 0 ? 'LIVE SCAN -- TASK $i OF $n' : 'LIVE SCAN';
-    final sub = connected ? 'PC: ${_pc?['name']}${vin.isNotEmpty ? '  \u00b7  VIN: $vin' : ''}' : (_pc == null ? 'no PC saved' : 'PC: ${_pc?['name']}');
+    final hasTask = connected && task.isNotEmpty;
+    final title = hasTask ? task : 'LIVE SCAN';
+    final progress = n > 0 ? '  \u00b7  Task $i of $n' : '';
+    final sub = connected
+        ? (vin.isNotEmpty ? 'VIN: $vin$progress' : 'PC: ${_pc?['name']}$progress')
+        : (_pc == null ? 'no PC saved' : 'PC: ${_pc?['name']}');
+    final secs = (_insp['state'] == 'scanning' && _insp['preview'] != true && _insp['seconds_left'] is num)
+        ? (_insp['seconds_left'] as num).toInt()
+        : null;
     // One line each, scaled down to fit so long names never spill or grow the bar sideways.
     Widget line(String text, double size, Color c, FontWeight w) => Padding(
           padding: const EdgeInsets.only(top: 2),
@@ -825,17 +816,20 @@ class _HomeState extends State<Home> {
         ),
         Expanded(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            line(title, 13, Colors.white, FontWeight.bold),
-            line(sub, 10, Colors.white70, FontWeight.normal),
-            if (connected && task.isNotEmpty) line('TASK: $task', 15, Colors.white, FontWeight.w900),
-            if (connected && task.isNotEmpty) line('NEXT: ${next.isEmpty ? '\u2014' : next}', 12, Colors.white70, FontWeight.w600),
+            line(title, 20, Colors.white, FontWeight.w900),
+            if (hasTask) line('NEXT: ${next.isEmpty ? '\u2014' : next}', 14, Colors.white70, FontWeight.w600),
+            line(sub, 12, Colors.white70, FontWeight.normal),
           ]),
         ),
-        IconButton(
-          icon: Icon(_showLog ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
-          tooltip: 'Debug console',
-          onPressed: () => setState(() => _showLog = !_showLog),
-        ),
+        Column(mainAxisSize: MainAxisSize.min, children: [
+          IconButton(
+            icon: Icon(_showLog ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
+            tooltip: 'Debug console',
+            onPressed: () => setState(() => _showLog = !_showLog),
+          ),
+          if (secs != null)
+            Text('-$secs', style: TextStyle(color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+        ]),
         IconButton(icon: const Icon(Icons.settings, color: Colors.white), tooltip: 'Settings', onPressed: _openSettings),
       ]),
     );
