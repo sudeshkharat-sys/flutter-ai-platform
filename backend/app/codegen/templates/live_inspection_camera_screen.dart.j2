@@ -1828,7 +1828,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       return;
     }
 
-    final nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    var nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    for (var k = 1; k < widget.tasks.length; k++) {
+      final j = (_currentIndex + k) % widget.tasks.length;
+      if (!_results.containsKey(j)) { nextIdx = j; break; }
+    }
     _addLog("Moving to Task ${nextIdx + 1}");
     setState(() {
       _currentIndex = nextIdx;
@@ -2135,6 +2139,25 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 ),
                               ),
                             ],
+                          ),
+                        ),
+                      ),
+                    if (_simScanActive)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: IgnorePointer(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.55),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Text('-${_simSecondsLeft()}',
+                                style: TextStyle(
+                                    color: _simSecondsLeft() <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w900)),
                           ),
                         ),
                       ),
@@ -2743,6 +2766,25 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           ),
                         ),
                       ),
+                    if (_capturedImageBytes == null && _watchActive)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: IgnorePointer(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.55),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Text('-${_watchSecondsLeft()}',
+                                style: TextStyle(
+                                    color: _watchSecondsLeft() <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w900)),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -2800,7 +2842,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 padding: const EdgeInsets.symmetric(vertical: 16),
                               ),
                               child: Text(
-                                _results.length + 1 == widget.tasks.length ? 'FINISH' : 'NEXT TASK',
+                                [for (var t = 0; t < widget.tasks.length; t++) if (t != _currentIndex && !_results.containsKey(t)) t].isEmpty ? 'FINISH' : 'NEXT TASK',
                                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                               ),
                             ),
@@ -4369,7 +4411,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       return;
     }
 
-    final nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    var nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    for (var k = 1; k < widget.tasks.length; k++) {
+      final j = (_currentIndex + k) % widget.tasks.length;
+      if (!_results.containsKey(j)) { nextIdx = j; break; }
+    }
     _addLog("Moving to Task ${nextIdx + 1}");
     setState(() {
       _currentIndex = nextIdx;
@@ -4665,6 +4711,25 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 ),
                               ),
                             ],
+                          ),
+                        ),
+                      ),
+                    if (_simScanActive)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: IgnorePointer(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.55),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Text('-${_simSecondsLeft()}',
+                                style: TextStyle(
+                                    color: _simSecondsLeft() <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w900)),
                           ),
                         ),
                       ),
@@ -5148,6 +5213,25 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           ),
                         ),
                       ),
+                    if (_capturedImageBytes == null && _watchActive)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: IgnorePointer(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.55),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Text('-${_watchSecondsLeft()}',
+                                style: TextStyle(
+                                    color: _watchSecondsLeft() <= 3 ? const Color(0xFFFF6B6B) : Colors.white,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w900)),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -5205,7 +5289,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 padding: const EdgeInsets.symmetric(vertical: 16),
                               ),
                               child: Text(
-                                _results.length + 1 == widget.tasks.length ? 'FINISH' : 'NEXT TASK',
+                                [for (var t = 0; t < widget.tasks.length; t++) if (t != _currentIndex && !_results.containsKey(t)) t].isEmpty ? 'FINISH' : 'NEXT TASK',
                                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                               ),
                             ),
