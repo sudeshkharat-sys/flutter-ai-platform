@@ -307,33 +307,53 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // Region-classifier votes per task (simultaneous mode): confident OK / wrong-state ticks.
   List<DetectionResult> _liveTickDetections = [];
 
-  /// Big banner under the header: which task is being checked right now, and how the previous one ended.
+  /// Banner under the header: the task being checked now (always visible, big), the task
+  /// coming up next, and how the previous one ended (green OK / red NOT OK).
   Widget _taskBanner({required bool sim}) {
     try {
       final n = widget.tasks.length;
       String nameOf(int i) => '${widget.tasks[i]['name']}';
       final String title;
-      final String sub;
-      Color color = const Color(0xFF1E3A5F);
+      String? next;
+      String? prevText;
+      bool prevOk = true;
+      String progress;
       if (sim) {
         final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
-        title = pending.isEmpty ? 'ALL TASKS DONE' : 'NOW CHECKING: ${pending.join('  \u2022  ')}';
-        sub = '${n - pending.length} of $n done';
+        title = pending.isEmpty ? 'ALL TASKS DONE' : pending.join('  \u2022  ');
+        progress = '${n - pending.length} of $n done';
       } else {
         final i = _currentIndex.clamp(0, n - 1);
-        title = 'NOW: ${nameOf(i)}';
-        final prev = i > 0 ? _results[i - 1] : null;
-        sub = 'Task ${i + 1} of $n' +
-            (prev != null ? '   |   previous: ${nameOf(i - 1)} ${prev['success'] == true ? 'OK' : 'NOT OK'}' : '');
+        title = nameOf(i);
+        progress = 'Task ${i + 1} of $n';
+        for (var k = 1; k < n; k++) {
+          final j = (i + k) % n;
+          if (!_results.containsKey(j)) { next = nameOf(j); break; }
+        }
+        // Most recently resolved task other than this one (a failed task moves on, so show why).
+        for (var k = 1; k < n; k++) {
+          final j = (i - k + n) % n;
+          final r = _results[j];
+          if (r != null) { prevText = nameOf(j); prevOk = r['success'] == true; break; }
+        }
       }
       return Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-        color: color,
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        color: const Color(0xFF1E3A5F),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(sim ? 'NOW CHECKING  \u2022  $progress' : 'CURRENT TASK  \u2022  $progress',
+              style: const TextStyle(color: Colors.white60, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
           Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900)),
-          Text(sub, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+          if (next != null)
+            Text('NEXT: $next', textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+          if (prevText != null)
+            Text('PREVIOUS: $prevText \u2014 ${prevOk ? 'OK' : 'NOT OK'}',
+                textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: prevOk ? const Color(0xFF7CE38B) : const Color(0xFFFF8A8A),
+                    fontSize: 12, fontWeight: FontWeight.bold)),
         ]),
       );
     } catch (_) {
@@ -3068,33 +3088,53 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   final Map<int, int> _taskHoldCount = {};
   List<DetectionResult> _liveTickDetections = [];
 
-  /// Big banner under the header: which task is being checked right now, and how the previous one ended.
+  /// Banner under the header: the task being checked now (always visible, big), the task
+  /// coming up next, and how the previous one ended (green OK / red NOT OK).
   Widget _taskBanner({required bool sim}) {
     try {
       final n = widget.tasks.length;
       String nameOf(int i) => '${widget.tasks[i]['name']}';
       final String title;
-      final String sub;
-      Color color = const Color(0xFF1E3A5F);
+      String? next;
+      String? prevText;
+      bool prevOk = true;
+      String progress;
       if (sim) {
         final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
-        title = pending.isEmpty ? 'ALL TASKS DONE' : 'NOW CHECKING: ${pending.join('  \u2022  ')}';
-        sub = '${n - pending.length} of $n done';
+        title = pending.isEmpty ? 'ALL TASKS DONE' : pending.join('  \u2022  ');
+        progress = '${n - pending.length} of $n done';
       } else {
         final i = _currentIndex.clamp(0, n - 1);
-        title = 'NOW: ${nameOf(i)}';
-        final prev = i > 0 ? _results[i - 1] : null;
-        sub = 'Task ${i + 1} of $n' +
-            (prev != null ? '   |   previous: ${nameOf(i - 1)} ${prev['success'] == true ? 'OK' : 'NOT OK'}' : '');
+        title = nameOf(i);
+        progress = 'Task ${i + 1} of $n';
+        for (var k = 1; k < n; k++) {
+          final j = (i + k) % n;
+          if (!_results.containsKey(j)) { next = nameOf(j); break; }
+        }
+        // Most recently resolved task other than this one (a failed task moves on, so show why).
+        for (var k = 1; k < n; k++) {
+          final j = (i - k + n) % n;
+          final r = _results[j];
+          if (r != null) { prevText = nameOf(j); prevOk = r['success'] == true; break; }
+        }
       }
       return Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-        color: color,
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        color: const Color(0xFF1E3A5F),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(sim ? 'NOW CHECKING  \u2022  $progress' : 'CURRENT TASK  \u2022  $progress',
+              style: const TextStyle(color: Colors.white60, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
           Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900)),
-          Text(sub, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+          if (next != null)
+            Text('NEXT: $next', textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+          if (prevText != null)
+            Text('PREVIOUS: $prevText \u2014 ${prevOk ? 'OK' : 'NOT OK'}',
+                textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: prevOk ? const Color(0xFF7CE38B) : const Color(0xFFFF8A8A),
+                    fontSize: 12, fontWeight: FontWeight.bold)),
         ]),
       );
     } catch (_) {
