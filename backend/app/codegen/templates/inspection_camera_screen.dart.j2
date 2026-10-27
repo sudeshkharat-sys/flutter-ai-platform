@@ -846,7 +846,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       return;
     }
 
-    final nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    var nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    for (var k = 1; k < widget.tasks.length; k++) {
+      final j = (_currentIndex + k) % widget.tasks.length;
+      if (!_results.containsKey(j)) { nextIdx = j; break; }
+    }
     _addLog("Moving to Task ${nextIdx + 1}");
     setState(() {
       _currentIndex = nextIdx;
@@ -1589,7 +1593,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                     vertical: 16),
                               ),
                               child: Text(
-                                _results.length + 1 == widget.tasks.length
+                                [for (var t = 0; t < widget.tasks.length; t++) if (t != _currentIndex && !_results.containsKey(t)) t].isEmpty
                                     ? 'FINISH'
                                     : 'NEXT TASK',
                                 style: const TextStyle(
@@ -2332,7 +2336,11 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
       return;
     }
 
-    final nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    var nextIdx = (_currentIndex + 1) % widget.tasks.length;
+    for (var k = 1; k < widget.tasks.length; k++) {
+      final j = (_currentIndex + k) % widget.tasks.length;
+      if (!_results.containsKey(j)) { nextIdx = j; break; }
+    }
     _addLog("Moving to Task ${nextIdx + 1}");
     setState(() {
       _currentIndex = nextIdx;
@@ -2786,7 +2794,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                     vertical: 16),
                               ),
                               child: Text(
-                                _results.length + 1 == widget.tasks.length
+                                [for (var t = 0; t < widget.tasks.length; t++) if (t != _currentIndex && !_results.containsKey(t)) t].isEmpty
                                     ? 'FINISH'
                                     : 'NEXT TASK',
                                 style: const TextStyle(
