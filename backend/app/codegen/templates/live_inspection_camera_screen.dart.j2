@@ -350,23 +350,32 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  /// Debug button with the scan countdown (-10, -9, ...) in its own fixed slot under it.
+  /// Debug button + round countdown badge (-10, -9, ...) side by side, centered in the red header.
+  /// The badge keeps its slot when idle so the title never shifts.
   Widget _headerDebugButton({required bool sim}) {
     final bool counting = sim ? _simScanActive : (_capturedImageBytes == null && _watchActive);
     final int secs = counting ? (sim ? _simSecondsLeft() : _watchSecondsLeft()) : -1;
-    return Column(mainAxisSize: MainAxisSize.min, children: [
+    return Row(mainAxisSize: MainAxisSize.min, children: [
       IconButton(
         padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
+        constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
         icon: Icon(_showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
         onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
       ),
       SizedBox(
-        height: 26,
+        width: 46,
+        height: 46,
         child: secs >= 0
-            ? Text('-$secs',
-                style: TextStyle(
-                    color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900))
+            ? DecoratedBox(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: secs <= 3 ? Colors.yellowAccent : Colors.white,
+                ),
+                child: Center(
+                  child: Text('-$secs',
+                      style: const TextStyle(color: Color(0xFFDC143C), fontSize: 17, fontWeight: FontWeight.w900)),
+                ),
+              )
             : null,
       ),
     ]);
@@ -3125,23 +3134,32 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  /// Debug button with the scan countdown (-10, -9, ...) in its own fixed slot under it.
+  /// Debug button + round countdown badge (-10, -9, ...) side by side, centered in the red header.
+  /// The badge keeps its slot when idle so the title never shifts.
   Widget _headerDebugButton({required bool sim}) {
     final bool counting = sim ? _simScanActive : (_capturedImageBytes == null && _watchActive);
     final int secs = counting ? (sim ? _simSecondsLeft() : _watchSecondsLeft()) : -1;
-    return Column(mainAxisSize: MainAxisSize.min, children: [
+    return Row(mainAxisSize: MainAxisSize.min, children: [
       IconButton(
         padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
+        constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
         icon: Icon(_showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
         onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
       ),
       SizedBox(
-        height: 26,
+        width: 46,
+        height: 46,
         child: secs >= 0
-            ? Text('-$secs',
-                style: TextStyle(
-                    color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900))
+            ? DecoratedBox(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: secs <= 3 ? Colors.yellowAccent : Colors.white,
+                ),
+                child: Center(
+                  child: Text('-$secs',
+                      style: const TextStyle(color: Color(0xFFDC143C), fontSize: 17, fontWeight: FontWeight.w900)),
+                ),
+              )
             : null,
       ),
     ]);

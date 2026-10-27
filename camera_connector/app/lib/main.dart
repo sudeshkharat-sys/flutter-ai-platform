@@ -822,21 +822,24 @@ class _HomeState extends State<Home> {
             slot(16, detail, 12, Colors.white70, FontWeight.normal),
           ]),
         ),
-        Column(mainAxisSize: MainAxisSize.min, children: [
-          IconButton(
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
-            icon: Icon(_showLog ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
-            tooltip: 'Debug console',
-            onPressed: () => setState(() => _showLog = !_showLog),
-          ),
-          SizedBox(
-            height: 26,
-            child: secs != null
-                ? Text('-$secs', style: TextStyle(color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900))
-                : null,
-          ),
-        ]),
+        IconButton(
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+          icon: Icon(_showLog ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
+          tooltip: 'Debug console',
+          onPressed: () => setState(() => _showLog = !_showLog),
+        ),
+        // Round countdown badge, vertically centered in the bar; keeps its slot when idle.
+        SizedBox(
+          width: 46,
+          height: 46,
+          child: secs != null
+              ? DecoratedBox(
+                  decoration: BoxDecoration(shape: BoxShape.circle, color: secs <= 3 ? Colors.yellowAccent : Colors.white),
+                  child: Center(child: Text('-$secs', style: const TextStyle(color: Color(0xFFDC143C), fontSize: 17, fontWeight: FontWeight.w900))),
+                )
+              : null,
+        ),
         IconButton(icon: const Icon(Icons.settings, color: Colors.white), tooltip: 'Settings', onPressed: _openSettings),
       ]),
     );
