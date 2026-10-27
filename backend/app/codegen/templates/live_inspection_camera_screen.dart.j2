@@ -307,55 +307,36 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // Region-classifier votes per task (simultaneous mode): confident OK / wrong-state ticks.
   List<DetectionResult> _liveTickDetections = [];
 
-  /// Banner under the header: the task being checked now (always visible, big), the task
-  /// coming up next, and how the previous one ended (green OK / red NOT OK).
-  Widget _taskBanner({required bool sim}) {
+  /// Lines inside the crimson header (under the VIN): the task being checked and the one after it.
+  /// FittedBox scales long names down to the header width instead of spilling or wrapping the bar taller.
+  Widget _taskHeaderLines({required bool sim}) {
     try {
       final n = widget.tasks.length;
       String nameOf(int i) => '${widget.tasks[i]['name']}';
-      final String title;
+      String now;
       String? next;
-      String? prevText;
-      bool prevOk = true;
-      String progress;
       if (sim) {
         final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
-        title = pending.isEmpty ? 'ALL TASKS DONE' : pending.join('  \u2022  ');
-        progress = '${n - pending.length} of $n done';
+        now = pending.isEmpty ? 'ALL DONE' : pending.join(' \u2022 ');
       } else {
         final i = _currentIndex.clamp(0, n - 1);
-        title = nameOf(i);
-        progress = 'Task ${i + 1} of $n';
+        now = nameOf(i);
         for (var k = 1; k < n; k++) {
           final j = (i + k) % n;
           if (!_results.containsKey(j)) { next = nameOf(j); break; }
         }
-        // Most recently resolved task other than this one (a failed task moves on, so show why).
-        for (var k = 1; k < n; k++) {
-          final j = (i - k + n) % n;
-          final r = _results[j];
-          if (r != null) { prevText = nameOf(j); prevOk = r['success'] == true; break; }
-        }
       }
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-        color: const Color(0xFF1E3A5F),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(sim ? 'NOW CHECKING  \u2022  $progress' : 'CURRENT TASK  \u2022  $progress',
-              style: const TextStyle(color: Colors.white60, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
-          Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
-          if (next != null)
-            Text('NEXT: $next', textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
-          if (prevText != null)
-            Text('PREVIOUS: $prevText \u2014 ${prevOk ? 'OK' : 'NOT OK'}',
-                textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: prevOk ? const Color(0xFF7CE38B) : const Color(0xFFFF8A8A),
-                    fontSize: 12, fontWeight: FontWeight.bold)),
-        ]),
-      );
+      Widget line(String label, String text, double size, Color c, FontWeight w) => Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text('$label$text', maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w)),
+            ),
+          );
+      return Column(mainAxisSize: MainAxisSize.min, children: [
+        line(sim ? 'NOW: ' : 'TASK: ', now, 15, Colors.white, FontWeight.w900),
+        if (!sim) line('NEXT: ', next ?? '\u2014', 12, Colors.white70, FontWeight.w600),
+      ]);
     } catch (_) {
       return const SizedBox.shrink();
     }
@@ -1898,6 +1879,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
                             Text('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
                                 style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                            _taskHeaderLines(sim: true),
                           ],
                         ),
                       ),
@@ -1912,7 +1894,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   ],
                 ),
               ),
-              _taskBanner(sim: true),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
@@ -2325,6 +2306,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                               '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
                               style: const TextStyle(color: Colors.white70, fontSize: 10),
                             ),
+                            _taskHeaderLines(sim: false),
                           ],
                         ),
                       ),
@@ -2339,7 +2321,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   ],
                 ),
               ),
-              _taskBanner(sim: false),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
@@ -3088,55 +3069,36 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   final Map<int, int> _taskHoldCount = {};
   List<DetectionResult> _liveTickDetections = [];
 
-  /// Banner under the header: the task being checked now (always visible, big), the task
-  /// coming up next, and how the previous one ended (green OK / red NOT OK).
-  Widget _taskBanner({required bool sim}) {
+  /// Lines inside the crimson header (under the VIN): the task being checked and the one after it.
+  /// FittedBox scales long names down to the header width instead of spilling or wrapping the bar taller.
+  Widget _taskHeaderLines({required bool sim}) {
     try {
       final n = widget.tasks.length;
       String nameOf(int i) => '${widget.tasks[i]['name']}';
-      final String title;
+      String now;
       String? next;
-      String? prevText;
-      bool prevOk = true;
-      String progress;
       if (sim) {
         final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
-        title = pending.isEmpty ? 'ALL TASKS DONE' : pending.join('  \u2022  ');
-        progress = '${n - pending.length} of $n done';
+        now = pending.isEmpty ? 'ALL DONE' : pending.join(' \u2022 ');
       } else {
         final i = _currentIndex.clamp(0, n - 1);
-        title = nameOf(i);
-        progress = 'Task ${i + 1} of $n';
+        now = nameOf(i);
         for (var k = 1; k < n; k++) {
           final j = (i + k) % n;
           if (!_results.containsKey(j)) { next = nameOf(j); break; }
         }
-        // Most recently resolved task other than this one (a failed task moves on, so show why).
-        for (var k = 1; k < n; k++) {
-          final j = (i - k + n) % n;
-          final r = _results[j];
-          if (r != null) { prevText = nameOf(j); prevOk = r['success'] == true; break; }
-        }
       }
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-        color: const Color(0xFF1E3A5F),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(sim ? 'NOW CHECKING  \u2022  $progress' : 'CURRENT TASK  \u2022  $progress',
-              style: const TextStyle(color: Colors.white60, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
-          Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
-          if (next != null)
-            Text('NEXT: $next', textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
-          if (prevText != null)
-            Text('PREVIOUS: $prevText \u2014 ${prevOk ? 'OK' : 'NOT OK'}',
-                textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: prevOk ? const Color(0xFF7CE38B) : const Color(0xFFFF8A8A),
-                    fontSize: 12, fontWeight: FontWeight.bold)),
-        ]),
-      );
+      Widget line(String label, String text, double size, Color c, FontWeight w) => Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text('$label$text', maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w)),
+            ),
+          );
+      return Column(mainAxisSize: MainAxisSize.min, children: [
+        line(sim ? 'NOW: ' : 'TASK: ', now, 15, Colors.white, FontWeight.w900),
+        if (!sim) line('NEXT: ', next ?? '\u2014', 12, Colors.white70, FontWeight.w600),
+      ]);
     } catch (_) {
       return const SizedBox.shrink();
     }
@@ -4457,6 +4419,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
                             Text('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
                                 style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                            _taskHeaderLines(sim: true),
                           ],
                         ),
                       ),
@@ -4471,7 +4434,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   ],
                 ),
               ),
-              _taskBanner(sim: true),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
@@ -4872,6 +4834,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                               '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}',
                               style: const TextStyle(color: Colors.white70, fontSize: 10),
                             ),
+                            _taskHeaderLines(sim: false),
                           ],
                         ),
                       ),
@@ -4886,7 +4849,6 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                   ],
                 ),
               ),
-              _taskBanner(sim: false),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
