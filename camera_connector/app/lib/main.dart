@@ -831,12 +831,12 @@ class _HomeState extends State<Home> {
         ),
         // Round countdown badge, vertically centered in the bar; keeps its slot when idle.
         SizedBox(
-          width: 46,
-          height: 46,
+          width: 40,
+          height: 40,
           child: secs != null
               ? DecoratedBox(
                   decoration: BoxDecoration(shape: BoxShape.circle, color: secs <= 3 ? Colors.yellowAccent : Colors.white),
-                  child: Center(child: Text('-$secs', style: const TextStyle(color: Color(0xFFDC143C), fontSize: 17, fontWeight: FontWeight.w900))),
+                  child: Center(child: Text('-$secs', style: const TextStyle(color: Color(0xFFDC143C), fontSize: 15, fontWeight: FontWeight.w900))),
                 )
               : null,
         ),
