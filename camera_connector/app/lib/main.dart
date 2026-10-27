@@ -790,22 +790,23 @@ class _HomeState extends State<Home> {
     final n = (_insp['task_n'] as num?)?.toInt() ?? 0;
     final i = (_insp['task_i'] as num?)?.toInt() ?? 0;
     final hasTask = connected && task.isNotEmpty;
-    final title = hasTask ? task : 'LIVE SCAN';
-    final progress = n > 0 ? '  \u00b7  Task $i of $n' : '';
-    final sub = connected
-        ? (vin.isNotEmpty ? 'VIN: $vin$progress' : 'PC: ${_pc?['name']}$progress')
-        : (_pc == null ? 'no PC saved' : 'PC: ${_pc?['name']}');
+    final done = connected && _insp['state'] == 'done';
+    final title = hasTask ? task : (connected ? 'LIVE SCAN' : 'LIVE SCAN');
+    // Live: current task (big) + next (small). Result screen adds the VIN / task count line.
+    final nextLine = hasTask ? 'NEXT: ${next.isEmpty ? '\u2014' : next}' : (connected ? '' : (_pc == null ? 'no PC saved' : 'PC: ${_pc?['name']}'));
+    final detail = done ? '${vin.isNotEmpty ? 'VIN: $vin' : 'PC: ${_pc?['name']}'}${n > 0 ? '  \u00b7  Task $i of $n' : ''}' : '';
     final secs = (_insp['state'] == 'scanning' && _insp['preview'] != true && _insp['seconds_left'] is num)
         ? (_insp['seconds_left'] as num).toInt()
         : null;
-    // One line each, scaled down to fit so long names never spill or grow the bar sideways.
-    Widget line(String text, double size, Color c, FontWeight w) => Padding(
-          padding: const EdgeInsets.only(top: 2),
+    // Fixed slots: the bar never changes height, whatever the PC reports.
+    Widget slot(double h, String text, double size, Color c, FontWeight w) => SizedBox(
+          height: h,
           child: FittedBox(fit: BoxFit.scaleDown, child: Text(text, maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w))),
         );
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+      height: 84,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
       color: const Color(0xFFDC143C),
       child: Row(children: [
         TextButton.icon(
@@ -816,19 +817,25 @@ class _HomeState extends State<Home> {
         ),
         Expanded(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            line(title, 20, Colors.white, FontWeight.w900),
-            if (hasTask) line('NEXT: ${next.isEmpty ? '\u2014' : next}', 14, Colors.white70, FontWeight.w600),
-            line(sub, 12, Colors.white70, FontWeight.normal),
+            slot(28, title, 22, Colors.white, FontWeight.w900),
+            slot(18, nextLine, 14, Colors.white70, FontWeight.w600),
+            slot(16, detail, 12, Colors.white70, FontWeight.normal),
           ]),
         ),
         Column(mainAxisSize: MainAxisSize.min, children: [
           IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
             icon: Icon(_showLog ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
             tooltip: 'Debug console',
             onPressed: () => setState(() => _showLog = !_showLog),
           ),
-          if (secs != null)
-            Text('-$secs', style: TextStyle(color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+          SizedBox(
+            height: 26,
+            child: secs != null
+                ? Text('-$secs', style: TextStyle(color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900))
+                : null,
+          ),
         ]),
         IconButton(icon: const Icon(Icons.settings, color: Colors.white), tooltip: 'Settings', onPressed: _openSettings),
       ]),

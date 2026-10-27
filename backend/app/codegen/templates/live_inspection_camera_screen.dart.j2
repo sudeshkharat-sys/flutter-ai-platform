@@ -307,58 +307,68 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // Region-classifier votes per task (simultaneous mode): confident OK / wrong-state ticks.
   List<DetectionResult> _liveTickDetections = [];
 
-  /// Text block of the crimson header: current task (bold), next task, then VIN. FittedBox scales long
-  /// names down to the header width instead of spilling or growing the bar.
+  /// Text block of the fixed-height crimson header. Three fixed slots so the bar never changes height:
+  /// current task (big), next task (small), and -- only on the result/review screen -- VIN + task count.
   Widget _taskHeaderLines({required bool sim}) {
     try {
       final n = widget.tasks.length;
       String nameOf(int i) => '${widget.tasks[i]['name']}';
+      final bool full = !sim && _capturedImageBytes != null;
       String now;
-      String? next;
-      String progress;
+      String sub;
+      String detail;
       if (sim) {
         final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
         now = pending.isEmpty ? 'ALL DONE' : pending.join(' \u2022 ');
-        progress = '${n - pending.length} of $n done';
+        sub = '${n - pending.length} of $n done';
+        detail = '';
       } else {
         final i = _currentIndex.clamp(0, n - 1);
         now = nameOf(i);
-        progress = 'Task ${i + 1} of $n';
+        String next = '\u2014';
         for (var k = 1; k < n; k++) {
           final j = (i + k) % n;
           if (!_results.containsKey(j)) { next = nameOf(j); break; }
         }
+        sub = 'NEXT: $next';
+        detail = '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  Task ${i + 1} of $n';
       }
-      Widget line(String text, double size, Color c, FontWeight w) => Padding(
-            padding: const EdgeInsets.only(top: 2),
+      Widget slot(double h, String text, double size, Color c, FontWeight w) => SizedBox(
+            height: h,
             child: FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(text, maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w)),
             ),
           );
       return Column(mainAxisSize: MainAxisSize.min, children: [
-        line(now, 20, Colors.white, FontWeight.w900),
-        if (!sim) line('NEXT: ${next ?? '\u2014'}', 14, Colors.white70, FontWeight.w600),
-        line('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  $progress', 12, Colors.white70, FontWeight.normal),
+        slot(28, now, 22, Colors.white, FontWeight.w900),
+        slot(18, sub, 14, Colors.white70, FontWeight.w600),
+        slot(16, full ? detail : '', 12, Colors.white70, FontWeight.normal),
       ]);
     } catch (_) {
       return const SizedBox.shrink();
     }
   }
 
-  /// Debug button with the scan countdown (-10, -9, ...) under it, inside the red header.
+  /// Debug button with the scan countdown (-10, -9, ...) in its own fixed slot under it.
   Widget _headerDebugButton({required bool sim}) {
     final bool counting = sim ? _simScanActive : (_capturedImageBytes == null && _watchActive);
     final int secs = counting ? (sim ? _simSecondsLeft() : _watchSecondsLeft()) : -1;
     return Column(mainAxisSize: MainAxisSize.min, children: [
       IconButton(
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
         icon: Icon(_showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
         onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
       ),
-      if (secs >= 0)
-        Text('-$secs',
-            style: TextStyle(
-                color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+      SizedBox(
+        height: 26,
+        child: secs >= 0
+            ? Text('-$secs',
+                style: TextStyle(
+                    color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900))
+            : null,
+      ),
     ]);
   }
 
@@ -1886,7 +1896,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             children: [
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                height: 84,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: const BoxDecoration(color: Color(0xFFDC143C)),
                 child: Row(
                   children: [
@@ -2182,7 +2193,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             children: [
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                height: 84,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: const BoxDecoration(color: Color(0xFFDC143C)),
                 child: Row(
                   children: [
@@ -2299,7 +2311,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             children: [
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                height: 84,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: const BoxDecoration(color: Color(0xFFDC143C)),
                 child: Row(
                   children: [
@@ -3069,58 +3082,68 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   final Map<int, int> _taskHoldCount = {};
   List<DetectionResult> _liveTickDetections = [];
 
-  /// Text block of the crimson header: current task (bold), next task, then VIN. FittedBox scales long
-  /// names down to the header width instead of spilling or growing the bar.
+  /// Text block of the fixed-height crimson header. Three fixed slots so the bar never changes height:
+  /// current task (big), next task (small), and -- only on the result/review screen -- VIN + task count.
   Widget _taskHeaderLines({required bool sim}) {
     try {
       final n = widget.tasks.length;
       String nameOf(int i) => '${widget.tasks[i]['name']}';
+      final bool full = !sim && _capturedImageBytes != null;
       String now;
-      String? next;
-      String progress;
+      String sub;
+      String detail;
       if (sim) {
         final pending = [for (var i = 0; i < n; i++) if (!_results.containsKey(i)) nameOf(i)];
         now = pending.isEmpty ? 'ALL DONE' : pending.join(' \u2022 ');
-        progress = '${n - pending.length} of $n done';
+        sub = '${n - pending.length} of $n done';
+        detail = '';
       } else {
         final i = _currentIndex.clamp(0, n - 1);
         now = nameOf(i);
-        progress = 'Task ${i + 1} of $n';
+        String next = '\u2014';
         for (var k = 1; k < n; k++) {
           final j = (i + k) % n;
           if (!_results.containsKey(j)) { next = nameOf(j); break; }
         }
+        sub = 'NEXT: $next';
+        detail = '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  Task ${i + 1} of $n';
       }
-      Widget line(String text, double size, Color c, FontWeight w) => Padding(
-            padding: const EdgeInsets.only(top: 2),
+      Widget slot(double h, String text, double size, Color c, FontWeight w) => SizedBox(
+            height: h,
             child: FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(text, maxLines: 1, style: TextStyle(color: c, fontSize: size, fontWeight: w)),
             ),
           );
       return Column(mainAxisSize: MainAxisSize.min, children: [
-        line(now, 20, Colors.white, FontWeight.w900),
-        if (!sim) line('NEXT: ${next ?? '\u2014'}', 14, Colors.white70, FontWeight.w600),
-        line('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  $progress', 12, Colors.white70, FontWeight.normal),
+        slot(28, now, 22, Colors.white, FontWeight.w900),
+        slot(18, sub, 14, Colors.white70, FontWeight.w600),
+        slot(16, full ? detail : '', 12, Colors.white70, FontWeight.normal),
       ]);
     } catch (_) {
       return const SizedBox.shrink();
     }
   }
 
-  /// Debug button with the scan countdown (-10, -9, ...) under it, inside the red header.
+  /// Debug button with the scan countdown (-10, -9, ...) in its own fixed slot under it.
   Widget _headerDebugButton({required bool sim}) {
     final bool counting = sim ? _simScanActive : (_capturedImageBytes == null && _watchActive);
     final int secs = counting ? (sim ? _simSecondsLeft() : _watchSecondsLeft()) : -1;
     return Column(mainAxisSize: MainAxisSize.min, children: [
       IconButton(
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
         icon: Icon(_showDebugConsole ? Icons.bug_report : Icons.bug_report_outlined, color: Colors.white70),
         onPressed: () => setState(() => _showDebugConsole = !_showDebugConsole),
       ),
-      if (secs >= 0)
-        Text('-$secs',
-            style: TextStyle(
-                color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900)),
+      SizedBox(
+        height: 26,
+        child: secs >= 0
+            ? Text('-$secs',
+                style: TextStyle(
+                    color: secs <= 3 ? Colors.yellowAccent : Colors.white, fontSize: 20, fontWeight: FontWeight.w900))
+            : null,
+      ),
     ]);
   }
 
@@ -4426,7 +4449,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             children: [
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                height: 84,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: const BoxDecoration(color: Color(0xFFDC143C)),
                 child: Row(
                   children: [
@@ -4712,7 +4736,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             children: [
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                height: 84,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: const BoxDecoration(color: Color(0xFFDC143C)),
                 child: Row(
                   children: [
@@ -4827,7 +4852,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
             children: [
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                height: 84,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: const BoxDecoration(color: Color(0xFFDC143C)),
                 child: Row(
                   children: [

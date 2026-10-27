@@ -450,7 +450,7 @@ class Inspector:
         return {
             "state": self.state,
             "vin": self.vin,
-            "task": self.task_name,
+            "task": self.task_name or (self.queue[self.queue_i]["name"] if self.queue and self.queue_i < len(self.queue) else None),
             "model": self.cfg.get("model"),
             "preview": self.preview,
             "vin_mode": self.vin_mode,
