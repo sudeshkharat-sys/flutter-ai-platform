@@ -1118,6 +1118,13 @@ class _SettingsPageState extends State<SettingsPage> {
             onChanged: _setAutofocus,
             dense: true,
           ),
+          ListTile(
+            leading: const Icon(Icons.wifi_tethering),
+            title: const Text('Hotspot: use 5 GHz'),
+            subtitle: const Text('Opens the phone\'s hotspot settings. Set "AP band" to 5 GHz, then turn the hotspot off and on. Much less lag than 2.4 GHz.'),
+            onTap: () => _ch.invokeMethod('openHotspotSettings'),
+            dense: true,
+          ),
           const Divider(height: 28),
           const Text('Torch: tap = this car only, double tap = stays on for every car (orange ring).', style: TextStyle(fontSize: 12)),
         ]),

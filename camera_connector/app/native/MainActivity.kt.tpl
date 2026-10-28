@@ -139,6 +139,17 @@ class MainActivity : FlutterActivity() {
                         } catch (e: Exception) { DebugLog.e("vibrate failed", e) }
                         result.success(null)
                     }
+                    "openHotspotSettings" -> {
+                        // Android does not let apps change the hotspot band: open the system hotspot page instead.
+                        val tries = listOf(
+                            Intent().setClassName("com.android.settings", "com.android.settings.TetherSettings"),
+                            Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
+                        var opened = false
+                        for (i in tries) {
+                            try { i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(i); opened = true; break } catch (_: Exception) {}
+                        }
+                        result.success(opened)
+                    }
                     "status" -> result.success(StreamService.status())
                     "clearLog" -> { DebugLog.clear(); result.success(null) }
                     "log" -> result.success(DebugLog.tail(300))
