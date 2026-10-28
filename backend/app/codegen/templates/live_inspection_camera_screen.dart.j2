@@ -2006,6 +2006,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                       child: _isCameraInitialized && _cameraController != null
                           ? FittedBox(
                               fit: BoxFit.cover,
+                              clipBehavior: Clip.hardEdge,
                               child: SizedBox(
                                 width: _cameraController!.value.previewSize?.height ??
                                     _cameraController!.value.aspectRatio,
@@ -2409,6 +2410,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                             // the flip here -- the standard fix for this.
                             ? FittedBox(
                                 fit: BoxFit.cover,
+                                clipBehavior: Clip.hardEdge,
                                 child: SizedBox(
                                   width: _cameraController!.value.previewSize?.height ??
                                       _cameraController!.value.aspectRatio,
@@ -4599,6 +4601,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                       child: _isCameraInitialized && _cameraController != null
                           ? FittedBox(
                               fit: BoxFit.cover,
+                              clipBehavior: Clip.hardEdge,
                               child: SizedBox(
                                 width: _cameraController!.value.previewSize?.height ??
                                     _cameraController!.value.aspectRatio,
@@ -4990,6 +4993,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                             // the flip here -- the standard fix for this.
                             ? FittedBox(
                                 fit: BoxFit.cover,
+                                clipBehavior: Clip.hardEdge,
                                 child: SizedBox(
                                   width: _cameraController!.value.previewSize?.height ??
                                       _cameraController!.value.aspectRatio,
