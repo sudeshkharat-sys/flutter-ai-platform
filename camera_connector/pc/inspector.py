@@ -131,6 +131,9 @@ def read_codes(cv2, img, detectors):
     return out
 
 
+DEFAULT_ROI = [0.3, 0.3, 0.7, 0.7]   # fixed red box (fractions of the frame), used until a square is drawn
+
+
 class Inspector:
     def __init__(self, cfg, base_dir, log, get_frame, tasks=None):
         self.base_cfg = cfg
@@ -145,8 +148,8 @@ class Inspector:
         self.task_name = None
         self.pack = None            # imported app pack (scan logic + tasks), see pack.py
         self.mode = cfg.get("mode") or "pack"      # "pack" = scan a label, tasks come from the pack; "manual" = one chosen task
-        self.auto_start = bool(cfg.get("auto_start", False))   # off: after Submit the next task waits for Start
-        self.auto_scan = bool(cfg.get("auto_scan", False))     # off: a label is only read when Scan is pressed
+        self.auto_start = bool(cfg.get("auto_start", True))    # off: after Submit the next task waits for Start
+        self.auto_scan = bool(cfg.get("auto_scan", True))      # off: a label is only read when Scan is pressed
         self._scan_req = None
         self.scan_reply = None
         self.blur = BlurGate()
@@ -480,7 +483,7 @@ class Inspector:
             "task_i": self.queue_i + 1 if self.queue else 0,
             "task_n": len(self.queue),
             "next_task": self.queue[self.queue_i + 1]["name"] if self.queue and self.queue_i + 1 < len(self.queue) else None,
-            "roi": self.scan_roi,
+            "roi": self.effective_roi(),
             "message": self.message,
             "result": self.result,
             "defects": self.result_defects,
@@ -874,8 +877,12 @@ class Inspector:
             self.scan_reply = {"ok": False, "message": "no QR code read in the scan square -- hold steady, move closer or enlarge the square"}
             self.log(self.scan_reply["message"], "WARN")
 
+    def effective_roi(self):
+        """The red box: the saved square, else a fixed centred box while a VIN / label is being waited for."""
+        return self.scan_roi or (DEFAULT_ROI if self.vin_mode else None)
+
     def _crop_roi(self, img):
-        r = self.scan_roi
+        r = self.effective_roi()
         if not r:
             return img
         h, w = img.shape[:2]

@@ -12,7 +12,7 @@ PACK = {"format": 1, "app_name": "Demo", "scan_types": ["model"],
 
 with tempfile.TemporaryDirectory() as d:
     logs = []
-    ins = Inspector({}, d, lambda m, lvl="INFO", **k: logs.append(m), lambda: (None, -1))
+    ins = Inspector({"auto_start": False, "auto_scan": False}, d, lambda m, lvl="INFO", **k: logs.append(m), lambda: (None, -1))
     armed = []
     ins._activate_task = lambda t: (armed.append(t["name"]), setattr(ins, "state", "waiting"), setattr(ins, "task_name", t["name"]), True)[-1]
     ins.load_pack(PACK)

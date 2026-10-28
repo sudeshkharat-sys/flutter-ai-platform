@@ -190,6 +190,7 @@ class _HomeState extends State<Home> {
   Map<String, dynamic> _insp = {};
   String _lastResult = '';
   bool _inspSeeded = false;
+  DateTime _greenUntil = DateTime.fromMillisecondsSinceEpoch(0); // red box turns green for a moment after a label was read
   bool _inspBusy = false;
   int _inspFails = 0;
   DateTime _lastRetry = DateTime.fromMillisecondsSinceEpoch(0);
@@ -307,6 +308,9 @@ class _HomeState extends State<Home> {
         final st = (j['state'] ?? '').toString();
         if ((st == 'waiting' || st == 'scanning') && _prevInspState != 'waiting' && _prevInspState != 'scanning') {
           try { _ch.invokeMethod('focusNow'); } catch (_) {}
+        }
+        if (_prevInspState == 'idle' && st != 'idle' && st.isNotEmpty && _insp['mode'] == 'pack') {
+          _greenUntil = DateTime.now().add(const Duration(seconds: 3));
         }
         _prevInspState = st;
         if (mounted) setState(() {
@@ -670,7 +674,8 @@ class _HomeState extends State<Home> {
           : Opacity(opacity: stale ? 0.35 : 1, child: Image.memory(_previewJpg!, gaplessPlayback: true, fit: BoxFit.contain)),
     );
     final size = _imgSize;
-    if (!_packIdle || _previewJpg == null || size == null) return base;
+    final green = DateTime.now().isBefore(_greenUntil);
+    if (!(_packIdle || green) || _previewJpg == null || size == null) return base;
     // waiting for a label: drag a square around the QR code (the PC only reads inside it), then press Scan
     return LayoutBuilder(builder: (ctx, bc) {
       final sc = math.min(bc.maxWidth / size.width, bc.maxHeight / size.height);
@@ -678,6 +683,9 @@ class _HomeState extends State<Home> {
       final ox = (bc.maxWidth - cw) / 2, oy = (bc.maxHeight - ch) / 2;
       Offset frac(Offset p) => Offset(((p.dx - ox) / cw).clamp(0.0, 1.0), ((p.dy - oy) / ch).clamp(0.0, 1.0));
       final a = _dragA, b = _dragB;
+      final roi = (_insp['roi'] is List && (_insp['roi'] as List).length == 4)
+          ? (_insp['roi'] as List).map((v) => (v as num).toDouble()).toList()
+          : null;
       return GestureDetector(
         onPanStart: (d) => setState(() => _dragA = _dragB = frac(d.localPosition)),
         onPanUpdate: (d) => setState(() => _dragB = frac(d.localPosition)),
@@ -690,6 +698,22 @@ class _HomeState extends State<Home> {
         },
         child: Stack(children: [
           Positioned.fill(child: base),
+          // the red box: only a QR inside it is read; green for a moment once the label was accepted
+          if (roi != null && a == null)
+            Positioned(
+              left: ox + roi[0] * cw,
+              top: oy + roi[1] * ch,
+              width: (roi[2] - roi[0]) * cw,
+              height: (roi[3] - roi[1]) * ch,
+              child: IgnorePointer(
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: green ? Colors.greenAccent : const Color(0xFFDC143C), width: 4),
+                    color: (green ? Colors.greenAccent : const Color(0xFFDC143C)).withOpacity(0.10),
+                  ),
+                ),
+              ),
+            ),
           if (a != null && b != null)
             Positioned(
               left: ox + math.min(a.dx, b.dx) * cw,
@@ -702,7 +726,7 @@ class _HomeState extends State<Home> {
             bottom: 36,
             left: 0,
             right: 0,
-            child: Text('Drag a square around the QR code, then press Scan',
+            child: Text(green ? 'Label read - loading task' : 'Put the QR inside the red box (drag to change it)',
                 textAlign: TextAlign.center, style: TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold)),
           ),
         ]),
