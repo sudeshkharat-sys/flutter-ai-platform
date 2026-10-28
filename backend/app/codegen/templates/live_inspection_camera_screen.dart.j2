@@ -1141,7 +1141,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           tickStopwatch.stop();
           continue;
         }
+        final tickTaskIdx = _currentIndex;
         final detections = await ModelManager().predictFrame(_framePayload(frame));
+        // Task moved on while this tick was inferring: its boxes belong to the old task, drop them.
+        if (tickTaskIdx != _currentIndex) { tickStopwatch.stop(); continue; }
         _lastTickFrame = frame;
         final String? savedInput = ModelManager().takeSavedInputPath();
         if (savedInput != null) _addLog('Model input saved to $savedInput (model_input_*.jpg = what the detector sees)');
@@ -1366,7 +1369,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           tickStopwatch.stop();
           continue;
         }
+        final tickTaskIdx = _currentIndex;
         final detections = await ModelManager().predictFrame(_framePayload(frame));
+        // Task moved on while this tick was inferring: its boxes belong to the old task, drop them.
+        if (tickTaskIdx != _currentIndex) { tickStopwatch.stop(); continue; }
         _lastTickFrame = frame;
         final String? savedInput = ModelManager().takeSavedInputPath();
         if (savedInput != null) _addLog('Model input saved to $savedInput (model_input_*.jpg = what the detector sees)');
@@ -1884,6 +1890,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _bestResult = null;
       _mandatoryClassResults = {};
       _detectedNonTargetClasses = [];
+      _allDetections = [];
+      _liveTickDetections = [];
+      _lastTickConfident = [];
+      _lastTickFrame = null;
     });
     _loadCurrentModel();
   }
@@ -3790,7 +3800,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           tickStopwatch.stop();
           continue;
         }
+        final tickTaskIdx = _currentIndex;
         final detections = await ModelManager().predictFrame(_framePayload(frame));
+        // Task moved on while this tick was inferring: its boxes belong to the old task, drop them.
+        if (tickTaskIdx != _currentIndex) { tickStopwatch.stop(); continue; }
         _lastTickFrame = frame;
         final String? savedInput = ModelManager().takeSavedInputPath();
         if (savedInput != null) _addLog('Model input saved to $savedInput (model_input_*.jpg = what the detector sees)');
@@ -3996,7 +4009,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           tickStopwatch.stop();
           continue;
         }
+        final tickTaskIdx = _currentIndex;
         final detections = await ModelManager().predictFrame(_framePayload(frame));
+        // Task moved on while this tick was inferring: its boxes belong to the old task, drop them.
+        if (tickTaskIdx != _currentIndex) { tickStopwatch.stop(); continue; }
         _lastTickFrame = frame;
         final String? savedInput = ModelManager().takeSavedInputPath();
         if (savedInput != null) _addLog('Model input saved to $savedInput (model_input_*.jpg = what the detector sees)');
@@ -4457,6 +4473,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       _capturedImageBytes = null;
       _bestResult = null;
       _detectedNonTargetClasses = [];
+      _allDetections = [];
+      _liveTickDetections = [];
+      _lastTickConfident = [];
+      _lastTickFrame = null;
     });
     _loadCurrentModel();
   }

@@ -59,8 +59,8 @@ class StreamService : LifecycleService() {
     private var port = 8080
     private var width = 1280
     private var height = 720
-    private var maxFps = 20
-    private var quality = 70
+    private var maxFps = 15
+    private var quality = 55
     private var rotation = Surface.ROTATION_0
     private var front = false
     private var name = "phone"
@@ -97,8 +97,8 @@ class StreamService : LifecycleService() {
         port = intent?.getIntExtra("port", 8080) ?: 8080
         width = intent?.getIntExtra("width", 1280) ?: 1280
         height = intent?.getIntExtra("height", 720) ?: 720
-        maxFps = intent?.getIntExtra("fps", 20) ?: 20
-        quality = intent?.getIntExtra("quality", 70) ?: 70
+        maxFps = intent?.getIntExtra("fps", 15) ?: 15
+        quality = intent?.getIntExtra("quality", 55) ?: 55
         rotation = intent?.getIntExtra("rotation", Surface.ROTATION_0) ?: Surface.ROTATION_0
         front = intent?.getBooleanExtra("front", false) ?: false
         name = intent?.getStringExtra("name") ?: "phone"

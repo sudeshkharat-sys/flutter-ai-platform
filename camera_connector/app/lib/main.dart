@@ -31,8 +31,8 @@ class Cfg {
   int port = 8080;
   String name = 'phone-1';
   int w = 1280, h = 720;
-  int fps = 20;
-  int quality = 70;
+  int fps = 15; // hotspot (2.4 GHz) carries ~1 MB/s comfortably; 20+ fps queues and adds lag
+  int quality = 55;
   int rotation = 0; // Surface.ROTATION_*
   bool front = false;
   bool autofocus = false;
@@ -1084,7 +1084,7 @@ class _SettingsPageState extends State<SettingsPage> {
               child: DropdownButtonFormField<int>(
                 value: c.quality,
                 decoration: const InputDecoration(labelText: 'JPEG quality'),
-                items: [50, 60, 70, 80, 90].map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
+                items: [40, 50, 55, 60, 70, 80, 90].map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
                 onChanged: (v) => _edit(() => c.quality = v!),
               ),
             ),
