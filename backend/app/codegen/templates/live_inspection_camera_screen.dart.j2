@@ -737,7 +737,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  Future<void> _loadCurrentModel() async {
+  Future<void> _loadCurrentModel({bool retry = true}) async {
+    // a tick still inferring on the old task's model must finish before that model is closed and swapped
+    for (var i = 0; i < 40 && (_isAnalyzing || _watching); i++) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    if (!mounted) return;
     setState(() {
       _isLoadingModel = true;
       _isModelLoaded = false;
@@ -757,6 +762,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       }
     } catch (e, st) {
       _addLog("AI Init error: $e\n${st.toString().split('\n').take(6).join('\n')}");
+      if (retry && mounted) {
+        // one quiet retry (task change raced the old model) before showing the error screen
+        await Future.delayed(const Duration(milliseconds: 600));
+        return _loadCurrentModel(retry: false);
+      }
       if (mounted) setState(() => _error = "AI Init error: $e");
     }
   }
@@ -3398,7 +3408,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
   }
 
-  Future<void> _loadCurrentModel() async {
+  Future<void> _loadCurrentModel({bool retry = true}) async {
+    // a tick still inferring on the old task's model must finish before that model is closed and swapped
+    for (var i = 0; i < 40 && (_isAnalyzing || _watching); i++) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    if (!mounted) return;
     setState(() {
       _isLoadingModel = true;
       _isModelLoaded = false;
@@ -3417,6 +3432,11 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       }
     } catch (e, st) {
       _addLog("AI Init error: $e\n${st.toString().split('\n').take(6).join('\n')}");
+      if (retry && mounted) {
+        // one quiet retry (task change raced the old model) before showing the error screen
+        await Future.delayed(const Duration(milliseconds: 600));
+        return _loadCurrentModel(retry: false);
+      }
       if (mounted) setState(() => _error = "AI Init error: $e");
     }
   }
