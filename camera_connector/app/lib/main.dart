@@ -722,12 +722,12 @@ class _HomeState extends State<Home> {
               height: (a.dy - b.dy).abs() * ch,
               child: Container(decoration: BoxDecoration(border: Border.all(color: Colors.greenAccent, width: 3), color: Colors.greenAccent.withOpacity(0.15))),
             ),
-          const Positioned(
+          Positioned(
             bottom: 36,
             left: 0,
             right: 0,
             child: Text(green ? 'Label read - loading task' : 'Put the QR inside the red box (drag to change it)',
-                textAlign: TextAlign.center, style: TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                textAlign: TextAlign.center, style: const TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold)),
           ),
         ]),
       );
