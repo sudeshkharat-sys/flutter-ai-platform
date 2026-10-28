@@ -326,6 +326,21 @@ class Inspector:
             cfg["mandatory"] = [n for n in names.values() if n not in cfg["fail"] and n not in cfg["ignored"]]
         return cfg
 
+    def phone_reconnected(self):
+        """The phone app (re)started and registered: a scan clock that ran while no phone was streaming must not count,
+        and a NOT FOUND that was only the old stream dying is thrown away (fresh scan)."""
+        if self.preview:
+            return
+        if self.state == "scanning":
+            self.started_at = time.time() + float(self.cfg.get("settle_seconds", 1.5))
+            self.tracker.reset()
+            self.blur.reset()
+            self._last_good = []
+            self.log("phone reconnected -- scan timer restarted")
+        elif self.state == "done" and self.result == NOT_FOUND:
+            self.log("phone reconnected -- discarding the old NOT FOUND, scanning again")
+            self._restart.set()
+
     def set_preview(self, on):
         """Boxes-only mode: keeps detecting and drawing, never decides OK / NOT OK."""
         self.preview = bool(on)
@@ -574,7 +589,7 @@ class Inspector:
                     continue
                 last_frame_no = fid
                 now_f = time.time()
-                if self.state == "scanning" and self._last_frame_t and now_f - self._last_frame_t > 6.0:
+                if self.state == "scanning" and self._last_frame_t and now_f - self._last_frame_t > 3.0:
                     # No frames for a while (phone was disconnected / app closed / camera stalled): the time that passed
                     # was not scanning time. Without this the first frame after reconnecting hit the old deadline -> instant NOT FOUND.
                     self.log(f"frames resumed after {now_f - self._last_frame_t:.0f}s -- scan timer restarted")

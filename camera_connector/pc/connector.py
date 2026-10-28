@@ -722,6 +722,8 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = diagnose(url, opencv_failed=False)
             if ok:
                 connect(url, name)
+                if INSPECTOR:
+                    INSPECTOR.phone_reconnected()
                 msg += " -- PC is now reading the stream"
             self._send(json.dumps({"ok": ok, "message": msg}))
         elif u.path == "/api/connect":

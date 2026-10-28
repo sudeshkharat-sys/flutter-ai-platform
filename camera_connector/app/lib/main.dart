@@ -189,6 +189,7 @@ class _HomeState extends State<Home> {
   String _prevInspState = '';
   Map<String, dynamic> _insp = {};
   String _lastResult = '';
+  bool _inspSeeded = false;
   bool _inspBusy = false;
   int _inspFails = 0;
   DateTime _lastRetry = DateTime.fromMillisecondsSinceEpoch(0);
@@ -284,7 +285,11 @@ class _HomeState extends State<Home> {
         if (_inspFails >= 3) _dlog('PC link OK again');
         _inspFails = 0;
         final r = (j['state'] == 'done' ? (j['result'] ?? '') : '').toString();
-        if (r.isNotEmpty && r != _lastResult) {
+        if (!_inspSeeded) {
+          // result already on the PC when this app started is old news: no buzz for it
+          _inspSeeded = true;
+          _lastResult = r;
+        } else if (r.isNotEmpty && r != _lastResult) {
           final seen = ((j['detections'] as List?) ?? const [])
               .map((d) => '${d['name']} ${((d['conf'] ?? 0) * 100).round()}%')
               .join(', ');

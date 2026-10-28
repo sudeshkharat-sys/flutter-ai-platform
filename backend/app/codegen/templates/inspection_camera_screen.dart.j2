@@ -358,8 +358,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             : "OCR CLASSIFIER: FAILED TO LOAD -- ${ModelManager().ocrLoadError ?? 'unknown error'}");
 {% endif %}
       }
-    } catch (e) {
-      _addLog("AI Init error: $e");
+    } catch (e, st) {
+      _addLog("AI Init error: $e\n${st.toString().split('\n').take(6).join('\n')}");
       if (mounted) setState(() => _error = "AI Init error: $e");
     }
   }
@@ -1828,8 +1828,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
             : "OCR CLASSIFIER: FAILED TO LOAD -- ${ModelManager().ocrLoadError ?? 'unknown error'}");
 {% endif %}
       }
-    } catch (e) {
-      _addLog("AI Init error: $e");
+    } catch (e, st) {
+      _addLog("AI Init error: $e\n${st.toString().split('\n').take(6).join('\n')}");
       if (mounted) setState(() => _error = "AI Init error: $e");
     }
   }
