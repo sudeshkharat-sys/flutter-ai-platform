@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Brain, Trash2, Plus, CheckCircle2, Download } from 'lucide-react';
-import { getModels, deleteModel, downloadModelPt } from '../api';
+import { Brain, Trash2, Plus, CheckCircle2, Download, RefreshCw } from 'lucide-react';
+import { getModels, deleteModel, downloadModelPt, replaceModelPt, getModelStatus } from '../api';
 import ConfirmModal from './ConfirmModal';
 import '../styles/ModelsBrowser.css';
 
@@ -9,6 +9,8 @@ export default function ModelLibrary() {
   const [models, setModels] = useState([]);
   const [loading, setLoading] = useState(true);
   const [confirmConfig, setConfirmConfig] = useState(null);
+  const [replacing, setReplacing] = useState({}); // id -> 'converting' | error text
+  const fileInputs = useRef({});
 
   useEffect(() => {
     getModels()
@@ -28,6 +30,31 @@ export default function ModelLibrary() {
       a.click(); URL.revokeObjectURL(url);
     } catch {
       alert('PT download failed.');
+    }
+  };
+
+  // Swap in an updated .pt for the SAME model: it keeps its id, so apps/tasks
+  // using it keep their Mandatory/Ignore class rules (no re-setup).
+  const handleReplacePt = async (id, file) => {
+    if (!file) return;
+    setReplacing(r => ({ ...r, [id]: 'converting' }));
+    try {
+      await replaceModelPt(id, file);
+      const poll = async () => {
+        const st = (await getModelStatus(id)).data;
+        if (st.status === 'ready') {
+          const all = (await getModels()).data;
+          setModels(all.filter(m => m.status === 'ready' || m.id === id));
+          setReplacing(r => { const n = { ...r }; delete n[id]; return n; });
+        } else if (st.status === 'error') {
+          setReplacing(r => ({ ...r, [id]: st.error_message || 'Conversion failed' }));
+        } else {
+          setTimeout(poll, 3000);
+        }
+      };
+      poll();
+    } catch (e) {
+      setReplacing(r => ({ ...r, [id]: e?.response?.data?.detail || 'Replace failed' }));
     }
   };
 
@@ -102,12 +129,31 @@ export default function ModelLibrary() {
                 )}
               </div>
 
+              {replacing[model.id] && replacing[model.id] !== 'converting' && (
+                <div style={{ color: '#e74c3c', fontSize: 12, margin: '6px 0' }}>{replacing[model.id]}</div>
+              )}
               <div className="model-card-footer">
                 <div className="model-status-badge">
                   <CheckCircle2 size={12} />
                   Ready
                 </div>
                 <div className="model-card-actions">
+                  <input
+                    type="file"
+                    accept=".pt"
+                    style={{ display: 'none' }}
+                    ref={el => { fileInputs.current[model.id] = el; }}
+                    onChange={e => { handleReplacePt(model.id, e.target.files[0]); e.target.value = ''; }}
+                  />
+                  <button
+                    className="btn-secondary"
+                    disabled={replacing[model.id] === 'converting'}
+                    title="Upload an updated .pt for this model. Its class rules in existing apps are kept."
+                    onClick={() => fileInputs.current[model.id]?.click()}
+                  >
+                    <RefreshCw size={13} />
+                    {replacing[model.id] === 'converting' ? 'Converting...' : 'Replace .pt'}
+                  </button>
                   <button className="btn-secondary" onClick={() => handleDownloadPt(model.id, model.vision_project_name)}>
                     <Download size={13} />
                     Download .pt

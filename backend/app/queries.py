@@ -108,6 +108,12 @@ class ModelAssetQueries:
         SET classes = :classes
         WHERE id = :id
     """
+    REPLACE_MODEL_PT = """
+        UPDATE model_assets
+        SET classes = :classes, input_size = :input_size, tflite_path = NULL, labels_path = NULL,
+            status = 'pending', error_message = NULL, conversion_log = ''
+        WHERE id = :id
+    """
     DELETE_MODEL = "DELETE FROM model_assets WHERE id = :id"
 
 class QueryValidator:

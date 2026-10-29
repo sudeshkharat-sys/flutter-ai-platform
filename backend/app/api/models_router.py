@@ -193,6 +193,71 @@ def upload_model(
     rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": asset_id})
     return rows[0]
 
+@router.post("/{model_asset_id}/replace-pt", response_model=ModelAssetResponse)
+def replace_model_pt(
+    model_asset_id: str,
+    file: UploadFile = File(...),
+    db: StateDBConnector = Depends(get_db_connector),
+):
+    """Swap in an updated .pt for an existing model and re-convert it.
+
+    The model keeps its id, so every app / task that already points at it keeps
+    its per-class Mandatory / Ignore rules and wiring -- nothing has to be set
+    up again (uploading as a new model would give it a new id and lose all of
+    that). Rules are keyed by class name, so they carry over for every class
+    that still exists in the new .pt. Rebuild the app afterwards to bundle the
+    new model.
+    """
+    rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})
+    if not rows:
+        raise HTTPException(status_code=404, detail="Model asset not found")
+    asset = rows[0]
+    if not file.filename.endswith(".pt"):
+        raise HTTPException(status_code=422, detail="Only .pt model files are supported.")
+    if not asset["pt_path"]:
+        raise HTTPException(status_code=422, detail="This model was not built from a .pt (e.g. an OCR bundle), so its .pt cannot be replaced.")
+    if asset["status"] == "converting":
+        raise HTTPException(status_code=409, detail="This model is being converted right now. Try again when it finishes.")
+
+    model_dir = Path(asset["pt_path"]).parent
+    new_pt = model_dir / "new_upload.pt"
+    with open(new_pt, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    task = model_task_of_pt(str(new_pt))
+    is_classifier = asset["model_kind"] == "classifier"
+    if is_classifier and task != "classify":
+        new_pt.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=f"This is a '{task}' model, but the model being replaced is a classifier.")
+    if not is_classifier and task == "classify":
+        new_pt.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="This is a classifier .pt, but the model being replaced is a detector.")
+
+    input_size = (extract_imgsz_from_pt(str(new_pt)) or 224) if is_classifier else asset["input_size"]
+    class_list = extract_classes_from_pt(str(new_pt)) or []
+
+    # Clear the previous export so the converter cannot pick up the old .tflite.
+    for child in model_dir.iterdir():
+        if child == new_pt:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+    pt_path = model_dir / "model.pt"
+    new_pt.replace(pt_path)
+
+    db.execute_update(ModelAssetQueries.REPLACE_MODEL_PT, {
+        "id": model_asset_id,
+        "classes": json.dumps(class_list),
+        "input_size": input_size,
+    })
+    convert_model_to_tflite.delay(model_asset_id)
+
+    rows = db.execute_query(ModelAssetQueries.GET_MODEL_BY_ID, {"id": model_asset_id})
+    return rows[0]
+
+
 @router.post("/upload-ocr", response_model=ModelAssetResponse)
 def upload_ocr_model(
     tflite_file: UploadFile = File(...),

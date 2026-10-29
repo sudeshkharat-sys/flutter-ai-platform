@@ -68,6 +68,11 @@ export const extractClasses = (file) => {
 export const getModels      = ()         => api.get('/models');
 export const getModelStatus = (id) => api.get(`/models/${id}/status`);
 export const detectModelClasses = (id) => api.post(`/models/${id}/detect-classes`);
+export const replaceModelPt = (id, file) => {
+  const form = new FormData();
+  form.append('file', file);
+  return api.post(`/models/${id}/replace-pt`, form, { headers: { 'Content-Type': 'multipart/form-data' } });
+};
 export const deleteModel = (id) => api.delete(`/models/${id}`);
 export const downloadModelPt = (id) =>
   api.get(`/models/${id}/download-pt`, { responseType: 'blob' });
