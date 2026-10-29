@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, downloadPcPack, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl, uploadOcrModel } from '../api';
+import { getApp, getModels, buildAPK, downloadAPK, downloadPcPack, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl, uploadOcrModel, replaceModelPt } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -109,6 +109,29 @@ export default function AppBuilder() {
       let msg = 'PC pack download failed.';
       try { msg = JSON.parse(await e.response.data.text()).detail || msg; } catch { /* keep default */ }
       alert(msg);
+    }
+  };
+
+  // Swap in an updated .pt for a model already in this app. Same model id, so the
+  // tasks keep their Mandatory/Ignore class rules -- nothing to set up again.
+  const [replacingId, setReplacingId] = useState(null);
+  const handleReplacePt = async (mid, file) => {
+    if (!file) return;
+    setReplacingId(mid);
+    try {
+      await replaceModelPt(mid, file);
+      for (;;) {
+        await new Promise(r => setTimeout(r, 3000));
+        const st = (await getModelStatus(mid)).data;
+        if (st.status === 'ready') break;
+        if (st.status === 'error') throw new Error(st.error_message || 'Conversion failed');
+      }
+      await loadData();
+      alert('Model replaced. Your class rules were kept. Rebuild the APK to bundle the new model.');
+    } catch (e) {
+      alert(e?.response?.data?.detail || e.message || 'Replace failed.');
+    } finally {
+      setReplacingId(null);
     }
   };
 
@@ -370,7 +393,14 @@ export default function AppBuilder() {
               {modelAssets.length > 0 ? modelAssets.map(m => (
                 <div key={m.id} style={{ padding: '10px 14px', background: 'var(--surface)', borderRadius: 10, border: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ fontSize: 12, fontWeight: 700 }}>{m.vision_project_name}</div>
-                  <button onClick={() => removeModel(m.id)} style={{ background: 'transparent', border: 'none', color: 'var(--error)', cursor: 'pointer', fontSize: 14 }}>×</button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <label style={{ color: C.accent, fontSize: 11, fontWeight: 700, cursor: replacingId ? 'not-allowed' : 'pointer' }} title="Upload an updated .pt for this model; its class rules are kept">
+                      {replacingId === m.id ? 'Converting...' : 'Replace .pt'}
+                      <input type="file" accept=".pt" style={{ display: 'none' }} disabled={!!replacingId}
+                        onChange={e => { handleReplacePt(m.id, e.target.files[0]); e.target.value = ''; }} />
+                    </label>
+                    <button onClick={() => removeModel(m.id)} style={{ background: 'transparent', border: 'none', color: 'var(--error)', cursor: 'pointer', fontSize: 14 }}>×</button>
+                  </div>
                 </div>
               )) : <div style={{ color: C.muted, fontSize: 11, textAlign: 'center' }}>No models added.</div>}
             </div>
