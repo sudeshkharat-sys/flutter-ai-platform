@@ -351,14 +351,18 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
   /// the camera moves away, so the operator just keeps aiming until the
   /// right (mapped) code is read.
   String? _scanError;
+  bool _scanErrorUnmapped = false;
   Timer? _scanErrorTimer;
 
-  void _showErrorDialog(String message) {
+  /// [unmapped] = the QR has the right pattern for this scan type but the
+  /// code has no task / master data (vs. a QR of the wrong kind altogether).
+  void _showErrorDialog(String message, {bool unmapped = false}) {
     if (!mounted) return;
     setState(() {
       _isProcessing = false;
       _pendingBarcode = null;
       _scanError = message;
+      _scanErrorUnmapped = unmapped;
     });
     _scanErrorTimer?.cancel();
     _scanErrorTimer = Timer(const Duration(milliseconds: 2500), () {
@@ -428,7 +432,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% if unmapped_code_auto_submit %}
         _showUnmappedCodeDialog(engineSerial, partNo);
 {% else %}
-        _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+        _showErrorDialog('Engine code not found. Please add it and rebuild the app.', unmapped: true);
 {% endif %}
         return;
       }
@@ -501,7 +505,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% if unmapped_code_auto_submit %}
         _showUnmappedCodeDialog(engineSerial, partNo);
 {% else %}
-        _showErrorDialog('Engine code not found. Please add it and rebuild the app.');
+        _showErrorDialog('Engine code not found. Please add it and rebuild the app.', unmapped: true);
 {% endif %}
         return;
       }
@@ -578,7 +582,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% if unmapped_code_auto_submit %}
       _showUnmappedCodeDialog(vin, extractedModelCode);
 {% else %}
-      _showErrorDialog('Model code is not present, please add code and rebuild app.');
+      _showErrorDialog('Model code is not present, please add code and rebuild app.', unmapped: true);
 {% endif %}
       return;
     }
@@ -671,7 +675,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% if unmapped_code_auto_submit %}
       _showUnmappedCodeDialog(vin, extractedModelCode);
 {% else %}
-      _showErrorDialog('Model code is not present, please add code and rebuild app.');
+      _showErrorDialog('Model code is not present, please add code and rebuild app.', unmapped: true);
 {% endif %}
       return;
     }
@@ -729,7 +733,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% if unmapped_code_auto_submit %}
       _showUnmappedCodeDialog(vin, extractedModelCode);
 {% else %}
-      _showErrorDialog('Model code is not present, please add code and rebuild app.');
+      _showErrorDialog('Model code is not present, please add code and rebuild app.', unmapped: true);
 {% endif %}
       return;
     }
@@ -1075,14 +1079,16 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
                       bottom: 16,
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                        decoration: BoxDecoration(color: const Color(0xFFDC143C), borderRadius: BorderRadius.circular(8)),
+                        decoration: BoxDecoration(color: _scanErrorUnmapped ? const Color(0xFFEF6C00) : const Color(0xFFDC143C), borderRadius: BorderRadius.circular(8)),
                         child: Row(
                           children: [
                             const Icon(Icons.error_outline, color: Colors.white),
                             const SizedBox(width: 10),
                             Expanded(
                               child: Text(
-                                '{% if scan_type == 'engine' %}Wrong QR - not the right engine{% elif scan_type == 'chakan' %}Wrong QR - not the right Chakan plant vehicle{% else %}Wrong QR - not the right vehicle{% endif %}\n$_scanError',
+                                _scanErrorUnmapped
+                                    ? '{% if scan_type == 'engine' %}QR is right, but this engine is not mapped - no task for it{% elif scan_type == 'chakan' %}QR is right, but this Chakan vehicle is not mapped - no task for it{% else %}QR is right, but this VIN is not mapped - no task for it{% endif %}\n$_scanError'
+                                    : '{% if scan_type == 'engine' %}Wrong QR - this is not an engine QR{% elif scan_type == 'chakan' %}Wrong QR - this is not a Chakan plant QR{% else %}Wrong QR - this is not a VIN QR{% endif %}\n$_scanError',
                                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                               ),
                             ),
