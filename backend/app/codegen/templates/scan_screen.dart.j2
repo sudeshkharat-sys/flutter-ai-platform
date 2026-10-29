@@ -355,7 +355,6 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 
   void _showErrorDialog(String message) {
     if (!mounted) return;
-    HapticFeedback.heavyImpact();
     setState(() {
       _isProcessing = false;
       _pendingBarcode = null;
