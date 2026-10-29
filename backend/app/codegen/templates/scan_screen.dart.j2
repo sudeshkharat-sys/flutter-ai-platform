@@ -358,6 +358,38 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
   /// code has no task / master data (vs. a QR of the wrong kind altogether).
   void _showErrorDialog(String message, {bool unmapped = false}) {
     if (!mounted) return;
+    if (unmapped) {
+      // Right kind of QR but nothing mapped for it: this one is a real stop,
+      // so keep the blocking pop-up (the operator must acknowledge it).
+      _scanErrorTimer?.cancel();
+      _scannerController.stop();
+      setState(() {
+        _scanError = null;
+        _pendingBarcode = null;
+      });
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('{% if scan_type == 'engine' %}Engine not mapped{% elif scan_type == 'chakan' %}Chakan vehicle not mapped{% else %}VIN not mapped{% endif %}',
+              style: TextStyle(color: Color(0xFFDC143C), fontWeight: FontWeight.bold)),
+          content: Text('The QR is correct, but there is no task for it.\n\n$message'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                if (mounted) {
+                  setState(() => _isProcessing = false);
+                  _restartScanner();
+                }
+              },
+              child: const Text('OK', style: TextStyle(color: Color(0xFFDC143C))),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     setState(() {
       _isProcessing = false;
       _pendingBarcode = null;
