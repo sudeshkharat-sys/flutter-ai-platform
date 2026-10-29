@@ -1082,7 +1082,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
                             const SizedBox(width: 10),
                             Expanded(
                               child: Text(
-                                'Wrong QR: $_scanError',
+                                '{% if scan_type == 'engine' %}Wrong QR - not the right engine{% elif scan_type == 'chakan' %}Wrong QR - not the right Chakan plant vehicle{% else %}Wrong QR - not the right vehicle{% endif %}\n$_scanError',
                                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                               ),
                             ),
