@@ -342,12 +342,30 @@ class _HomeState extends State<Home> {
       // PC unreachable for ~7 s: try to register again (at most every 20 s)
       if (_inspFails >= 10 && DateTime.now().difference(_lastRetry).inSeconds >= 20) {
         _lastRetry = DateTime.now();
-        _dlog('PC not answering -- trying to reconnect', 'WARN');
-        _sendToPc();
+        _dlog('PC not answering -- looking for it again (its address may have changed)', 'WARN');
+        _refindPc().then((_) => _sendToPc());
       }
     } finally {
       c.close(force: true);
       _inspBusy = false;
+    }
+  }
+
+  /// The saved PC address goes stale when the network changes (new hotspot, new Wi-Fi): scan for the PC and save what is found.
+  Future<void> _refindPc() async {
+    try {
+      final l = await findPcs(int.tryParse('${_pc?['port']}') ?? 8095);
+      if (l.isNotEmpty) {
+        final old = _pc;
+        cfg.pc = l.first;
+        await cfg.save();
+        _dlog('PC found again at ${l.first['ip']}:${l.first['port']} (was ${old?['ip']})');
+        if (mounted) setState(() {});
+      } else {
+        _dlog('PC not found on this network', 'WARN');
+      }
+    } catch (e) {
+      _dlog('PC search failed: ${e.runtimeType}', 'WARN');
     }
   }
 
@@ -533,6 +551,7 @@ class _HomeState extends State<Home> {
         await Future.delayed(const Duration(seconds: 1)); // let the camera bind first
       }
       await _ch.invokeMethod('setZoom', {'ratio': _zooms[cfg.zoomIdx]});
+      if (await _reach([_pc!['ip']], int.tryParse('${_pc!['port']}') ?? 8095) == null) await _refindPc();
       await _sendToPc();
     } on PlatformException catch (e) {
       setState(() => _msg = 'start failed: ${e.message}');
