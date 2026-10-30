@@ -354,6 +354,8 @@ class Inspector:
             # (else the old start time makes the time limit expire at once -> NOT FOUND within seconds)
             self.state, self.message = "waiting", "waiting for the phone camera..."
             self.result, self.dets = None, []
+            self._votes = 0
+            self.started_at = time.time() + float(self.cfg.get("settle_seconds", 1.5))
             if self.tracker:
                 self.tracker.reset()
         self.log(f"preview (boxes only) {'ON' if self.preview else 'OFF'}")
@@ -591,6 +593,7 @@ class Inspector:
                     time.sleep(0.01)
                     continue
                 last_frame_no = fid
+                was_preview = self.preview
                 now_f = time.time()
                 if self.state == "scanning" and self._last_frame_t and now_f - self._last_frame_t > 3.0:
                     # No frames for a while (phone was disconnected / app closed / camera stalled): the time that passed
@@ -673,6 +676,11 @@ class Inspector:
                     self.log(f"scan time ({self.case_cfg.scan_seconds:.0f}s) elapsed ({elapsed:.1f}s since start, {self._votes} voting frames, "
                              f"task {self.task_name}) -- last frame decides: {result}")
 
+                if self.preview != was_preview or self.state != "scanning":
+                    # Start (boxes-only -> inspection) was pressed while this frame was being processed: a verdict computed
+                    # with the OLD scan clock must not become the result (it showed NOT FOUND the moment Start was clicked)
+                    last_frame_no = -1
+                    continue
                 annotated = self._draw(cv2, img, boxes)
                 if result:
                     self._finish(cv2, result, img, annotated, dets)
