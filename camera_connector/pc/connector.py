@@ -37,6 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import cv2
+import numpy as np
 
 from inspector import Inspector, load_config, load_tasks
 import pack as packmod
@@ -616,6 +617,42 @@ async function tick(){try{
 setInterval(tick,1000);tick();</script>"""
 
 
+PREVIEW_W = 800            # phone preview is shrunk to this width: a phone screen needs no more, and it decodes fast
+_PREVIEW_CACHE = {}        # reader key -> (frame token, jpeg bytes)
+
+
+def preview_jpeg(r):
+    """(token, jpeg) of what the phone app should show for reader r; encoded once per new frame / result."""
+    ins = INSPECTOR
+    if r is None:
+        return None, None
+    if ins is not None and r is active_reader() and ins.state in ("scanning", "done") and ins.display:
+        tok = ("a", id(ins.display))
+        hit = _PREVIEW_CACHE.get(r.key)
+        if hit and hit[0] == tok:
+            return hit
+        arr = cv2.imdecode(np.frombuffer(ins.display, np.uint8), cv2.IMREAD_COLOR)
+        jpg = _shrink_jpeg(arr) if arr is not None else ins.display
+        _PREVIEW_CACHE[r.key] = (tok, jpg)
+        return _PREVIEW_CACHE[r.key]
+    f, fid = r.get()
+    if f is None:
+        return None, None
+    tok = fid  # the phone draws its own red scan box on top; nothing is burnt into this picture
+    hit = _PREVIEW_CACHE.get(r.key)
+    if hit and hit[0] == tok:
+        return hit
+    _PREVIEW_CACHE[r.key] = (tok, _shrink_jpeg(f))
+    return _PREVIEW_CACHE[r.key]
+
+
+def _shrink_jpeg(img):
+    h, w = img.shape[:2]
+    if w > PREVIEW_W:
+        img = cv2.resize(img, (PREVIEW_W, int(h * PREVIEW_W / w)), interpolation=cv2.INTER_AREA)
+    return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 60])[1].tobytes()
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -624,11 +661,13 @@ class Handler(BaseHTTPRequestHandler):
         if "/api/" not in line and "/video" not in line:
             log("http " + line, debug_only=True)
 
-    def _send(self, body, ctype="application/json", code=200):
+    def _send(self, body, ctype="application/json", code=200, extra=None):
         if isinstance(body, str):
             body = body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -676,24 +715,24 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/log":
             self._send(json.dumps(list(LOG)[-200:]))
         elif u.path == "/preview.jpg":
-            # what the PC shows for this phone (boxes / result when it is the inspected one) -- used by the phone app
+            # what the PC shows for this phone (boxes / result when it is the inspected one) -- used by the phone app.
+            # Long-poll: ?after=<X-Fid of the last picture> waits (<=1 s) for a NEW picture, so the phone gets each
+            # frame as soon as it exists (no fixed polling delay) and the PC never re-encodes the same frame twice.
             r = self._cam(q.get("cam", [None])[0])
-            ins = INSPECTOR
-            jpg = ins.display if (ins is not None and r is not None and r is active_reader()
-                                  and ins.state in ("scanning", "done") and ins.display) else None
-            if jpg is None:
-                f = r.get()[0] if r else None
-                if f is None:
-                    return self._send("no frame yet", "text/plain", 404)
-                if ins is not None and ins.scan_roi and ins.state == "idle":
-                    f = f.copy()
-                    h, w = f.shape[:2]
-                    r = ins.scan_roi
-                    cv2.rectangle(f, (int(r[0] * w), int(r[1] * h)), (int(r[2] * w), int(r[3] * h)), (0, 255, 0), 3)
-                    cv2.putText(f, "scan label here", (int(r[0] * w) + 6, max(24, int(r[1] * h) - 8)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 60])[1].tobytes()
-            self._send(jpg, "image/jpeg")
+            try:
+                after = q.get("after", [""])[0]
+            except Exception:
+                after = ""
+            t0 = time.time()
+            while True:
+                fid, jpg = preview_jpeg(r)
+                if jpg is None:
+                    if time.time() - t0 > 1.0:
+                        return self._send("no frame yet", "text/plain", 404)
+                elif str(fid) != after or time.time() - t0 > 1.0:
+                    break
+                time.sleep(0.01)
+            self._send(jpg, "image/jpeg", extra={"X-Fid": str(fid)})
         elif u.path == "/snapshot.jpg":
             r = first_reader(q.get("cam", [None])[0])
             f = r.get()[0] if r else None

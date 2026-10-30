@@ -175,7 +175,9 @@ class _HomeState extends State<Home> {
   String _msg = '';
   bool _connecting = false;
   Timer? _timer;
-  Timer? _previewTimer;
+  HttpClient? _previewClient; // one kept-alive connection for the picture (no new TCP connect per frame)
+  String _previewFid = '';
+  bool _alive = true;
   Timer? _inspTimer;
 
   // what the PC sees (with boxes), polled as JPEG snapshots
@@ -217,14 +219,15 @@ class _HomeState extends State<Home> {
     setState(() => _loaded = true);
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _poll());
     _inspTimer = Timer.periodic(const Duration(milliseconds: 700), (_) => _fetchInsp());
-    _previewTimer = Timer.periodic(const Duration(milliseconds: 300), (_) => _fetchPreview());
+    _previewLoop();
     _poll();
   }
 
   @override
   void dispose() {
     _timer?.cancel();
-    _previewTimer?.cancel();
+    _alive = false;
+    _previewClient?.close(force: true);
     _inspTimer?.cancel();
     super.dispose();
   }
@@ -242,33 +245,48 @@ class _HomeState extends State<Home> {
     }
   }
 
-  /// One snapshot of what the PC shows for this phone (boxes / result included).
-  Future<void> _fetchPreview() async {
-    final pc = _pc;
-    if (pc == null || !_running || _previewBusy) return;
-    _previewBusy = true;
-    final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
-    try {
-      final req = await c
-          .getUrl(Uri.parse('http://${pc['ip']}:${pc['port']}/preview.jpg?cam=me&t=${DateTime.now().millisecondsSinceEpoch}'))
-          .timeout(const Duration(seconds: 3));
-      final res = await req.close().timeout(const Duration(seconds: 3));
-      if (res.statusCode == 200) {
-        final b = BytesBuilder();
+  /// The picture the PC shows for this phone (boxes / result included). The PC answers as soon as a NEW picture
+  /// exists (long-poll, `after=`), so the picture arrives at camera speed instead of every 300 ms + connect time.
+  Future<void> _previewLoop() async {
+    while (_alive) {
+      final pc = _pc;
+      if (pc == null || !_running) {
+        await Future.delayed(const Duration(milliseconds: 300));
+        continue;
+      }
+      _previewBusy = true;
+      try {
+        final c = _previewClient ??= (HttpClient()
+          ..connectionTimeout = const Duration(seconds: 2)
+          ..idleTimeout = const Duration(seconds: 30));
+        final req = await c
+            .getUrl(Uri.parse('http://${pc['ip']}:${pc['port']}/preview.jpg?cam=me&after=$_previewFid'))
+            .timeout(const Duration(seconds: 3));
+        final res = await req.close().timeout(const Duration(seconds: 4));
+        final b = BytesBuilder(copy: false);
         await for (final chunk in res) {
           b.add(chunk);
         }
-        if (mounted) setState(() {
-          _previewJpg = b.takeBytes();
-          _imgSize = _jpegSize(_previewJpg!) ?? _imgSize;
-          _previewAt = DateTime.now();
-        });
+        if (res.statusCode == 200) {
+          _previewFid = res.headers.value('x-fid') ?? '';
+          final jpg = b.takeBytes();
+          if (mounted) setState(() {
+            _previewJpg = jpg;
+            _imgSize = _jpegSize(jpg) ?? _imgSize;
+            _previewAt = DateTime.now();
+          });
+        } else {
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
+      } catch (_) {
+        // the old picture goes stale and is greyed out; start a fresh connection next time
+        _previewClient?.close(force: true);
+        _previewClient = null;
+        _previewFid = '';
+        await Future.delayed(const Duration(milliseconds: 500));
+      } finally {
+        _previewBusy = false;
       }
-    } catch (_) {
-      // the old picture goes stale and is greyed out
-    } finally {
-      c.close(force: true);
-      _previewBusy = false;
     }
   }
 
@@ -664,6 +682,28 @@ class _HomeState extends State<Home> {
     );
   }
 
+  /// Corner `q` pulled onto a perfect square (in picture pixels) that starts at corner `p`.
+  Offset _squareFrom(Offset p, Offset q, Size size) {
+    final side = math.max((q.dx - p.dx).abs() * size.width, (q.dy - p.dy).abs() * size.height);
+    final sx = (q.dx >= p.dx ? 1 : -1) * side / size.width, sy = (q.dy >= p.dy ? 1 : -1) * side / size.height;
+    return Offset((p.dx + sx).clamp(0.0, 1.0), (p.dy + sy).clamp(0.0, 1.0));
+  }
+
+  bool _roiFixing = false;
+
+  /// Like the inspection app: the scan box is a perfect square. Square it (centred) if the PC still has a wide one.
+  void _ensureSquareRoi(List<double>? roi, Size size) {
+    if (_roiFixing) return;
+    if (roi != null) {
+      final wpx = (roi[2] - roi[0]) * size.width, hpx = (roi[3] - roi[1]) * size.height;
+      if ((wpx - hpx).abs() / math.max(wpx, hpx) < 0.04) return;
+    }
+    _roiFixing = true;
+    final side = 0.45 * math.min(size.width, size.height);
+    final sx = side / size.width, sy = side / size.height;
+    _setRoi(0.5 - sx / 2, 0.5 - sy / 2, 0.5 + sx / 2, 0.5 + sy / 2).whenComplete(() => Future.delayed(const Duration(seconds: 2), () => _roiFixing = false));
+  }
+
   Widget _pcView() {
     final stale = DateTime.now().difference(_previewAt).inSeconds >= 3;
     final base = Container(
@@ -686,9 +726,10 @@ class _HomeState extends State<Home> {
       final roi = (_insp['roi'] is List && (_insp['roi'] as List).length == 4)
           ? (_insp['roi'] as List).map((v) => (v as num).toDouble()).toList()
           : null;
+      if (_packIdle) WidgetsBinding.instance.addPostFrameCallback((_) => _ensureSquareRoi(roi, size));
       return GestureDetector(
         onPanStart: (d) => setState(() => _dragA = _dragB = frac(d.localPosition)),
-        onPanUpdate: (d) => setState(() => _dragB = frac(d.localPosition)),
+        onPanUpdate: (d) => setState(() => _dragB = _squareFrom(_dragA!, frac(d.localPosition), size)),
         onPanEnd: (_) {
           final p = _dragA, q = _dragB;
           setState(() => _dragA = _dragB = null);
@@ -706,12 +747,7 @@ class _HomeState extends State<Home> {
               width: (roi[2] - roi[0]) * cw,
               height: (roi[3] - roi[1]) * ch,
               child: IgnorePointer(
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: green ? Colors.greenAccent : const Color(0xFFDC143C), width: 4),
-                    color: (green ? Colors.greenAccent : const Color(0xFFDC143C)).withOpacity(0.10),
-                  ),
-                ),
+                child: _scanFrame(green ? Colors.greenAccent : const Color(0xFFDC143C)),
               ),
             ),
           if (a != null && b != null)
@@ -732,6 +768,34 @@ class _HomeState extends State<Home> {
         ]),
       );
     });
+  }
+
+  /// The inspection app's scan frame: thin square outline with thick corner brackets.
+  Widget _scanFrame(Color c) {
+    Widget bracket({double? top, double? bottom, double? left, double? right, required bool t, required bool l}) => Positioned(
+          top: top, bottom: bottom, left: left, right: right,
+          child: Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              border: Border(
+                top: t ? BorderSide(color: c, width: 3) : BorderSide.none,
+                bottom: !t ? BorderSide(color: c, width: 3) : BorderSide.none,
+                left: l ? BorderSide(color: c, width: 3) : BorderSide.none,
+                right: !l ? BorderSide(color: c, width: 3) : BorderSide.none,
+              ),
+            ),
+          ),
+        );
+    return Container(
+      decoration: BoxDecoration(border: Border.all(color: c, width: 2)),
+      child: Stack(children: [
+        bracket(top: 0, left: 0, t: true, l: true),
+        bracket(top: 0, right: 0, t: true, l: false),
+        bracket(bottom: 0, left: 0, t: false, l: true),
+        bracket(bottom: 0, right: 0, t: false, l: false),
+      ]),
+    );
   }
 
   Widget _liveStack() {

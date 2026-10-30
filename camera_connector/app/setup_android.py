@@ -90,6 +90,11 @@ def main():
                    '        android:foregroundServiceType="camera"/>\n')
         x = x.replace("</application>", service + "    </application>", 1)
         print("manifest patched")
+    if ".SquareScanActivity" not in x:  # square QR scanner (zxing CaptureActivity subclass)
+        x = x.replace("</application>", '    <activity android:name=".SquareScanActivity" android:exported="false"\n'
+                     '        android:screenOrientation="portrait" android:theme="@style/zxing_CaptureTheme"\n'
+                     '        android:windowSoftInputMode="stateAlwaysHidden"/>\n    </application>', 1)
+        print("manifest: added SquareScanActivity")
     missing = [p for p in PERMISSIONS if f'android:name="{p}"' not in x]
     if missing:  # manifest patched by an older version of this script
         x = x.replace("<application", "".join(f'    <uses-permission android:name="{p}"/>\n' for p in missing) + "    <application", 1)
