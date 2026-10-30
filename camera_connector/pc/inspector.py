@@ -600,6 +600,7 @@ class Inspector:
                     self.tracker.reset()
                     self.blur.reset()
                     self._last_good = []
+                    self._first_tick, self._votes = True, 0
                 self._last_frame_t = now_f
                 if self.state == "waiting":
                     self.state = "scanning"
@@ -609,6 +610,7 @@ class Inspector:
                     self.blur.reset()
                     self._last_good = []
                     self.result = None
+                    self._first_tick, self._votes = True, 0
                     self.log("scan started")
 
                 img = frame
@@ -621,6 +623,10 @@ class Inspector:
                 t0 = time.perf_counter()
                 res = self.model.predict(img, imgsz=self.imgsz, conf=self.case_cfg.conf, device=self.device, verbose=False)[0]
                 self.infer_ms = round((time.perf_counter() - t0) * 1000)
+                if getattr(self, "_first_tick", False) and not self.preview:
+                    # the first inference of a scan includes model warm-up (seconds on some PCs): that is not scanning time
+                    self._first_tick = False
+                    self.started_at = max(self.started_at, time.time() + float(self.cfg.get("settle_seconds", 1.5)))
                 boxes = []
                 dets = []
                 if res.boxes is not None and len(res.boxes):
@@ -654,11 +660,15 @@ class Inspector:
                     self.log(f"skipped blurry frame (sharpness {self.sharp:.0f}, best recent {self.blur.ref:.0f})", debug_only=True)
                 else:
                     self._last_good = dets
+                    self._votes = getattr(self, "_votes", 0) + 1
                     result = None if self.preview else self.tracker.update(dets)
                 self.log(f"tick {self.infer_ms}ms | {', '.join(f'{n} {int(p * 100)}%' for n, p in dets) or 'none'} "
                          f"| ok {self.tracker.ok_count}/{self.case_cfg.pass_ticks_needed} "
                          f"fail {self.tracker.fail_count}/{self.case_cfg.fail_ticks_needed}", debug_only=True)
-                if result is None and not self.preview and time.time() - self.started_at >= self.case_cfg.scan_seconds:
+                # NOT FOUND needs real evidence: at least 5 frames that were allowed to vote (or 15 s past the limit)
+                elapsed = time.time() - self.started_at
+                if (result is None and not self.preview and elapsed >= self.case_cfg.scan_seconds
+                        and (getattr(self, "_votes", 0) >= 5 or elapsed >= self.case_cfg.scan_seconds + 15)):
                     result = self.tracker.final(self._last_good if bad else dets)
                     self.log(f"scan time ({self.case_cfg.scan_seconds:.0f}s) elapsed -- last frame decides: {result}")
 
