@@ -670,7 +670,8 @@ class Inspector:
                 if (result is None and not self.preview and elapsed >= self.case_cfg.scan_seconds
                         and (getattr(self, "_votes", 0) >= 5 or elapsed >= self.case_cfg.scan_seconds + 15)):
                     result = self.tracker.final(self._last_good if bad else dets)
-                    self.log(f"scan time ({self.case_cfg.scan_seconds:.0f}s) elapsed -- last frame decides: {result}")
+                    self.log(f"scan time ({self.case_cfg.scan_seconds:.0f}s) elapsed ({elapsed:.1f}s since start, {self._votes} voting frames, "
+                             f"task {self.task_name}) -- last frame decides: {result}")
 
                 annotated = self._draw(cv2, img, boxes)
                 if result:
