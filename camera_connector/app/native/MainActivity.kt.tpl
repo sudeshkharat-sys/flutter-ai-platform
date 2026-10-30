@@ -57,7 +57,6 @@ class MainActivity : FlutterActivity() {
                             pendingQr = result
                             try {
                                 IntentIntegrator(this)
-                                    .setCaptureActivity(SquareScanActivity::class.java)
                                     .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
                                     .setPrompt("Scan the QR code shown on the PC connector")
                                     .setBeepEnabled(false)
