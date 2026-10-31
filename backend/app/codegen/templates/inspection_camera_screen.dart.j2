@@ -385,12 +385,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         setState(() => _isFlashOn = false);
       }
       ctrl.dispose();
+      if (mounted) setState(() => _isCameraInitialized = false);
     } else if (state == AppLifecycleState.resumed) {
       _initializeCamera();
     }
   }
 
   Future<void> _initializeCamera([int attempt = 0]) async {
+    // never draw a disposed / not-yet-initialized controller (shows as a white preview)
+    if (mounted && _isCameraInitialized) setState(() => _isCameraInitialized = false);
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -1863,12 +1866,15 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         setState(() => _isFlashOn = false);
       }
       ctrl.dispose();
+      if (mounted) setState(() => _isCameraInitialized = false);
     } else if (state == AppLifecycleState.resumed) {
       _initializeCamera();
     }
   }
 
   Future<void> _initializeCamera([int attempt = 0]) async {
+    // never draw a disposed / not-yet-initialized controller (shows as a white preview)
+    if (mounted && _isCameraInitialized) setState(() => _isCameraInitialized = false);
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {

@@ -803,6 +803,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         setState(() => _isFlashOn = false);
       }
       ctrl.dispose();
+      if (mounted) setState(() => _isCameraInitialized = false);
     } else if (state == AppLifecycleState.resumed) {
       _initializeCamera().then((_) {
         if (_simultaneousMode) {
@@ -832,6 +833,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // imageFormatGroup is explicit (not left to the platform default) since
   // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
   Future<void> _initializeCamera([int attempt = 0]) async {
+    // never draw a disposed / not-yet-initialized controller (shows as a white preview)
+    if (mounted && _isCameraInitialized) setState(() => _isCameraInitialized = false);
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -3483,6 +3486,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         setState(() => _isFlashOn = false);
       }
       ctrl.dispose();
+      if (mounted) setState(() => _isCameraInitialized = false);
     } else if (state == AppLifecycleState.resumed) {
       _initializeCamera().then((_) {
         if (_simultaneousMode) {
@@ -3512,6 +3516,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // imageFormatGroup is explicit (not left to the platform default) since
   // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
   Future<void> _initializeCamera([int attempt = 0]) async {
+    // never draw a disposed / not-yet-initialized controller (shows as a white preview)
+    if (mounted && _isCameraInitialized) setState(() => _isCameraInitialized = false);
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
