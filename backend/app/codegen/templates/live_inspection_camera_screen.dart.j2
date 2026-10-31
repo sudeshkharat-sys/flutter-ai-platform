@@ -831,7 +831,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // streamed frame further in software for per-tick inference speed.
   // imageFormatGroup is explicit (not left to the platform default) since
   // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
-  Future<void> _initializeCamera() async {
+  Future<void> _initializeCamera([int attempt = 0]) async {
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -890,6 +890,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       }
     } catch (e) {
       _addLog("Camera error: $e");
+      // The previous screen's camera may still be releasing (live <-> photo switch): retry before giving up.
+      if (attempt < 3 && mounted) {
+        try { await _cameraController?.dispose(); } catch (_) {}
+        _cameraController = null;
+        await Future.delayed(const Duration(milliseconds: 700));
+        if (mounted) return _initializeCamera(attempt + 1);
+        return;
+      }
       if (mounted) setState(() => _error = "Camera error: $e");
     }
   }
@@ -3503,7 +3511,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // streamed frame further in software for per-tick inference speed.
   // imageFormatGroup is explicit (not left to the platform default) since
   // _convertCameraFrameToJpeg's YUV/NV12 handling assumes it.
-  Future<void> _initializeCamera() async {
+  Future<void> _initializeCamera([int attempt = 0]) async {
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -3562,6 +3570,14 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
       }
     } catch (e) {
       _addLog("Camera error: $e");
+      // The previous screen's camera may still be releasing (live <-> photo switch): retry before giving up.
+      if (attempt < 3 && mounted) {
+        try { await _cameraController?.dispose(); } catch (_) {}
+        _cameraController = null;
+        await Future.delayed(const Duration(milliseconds: 700));
+        if (mounted) return _initializeCamera(attempt + 1);
+        return;
+      }
       if (mounted) setState(() => _error = "Camera error: $e");
     }
   }

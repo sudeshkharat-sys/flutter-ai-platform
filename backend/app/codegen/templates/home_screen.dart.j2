@@ -127,6 +127,8 @@ class _HomeScreenState extends State<HomeScreen> {
       // inspector left before finishing this segment -> don't continue the chain
       if (!seg.asMap().keys.every((k) => result.containsKey(k))) return;
       i = j;
+      // let the finished screen release the camera before the next (live/photo) screen opens it
+      await Future.delayed(const Duration(milliseconds: 600));
     }
   }
 
