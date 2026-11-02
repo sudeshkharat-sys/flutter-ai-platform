@@ -818,6 +818,37 @@ async def download_month_excel(appName: str, year: str, month: str, _: None = De
     )
 
 
+@app.get("/download/excel-range")
+async def download_range_excel(appName: str = "", year: str = "", month: str = "", _: None = Depends(_require_session)):
+    """Excel for the gear panel on the main page: one app or every app
+    (appName empty), for a whole year / one month / all time. Rows are
+    shift-day based so Shift C lands in the previous day's month."""
+    if year and not (len(year) == 4 and year.isdigit()):
+        raise HTTPException(status_code=422, detail="year must be YYYY")
+    if month and not (len(month) == 2 and month.isdigit()):
+        raise HTTPException(status_code=422, detail="month must be MM")
+    prefix = (year + ("-" + month if month else "")) if year else ""
+    if month and not year:
+        raise HTTPException(status_code=422, detail="pick a year with the month")
+
+    def build():
+        names = [_safe_name(appName)] if appName else sorted({_safe_name(g["appName"]) for g in _list_groups()})
+        rows: list[dict] = []
+        for safe in names:
+            for d in _device_dirs_for_app(safe):
+                rows.extend(r for r in _flatten_rows(d, safe) if (_shift_day(r) or "").startswith(prefix))
+        rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+        return _build_workbook(rows)
+
+    buf = await run_in_threadpool(build)
+    label = "_".join(x for x in (_safe_name(appName) if appName else "AllApps", year, month) if x) or "All"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{label}.xlsx"'},
+    )
+
+
 @app.post("/download/excel-filtered")
 async def download_filtered_excel(request: Request, _: None = Depends(_require_session)):
     """Takes the exact rows the browser currently has filtered/displayed
@@ -1261,6 +1292,13 @@ VIEWER_HTML = """<!doctype html>
   .plate-view { background: var(--eye-orange); }
   .plate-future { background: var(--eye-gold); }
   header .spacer { flex: 1; }
+  .gear-btn { background: #fff; border: 1px solid var(--border); border-radius: 8px; font-size: 20px; width: 38px; height: 38px; cursor: pointer; color: var(--text); }
+  .gear-btn:hover { color: var(--crimson); }
+  .gear-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+  .gear-box { background: var(--card); border-radius: 12px; padding: 20px; width: min(420px, 92vw); }
+  .gear-section { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--border); }
+  .gear-section label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .gear-section select { flex: 1; padding: 7px; border: 1px solid var(--border); border-radius: 8px; }
   header a { color: var(--muted); font-size: 12px; text-decoration: none; }
   header a:hover { color: var(--crimson); }
 
@@ -1449,8 +1487,33 @@ VIEWER_HTML = """<!doctype html>
     <p>Read-only. View inspections and download Excel.</p>
   </div>
   <div class="spacer"></div>
+  <button class="gear-btn" id="gearBtn" title="Downloads &amp; reports" onclick="openGear()">&#9881;</button>
   <a href="/logout">Log out</a>
 </header>
+<div id="gearModal" class="gear-overlay" style="display:none;" onclick="if(event.target===this)closeGear()">
+  <div class="gear-box">
+    <div style="display:flex;align-items:center;margin-bottom:12px;">
+      <h3 style="margin:0;flex:1;">&#9881; Downloads &amp; Reports</h3>
+      <button class="secondary" onclick="closeGear()">&#10005;</button>
+    </div>
+    <div class="gear-section">
+      <b>Download Excel</b>
+      <label>App <select id="gApp"><option value="">All apps</option></select></label>
+      <label>Year <select id="gYear"><option value="">All</option></select></label>
+      <label>Month <select id="gMonth"><option value="">All</option>
+        <option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option><option value="04">Apr</option>
+        <option value="05">May</option><option value="06">Jun</option><option value="07">Jul</option><option value="08">Aug</option>
+        <option value="09">Sep</option><option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option></select></label>
+      <button class="btn-back" onclick="gearDownload()">Download Excel</button>
+      <span class="muted" style="font-size:11px;">Year All = everything. Pick a year for the whole year, add a month for just that month.</span>
+    </div>
+    <div class="gear-section">
+      <b>Generate Report</b>
+      <span class="muted" style="font-size:12px;">All apps: storage, total / unique / duplicate VINs, pass-fail by day, shift and month, drive space.</span>
+      <button class="btn-back" onclick="window.location='/download/report'">&#128202; Generate Report</button>
+    </div>
+  </div>
+</div>
 <main>
   <div id="appsListView">
     <div class="toolbar">
@@ -1458,7 +1521,6 @@ VIEWER_HTML = """<!doctype html>
       <span style="flex:1"></span>
       <span class="muted" id="appsUpdatedAt" style="font-size:11px;"></span>
       <button class="secondary" onclick="loadApps()">Refresh</button>
-      <a href="/download/report" download><button class="secondary" title="Excel: storage, VINs, duplicates, pass/fail by day, shift and month">&#128202; Generate Report</button></a>
     </div>
     <p class="muted" id="offlineNote" style="margin:-6px 0 14px; display:none;">Offline: WiFi dropped, phone's off, or the app isn't open — nothing wrong on the receiving PC.</p>
     <div id="appsList" class="apps-grid"><div class="empty">Loading...</div></div>
@@ -2231,6 +2293,26 @@ async function downloadBlob(url, body, filename) {
 document.getElementById('downloadFullBtn').addEventListener('click', () => {
   window.location = '/download/excel?' + new URLSearchParams({ device: currentDevice, appName: currentAppName });
 });
+async function openGear() {
+  document.getElementById('gearModal').style.display = 'flex';
+  const yr = document.getElementById('gYear');
+  if (yr.options.length === 1) {
+    for (let y = new Date().getFullYear(); y >= 2024; y--) yr.add(new Option(y, y));
+  }
+  const sel = document.getElementById('gApp');
+  if (sel.options.length === 1) {
+    try {
+      const apps = await (await fetch('/api/apps')).json();
+      apps.forEach(a => sel.add(new Option(a.appName, a.appName)));
+    } catch (e) {}
+  }
+}
+function closeGear() { document.getElementById('gearModal').style.display = 'none'; }
+function gearDownload() {
+  const year = document.getElementById('gYear').value, month = document.getElementById('gMonth').value;
+  if (month && !year) { alert('Pick a year along with the month.'); return; }
+  window.location = '/download/excel-range?' + new URLSearchParams({ appName: document.getElementById('gApp').value, year, month });
+}
 document.getElementById('downloadMonthBtn').addEventListener('click', () => {
   const year = document.getElementById('dlYear').value;
   const month = document.getElementById('dlMonth').value;
