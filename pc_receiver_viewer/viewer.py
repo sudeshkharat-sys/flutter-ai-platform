@@ -39,12 +39,13 @@ import json
 import os
 import re
 import secrets
+import shutil
 import zipfile
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import mimetypes
@@ -837,6 +838,233 @@ async def download_filtered_excel(request: Request, _: None = Depends(_require_s
     )
 
 
+# ── Management report (multi-sheet Excel) ────────────────────────────────
+# One workbook covering every app: storage, VIN counts (total / unique /
+# duplicate), pass/fail, and breakdowns by day, shift and month. Built from
+# the same flattened rows the screens use, so numbers match the dashboard.
+# Read-only: nothing is written to the data folders.
+
+def _shift_day(row: dict) -> str:
+    """Shift C (00:00-07:00) belongs to the previous day's shift -- same
+    rule as the on-screen shiftGroupDate()."""
+    d = row.get("date") or ""
+    if row.get("shift") != "C" or not d:
+        return d
+    try:
+        return (datetime.strptime(d, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    except ValueError:
+        return d
+
+
+def _scan_events(rows: list[dict]) -> list[dict]:
+    """Collapse task rows into one record per physical scan of a VIN
+    (vin+date+time). A scan passes only if every task in it is OK."""
+    events: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r.get("vin"), r.get("date"), r.get("time"))
+        ev = events.get(key)
+        if ev is None:
+            ev = events[key] = {
+                "vin": r.get("vin") or "", "date": r.get("date") or "",
+                "time": r.get("time") or "", "shift": r.get("shift") or "Unknown",
+                "shiftDay": _shift_day(r), "model": r.get("modelName") or r.get("modelCode") or "Unknown",
+                "device": r.get("device") or "", "pass": True,
+            }
+        if r.get("result") != "OK":
+            ev["pass"] = False
+    return list(events.values())
+
+
+def _pct(part: int, whole: int) -> float:
+    return round(100.0 * part / whole, 1) if whole else 0.0
+
+
+def _disk_rows() -> list[list]:
+    """Every drive that matters: all Windows drive letters (deploy vs
+    storage drives), plus the drives holding the data / negative-dataset /
+    app folders, flagged by role."""
+    roles: dict[str, list[str]] = {}
+    for label, p in (("Viewer app (deploy)", APP_DIR), ("Received data", DATA_DIR),
+                     ("Negative dataset", NEGATIVE_DATASET_DIR)):
+        try:
+            anchor = Path(p).resolve().anchor or str(Path(p).resolve())
+        except Exception:
+            continue
+        roles.setdefault(anchor, []).append(label)
+    anchors = set(roles)
+    if os.name == "nt":
+        import string
+        for letter in string.ascii_uppercase:
+            if os.path.exists(f"{letter}:\\"):
+                anchors.add(f"{letter}:\\")
+    out = []
+    for a in sorted(anchors):
+        try:
+            total, used, free = shutil.disk_usage(a)
+        except Exception:
+            continue
+        out.append([a, ", ".join(roles.get(a, [])) or "-", round(total / 1024**3, 1),
+                    round(used / 1024**3, 1), round(free / 1024**3, 1), _pct(used, total)])
+    return out
+
+
+def _build_report_workbook() -> io.BytesIO:
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    head_fill = PatternFill("solid", fgColor="C8102E")
+    head_font = Font(bold=True, color="FFFFFF")
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    def sheet(title: str, headers: list[str], data: list[list], widths: list[int] | None = None):
+        ws = wb.create_sheet(title[:31])
+        ws.append(headers)
+        for c in ws[1]:
+            c.fill, c.font = head_fill, head_font
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        for row in data:
+            ws.append(row)
+        ws.freeze_panes = "A2"
+        if data:
+            ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(data) + 1}"
+        for i, h in enumerate(headers, start=1):
+            w = (widths[i - 1] if widths and i <= len(widths) else max(12, len(h) + 4))
+            ws.column_dimensions[get_column_letter(i)].width = w
+        return ws
+
+    # Storage per app: received_data (all devices) + negative_dataset.
+    app_names: dict[str, str] = {}
+    for g in _list_groups():
+        app_names.setdefault(_safe_name(g["appName"]), g["appName"])
+
+    summary, daily, shifts, monthly, dups, tasks, models = [], [], [], [], [], [], []
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    grand = {"bytes": 0, "neg": 0, "rows": 0, "scans": 0, "vins": 0, "dupvins": 0, "pass": 0, "fail": 0}
+
+    for safe, display in sorted(app_names.items()):
+        device_dirs = _device_dirs_for_app(safe)
+        rows: list[dict] = []
+        recv_bytes = 0
+        batches = 0
+        for d in device_dirs:
+            rows.extend(_flatten_rows(d, safe))
+            app_dir = DATA_DIR / _safe_name(d) / safe
+            recv_bytes += _dir_stats(app_dir)[1]
+            batches += sum(1 for p in app_dir.iterdir() if p.is_dir()) if app_dir.exists() else 0
+        neg_files, neg_bytes = _dir_stats(NEGATIVE_DATASET_DIR / safe)
+
+        events = _scan_events(rows)
+        by_vin: dict[str, list[dict]] = {}
+        for ev in events:
+            by_vin.setdefault(ev["vin"], []).append(ev)
+        unique_vins = len(by_vin)
+        dup_vins = {v: evs for v, evs in by_vin.items() if len(evs) > 1}
+        dup_extra_scans = sum(len(e) - 1 for e in dup_vins.values())
+        scan_pass = sum(1 for e in events if e["pass"])
+        scan_fail = len(events) - scan_pass
+        # VIN-level verdict = result of that VIN's most recent scan
+        vin_pass = vin_fail = 0
+        for evs in by_vin.values():
+            last = max(evs, key=lambda e: (e["date"], e["time"]))
+            if last["pass"]:
+                vin_pass += 1
+            else:
+                vin_fail += 1
+        dates = sorted(e["date"] for e in events if e["date"])
+
+        summary.append([
+            display, len(device_dirs), batches,
+            round(recv_bytes / 1024**2, 1), round(neg_bytes / 1024**2, 1),
+            round((recv_bytes + neg_bytes) / 1024**3, 3),
+            len(events), unique_vins, len(dup_vins), dup_extra_scans,
+            scan_pass, scan_fail, _pct(scan_pass, len(events)),
+            vin_pass, vin_fail, _pct(vin_pass, unique_vins),
+            dates[0] if dates else "", dates[-1] if dates else "",
+        ])
+        grand["bytes"] += recv_bytes; grand["neg"] += neg_bytes
+        grand["scans"] += len(events); grand["vins"] += unique_vins
+        grand["dupvins"] += len(dup_vins); grand["pass"] += scan_pass; grand["fail"] += scan_fail
+
+        def bucket(keyfn):
+            out: dict = {}
+            for e in events:
+                b = out.setdefault(keyfn(e), {"scans": 0, "vins": set(), "pass": 0, "fail": 0})
+                b["scans"] += 1
+                b["vins"].add(e["vin"])
+                b["pass" if e["pass"] else "fail"] += 1
+            return out
+
+        for day, b in sorted(bucket(lambda e: e["shiftDay"]).items()):
+            daily.append([display, day, b["scans"], len(b["vins"]), b["pass"], b["fail"], _pct(b["pass"], b["scans"])])
+        for (month, sh), b in sorted(bucket(lambda e: ((e["shiftDay"] or "")[:7], e["shift"])).items()):
+            shifts.append([display, month, sh, b["scans"], len(b["vins"]), b["pass"], b["fail"], _pct(b["pass"], b["scans"])])
+        for month, b in sorted(bucket(lambda e: (e["shiftDay"] or "")[:7]).items()):
+            monthly.append([display, month, b["scans"], len(b["vins"]), b["pass"], b["fail"], _pct(b["pass"], b["scans"])])
+        for model, b in sorted(bucket(lambda e: e["model"]).items()):
+            models.append([display, model, b["scans"], len(b["vins"]), b["pass"], b["fail"], _pct(b["pass"], b["scans"])])
+
+        # Per-task pass/fail (what is actually failing)
+        t: dict[str, list[int]] = {}
+        for r in rows:
+            c = t.setdefault(r.get("taskName") or "Unknown", [0, 0])
+            c[0 if r.get("result") == "OK" else 1] += 1
+        for name, (ok, nok) in sorted(t.items()):
+            tasks.append([display, name, ok + nok, ok, nok, _pct(ok, ok + nok)])
+
+        for vin, evs in sorted(dup_vins.items(), key=lambda kv: -len(kv[1])):
+            evs = sorted(evs, key=lambda e: (e["date"], e["time"]))
+            dups.append([display, vin, len(evs), sum(1 for e in evs if e["pass"]), sum(1 for e in evs if not e["pass"]),
+                         evs[0]["date"] + " " + evs[0]["time"], evs[-1]["date"] + " " + evs[-1]["time"],
+                         "PASS" if evs[-1]["pass"] else "FAIL",
+                         ", ".join(sorted({e["device"] for e in evs}))])
+
+    summary.append([
+        "ALL APPS", "", "", round(grand["bytes"] / 1024**2, 1), round(grand["neg"] / 1024**2, 1),
+        round((grand["bytes"] + grand["neg"]) / 1024**3, 3),
+        grand["scans"], grand["vins"], grand["dupvins"], "",
+        grand["pass"], grand["fail"], _pct(grand["pass"], grand["scans"]), "", "", "", "", "",
+    ])
+
+    ws = sheet("Summary", [
+        "App", "Devices", "Batches received", "Received data (MB)", "Negative images (MB)", "Total storage (GB)",
+        "Total scans", "Unique VINs", "Duplicate VINs", "Extra (repeat) scans",
+        "Scans PASS", "Scans FAIL", "Scan pass %",
+        "VINs PASS (latest scan)", "VINs FAIL (latest scan)", "VIN pass %",
+        "First scan", "Last scan",
+    ], summary, [28, 9, 11, 14, 14, 13, 11, 11, 11, 12, 10, 10, 10, 14, 14, 10, 12, 12])
+    ws.row_dimensions[1].height = 45
+    for c in ws[ws.max_row]:
+        c.font = Font(bold=True)
+    ws.cell(row=ws.max_row + 2, column=1, value=f"Generated {generated}. A scan = one VIN inspected at one date/time; "
+                                                  f"it PASSES only if every task in it is OK. Shift C counts toward the previous day.")
+
+    sheet("Storage Drives", ["Drive", "Used for", "Total (GB)", "Used (GB)", "Free (GB)", "Used %"], _disk_rows(), [12, 40, 12, 12, 12, 10])
+    sheet("By Day", ["App", "Shift day", "Scans", "Unique VINs", "PASS", "FAIL", "Pass %"], daily, [28, 12, 10, 12, 10, 10, 10])
+    sheet("By Shift", ["App", "Month", "Shift", "Scans", "Unique VINs", "PASS", "FAIL", "Pass %"], shifts, [28, 10, 8, 10, 12, 10, 10, 10])
+    sheet("By Month", ["App", "Month", "Scans", "Unique VINs", "PASS", "FAIL", "Pass %"], monthly, [28, 10, 10, 12, 10, 10, 10])
+    sheet("By Model", ["App", "Model", "Scans", "Unique VINs", "PASS", "FAIL", "Pass %"], models, [28, 28, 10, 12, 10, 10, 10])
+    sheet("By Task", ["App", "Task", "Checks", "OK", "NOT OK", "OK %"], tasks, [28, 32, 10, 10, 10, 10])
+    sheet("Duplicate VINs", ["App", "VIN", "Times scanned", "PASS", "FAIL", "First scan", "Last scan", "Latest result", "Devices"],
+          dups, [28, 24, 13, 8, 8, 20, 20, 13, 30])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+@app.get("/download/report")
+async def download_report(_: None = Depends(_require_session)):
+    buf = await run_in_threadpool(_build_report_workbook)
+    filename = f"DigitalEye_Report_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 _NEG_FILENAME_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
@@ -1230,6 +1458,7 @@ VIEWER_HTML = """<!doctype html>
       <span style="flex:1"></span>
       <span class="muted" id="appsUpdatedAt" style="font-size:11px;"></span>
       <button class="secondary" onclick="loadApps()">Refresh</button>
+      <a href="/download/report" download><button class="secondary" title="Excel: storage, VINs, duplicates, pass/fail by day, shift and month">&#128202; Generate Report</button></a>
     </div>
     <p class="muted" id="offlineNote" style="margin:-6px 0 14px; display:none;">Offline: WiFi dropped, phone's off, or the app isn't open — nothing wrong on the receiving PC.</p>
     <div id="appsList" class="apps-grid"><div class="empty">Loading...</div></div>

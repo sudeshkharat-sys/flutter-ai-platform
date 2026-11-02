@@ -24,6 +24,7 @@ bug or restart here can never affect the live phone → PC sync pipeline.
   (the app you have open), optionally one task within it, and/or a capture
   date range (e.g. "just today's") -- so a repeat pull doesn't have to
   re-download everything again.
+- ✅ **Generate Report** (Apps page): one Excel with per-app storage, total / unique / duplicate VINs, scan and VIN pass/fail, plus sheets by day, shift, month, model, task, a duplicate-VIN list and free space on every drive.
 - ❌ No pairing, no upload, no delete, no settings, no device management.
   Every route is read-only at the code level (files are only ever opened
   for reading) — the negative-dataset ZIP download above has no delete
