@@ -21,3 +21,10 @@ Two projects on the same ports clash: give each its own BACKEND_PORT / FRONTEND_
 Typed shortcuts: run install-shortcuts.bat once, add %USERPROFILE%\dev-tools to your user PATH
 (it prints the steps). Then in any Anaconda Prompt: pg-start, redis-start, fa-backend, fa-celery,
 fa-frontend, fa-all, pg-psql, pg-stop. Before closing a window: save-history.
+
+Windows Terminal tab with the command list (no PowerShell needed):
+  Settings > Add a new profile > New empty profile
+    Name:               Flutter AI
+    Command line:       cmd.exe /k "call C:\conda\Scripts\activate.bat flutter-ai & call D:\Codes\Dataeaze\flutter-ai-platform\local_dev\banner.bat"
+    Starting directory: D:\Codes\Dataeaze\flutter-ai-platform
+  Settings > Startup > Default profile > Flutter AI
