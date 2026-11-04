@@ -17,3 +17,7 @@ Command history: cmd/Anaconda Prompt cannot keep history between windows, so use
 (double-click it, or put a Desktop shortcut to it) instead of retyping commands.
 Using this for a second project: copy this folder into it and edit only the top block of _config.bat.
 Two projects on the same ports clash: give each its own BACKEND_PORT / FRONTEND_PORT, and run one stack at a time unless ports differ.
+
+Typed shortcuts: run install-shortcuts.bat once, add %USERPROFILE%\dev-tools to your user PATH
+(it prints the steps). Then in any Anaconda Prompt: pg-start, redis-start, fa-backend, fa-celery,
+fa-frontend, fa-all, pg-psql, pg-stop. Before closing a window: save-history.
