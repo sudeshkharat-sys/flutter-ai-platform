@@ -1,6 +1,6 @@
 @echo off
 call "%~dp0_config.bat"
-call "%CONDA_ACTIVATE%" flutter-ai
+call "%CONDA_ACTIVATE%" %CONDA_ENV%
 cd /d "%PROJ%\backend"
-echo Starting Celery worker (needs Redis running first).
-celery -A app.tasks.celery_app worker --loglevel=info --pool=solo
+echo [%PROJECT_NAME%] Celery worker (Redis must be running first).
+celery -A %CELERY_APP% worker --loglevel=info --pool=solo
