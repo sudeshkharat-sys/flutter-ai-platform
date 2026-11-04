@@ -1,6 +1,8 @@
 @echo off
 rem ===== Per-project settings. Copy this folder to the other project and edit only this block. =====
 set "PROJECT_NAME=flutter-ai"
+rem Short prefix for the typed commands, e.g. fa-backend. Use another prefix (vi) for the other project.
+set "PROJECT_SHORT=fa"
 set "PROJ=D:\Codes\Dataeaze\flutter-ai-platform"
 set "CONDA_ENV=flutter-ai"
 set "BACKEND_APP=app.main:app"
