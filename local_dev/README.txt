@@ -28,3 +28,10 @@ Windows Terminal tab with the command list (no PowerShell needed):
     Command line:       cmd.exe /k "call C:\conda\Scripts\activate.bat flutter-ai & call D:\Codes\Dataeaze\flutter-ai-platform\local_dev\banner.bat"
     Starting directory: D:\Codes\Dataeaze\flutter-ai-platform
   Settings > Startup > Default profile > Flutter AI
+
+If double-clicking a .bat only shows "Open with" (or opens it in VS Code):
+  Windows has no default app for .bat on that PC. Do not pick VS Code - it only edits the file.
+  Use a Desktop shortcut instead: right-click Desktop > New > Shortcut, Location:
+    C:\Windows\System32\cmd.exe /k D:\Codes\Dataeaze\flutter-ai-platform\local_dev\start-all.bat
+  Tips: type the quotes by hand (curly quotes copied from chat/Word break it), keep the repo path
+  free of spaces, leave "Run as administrator" off, and update the shortcut if the folder moves.
