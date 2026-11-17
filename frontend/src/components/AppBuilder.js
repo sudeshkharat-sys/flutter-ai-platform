@@ -24,6 +24,60 @@ const classRuleButtonStyle = (active, activeColor) => ({
   color: active ? '#fff' : C.muted,
 });
 
+// Type-to-filter replacement for a plain <select> (long model lists).
+function SearchableSelect({ value, options, onChange, placeholder = 'Select...', style }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const boxRef = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  const selected = options.find(o => o.value === value);
+  const needle = q.trim().toLowerCase();
+  const shown = needle ? options.filter(o => o.label.toLowerCase().includes(needle)) : options;
+  return (
+    <div ref={boxRef} style={{ position: 'relative', width: '100%' }}>
+      <div onClick={() => { setOpen(o => !o); setQ(''); }}
+        style={{ ...inputStyle, ...(style || {}), cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: selected ? C.text : C.muted }}>
+        {selected ? selected.label : placeholder}
+      </div>
+      {open && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, minWidth: '100%', width: 'max-content', maxWidth: 420, zIndex: 1000, marginTop: 4, background: 'black', border: `1px solid ${C.border}`, borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.6)' }}>
+          <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search..."
+            onKeyDown={e => { if (e.key === 'Escape') setOpen(false); if (e.key === 'Enter' && shown.length === 1) { onChange(shown[0].value); setOpen(false); } }}
+            style={{ ...inputStyle, borderRadius: '8px 8px 0 0', borderWidth: '0 0 1px 0' }} />
+          <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+            <div onClick={() => { onChange(''); setOpen(false); }} style={{ padding: '8px 12px', cursor: 'pointer', color: C.muted, fontSize: 13 }}>{placeholder}</div>
+            {shown.map(o => (
+              <div key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
+                style={{ padding: '8px 12px', cursor: 'pointer', fontSize: 13, color: C.text, background: o.value === value ? 'rgba(220, 20, 60, 0.15)' : 'transparent' }}>
+                {o.label}
+              </div>
+            ))}
+            {shown.length === 0 && <div style={{ padding: '8px 12px', color: C.muted, fontSize: 13 }}>No match</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// When the model on a task changes, keep the class rules (mandatory / ignored /
+// OCR config) for every class name the new model also has; drop only the rest.
+function carryOverClassRules(task, newModel) {
+  const classes = newModel?.classes || [];
+  const has = (c) => classes.includes(c);
+  const cfg = {};
+  Object.entries(task.classOcrConfig || {}).forEach(([k, v]) => { if (has(k)) cfg[k] = v; });
+  task.class = has(task.class) ? task.class : (classes[0] || '');
+  task.mandatoryClasses = (task.mandatoryClasses || []).filter(has);
+  task.ignoredClasses = (task.ignoredClasses || []).filter(has);
+  task.classOcrConfig = cfg;
+}
+
 export default function AppBuilder() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -445,6 +499,7 @@ import { Plus, Trash2, Edit3, ChevronRight, ArrowLeft, Check, ChevronDown, Arrow
 
 function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const navigate = useNavigate();
+  const appliedRef = useRef(new Set());
   const [models, setModels] = useState([]);
   const [masterMappings, setMasterMappings] = useState([]);
   const [engineMappings, setEngineMappings] = useState([]);
@@ -621,6 +676,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               };
             });
 
+        restoredReviewData.forEach(r => (r.selectedAIModels || []).forEach(t => appliedRef.current.add(`${r.model_code}|${t.modelId}`)));
+        // Default tasks saved earlier were already applied to every code.
+        (existingApp.app_settings?.default_configs || []).forEach(c => restoredReviewData.forEach(r => appliedRef.current.add(`${r.model_code}|${c.modelId}`)));
         setReviewData(restoredReviewData);
         if (startAtReview) setIsReviewing(true);
       }
@@ -657,11 +715,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newConfigs = [...defaultAIConfigs];
     newConfigs[index][field] = value;
     if (field === 'modelId') {
-      const m = models.find(mod => mod.id === value);
-      newConfigs[index].class = m?.classes[0] || '';
-      newConfigs[index].mandatoryClasses = [];
-      newConfigs[index].ignoredClasses = [];
-      newConfigs[index].classOcrConfig = {};
+      carryOverClassRules(newConfigs[index], models.find(mod => mod.id === value));
     }
     setDefaultAIConfigs(newConfigs);
   };
@@ -796,13 +850,22 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   // Review after adding a new VIN re-appends that new task onto every
   // previously configured VIN/model code as well. So: brand-new rows get
   // validAI, rows that already exist keep exactly what they had.
-  const mergeAIModels = (existing, validAI) => {
-    if (existing !== undefined) return existing;
-    return validAI.map(v => ({ ...v }));
+  // Default tasks added after a row already existed (e.g. while updating a
+  // profile) are appended to it once; appliedRef remembers what was already
+  // applied per code so a task the user deleted from a row doesn't come back.
+  const mergeAIModels = (existing, validAI, code) => {
+    const fresh = (v) => ({ ...v, classOcrConfig: { ...(v.classOcrConfig || {}) } });
+    if (existing === undefined) {
+      validAI.forEach(v => appliedRef.current.add(`${code}|${v.modelId}`));
+      return validAI.map(fresh);
+    }
+    const toAdd = validAI.filter(v => !appliedRef.current.has(`${code}|${v.modelId}`) && !existing.some(e => e.modelId === v.modelId));
+    toAdd.forEach(v => appliedRef.current.add(`${code}|${v.modelId}`));
+    return [...existing, ...toAdd.map(fresh)];
   };
 
   const handleEnterReview = () => {
-    const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0) : c.class));
+    const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0 || c.ignoredClasses?.length > 0) : c.class));
     const existingByCode = reviewData.reduce((acc, row) => {
       acc[row.model_code] = row.selectedAIModels;
       return acc;
@@ -816,7 +879,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         platform_name: 'Any',
         model_code: '',
         description: 'Open scan -- applies to any scanned code',
-        selectedAIModels: mergeAIModels(existingByCode[''], validAI),
+        selectedAIModels: mergeAIModels(existingByCode[''], validAI, ''),
       }]);
       setIsReviewing(true);
       return;
@@ -834,7 +897,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           platform_name: mapping.sheet_name,
           model_code: mapping.part_no,
           description: mapping.description,
-          selectedAIModels: mergeAIModels(existingByCode[mapping.part_no], validAI)
+          selectedAIModels: mergeAIModels(existingByCode[mapping.part_no], validAI, mapping.part_no)
         };
       });
       setReviewData(newReviewData);
@@ -850,7 +913,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           platform_name: mapping.platform_name,
           model_code: mapping.model_code,
           description: mapping.description,
-          selectedAIModels: mergeAIModels(existingByCode[code], validAI)
+          selectedAIModels: mergeAIModels(existingByCode[code], validAI, code)
         };
       });
       setReviewData(newReviewData);
@@ -862,11 +925,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const newData = [...reviewData];
     newData[rowIndex].selectedAIModels[aiIdx][field] = value;
     if (field === 'modelId') {
-      const m = models.find(mod => mod.id === value);
-      newData[rowIndex].selectedAIModels[aiIdx].class = m?.classes[0] || '';
-      newData[rowIndex].selectedAIModels[aiIdx].mandatoryClasses = [];
-      newData[rowIndex].selectedAIModels[aiIdx].ignoredClasses = [];
-      newData[rowIndex].selectedAIModels[aiIdx].classOcrConfig = {};
+      carryOverClassRules(newData[rowIndex].selectedAIModels[aiIdx], models.find(mod => mod.id === value));
     }
     setReviewData(newData);
   };
@@ -1341,10 +1400,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
                         <div>
                           <label style={labelStyle}>AI Model</label>
-                          <select style={inputStyle} value={config.modelId} onChange={(e) => handleUpdateDefaultAI(idx, 'modelId', e.target.value)}>
-                            <option value="">Select AI Model...</option>
-                            {models.filter(m => m.model_kind !== 'classifier').map(m => <option key={m.id} value={m.id}>{m.vision_project_name}</option>)}
-                          </select>
+                          <SearchableSelect value={config.modelId} placeholder="Select AI Model..."
+                            options={models.filter(m => m.model_kind !== 'classifier').map(m => ({ value: m.id, label: m.vision_project_name }))}
+                            onChange={(v) => handleUpdateDefaultAI(idx, 'modelId', v)} />
                         </div>
                         <div>
                           {detectionMethod !== 'multiclass' ? (
@@ -1541,14 +1599,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                           {row.selectedAIModels.map((ai, aiIdx) => (
                             <div key={aiIdx} style={{ display: 'grid', gridTemplateColumns: '180px 320px 1fr 80px 90px 50px', borderBottom: aiIdx === row.selectedAIModels.length - 1 ? 'none' : `1px solid ${C.border}` }}>
                               <div style={{ padding: '12px 16px' }}>
-                                <select 
-                                  style={{ ...miniSelectStyle, width: '100%' }} 
-                                  value={ai.modelId} 
-                                  onChange={(e) => handleUpdateRowAI(rowIndex, aiIdx, 'modelId', e.target.value)}
-                                >
-                                  <option value="">Select Model...</option>
-                                  {models.filter(m => m.model_kind !== 'classifier').map(m => <option key={m.id} value={m.id}>{m.vision_project_name}</option>)}
-                                </select>
+                                <SearchableSelect style={miniSelectStyle} value={ai.modelId} placeholder="Select Model..."
+                                  options={models.filter(m => m.model_kind !== 'classifier').map(m => ({ value: m.id, label: m.vision_project_name }))}
+                                  onChange={(v) => handleUpdateRowAI(rowIndex, aiIdx, 'modelId', v)} />
                               </div>
                               <div style={{ padding: '12px 16px' }}>
                                 {detectionMethod !== 'multiclass' ? (
