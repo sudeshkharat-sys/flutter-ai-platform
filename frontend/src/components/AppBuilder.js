@@ -78,6 +78,7 @@ function carryOverClassRules(task, newModel) {
   task.classOcrConfig = cfg;
 }
 
+const taskSig = (t) => `${t.modelId}|${t.instruction || ''}|${[...(t.mandatoryClasses || [])].sort().join(',')}|${[...(t.ignoredClasses || [])].sort().join(',')}|${t.class || ''}`;
 let _uidSeq = 0;
 const newUid = () => `t${Date.now().toString(36)}${(_uidSeq++).toString(36)}`;
 
@@ -863,39 +864,56 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   // Default tasks added after a row already existed (e.g. while updating a
   // profile) are appended to it once; appliedRef remembers what was already
   // applied per code so a task the user deleted from a row doesn't come back.
-  const mergeAIModels = (existing, validAI, code, newRowTasks) => {
-    const fresh = (v) => ({ ...v, _uid: undefined, classOcrConfig: { ...(v.classOcrConfig || {}) } });
+  const mergeAIModels = (existing, validAI, code, assign) => {
+    const fresh = (v) => ({ ...v, _uid: undefined, mandatoryClasses: [...(v.mandatoryClasses || [])], ignoredClasses: [...(v.ignoredClasses || [])], classOcrConfig: { ...(v.classOcrConfig || {}) } });
+    if (assign) {
+      // The user chose exactly which tasks each code gets (task x VIN grid).
+      validAI.forEach(v => appliedRef.current.add(`${code}|${v._uid}`));
+      const chosen = (assign[code] || []).map(fresh);
+      return existing === undefined ? chosen : [...existing, ...chosen];
+    }
     if (existing === undefined) {
       validAI.forEach(v => appliedRef.current.add(`${code}|${v._uid}`));
-      return (newRowTasks || validAI).map(fresh);
+      return validAI.map(fresh);
     }
     const toAdd = validAI.filter(v => !appliedRef.current.has(`${code}|${v._uid}`));
     toAdd.forEach(v => appliedRef.current.add(`${code}|${v._uid}`));
     return [...existing, ...toAdd.map(fresh)];
   };
 
-  const handleEnterReview = (chosenForNew) => {
+  const handleEnterReview = (assign) => {
     const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0 || c.ignoredClasses?.length > 0) : c.class));
     const existingByCode = reviewData.reduce((acc, row) => {
       acc[row.model_code] = row.selectedAIModels;
       return acc;
     }, {});
 
-    // Updating a profile and adding new VIN/codes: ask which tasks they get.
-    if (chosenForNew === undefined && !openScan && reviewData.length > 0) {
+    // Updating a profile with new codes and/or new tasks: let the user pick,
+    // in a task x code grid, exactly which code gets which task.
+    if (assign === undefined && !openScan && reviewData.length > 0) {
       const targets = scanType === 'engine' ? selectedEngineCodes : selectedModelCodes;
       const newCodes = targets.filter(c => existingByCode[c] === undefined);
-      if (newCodes.length > 0) {
-        const sig = (t) => `${t.modelId}|${t.instruction || ''}|${[...(t.mandatoryClasses || [])].sort().join(',')}|${[...(t.ignoredClasses || [])].sort().join(',')}|${t.class || ''}`;
+      const oldCodes = targets.filter(c => existingByCode[c] !== undefined);
+      const newTasks = validAI.filter(v => oldCodes.some(c => !appliedRef.current.has(`${c}|${v._uid}`)));
+      if (newCodes.length > 0 || newTasks.length > 0) {
         const seen = new Set();
-        const candidates = [];
-        [...validAI, ...reviewData.flatMap(r => r.selectedAIModels || [])].forEach(t => {
-          if (!t.modelId || seen.has(sig(t))) return;
-          seen.add(sig(t));
-          candidates.push(t);
+        const rows = [];
+        [...newTasks, ...validAI, ...reviewData.flatMap(r => r.selectedAIModels || [])].forEach(t => {
+          if (!t.modelId || seen.has(taskSig(t))) return;
+          seen.add(taskSig(t));
+          rows.push(t);
         });
-        if (candidates.length > 0) {
-          setNewVinPrompt({ newCodes, candidates, picked: candidates.map(() => true) });
+        const columns = [...newCodes, ...(newTasks.length > 0 ? oldCodes : [])];
+        const has = {};
+        oldCodes.forEach(c => { has[c] = new Set((existingByCode[c] || []).map(taskSig)); });
+        const isNewTask = (t) => newTasks.some(n => taskSig(n) === taskSig(t));
+        const checked = {};
+        rows.forEach((t, i) => columns.forEach(c => {
+          if (has[c] && has[c].has(taskSig(t))) return;
+          checked[`${i}|${c}`] = newCodes.includes(c) || isNewTask(t);
+        }));
+        if (rows.length > 0) {
+          setNewVinPrompt({ columns, newCodes, rows, has, checked, existingByCode });
           return;
         }
       }
@@ -927,7 +945,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           platform_name: mapping.sheet_name,
           model_code: mapping.part_no,
           description: mapping.description,
-          selectedAIModels: mergeAIModels(existingByCode[mapping.part_no], validAI, mapping.part_no, chosenForNew)
+          selectedAIModels: mergeAIModels(existingByCode[mapping.part_no], validAI, mapping.part_no, assign)
         };
       });
       setReviewData(newReviewData);
@@ -943,7 +961,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           platform_name: mapping.platform_name,
           model_code: mapping.model_code,
           description: mapping.description,
-          selectedAIModels: mergeAIModels(existingByCode[code], validAI, code, chosenForNew)
+          selectedAIModels: mergeAIModels(existingByCode[code], validAI, code, assign)
         };
       });
       setReviewData(newReviewData);
@@ -1162,28 +1180,85 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   if (loading) return null;
 
+  const setCells = (fn) => setNewVinPrompt(p => {
+    const checked = { ...p.checked };
+    Object.keys(checked).forEach(k => { const [i, ...rest] = k.split('|'); checked[k] = fn(Number(i), rest.join('|'), checked[k]); });
+    return { ...p, checked };
+  });
+  const copyFromCode = (col, src) => {
+    if (!src) return;
+    const srcSigs = new Set((newVinPrompt.existingByCode[src] || []).map(taskSig));
+    setCells((i, c, cur) => c === col ? srcSigs.has(taskSig(newVinPrompt.rows[i])) : cur);
+  };
   const promptModal = newVinPrompt && (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 24, width: '100%', maxWidth: 560, maxHeight: '85vh', overflowY: 'auto' }}>
-        <h3 style={{ fontSize: 18, fontWeight: 800, marginBottom: 6 }}>New {scanType === 'engine' ? 'engine code' : 'VIN / model code'}{newVinPrompt.newCodes.length > 1 ? 's' : ''} added</h3>
-        <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>{newVinPrompt.newCodes.join(', ')}<br />Choose which tasks they should get:</p>
-        {newVinPrompt.candidates.map((t, i) => {
-          const m = models.find(x => x.id === t.modelId);
-          const rule = detectionMethod === 'multiclass' ? `${(t.mandatoryClasses || []).length} mandatory, ${(t.ignoredClasses || []).length} ignored` : (t.class || '');
-          return (
-            <label key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 4px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer' }}>
-              <input type="checkbox" checked={newVinPrompt.picked[i]} onChange={() => setNewVinPrompt(p => ({ ...p, picked: p.picked.map((v, j) => j === i ? !v : v) }))} />
-              <span style={{ fontSize: 13 }}><b>{m?.vision_project_name || t.modelId}</b> <span style={{ color: C.muted }}>{rule}</span>{t.instruction ? <><br /><span style={{ color: C.muted }}>{t.instruction}</span></> : null}</span>
-            </label>
-          );
-        })}
-        <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
-          <button onClick={() => setNewVinPrompt(p => ({ ...p, picked: p.picked.map(() => true) }))} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 12px' }}>Select all</button>
-          <button onClick={() => setNewVinPrompt(p => ({ ...p, picked: p.picked.map(() => false) }))} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 12px' }}>None</button>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 24, width: '100%', maxWidth: 1000, maxHeight: '88vh', display: 'flex', flexDirection: 'column' }}>
+        <h3 style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>Assign tasks to codes</h3>
+        <p style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>Tick which task each {scanType === 'engine' ? 'engine code' : 'VIN / model code'} gets. Greyed ✓ = already has it. New codes: {newVinPrompt.newCodes.join(', ') || 'none'}.</p>
+        <div style={{ overflow: 'auto', border: `1px solid ${C.border}`, borderRadius: 10 }}>
+          <table style={{ borderCollapse: 'collapse', fontSize: 13, width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={{ position: 'sticky', left: 0, background: C.surface, padding: 10, textAlign: 'left', minWidth: 220 }}>Task</th>
+                {newVinPrompt.columns.map(c => (
+                  <th key={c} style={{ padding: 10, minWidth: 110, verticalAlign: 'top' }}>
+                    <div style={{ fontWeight: 800 }}>{c}{newVinPrompt.newCodes.includes(c) ? ' (new)' : ''}</div>
+                    <label style={{ fontSize: 11, color: C.muted, cursor: 'pointer' }}>
+                      <input type="checkbox" onChange={e => { const on = e.target.checked; setCells((i, cc, cur) => cc === c ? on : cur); }} /> all
+                    </label>
+                    <select value="" onChange={e => copyFromCode(c, e.target.value)} style={{ display: 'block', width: '100%', marginTop: 4, fontSize: 11, background: 'black', color: C.text, border: `1px solid ${C.border}`, borderRadius: 6 }}>
+                      <option value="">Copy from…</option>
+                      {Object.keys(newVinPrompt.existingByCode).filter(o => o !== c).map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </th>
+                ))}
+                <th style={{ padding: 10, fontSize: 11, color: C.muted }}>row</th>
+              </tr>
+            </thead>
+            <tbody>
+              {newVinPrompt.rows.map((t, i) => {
+                const m = models.find(x => x.id === t.modelId);
+                const rule = detectionMethod === 'multiclass' ? `${(t.mandatoryClasses || []).length} mandatory, ${(t.ignoredClasses || []).length} ignored` : (t.class || '');
+                return (
+                  <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ position: 'sticky', left: 0, background: C.surface, padding: 10 }}>
+                      <b>{m?.vision_project_name || t.modelId}</b> <span style={{ color: C.muted }}>{rule}</span>
+                      {t.instruction ? <div style={{ color: C.muted, fontSize: 12 }}>{t.instruction}</div> : null}
+                    </td>
+                    {newVinPrompt.columns.map(c => {
+                      const k = `${i}|${c}`;
+                      return (
+                        <td key={c} style={{ textAlign: 'center', padding: 10 }}>
+                          {k in newVinPrompt.checked
+                            ? <input type="checkbox" checked={newVinPrompt.checked[k]} onChange={() => setNewVinPrompt(p => ({ ...p, checked: { ...p.checked, [k]: !p.checked[k] } }))} />
+                            : <span style={{ color: C.muted }}>✓</span>}
+                        </td>
+                      );
+                    })}
+                    <td style={{ textAlign: 'center', padding: 10 }}>
+                      <input type="checkbox" onChange={e => { const on = e.target.checked; setCells((ii, cc, cur) => ii === i ? on : cur); }} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+          <button onClick={() => setCells(() => true)} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 12px' }}>Tick all</button>
+          <button onClick={() => setCells(() => false)} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 12px' }}>Clear all</button>
           <span style={{ flex: 1 }} />
           <button onClick={() => setNewVinPrompt(null)} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 14px' }}>Cancel</button>
-          <button onClick={() => { const chosen = newVinPrompt.candidates.filter((_, i) => newVinPrompt.picked[i]); setNewVinPrompt(null); handleEnterReview(chosen); }}
-            style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.accent, color: '#fff', fontWeight: 800, cursor: 'pointer' }}>Continue</button>
+          <button onClick={() => {
+            const a = {};
+            Object.entries(newVinPrompt.checked).forEach(([k, on]) => {
+              if (!on) return;
+              const [i, ...rest] = k.split('|'); const c = rest.join('|');
+              (a[c] = a[c] || []).push(newVinPrompt.rows[Number(i)]);
+            });
+            setNewVinPrompt(null);
+            handleEnterReview(a);
+          }} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.accent, color: '#fff', fontWeight: 800, cursor: 'pointer' }}>Continue</button>
         </div>
       </div>
     </div>
