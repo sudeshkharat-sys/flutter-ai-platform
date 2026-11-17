@@ -503,6 +503,7 @@ import { Plus, Trash2, Edit3, ChevronRight, ArrowLeft, Check, ChevronDown, Arrow
 function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const navigate = useNavigate();
   const appliedRef = useRef(new Set());
+  const [newVinPrompt, setNewVinPrompt] = useState(null);
   const [models, setModels] = useState([]);
   const [masterMappings, setMasterMappings] = useState([]);
   const [engineMappings, setEngineMappings] = useState([]);
@@ -722,6 +723,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     newConfigs[index][field] = value;
     if (field === 'modelId') {
       carryOverClassRules(newConfigs[index], models.find(mod => mod.id === value));
+      // A different model is a different task: give it a fresh id so Review
+      // treats it as new and adds it to the existing rows.
+      newConfigs[index]._uid = newUid();
     }
     setDefaultAIConfigs(newConfigs);
   };
@@ -859,23 +863,43 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   // Default tasks added after a row already existed (e.g. while updating a
   // profile) are appended to it once; appliedRef remembers what was already
   // applied per code so a task the user deleted from a row doesn't come back.
-  const mergeAIModels = (existing, validAI, code) => {
+  const mergeAIModels = (existing, validAI, code, newRowTasks) => {
     const fresh = (v) => ({ ...v, _uid: undefined, classOcrConfig: { ...(v.classOcrConfig || {}) } });
     if (existing === undefined) {
       validAI.forEach(v => appliedRef.current.add(`${code}|${v._uid}`));
-      return validAI.map(fresh);
+      return (newRowTasks || validAI).map(fresh);
     }
     const toAdd = validAI.filter(v => !appliedRef.current.has(`${code}|${v._uid}`));
     toAdd.forEach(v => appliedRef.current.add(`${code}|${v._uid}`));
     return [...existing, ...toAdd.map(fresh)];
   };
 
-  const handleEnterReview = () => {
+  const handleEnterReview = (chosenForNew) => {
     const validAI = defaultAIConfigs.filter(c => c.modelId && (detectionMethod === 'multiclass' ? (c.mandatoryClasses?.length > 0 || c.ignoredClasses?.length > 0) : c.class));
     const existingByCode = reviewData.reduce((acc, row) => {
       acc[row.model_code] = row.selectedAIModels;
       return acc;
     }, {});
+
+    // Updating a profile and adding new VIN/codes: ask which tasks they get.
+    if (chosenForNew === undefined && !openScan && reviewData.length > 0) {
+      const targets = scanType === 'engine' ? selectedEngineCodes : selectedModelCodes;
+      const newCodes = targets.filter(c => existingByCode[c] === undefined);
+      if (newCodes.length > 0) {
+        const sig = (t) => `${t.modelId}|${t.instruction || ''}|${[...(t.mandatoryClasses || [])].sort().join(',')}|${[...(t.ignoredClasses || [])].sort().join(',')}|${t.class || ''}`;
+        const seen = new Set();
+        const candidates = [];
+        [...validAI, ...reviewData.flatMap(r => r.selectedAIModels || [])].forEach(t => {
+          if (!t.modelId || seen.has(sig(t))) return;
+          seen.add(sig(t));
+          candidates.push(t);
+        });
+        if (candidates.length > 0) {
+          setNewVinPrompt({ newCodes, candidates, picked: candidates.map(() => true) });
+          return;
+        }
+      }
+    }
 
     if (openScan) {
       // No code restriction -- one universal task group (blank model_code)
@@ -903,7 +927,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           platform_name: mapping.sheet_name,
           model_code: mapping.part_no,
           description: mapping.description,
-          selectedAIModels: mergeAIModels(existingByCode[mapping.part_no], validAI, mapping.part_no)
+          selectedAIModels: mergeAIModels(existingByCode[mapping.part_no], validAI, mapping.part_no, chosenForNew)
         };
       });
       setReviewData(newReviewData);
@@ -913,13 +937,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         return;
       }
       const newReviewData = selectedModelCodes.map(code => {
-        const mapping = masterMappings.find(m => m.model_code === code);
+        const mapping = masterMappings.find(m => m.model_code === code) || { model_code: code, platform_name: 'Unknown', description: '' };
         return {
-          id: mapping.id,
+          id: mapping.id || Math.random().toString(),
           platform_name: mapping.platform_name,
           model_code: mapping.model_code,
           description: mapping.description,
-          selectedAIModels: mergeAIModels(existingByCode[code], validAI, code)
+          selectedAIModels: mergeAIModels(existingByCode[code], validAI, code, chosenForNew)
         };
       });
       setReviewData(newReviewData);
@@ -1138,8 +1162,36 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   if (loading) return null;
 
+  const promptModal = newVinPrompt && (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 24, width: '100%', maxWidth: 560, maxHeight: '85vh', overflowY: 'auto' }}>
+        <h3 style={{ fontSize: 18, fontWeight: 800, marginBottom: 6 }}>New {scanType === 'engine' ? 'engine code' : 'VIN / model code'}{newVinPrompt.newCodes.length > 1 ? 's' : ''} added</h3>
+        <p style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>{newVinPrompt.newCodes.join(', ')}<br />Choose which tasks they should get:</p>
+        {newVinPrompt.candidates.map((t, i) => {
+          const m = models.find(x => x.id === t.modelId);
+          const rule = detectionMethod === 'multiclass' ? `${(t.mandatoryClasses || []).length} mandatory, ${(t.ignoredClasses || []).length} ignored` : (t.class || '');
+          return (
+            <label key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 4px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer' }}>
+              <input type="checkbox" checked={newVinPrompt.picked[i]} onChange={() => setNewVinPrompt(p => ({ ...p, picked: p.picked.map((v, j) => j === i ? !v : v) }))} />
+              <span style={{ fontSize: 13 }}><b>{m?.vision_project_name || t.modelId}</b> <span style={{ color: C.muted }}>{rule}</span>{t.instruction ? <><br /><span style={{ color: C.muted }}>{t.instruction}</span></> : null}</span>
+            </label>
+          );
+        })}
+        <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
+          <button onClick={() => setNewVinPrompt(p => ({ ...p, picked: p.picked.map(() => true) }))} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 12px' }}>Select all</button>
+          <button onClick={() => setNewVinPrompt(p => ({ ...p, picked: p.picked.map(() => false) }))} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 12px' }}>None</button>
+          <span style={{ flex: 1 }} />
+          <button onClick={() => setNewVinPrompt(null)} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 14px' }}>Cancel</button>
+          <button onClick={() => { const chosen = newVinPrompt.candidates.filter((_, i) => newVinPrompt.picked[i]); setNewVinPrompt(null); handleEnterReview(chosen); }}
+            style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.accent, color: '#fff', fontWeight: 800, cursor: 'pointer' }}>Continue</button>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      {promptModal}
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 24, padding: 32, width: '100%', maxWidth: isReviewing ? 1150 : 700, maxHeight: '95vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1567,7 +1619,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             </div>
 
             <button
-              onClick={handleEnterReview}
+              onClick={() => handleEnterReview()}
               disabled={!openScan && (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0)}
               style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: (!openScan && (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0)) ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
             >
