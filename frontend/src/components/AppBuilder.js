@@ -78,6 +78,9 @@ function carryOverClassRules(task, newModel) {
   task.classOcrConfig = cfg;
 }
 
+let _uidSeq = 0;
+const newUid = () => `t${Date.now().toString(36)}${(_uidSeq++).toString(36)}`;
+
 export default function AppBuilder() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -577,7 +580,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     };
   }, [showDropdown, showEngineDropdown]);
 
-  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ modelId: '', class: '', mandatoryClasses: [], ignoredClasses: [], classOcrConfig: {}, instruction: '' }]);
+  const [defaultAIConfigs, setDefaultAIConfigs] = useState([{ _uid: newUid(), modelId: '', class: '', mandatoryClasses: [], ignoredClasses: [], classOcrConfig: {}, instruction: '' }]);
 
   const [isReviewing, setIsReviewing] = useState(startAtReview);
   const [reviewData, setReviewData] = useState([]); 
@@ -598,6 +601,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       setLoading(false);
 
       if (existingApp) {
+        let restored_uids = [];
         let codes = [];
         if (existingApp.app_settings?.model_codes) {
           codes = existingApp.app_settings.model_codes;
@@ -618,11 +622,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           // user never selected in the Multi-Class checklist.
           const restored = existingApp.app_settings.default_configs.map(c => ({
             ...c,
+            _uid: c._uid || newUid(),
             class: c.class || '',
             mandatoryClasses: c.mandatoryClasses || [],
             ignoredClasses: c.ignoredClasses || [],
             classOcrConfig: c.classOcrConfig || {},
           }));
+          restored_uids = restored.map(c => c._uid);
           setDefaultAIConfigs(restored);
         }
 
@@ -676,9 +682,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               };
             });
 
-        restoredReviewData.forEach(r => (r.selectedAIModels || []).forEach(t => appliedRef.current.add(`${r.model_code}|${t.modelId}`)));
         // Default tasks saved earlier were already applied to every code.
-        (existingApp.app_settings?.default_configs || []).forEach(c => restoredReviewData.forEach(r => appliedRef.current.add(`${r.model_code}|${c.modelId}`)));
+        // Saved default tasks were already applied to every code; remember by uid.
+        (existingApp.app_settings?.default_configs || []).forEach((c, i) => restoredReviewData.forEach(r => appliedRef.current.add(`${r.model_code}|${restored_uids[i]}`)));
         setReviewData(restoredReviewData);
         if (startAtReview) setIsReviewing(true);
       }
@@ -704,7 +710,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   };
 
   const handleAddDefaultAI = () => {
-    setDefaultAIConfigs([...defaultAIConfigs, { modelId: '', class: '', mandatoryClasses: [], ignoredClasses: [], classOcrConfig: {}, instruction: '' }]);
+    setDefaultAIConfigs([...defaultAIConfigs, { _uid: newUid(), modelId: '', class: '', mandatoryClasses: [], ignoredClasses: [], classOcrConfig: {}, instruction: '' }]);
   };
 
   const handleRemoveDefaultAI = (index) => {
@@ -854,13 +860,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   // profile) are appended to it once; appliedRef remembers what was already
   // applied per code so a task the user deleted from a row doesn't come back.
   const mergeAIModels = (existing, validAI, code) => {
-    const fresh = (v) => ({ ...v, classOcrConfig: { ...(v.classOcrConfig || {}) } });
+    const fresh = (v) => ({ ...v, _uid: undefined, classOcrConfig: { ...(v.classOcrConfig || {}) } });
     if (existing === undefined) {
-      validAI.forEach(v => appliedRef.current.add(`${code}|${v.modelId}`));
+      validAI.forEach(v => appliedRef.current.add(`${code}|${v._uid}`));
       return validAI.map(fresh);
     }
-    const toAdd = validAI.filter(v => !appliedRef.current.has(`${code}|${v.modelId}`) && !existing.some(e => e.modelId === v.modelId));
-    toAdd.forEach(v => appliedRef.current.add(`${code}|${v.modelId}`));
+    const toAdd = validAI.filter(v => !appliedRef.current.has(`${code}|${v._uid}`));
+    toAdd.forEach(v => appliedRef.current.add(`${code}|${v._uid}`));
     return [...existing, ...toAdd.map(fresh)];
   };
 
