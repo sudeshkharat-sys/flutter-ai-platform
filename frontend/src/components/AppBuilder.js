@@ -665,6 +665,19 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         // '' in handleSaveProfile). Rebuild that single row directly
         // rather than producing an empty (and therefore blank-looking)
         // review table.
+        // The review table must list EVERY code that has tasks in the builder.
+        // It used to be built only from the saved code list (and only model
+        // codes, never engine codes), so tasks whose code wasn't in that list
+        // showed in the builder but were missing here -- and were then wiped
+        // when the profile was saved. Add those codes back as selected.
+        const isEngineScan = existingApp.app_settings?.scan_type === 'engine';
+        const savedCodes = isEngineScan ? (existingApp.app_settings?.engine_codes || []) : codes;
+        const orphanCodes = Object.keys(tasksByCode).filter(c => c !== 'Default' && !savedCodes.includes(c));
+        const reviewCodes = [...savedCodes, ...orphanCodes];
+        if (orphanCodes.length > 0) {
+          if (isEngineScan) setSelectedEngineCodes(reviewCodes);
+          else setSelectedModelCodes(reviewCodes);
+        }
         const restoredReviewData = existingApp.app_settings?.skip_masterdata_validation
           ? [{
               id: 'open-scan',
@@ -673,7 +686,11 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
               description: 'Open scan -- applies to any scanned code',
               selectedAIModels: tasksByCode['Default'] || [],
             }]
-          : codes.map(code => {
+          : reviewCodes.map(code => {
+              if (isEngineScan) {
+                const em = allEngineMappings.find(m => m.part_no === code) || { part_no: code, sheet_name: 'Unknown', description: '' };
+                return { id: em.id || Math.random().toString(), platform_name: em.sheet_name, model_code: em.part_no, description: em.description, selectedAIModels: tasksByCode[code] || [] };
+              }
               const mapping = allMappings.find(m => m.model_code === code) || { model_code: code, platform_name: 'Unknown', description: '' };
               return {
                 id: mapping.id || Math.random().toString(),
