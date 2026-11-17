@@ -1207,79 +1207,91 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     const srcSigs = new Set((newVinPrompt.existingByCode[src] || []).map(taskSig));
     setCells((i, c, cur) => c === col ? srcSigs.has(taskSig(newVinPrompt.rows[i])) : cur);
   };
-  const promptModal = newVinPrompt && (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 24, width: '100%', maxWidth: 1000, maxHeight: '88vh', display: 'flex', flexDirection: 'column' }}>
-        <h3 style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>Assign tasks to codes</h3>
-        <p style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>Tick which task each {scanType === 'engine' ? 'engine code' : 'VIN / model code'} gets. Greyed ✓ = already has it. New codes: {newVinPrompt.newCodes.join(', ') || 'none'}.</p>
-        <div style={{ overflow: 'auto', border: `1px solid ${C.border}`, borderRadius: 10 }}>
-          <table style={{ borderCollapse: 'collapse', fontSize: 13, width: '100%' }}>
-            <thead>
-              <tr>
-                <th style={{ position: 'sticky', left: 0, background: C.surface, padding: 10, textAlign: 'left', minWidth: 220 }}>Task</th>
-                {newVinPrompt.columns.map(c => (
-                  <th key={c} style={{ padding: 10, minWidth: 110, verticalAlign: 'top' }}>
-                    <div style={{ fontWeight: 800 }}>{c}{newVinPrompt.newCodes.includes(c) ? ' (new)' : ''}</div>
-                    <label style={{ fontSize: 11, color: C.muted, cursor: 'pointer' }}>
-                      <input type="checkbox" onChange={e => { const on = e.target.checked; setCells((i, cc, cur) => cc === c ? on : cur); }} /> all
-                    </label>
-                    <select value="" onChange={e => copyFromCode(c, e.target.value)} style={{ display: 'block', width: '100%', marginTop: 4, fontSize: 11, background: 'black', color: C.text, border: `1px solid ${C.border}`, borderRadius: 6 }}>
-                      <option value="">Copy from…</option>
-                      {Object.keys(newVinPrompt.existingByCode).filter(o => o !== c).map(o => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                  </th>
-                ))}
-                <th style={{ padding: 10, fontSize: 11, color: C.muted }}>row</th>
-              </tr>
-            </thead>
-            <tbody>
-              {newVinPrompt.rows.map((t, i) => {
-                const m = models.find(x => x.id === t.modelId);
-                const rule = detectionMethod === 'multiclass' ? `${(t.mandatoryClasses || []).length} mandatory, ${(t.ignoredClasses || []).length} ignored` : (t.class || '');
-                return (
-                  <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
-                    <td style={{ position: 'sticky', left: 0, background: C.surface, padding: 10 }}>
-                      <b>{m?.vision_project_name || t.modelId}</b> <span style={{ color: C.muted }}>{rule}</span>
-                      {t.instruction ? <div style={{ color: C.muted, fontSize: 12 }}>{t.instruction}</div> : null}
+  const promptModal = newVinPrompt && (() => {
+    const P = newVinPrompt;
+    const needle = (P.filter || '').trim().toLowerCase();
+    const codes = P.columns.filter(c => !needle || c.toLowerCase().includes(needle));
+    const taskTitle = (t) => t.instruction || models.find(x => x.id === t.modelId)?.vision_project_name || t.modelId;
+    const taskSub = (t) => {
+      const mn = models.find(x => x.id === t.modelId)?.vision_project_name || '';
+      const rule = detectionMethod === 'multiclass' ? `${(t.mandatoryClasses || []).length} mandatory, ${(t.ignoredClasses || []).length} ignored` : (t.class || '');
+      return [mn, rule].filter(Boolean).join(' · ');
+    };
+    const cell = { padding: '8px 10px', borderBottom: '1px solid #333' };
+    const btn = { padding: '6px 10px', borderRadius: 6, border: '1px solid #555', background: '#222', color: '#fff', fontSize: 12, cursor: 'pointer' };
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.9)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <div style={{ background: '#141414', color: '#fff', border: '1px solid #444', borderRadius: 16, padding: 24, width: '100%', maxWidth: 1000, height: '88vh', display: 'flex', flexDirection: 'column' }}>
+          <h3 style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>Choose tasks for each {scanType === 'engine' ? 'engine code' : 'VIN'}</h3>
+          <p style={{ fontSize: 13, color: '#bbb', marginBottom: 12, lineHeight: 1.5 }}>
+            Each line is one {scanType === 'engine' ? 'engine code' : 'VIN'}. Tick the tasks it should have.
+            <b> NEW</b> = just added. <b>✓ already</b> = it already has that task.
+            Use <b>Copy tasks from…</b> to copy another VIN's tasks onto a line.
+          </p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+            <input value={P.filter || ''} onChange={e => setNewVinPrompt(p => ({ ...p, filter: e.target.value }))} placeholder="Search VIN..." style={{ flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid #555', background: '#000', color: '#fff' }} />
+            <button style={btn} onClick={() => setCells(() => true)}>Tick all</button>
+            <button style={btn} onClick={() => setCells(() => false)}>Clear all</button>
+          </div>
+          <div style={{ flex: 1, overflow: 'auto', border: '1px solid #444', borderRadius: 10 }}>
+            <table style={{ borderCollapse: 'separate', borderSpacing: 0, fontSize: 13, width: '100%' }}>
+              <thead>
+                <tr>
+                  <th style={{ ...cell, position: 'sticky', top: 0, left: 0, zIndex: 3, background: '#1f1f1f', textAlign: 'left', minWidth: 230 }}>{scanType === 'engine' ? 'Engine code' : 'VIN'}</th>
+                  {P.rows.map((t, i) => (
+                    <th key={i} style={{ ...cell, position: 'sticky', top: 0, zIndex: 2, background: '#1f1f1f', minWidth: 150, textAlign: 'left', verticalAlign: 'top' }}>
+                      <div style={{ fontWeight: 800 }}>{taskTitle(t)}</div>
+                      <div style={{ fontSize: 11, color: '#aaa', fontWeight: 400 }}>{taskSub(t)}</div>
+                      <label style={{ fontSize: 11, color: '#ccc', cursor: 'pointer' }}>
+                        <input type="checkbox" onChange={e => { const on = e.target.checked; setCells((ii, cc, cur) => ii === i ? on : cur); }} /> give to all
+                      </label>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {codes.map(c => (
+                  <tr key={c}>
+                    <td style={{ ...cell, position: 'sticky', left: 0, background: '#141414', zIndex: 1 }}>
+                      <div style={{ fontWeight: 700 }}>{c} {P.newCodes.includes(c) && <span style={{ background: '#dc143c', borderRadius: 4, padding: '1px 6px', fontSize: 10, marginLeft: 4 }}>NEW</span>}</div>
+                      <select value="" onChange={e => copyFromCode(c, e.target.value)} style={{ marginTop: 4, width: '100%', fontSize: 11, background: '#000', color: '#fff', border: '1px solid #555', borderRadius: 6 }}>
+                        <option value="">Copy tasks from…</option>
+                        {Object.keys(P.existingByCode).filter(o => o !== c).map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
                     </td>
-                    {newVinPrompt.columns.map(c => {
+                    {P.rows.map((t, i) => {
                       const k = `${i}|${c}`;
                       return (
-                        <td key={c} style={{ textAlign: 'center', padding: 10 }}>
-                          {k in newVinPrompt.checked
-                            ? <input type="checkbox" checked={newVinPrompt.checked[k]} onChange={() => setNewVinPrompt(p => ({ ...p, checked: { ...p.checked, [k]: !p.checked[k] } }))} />
-                            : <span style={{ color: C.muted }}>✓</span>}
+                        <td key={i} style={{ ...cell, textAlign: 'center' }}>
+                          {k in P.checked
+                            ? <input type="checkbox" style={{ width: 18, height: 18 }} checked={P.checked[k]} onChange={() => setNewVinPrompt(p => ({ ...p, checked: { ...p.checked, [k]: !p.checked[k] } }))} />
+                            : <span style={{ color: '#7c7' }}>✓ already</span>}
                         </td>
                       );
                     })}
-                    <td style={{ textAlign: 'center', padding: 10 }}>
-                      <input type="checkbox" onChange={e => { const on = e.target.checked; setCells((ii, cc, cur) => ii === i ? on : cur); }} />
-                    </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-          <button onClick={() => setCells(() => true)} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 12px' }}>Tick all</button>
-          <button onClick={() => setCells(() => false)} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 12px' }}>Clear all</button>
-          <span style={{ flex: 1 }} />
-          <button onClick={() => setNewVinPrompt(null)} style={{ ...classRuleButtonStyle(false, C.accent), padding: '8px 14px' }}>Cancel</button>
-          <button onClick={() => {
-            const a = {};
-            Object.entries(newVinPrompt.checked).forEach(([k, on]) => {
-              if (!on) return;
-              const [i, ...rest] = k.split('|'); const c = rest.join('|');
-              (a[c] = a[c] || []).push(newVinPrompt.rows[Number(i)]);
-            });
-            setNewVinPrompt(null);
-            handleEnterReview(a);
-          }} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.accent, color: '#fff', fontWeight: 800, cursor: 'pointer' }}>Continue</button>
+                ))}
+                {codes.length === 0 && <tr><td style={cell} colSpan={P.rows.length + 1}>No match</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 14, justifyContent: 'flex-end' }}>
+            <button style={{ ...btn, padding: '10px 16px' }} onClick={() => setNewVinPrompt(null)}>Cancel</button>
+            <button style={{ padding: '10px 22px', borderRadius: 8, border: 'none', background: '#dc143c', color: '#fff', fontWeight: 800, cursor: 'pointer' }} onClick={() => {
+              const a = {};
+              Object.entries(P.checked).forEach(([k, on]) => {
+                if (!on) return;
+                const [i, ...rest] = k.split('|'); const c = rest.join('|');
+                (a[c] = a[c] || []).push(P.rows[Number(i)]);
+              });
+              setNewVinPrompt(null);
+              handleEnterReview(a);
+            }}>Continue</button>
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  })();
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
