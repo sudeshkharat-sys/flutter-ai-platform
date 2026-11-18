@@ -336,7 +336,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           if (!_results.containsKey(j)) { next = nameOf(j); break; }
         }
         sub = 'NEXT: $next';
-        detail = '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  Task ${i + 1} of $n';
+        detail = '{% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  Task ${i + 1} of $n';
       }
       Widget slot(double h, String text, double size, Color c, FontWeight w) => SizedBox(
             height: h,
@@ -407,8 +407,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     } else {
       _loadCurrentModel();
     }
-    ScanLog.begin('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %} ${widget.vin}');
-    _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
+    ScanLog.begin('{% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %} ${widget.vin}');
+    _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
   /// This process's cumulative CPU time (user + system) in clock ticks (100/s), from
@@ -3153,7 +3153,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           if (!_results.containsKey(j)) { next = nameOf(j); break; }
         }
         sub = 'NEXT: $next';
-        detail = '{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  Task ${i + 1} of $n';
+        detail = '{% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %}: ${widget.vin}  \u00b7  Task ${i + 1} of $n';
       }
       Widget slot(double h, String text, double size, Color c, FontWeight w) => SizedBox(
             height: h,
@@ -3231,8 +3231,8 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     } else {
       _loadCurrentModel();
     }
-    ScanLog.begin('{% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %} ${widget.vin}');
-    _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}Engine No{% else %}VIN{% endif %}: ${widget.vin}");
+    ScanLog.begin('{% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %} ${widget.vin}');
+    _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %}: ${widget.vin}");
   }
 
   void _addLog(String msg) {

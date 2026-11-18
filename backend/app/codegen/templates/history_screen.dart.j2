@@ -584,7 +584,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           child: TextField(
             controller: _searchController,
             decoration: InputDecoration(
-              hintText: '{% if scan_type == "engine" %}Search by Serial or Engine Code...{% else %}Search by VIN or Model Code...{% endif %}',
+              hintText: '{% if scan_type == "engine" %}Search by {{ "Traceability or Model Code" if is_radiator else "Serial or Engine Code" }}...{% else %}Search by VIN or Model Code...{% endif %}',
               hintStyle: const TextStyle(fontSize: 13, color: Colors.grey),
               prefixIcon: const Icon(Icons.search, color: Color(0xFFDC143C)),
               suffixIcon: _searchQuery.isNotEmpty
@@ -672,7 +672,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ),
             ),
             title: Text(
-              '{% if scan_type == "engine" %}Serial{% else %}VIN{% endif %}: ${item['vin']}',
+              '{% if scan_type == "engine" %}{{ "Traceability" if is_radiator else "Serial" }}{% else %}VIN{% endif %}: ${item['vin']}',
               style: const TextStyle(
                 color: Color(0xFFDC143C),
                 fontWeight: FontWeight.bold,
@@ -683,7 +683,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    '{% if scan_type == "engine" %}Engine Code{% else %}Model{% endif %}: ${item['modelCode']} • ${_formatDate(date)} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}',
+                    '{% if scan_type == "engine" %}{{ code_label|default("Engine Code") }}{% else %}Model{% endif %}: ${item['modelCode']} • ${_formatDate(date)} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}',
                     style: const TextStyle(fontSize: 11, color: Colors.grey),
                   ),
                 ),

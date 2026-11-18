@@ -37,10 +37,10 @@ def build_pack(app, model_assets, master_rows, engine_rows):
     app_type = settings.get("app_type", "sequential")
     caps = _j(settings.get("combined_capabilities"), [])
     if app_type == "combined" and caps:
-        kinds = [k for k in ("chakan", "engine", "model") if k in caps or (k == "model" and "vin" in caps)]
+        kinds = [k for k in ("chakan", "engine", "model") if k in caps or (k == "engine" and "radiator" in caps) or (k == "model" and "vin" in caps)]
         scan_types = kinds or ["model"]
     else:
-        scan_types = [settings.get("scan_type") or ("engine" if app_type == "ocr" else "model")]
+        scan_types = [("engine" if settings.get("scan_type") == "radiator" else settings.get("scan_type")) or ("engine" if app_type == "ocr" else "model")]
 
     # one .pt per model asset, with a unique file name
     assets = {a["id"]: a for a in model_assets}

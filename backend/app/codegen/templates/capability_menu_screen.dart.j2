@@ -6,6 +6,9 @@ import 'vin_scan_screen.dart';
 {% if 'engine' in combined_capabilities %}
 import 'engine_scan_screen.dart';
 {% endif %}
+{% if 'radiator' in combined_capabilities %}
+import 'radiator_scan_screen.dart';
+{% endif %}
 {% if 'chakan' in combined_capabilities %}
 import 'chakan_scan_screen.dart';
 {% endif %}
@@ -52,6 +55,18 @@ class CapabilityMenuScreen extends StatelessWidget {
               () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const VinScanScreen(modelCode: '')),
+              ),
+            ),
+            const SizedBox(height: 16),
+{% endif %}
+{% if 'radiator' in combined_capabilities %}
+            _menuButton(
+              context,
+              'Scan Radiator',
+              Icons.qr_code_scanner,
+              () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const RadiatorScanScreen(modelCode: '')),
               ),
             ),
             const SizedBox(height: 16),

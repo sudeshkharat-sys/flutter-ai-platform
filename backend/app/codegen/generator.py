@@ -11,6 +11,17 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 _KOTLIN_FALLBACK = "2.1.20"
 
 
+def _logic_scan_type(t):
+    """'radiator' scans use the engine code path; only labels differ."""
+    return "engine" if t == "radiator" else t
+
+
+def _is_radiator(settings, is_combined_app, combined_capabilities):
+    if is_combined_app:
+        return "radiator" in combined_capabilities and "engine" not in combined_capabilities
+    return settings.get("scan_type") == "radiator"
+
+
 def _detect_kotlin_version() -> str:
     flutter_roots = [r"C:\flutter", "/flutter", "/usr/local/flutter"]
     env_root = os.environ.get("FLUTTER_ROOT") or os.environ.get("FLUTTER_HOME")
@@ -327,12 +338,18 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         # built into history_screen.dart.j2, just needs this flag set. A
         # combined app follows the same rule based on which capabilities it
         # actually has (prefers "engine" labels if engine/OCR is present).
-        "scan_type": settings.get(
+        # "radiator" is the engine-style PART_NO + traceability sticker with
+        # Radiator labels: the generated app treats it as scan_type "engine"
+        # (same parsing / Engine Data validation) and only the labels differ.
+        "scan_type": _logic_scan_type(settings.get(
             "scan_type",
             (ocr_ctx.get("ocr_truth_scan_type", "engine") if (is_ocr_app and not is_combined_app)
-             else "engine" if (is_ocr_app or (is_combined_app and "engine" in combined_capabilities))
+             else "engine" if (is_ocr_app or (is_combined_app and ("engine" in combined_capabilities or "radiator" in combined_capabilities)))
              else "model"),
-        ),
+        )),
+        "is_radiator": _is_radiator(settings, is_combined_app, combined_capabilities),
+        "trace_label": "Radiator Traceability" if _is_radiator(settings, is_combined_app, combined_capabilities) else "Engine No",
+        "code_label": "Model Code" if _is_radiator(settings, is_combined_app, combined_capabilities) else "Engine Code",
         "app_settings": settings,
         # Detection engine selector: 'default' (single-target flow) or
         # 'multiclass' (mandatory-class checklist + per-class OCR verification).
@@ -690,6 +707,9 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             if "engine" in combined_capabilities:
                 engine_ctx = {**ctx, "scan_type": "engine", "scan_screen_class_name": "EngineScanScreen", "is_ocr_app": False}
                 zf.writestr(f"{root}/lib/screens/engine_scan_screen.dart", scan_tmpl.render(**engine_ctx))
+            if "radiator" in combined_capabilities:
+                radiator_ctx = {**ctx, "scan_type": "engine", "is_radiator": True, "trace_label": "Radiator Traceability", "code_label": "Model Code", "scan_screen_class_name": "RadiatorScanScreen", "is_ocr_app": False}
+                zf.writestr(f"{root}/lib/screens/radiator_scan_screen.dart", scan_tmpl.render(**radiator_ctx))
             if "chakan" in combined_capabilities:
                 chakan_ctx = {**ctx, "scan_type": "chakan", "scan_screen_class_name": "ChakanScanScreen", "is_ocr_app": False}
                 zf.writestr(f"{root}/lib/screens/chakan_scan_screen.dart", scan_tmpl.render(**chakan_ctx))

@@ -523,6 +523,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     );
   };
   const [scanType, setScanType] = useState(existingApp?.app_settings?.scan_type || 'model');
+  const isEngineLike = scanType === 'engine' || scanType === 'radiator';
   // Detection engine: 'default' (single target class) or 'multiclass'
   // (mandatory-class checklist + per-class OCR verification).
   const [detectionMethod, setDetectionMethod] = useState(existingApp?.app_settings?.detection_method || 'default');
@@ -670,7 +671,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         // codes, never engine codes), so tasks whose code wasn't in that list
         // showed in the builder but were missing here -- and were then wiped
         // when the profile was saved. Add those codes back as selected.
-        const isEngineScan = existingApp.app_settings?.scan_type === 'engine';
+        const isEngineScan = ['engine', 'radiator'].includes(existingApp.app_settings?.scan_type);
         const savedCodes = isEngineScan ? (existingApp.app_settings?.engine_codes || []) : codes;
         const orphanCodes = Object.keys(tasksByCode).filter(c => c !== 'Default' && !savedCodes.includes(c));
         const reviewCodes = [...savedCodes, ...orphanCodes];
@@ -908,7 +909,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     // Updating a profile with new codes and/or new tasks: let the user pick,
     // in a task x code grid, exactly which code gets which task.
     if (assign === undefined && !openScan && reviewData.length > 0) {
-      const targets = scanType === 'engine' ? selectedEngineCodes : selectedModelCodes;
+      const targets = isEngineLike ? selectedEngineCodes : selectedModelCodes;
       const newCodes = targets.filter(c => existingByCode[c] === undefined);
       const oldCodes = targets.filter(c => existingByCode[c] !== undefined);
       const newTasks = validAI.filter(v => oldCodes.some(c => !appliedRef.current.has(`${c}|${v._uid}`)));
@@ -950,7 +951,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       return;
     }
 
-    if (scanType === 'engine') {
+    if (isEngineLike) {
       if (selectedEngineCodes.length === 0) {
         alert("Please select at least one Engine Code, or turn on Open Scan.");
         return;
@@ -1222,9 +1223,9 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     return (
       <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.9)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
         <div style={{ background: '#141414', color: '#fff', border: '1px solid #444', borderRadius: 16, padding: 24, width: '100%', maxWidth: 1000, height: '88vh', display: 'flex', flexDirection: 'column' }}>
-          <h3 style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>Choose tasks for each {scanType === 'engine' ? 'engine code' : 'VIN'}</h3>
+          <h3 style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>Choose tasks for each {isEngineLike ? 'engine code' : 'VIN'}</h3>
           <p style={{ fontSize: 13, color: '#bbb', marginBottom: 12, lineHeight: 1.5 }}>
-            Each line is one {scanType === 'engine' ? 'engine code' : 'VIN'}. Tick the tasks it should have.
+            Each line is one {isEngineLike ? 'engine code' : 'VIN'}. Tick the tasks it should have.
             <b> NEW</b> = just added. <b>✓ already</b> = it already has that task.
             Use <b>Copy tasks from…</b> to copy another VIN's tasks onto a line.
           </p>
@@ -1237,7 +1238,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             <table style={{ borderCollapse: 'separate', borderSpacing: 0, fontSize: 13, width: '100%' }}>
               <thead>
                 <tr>
-                  <th style={{ ...cell, position: 'sticky', top: 0, left: 0, zIndex: 3, background: '#1f1f1f', textAlign: 'left', minWidth: 230 }}>{scanType === 'engine' ? 'Engine code' : 'VIN'}</th>
+                  <th style={{ ...cell, position: 'sticky', top: 0, left: 0, zIndex: 3, background: '#1f1f1f', textAlign: 'left', minWidth: 230 }}>{isEngineLike ? 'Engine code' : 'VIN'}</th>
                   {P.rows.map((t, i) => (
                     <th key={i} style={{ ...cell, position: 'sticky', top: 0, zIndex: 2, background: '#1f1f1f', minWidth: 150, textAlign: 'left', verticalAlign: 'top' }}>
                       <div style={{ fontWeight: 800 }}>{taskTitle(t)}</div>
@@ -1328,6 +1329,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                     {[
                       { key: 'vin', label: 'VIN scan', hint: 'Scan a raw VIN barcode, checked against Master Data, then straight into this checklist.' },
                       { key: 'engine', label: 'Engine scan', hint: 'Scan an engine sticker ("PART_NO SERIAL_NO"), checked against Engine Data, then straight into this checklist.' },
+                      { key: 'radiator', label: 'Radiator scan', hint: 'Scan a radiator sticker ("MODEL_CODE TRACEABILITY"), model code checked against Engine Data, then straight into this checklist.' },
                       { key: 'chakan', label: 'Chakan Plant scan', hint: 'Scan a Chakan Plant barcode ("VIN_ModelCode_Garbage"), checked against Master Data, then straight into this checklist.' },
                       { key: 'inspection', label: 'Class Inspection', hint: 'Skip the barcode scan entirely -- go straight into this checklist with no vehicle/code attached, for whenever no scan is needed.' },
                     ].map(cap => (
@@ -1362,6 +1364,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                 >
                   <option value="model">Model Code (VIN barcode)</option>
                   <option value="engine">Engine Code (Part No + Serial)</option>
+                  <option value="radiator">Radiator Scan (Model Code + Radiator Traceability)</option>
                   <option value="chakan">Chakan Plant (VIN_ModelCode_Garbage)</option>
                 </select>
               </div>
@@ -1393,8 +1396,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                 <span>
                   <span style={{ ...labelStyle, display: 'block', marginBottom: 0 }}>Open Scan (skip masterdata)</span>
                   <span style={{ fontSize: 11, color: C.muted }}>
-                    Off (default): pick specific {scanType === 'engine' ? 'Engine' : 'Model'} codes below -- scans
-                    are checked against {scanType === 'engine' ? 'Engine Data' : 'Master Data'} and rejected if
+                    Off (default): pick specific {isEngineLike ? 'Engine' : 'Model'} codes below -- scans
+                    are checked against {isEngineLike ? 'Engine Data' : 'Master Data'} and rejected if
                     unknown, and this checklist only shows for those codes. On: no code selection needed --
                     any scanned code is accepted as-is and this same checklist applies to every scan.
                   </span>
@@ -1412,7 +1415,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                   <span>
                     <span style={{ ...labelStyle, display: 'block', marginBottom: 0 }}>Auto-submit OK for unmapped codes</span>
                     <span style={{ fontSize: 11, color: C.muted }}>
-                      Off (default): a scanned code that doesn't match any selected {scanType === 'engine' ? 'Engine' : 'Model'}
+                      Off (default): a scanned code that doesn't match any selected {isEngineLike ? 'Engine' : 'Model'}
                       {' '}code below is rejected ("code not present, rebuild app"). On: instead of rejecting it, the
                       operator sees a "no inspection required for this code" message with a Submit button -- submitting
                       records that VIN with an OK result and no photo, without opening any task. Use this when some
@@ -1423,7 +1426,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                 </label>
               )}
 
-              {openScan ? null : scanType !== 'engine' ? (
+              {openScan ? null : !isEngineLike ? (
                 <div style={{ position: 'relative' }} ref={modelDropdownRef}>
                   <label style={labelStyle}>Vehicle Model Code (Multi-Select)</label>
                   <div
@@ -1641,7 +1644,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                 onChange={e => handleClassOcrTruthSource(idx, c, e.target.value)}
                                               >
                                                 <option value="fixed">Fixed text</option>
-                                                <option value="scan">Scanned {scanType === 'engine' ? 'Engine No' : 'VIN'}</option>
+                                                <option value="scan">Scanned {isEngineLike ? 'Engine No' : 'VIN'}</option>
                                               </select>
                                               {(ocrCfg.ocrTruthSource || 'fixed') === 'fixed' && (
                                                 <input
@@ -1724,8 +1727,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
             <button
               onClick={() => handleEnterReview()}
-              disabled={!openScan && (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0)}
-              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: (!openScan && (scanType === 'engine' ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0)) ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+              disabled={!openScan && (isEngineLike ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0)}
+              style={{ width: '100%', padding: '18px', borderRadius: 14, border: 'none', background: (!openScan && (isEngineLike ? selectedEngineCodes.length === 0 : selectedModelCodes.length === 0)) ? C.border : 'linear-gradient(135deg, var(--accent), var(--accent2))', color: '#fff', fontWeight: 900, fontSize: 16, cursor: 'pointer', marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
             >
               REVIEW MAPPINGS <ChevronRight size={20} />
             </button>
@@ -1835,7 +1838,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                                                   onChange={e => handleRowClassOcrTruthSource(rowIndex, aiIdx, c, e.target.value)}
                                                 >
                                                   <option value="fixed">Fixed text</option>
-                                                  <option value="scan">Scanned {scanType === 'engine' ? 'Engine No' : 'VIN'}</option>
+                                                  <option value="scan">Scanned {isEngineLike ? 'Engine No' : 'VIN'}</option>
                                                 </select>
                                                 {(ocrCfg.ocrTruthSource || 'fixed') === 'fixed' && (
                                                   <input
