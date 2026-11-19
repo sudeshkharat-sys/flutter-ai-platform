@@ -447,6 +447,14 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       if (pn.isEmpty || !up.startsWith(pn.toUpperCase())) continue;
       if (best == null || pn.length > best.length) best = raw.substring(0, pn.length);
     }
+{% if skip_masterdata_validation %}
+    // Open Scan: no saved model list to check against. Radiator model codes
+    // share one shape (10 letters/digits, e.g. HR200L5GAA), so accept any scan
+    // that starts with such a code and treat the rest as the traceability.
+    if (best == null && raw.length > 10 && RegExp(r'^[A-Za-z0-9]{10}').hasMatch(raw)) {
+      best = raw.substring(0, 10);
+    }
+{% endif %}
     if (best == null || raw.length <= best.length) return null;
     return best;
   }
