@@ -491,7 +491,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% if unmapped_code_auto_submit %}
         _showUnmappedCodeDialog(engineSerial, partNo);
 {% else %}
-        _showErrorDialog('{{ 'Model code' if is_radiator else 'Engine code' }} not found. Please add it and rebuild the app.', unmapped: true);
+        _showErrorDialog('{{ 'Model code' if is_radiator else 'Engine code' }} not found{% if is_radiator %}: $partNo{% endif %}. Please add it and rebuild the app.', unmapped: true);
 {% endif %}
         return;
       }
@@ -512,7 +512,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       setState(() => _isProcessing = true);
 {% else %}
       setState(() => _isProcessing = true);
-      _showErrorDialog('Invalid {{ 'radiator' if is_radiator else 'engine' }} barcode. Expected format: {{ 'MODEL SERIAL DD/MM/YY SHIFT HH:MM:SS' if is_radiator else 'PART_NO SERIAL_NO' }}');
+      _showErrorDialog('Invalid {{ 'radiator' if is_radiator else 'engine' }} barcode. Expected format: {{ 'MODEL SERIAL DD/MM/YY SHIFT HH:MM:SS' if is_radiator else 'PART_NO SERIAL_NO' }}{% if is_radiator %}\nScanned: "$raw" (${_scanData.length} saved model codes){% endif %}');
       return;
 {% endif %}
     }
@@ -578,7 +578,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
 {% if unmapped_code_auto_submit %}
         _showUnmappedCodeDialog(engineSerial, partNo);
 {% else %}
-        _showErrorDialog('{{ 'Model code' if is_radiator else 'Engine code' }} not found. Please add it and rebuild the app.', unmapped: true);
+        _showErrorDialog('{{ 'Model code' if is_radiator else 'Engine code' }} not found{% if is_radiator %}: $partNo{% endif %}. Please add it and rebuild the app.', unmapped: true);
 {% endif %}
         return;
       }
@@ -595,7 +595,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       setState(() => _isProcessing = true);
 {% else %}
       setState(() => _isProcessing = true);
-      _showErrorDialog('Invalid {{ 'radiator' if is_radiator else 'engine' }} barcode. Expected format: {{ 'MODEL SERIAL DD/MM/YY SHIFT HH:MM:SS' if is_radiator else 'PART_NO SERIAL_NO' }}');
+      _showErrorDialog('Invalid {{ 'radiator' if is_radiator else 'engine' }} barcode. Expected format: {{ 'MODEL SERIAL DD/MM/YY SHIFT HH:MM:SS' if is_radiator else 'PART_NO SERIAL_NO' }}{% if is_radiator %}\nScanned: "$raw" (${_scanData.length} saved model codes){% endif %}');
       return;
 {% endif %}
     }
