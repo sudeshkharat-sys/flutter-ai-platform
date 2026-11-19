@@ -53,3 +53,25 @@ until it looks right, then bake the final values in as the app-builder default.
   whether it is set per app, per task, or typed in the app.
 - Does the PC ever print this label?
 - Real sticker width (photo shows two small side-by-side labels).
+
+---
+
+# Index of the other notes files (full detail stays in each file)
+
+## NEXT_STEPS.md - lock / unlock inspection app
+- Use case: phone in a car bonnet; Max_reg region detected, then a YOLO-cls model says locked / unlocked.
+- Built: YOLO26 end-to-end decoder, classifier model kind, per-class Classify region, live decision without voting, live debug log, torch, zoom.
+- Backlog (priority): 1) in-APK settings screen to tune on site, 2) detector + classifier agreement for OK, 3) vote gating (blur / steady box), 4) vibrate + beep feedback, 5) shorter timeout, 6) higher live resolution, 7) save on-site frames for retraining, 8) possible third class `unclear`.
+- Also in the file: open questions, verification checklist after an APK rebuild, and updates on live decision, detection speed, letterbox, last-scan debug log, and the Task builder in the PC Runner exe (built, untested on hardware).
+- Status: nothing in it was compiled or run when written.
+
+## PERF_NOTES.md - speed discussions (not implemented unless noted)
+- Manual capture feels slow (traced through `_handleCapture`).
+- GPU delegate: tried, deliberately OFF, don't reopen.
+- Multi-core CPU inference: not implemented, looks safe.
+- OCR char-batch + CRNN sequential loop: not implemented, needs care.
+- Rule: delete an entry once it is implemented and note the commit.
+
+## LIVE_FEED_RUNNER_PLAN.md - live feed runner.py (staged)
+- Why: on-device TFLite live detection can't match the Python sequence viewer (`.pt` via Ultralytics `predict()`).
+- Target architecture, status of step 1 ("Runner Cam") and step 2 (model + stop-on-result, simulated only), staged build order, decisions already made, cross-repo note.
