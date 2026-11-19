@@ -1,0 +1,218 @@
+import 'package:flutter/material.dart';
+import '../services/print_service.dart';
+
+const _crimson = Color(0xFFDC143C);
+
+/// Edit the printed label: add / move / hide rows, change row text and size.
+/// Live rows (VIN, date & time, status, failed tasks) can't be deleted; only
+/// custom rows can. Every change is saved on the phone straight away.
+class LabelLayoutScreen extends StatefulWidget {
+  const LabelLayoutScreen({super.key});
+
+  @override
+  State<LabelLayoutScreen> createState() => _LabelLayoutScreenState();
+}
+
+class _LabelLayoutScreenState extends State<LabelLayoutScreen> {
+  List<LabelRow> _rows = [];
+  bool _loading = true;
+  final Map<String, TextEditingController> _ctl = {};
+
+  static const _names = <String, String>{
+    'title': 'Title',
+    'vin': 'VIN (live value)',
+    'datetime': 'Date & time (live value)',
+    'status': 'Status (live value)',
+    'failed': 'Failed tasks (live value)',
+    'footer': 'Footer',
+    'custom': 'Custom row',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    for (final c in _ctl.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final rows = await PrintService.instance.getLabelLayout();
+    if (!mounted) return;
+    setState(() {
+      _rows = rows;
+      _loading = false;
+    });
+  }
+
+  void _change(VoidCallback fn) {
+    setState(fn);
+    PrintService.instance.saveLabelLayout(_rows);
+  }
+
+  TextEditingController _controllerFor(LabelRow r) =>
+      _ctl.putIfAbsent(r.id, () => TextEditingController(text: r.text));
+
+  void _addAt(int index) {
+    final id = 'c${DateTime.now().millisecondsSinceEpoch}';
+    _change(() => _rows.insert(index, LabelRow(id: id, type: 'custom', text: 'New row')));
+  }
+
+  void _move(int index, int delta) {
+    final to = index + delta;
+    if (to < 0 || to >= _rows.length) return;
+    _change(() {
+      final r = _rows.removeAt(index);
+      _rows.insert(to, r);
+    });
+  }
+
+  Future<void> _reset() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reset label?'),
+        content: const Text('Go back to the default label. Custom rows and size changes are removed.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Reset')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await PrintService.instance.resetLabelLayout();
+    for (final c in _ctl.values) {
+      c.dispose();
+    }
+    _ctl.clear();
+    await _load();
+  }
+
+  Widget _rowCard(int i) {
+    final r = _rows[i];
+    return Card(
+      key: ValueKey(r.id),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Expanded(
+                child: Text(_names[r.type] ?? r.type,
+                    style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: r.visible ? Colors.black87 : Colors.grey)),
+              ),
+              IconButton(
+                tooltip: 'Add a row above',
+                icon: const Icon(Icons.add, color: _crimson),
+                onPressed: () => _addAt(i),
+              ),
+              IconButton(
+                tooltip: 'Move up',
+                icon: const Icon(Icons.arrow_upward),
+                onPressed: i == 0 ? null : () => _move(i, -1),
+              ),
+              IconButton(
+                tooltip: 'Move down',
+                icon: const Icon(Icons.arrow_downward),
+                onPressed: i == _rows.length - 1 ? null : () => _move(i, 1),
+              ),
+              IconButton(
+                tooltip: r.visible ? 'Hide on label' : 'Show on label',
+                icon: Icon(r.visible ? Icons.visibility : Icons.visibility_off),
+                onPressed: () => _change(() => r.visible = !r.visible),
+              ),
+              if (r.deletable)
+                IconButton(
+                  tooltip: 'Delete row',
+                  icon: const Icon(Icons.delete_outline, color: _crimson),
+                  onPressed: () => _change(() {
+                    _rows.removeAt(i);
+                    _ctl.remove(r.id)?.dispose();
+                  }),
+                ),
+            ]),
+            if (r.hasText)
+              TextField(
+                controller: _controllerFor(r),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                  labelText: 'Text on label',
+                ),
+                onChanged: (v) {
+                  r.text = v;
+                  PrintService.instance.saveLabelLayout(_rows);
+                },
+              )
+            else
+              const Text('Filled in automatically at print time',
+                  style: TextStyle(color: Colors.black54, fontSize: 12)),
+            const SizedBox(height: 6),
+            Row(children: [
+              const Text('Size'),
+              IconButton(
+                icon: const Icon(Icons.remove_circle_outline),
+                onPressed: r.size <= 40 ? null : () => _change(() => r.size -= 10),
+              ),
+              SizedBox(
+                width: 56,
+                child: Text('${r.size}%', textAlign: TextAlign.center,
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.add_circle_outline),
+                onPressed: r.size >= 250 ? null : () => _change(() => r.size += 10),
+              ),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F7F7),
+      appBar: AppBar(
+        backgroundColor: _crimson,
+        foregroundColor: Colors.white,
+        title: const Text('Label layout', style: TextStyle(fontWeight: FontWeight.bold)),
+        actions: [
+          TextButton(
+            onPressed: _loading ? null : _reset,
+            child: const Text('Reset', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                const Text(
+                  'Rows print top to bottom. Changes are saved automatically and used for the next printed label. Long text shrinks to fit the label width.',
+                  style: TextStyle(color: Colors.black54),
+                ),
+                const SizedBox(height: 8),
+                for (int i = 0; i < _rows.length; i++) _rowCard(i),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () => _addAt(_rows.length),
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add row at the end'),
+                ),
+              ],
+            ),
+    );
+  }
+}

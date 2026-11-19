@@ -11,7 +11,7 @@ Add a new `##` section per idea; mark it built when done.
 
 ## Label layout settings (printer)
 
-Status: **idea agreed, not built yet.** Notes so we remember the decisions.
+Status: **first version written (untested - no Flutter SDK here, needs an APK rebuild).** Files: `label_layout_screen.dart.j2` (screen), `print_service.dart.j2` (`LabelRow`, saved layout, `_buildZpl` driven by rows), tile in `settings_screen.dart.j2`.
 
 ### Why
 How the Zebra label prints is trial and error. Today every size is hard-coded

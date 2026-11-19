@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +16,51 @@ class DiscoveredPrinter {
   });
 }
 
+/// One row of the printed label. Live rows (VIN, date/time, status, failed
+/// tasks) are filled in at print time and can be moved / resized / hidden but
+/// never deleted; title, footer and custom rows carry editable text.
+class LabelRow {
+  final String id;
+  final String type; // title | vin | datetime | status | failed | footer | custom
+  String text;
+  int size; // percent of the default size
+  bool visible;
+
+  LabelRow({
+    required this.id,
+    required this.type,
+    this.text = '',
+    this.size = 100,
+    this.visible = true,
+  });
+
+  bool get isLive =>
+      type == 'vin' || type == 'datetime' || type == 'status' || type == 'failed';
+  bool get hasText => !isLive;
+  bool get deletable => type == 'custom';
+
+  Map<String, dynamic> toJson() =>
+      {'id': id, 'type': type, 'text': text, 'size': size, 'visible': visible};
+
+  static LabelRow fromJson(Map<String, dynamic> j) => LabelRow(
+        id: j['id'] as String,
+        type: j['type'] as String,
+        text: (j['text'] as String?) ?? '',
+        size: ((j['size'] as num?) ?? 100).toInt().clamp(40, 250).toInt(),
+        visible: (j['visible'] as bool?) ?? true,
+      );
+
+  /// The layout the app printed before this screen existed.
+  static List<LabelRow> defaults() => [
+        LabelRow(id: 'title', type: 'title', text: 'DIGITAL EYE INSPECTION REPORT'),
+        LabelRow(id: 'vin', type: 'vin'),
+        LabelRow(id: 'datetime', type: 'datetime'),
+        LabelRow(id: 'status', type: 'status'),
+        LabelRow(id: 'failed', type: 'failed'),
+        LabelRow(id: 'footer', type: 'footer', text: '* Digital Eye Inspection System *'),
+      ];
+}
+
 class PrintService {
   static final PrintService instance = PrintService._();
   PrintService._();
@@ -29,6 +75,7 @@ class PrintService {
   static const _kDefaultNameKey = 'default_printer_name';
   static const _kDpiKey = 'printer_dpi';
   static const _kPromptedKey = 'printer_setup_prompted';
+  static const _kLayoutKey = 'label_layout_v1';
 
   /// Supported label print resolutions.
   static const List<int> supportedDpi = [203, 300];
@@ -81,6 +128,39 @@ class PrintService {
   Future<void> markPrinterSetupPrompted() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kPromptedKey, true);
+  }
+
+  /// Saved label layout (defaults when none saved or the saved one is bad).
+  /// Any default row missing from a saved layout (live rows especially) is
+  /// put back so the label can never lose its VIN / status.
+  Future<List<LabelRow>> getLabelLayout() async {
+    final defaults = LabelRow.defaults();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kLayoutKey);
+      if (raw == null || raw.isEmpty) return defaults;
+      final rows = (jsonDecode(raw) as List)
+          .map((e) => LabelRow.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+      for (int i = 0; i < defaults.length; i++) {
+        if (!rows.any((r) => r.id == defaults[i].id)) {
+          rows.insert(i < rows.length ? i : rows.length, defaults[i]);
+        }
+      }
+      return rows;
+    } catch (_) {
+      return defaults;
+    }
+  }
+
+  Future<void> saveLabelLayout(List<LabelRow> rows) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kLayoutKey, jsonEncode(rows.map((r) => r.toJson()).toList()));
+  }
+
+  Future<void> resetLabelLayout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kLayoutKey);
   }
 
   // ── Bluetooth discovery ───────────────────────────────────────────────────
@@ -159,135 +239,165 @@ class PrintService {
     return v.isNotEmpty && v != 'none' && v != 'null' && v != 'n/a';
   }
 
-  /// Build a ZPL II label for the inspection report.
+  /// Build a ZPL II label for the inspection report from the saved [rows].
   /// Authored for a Zebra ZT411 at 300 dpi, 4-inch wide labels; all
   /// coordinates are scaled at print time for [dpi] (e.g. 203 dpi) so the
   /// label keeps the same physical 4-inch size on either printer class.
+  /// Each row's size % scales its fonts and height; long text is shrunk to
+  /// fit the label width instead of running off the edge.
   String _buildZpl({
     required String vin,
     required String modelCode,
     required String timestamp,
     required bool overallSuccess,
     required List<Map<String, dynamic>> tasks,
+    required List<LabelRow> rows,
     int dpi = PrintService.defaultDpi,
   }) {
     final double scale = dpi / PrintService.defaultDpi;
     int s(num v) => (v * scale).round();
+    const int usable = 1100; // printable width in 300-dpi dots
 
-    // Clean up ISO timestamp → "2026-03-26 15:46:09"
+    // Clean up ISO timestamp -> "2026-03-26 15:46:09"
     final cleanDate = timestamp
         .replaceFirst('T', ' ')
         .replaceAll(RegExp(r'\.\d+$'), '');
+    final dtParts = cleanDate.split(' ');
+    final datePart = dtParts.isNotEmpty ? dtParts[0] : cleanDate;
+    final timePart = dtParts.length > 1 ? dtParts[1] : '';
 
     // Only show failed tasks on the label
     final failedTasks = overallSuccess
         ? <Map<String, dynamic>>[]
         : tasks.where((t) => t['success'] != true).toList();
-
-    // When there are many failed tasks, lay them out in two columns so the
-    // label stays compact instead of growing very long.
     final bool twoCol = failedTasks.length > 4;
 
-    // Body is built first so the exact content height (and therefore ^LL)
-    // is known before we emit the header — avoids magic-number height math
-    // drifting out of sync with the layout below.
-    final body = StringBuffer();
-    int y = s(20);
-
-    // ── Title ─────────────────────────────────────────────────────────────────
-    body.writeln(
-        '^FO${s(50)},$y^A0N,${s(46)},${s(32)}^FDDIGITAL EYE INSPECTION REPORT^FS');
-    y += s(75);
-    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
-    y += s(18);
-
-    // ── VIN — its own full-width row, printed extra large for readability ──
-    body.writeln('^FO${s(50)},$y^A0N,${s(30)},${s(20)}^FDVIN :^FS');
-    y += s(34);
-    body.writeln('^FO${s(50)},$y^A0N,${s(90)},${s(60)}^FD$vin^FS');
-    y += s(100);
-    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
-    y += s(18);
-
-    // ── DATE + TIME, single compact row ─────────────────────────────────────
-    final parts = cleanDate.split(' ');
-    final datePart = parts.isNotEmpty ? parts[0] : cleanDate;
-    final timePart = parts.length > 1 ? parts[1] : '';
-    body.writeln(
-        '^FO${s(50)},$y^A0N,${s(26)},${s(18)}^FDDATE : $datePart    TIME : $timePart^FS');
-    y += s(40);
-    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
-    y += s(18);
-
-    // ── Status ────────────────────────────────────────────────────────────────
-    final statusText = overallSuccess ? '[ PASSED ]' : '[ FAILED ]';
-    body.writeln('^FO${s(50)},$y^A0N,${s(60)},${s(44)}^FD$statusText^FS');
-    y += s(75);
-    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
-    y += s(18);
-
-    // ── Failed tasks only ─────────────────────────────────────────────────────
-    if (failedTasks.isNotEmpty) {
-      body.writeln('^FO${s(50)},$y^A0N,${s(32)},${s(23)}^FDFAILED TASKS^FS');
-      y += s(44);
-      body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(2)},${s(2)}^FS');
-      y += s(12);
-
-      String fit(String str, int max) =>
-          str.length > max ? '${str.substring(0, max - 3)}...' : str;
-
-      if (!twoCol) {
-        // Single column — one task per row, full width.
-        for (final task in failedTasks) {
-          final name = fit(task['taskName'] as String? ?? 'Task', 40);
-          body.writeln('^FO${s(50)},$y^A0N,${s(38)},${s(27)}^FD$name^FS');
-          y += s(50);
-
-          final part = task['detectedPart'] as String?;
-          if (_hasValue(part)) {
-            body.writeln(
-                '^FO${s(70)},$y^A0N,${s(30)},${s(22)}^FD> ${fit(part!.trim(), 44)}^FS');
-            y += s(40);
-          }
-
-          body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(2)},${s(2)}^FS');
-          y += s(8);
-        }
-        y += s(6);
-      } else {
-        // Two columns — left column fills first, then right column.
-        final startY = y;
-        final half = (failedTasks.length / 2).ceil();
-        final rowH = s(98);
-        final colX = [s(50), s(620)];
-        for (int i = 0; i < failedTasks.length; i++) {
-          final col = i < half ? 0 : 1;
-          final rowIdx = i < half ? i : i - half;
-          final rx = colX[col];
-          final ry = startY + rowIdx * rowH;
-          final task = failedTasks[i];
-
-          // ~22 chars fit in a ~550-dot column at width 24.
-          final name = fit(task['taskName'] as String? ?? 'Task', 22);
-          body.writeln('^FO$rx,$ry^A0N,${s(34)},${s(24)}^FD$name^FS');
-
-          final part = task['detectedPart'] as String?;
-          if (_hasValue(part)) {
-            body.writeln(
-                '^FO${rx + s(20)},${ry + s(44)}^A0N,${s(28)},${s(20)}^FD> ${fit(part!.trim(), 24)}^FS');
-          }
-        }
-        y = startY + half * rowH + s(6);
-      }
+    // ZPL control characters must not appear in field data.
+    String z(String t) => t.replaceAll(RegExp(r'[\^~\\]'), ' ');
+    String fit(String str, int max) =>
+        str.length > max ? '${str.substring(0, max - 3)}...' : str;
+    // Largest char width <= [baseW] that keeps [len] chars inside [maxDots].
+    int fitW(num baseW, int len, [int maxDots = usable]) {
+      if (len <= 0) return baseW.round();
+      final maxW = (maxDots / len).floor();
+      final w = baseW < maxW ? baseW.round() : maxW;
+      return w < 10 ? 10 : w;
     }
 
-    body.writeln('^FO${s(50)},$y^GB${s(1100)},${s(4)},${s(4)}^FS');
-    y += s(14);
+    final body = StringBuffer();
+    int y = s(20);
+    bool first = true;
 
-    // ── Footer ────────────────────────────────────────────────────────────────
-    body.writeln(
-        '^FO${s(50)},$y^A0N,${s(30)},${s(22)}^FD* Digital Eye Inspection System *^FS');
-    y += s(40);
+    void line(int thick) {
+      body.writeln('^FO${s(50)},$y^GB${s(usable)},${s(thick)},${s(thick)}^FS');
+    }
+
+    for (final row in rows) {
+      if (!row.visible) continue;
+      final double f = row.size / 100.0;
+
+      // Rows with nothing to print take no space (and no separator).
+      if (row.type == 'failed' && failedTasks.isEmpty) continue;
+      if (row.hasText && row.text.trim().isEmpty) continue;
+
+      if (!first) {
+        line(4);
+        y += s(18);
+      }
+      first = false;
+
+      switch (row.type) {
+        case 'title':
+        case 'footer':
+        case 'custom': {
+          final t = z(row.text.trim());
+          final double baseH = row.type == 'title' ? 46 : row.type == 'footer' ? 30 : 40;
+          final double baseW = row.type == 'title' ? 32 : row.type == 'footer' ? 22 : 28;
+          final double adv = row.type == 'title' ? 75 : row.type == 'footer' ? 40 : 55;
+          final w = fitW(baseW * f, t.length);
+          final h = (baseH * f * (w / (baseW * f))).round();
+          body.writeln('^FO${s(50)},$y^A0N,${s(h)},${s(w)}^FD$t^FS');
+          y += s(adv * f);
+          break;
+        }
+
+        case 'vin': {
+          body.writeln('^FO${s(50)},$y^A0N,${s(30 * f)},${s(20 * f)}^FDVIN :^FS');
+          y += s(34 * f);
+          final v = z(vin);
+          final w = fitW(60 * f, v.length);
+          final h = (90 * f * (w / (60 * f))).round();
+          body.writeln('^FO${s(50)},$y^A0N,${s(h)},${s(w)}^FD$v^FS');
+          y += s(100 * f);
+          break;
+        }
+
+        case 'datetime': {
+          final t = 'DATE : $datePart    TIME : $timePart';
+          final w = fitW(18 * f, t.length);
+          final h = (26 * f * (w / (18 * f))).round();
+          body.writeln('^FO${s(50)},$y^A0N,${s(h)},${s(w)}^FD$t^FS');
+          y += s(40 * f);
+          break;
+        }
+
+        case 'status': {
+          final st = overallSuccess ? '[ PASSED ]' : '[ FAILED ]';
+          body.writeln('^FO${s(50)},$y^A0N,${s(60 * f)},${s(44 * f)}^FD$st^FS');
+          y += s(75 * f);
+          break;
+        }
+
+        case 'failed': {
+          body.writeln('^FO${s(50)},$y^A0N,${s(32 * f)},${s(23 * f)}^FDFAILED TASKS^FS');
+          y += s(44 * f);
+          line(2);
+          y += s(12);
+          if (!twoCol) {
+            for (final task in failedTasks) {
+              final name = z(fit(task['taskName'] as String? ?? 'Task', 40));
+              body.writeln(
+                  '^FO${s(50)},$y^A0N,${s(38 * f)},${s(fitW(27 * f, name.length))}^FD$name^FS');
+              y += s(50 * f);
+              final part = task['detectedPart'] as String?;
+              if (_hasValue(part)) {
+                final pt = z('> ${fit(part!.trim(), 44)}');
+                body.writeln(
+                    '^FO${s(70)},$y^A0N,${s(30 * f)},${s(fitW(22 * f, pt.length, usable - 20))}^FD$pt^FS');
+                y += s(40 * f);
+              }
+              line(2);
+              y += s(8);
+            }
+            y += s(6);
+          } else {
+            final startY = y;
+            final half = (failedTasks.length / 2).ceil();
+            final rowH = s(98 * f);
+            final colX = [s(50), s(620)];
+            for (int i = 0; i < failedTasks.length; i++) {
+              final col = i < half ? 0 : 1;
+              final rowIdx = i < half ? i : i - half;
+              final rx = colX[col];
+              final ry = startY + rowIdx * rowH;
+              final task = failedTasks[i];
+              final name = z(fit(task['taskName'] as String? ?? 'Task', 22));
+              body.writeln(
+                  '^FO$rx,$ry^A0N,${s(34 * f)},${s(fitW(24 * f, name.length, 520))}^FD$name^FS');
+              final part = task['detectedPart'] as String?;
+              if (_hasValue(part)) {
+                final pt = z('> ${fit(part!.trim(), 24)}');
+                body.writeln(
+                    '^FO${rx + s(20)},${ry + s(44 * f)}^A0N,${s(28 * f)},${s(fitW(20 * f, pt.length, 500))}^FD$pt^FS');
+              }
+            }
+            y = startY + half * rowH + s(6);
+          }
+          break;
+        }
+      }
+    }
+    y += s(10);
 
     final header = StringBuffer();
     header.writeln('^XA');
@@ -321,6 +431,7 @@ class PrintService {
         timestamp: timestamp,
         overallSuccess: overallSuccess,
         tasks: tasks,
+        rows: await getLabelLayout(),
         dpi: await getPrinterDpi(),
       );
 

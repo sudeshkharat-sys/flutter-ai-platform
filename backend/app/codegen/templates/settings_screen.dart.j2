@@ -7,6 +7,7 @@ import '../ml/detector.dart';
 import '../services/camera_prefs.dart';
 import '../services/sync_service.dart';
 import 'sync_screen.dart';
+import 'label_layout_screen.dart';
 
 const _crimson = Color(0xFFDC143C);
 
@@ -203,6 +204,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 await Navigator.push(context, MaterialPageRoute(builder: (_) => const SyncScreen()));
                 _load();
               },
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.print, color: _crimson),
+              title: const Text('Label layout', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Edit the printed label: rows, text, sizes'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LabelLayoutScreen())),
             ),
           ),
           const SizedBox(height: 8),
