@@ -8,6 +8,7 @@ import '../services/camera_prefs.dart';
 import '../services/sync_service.dart';
 import 'sync_screen.dart';
 import 'label_layout_screen.dart';
+import 'printer_discovery_screen.dart';
 
 const _crimson = Color(0xFFDC143C);
 
@@ -210,6 +211,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Card(
             child: ListTile(
               leading: const Icon(Icons.print, color: _crimson),
+              title: const Text('Printer', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Select, scan and connect the label printer (203 / 300 dpi)'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PrinterDiscoveryScreen(selectOnly: true))),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.label_outline, color: _crimson),
               title: const Text('Label layout', style: TextStyle(fontWeight: FontWeight.w600)),
               subtitle: const Text('Edit the printed label: rows, text, sizes'),
               trailing: const Icon(Icons.chevron_right),
