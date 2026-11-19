@@ -57,17 +57,29 @@ def _update_status(db, app_id, status=None, step=None, error=None, apk_path=None
 
 def _run_command_streaming(db, app_id, cmd, cwd, env):
     """Run a command and stream its output to the build_log in batches."""
+    # Keep Flutter/Gradle off the worker's console: on Windows they otherwise
+    # share it, and a console signal / window event (Ctrl+C, Ctrl+Break, tab
+    # closing) aimed at the build can take the Celery worker down with it.
+    # No console + own process group + no stdin means the worker only ever
+    # talks to the child through the output pipe.
+    extra = {}
+    if os.name == "nt":
+        extra["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        )
     process = subprocess.Popen(
         cmd,
         cwd=str(cwd),
         env=env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1, 
         universal_newlines=True,
         encoding='utf-8',
-        errors='replace'
+        errors='replace',
+        **extra,
     )
     
     batch = []
