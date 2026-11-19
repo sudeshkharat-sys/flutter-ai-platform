@@ -452,12 +452,25 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     }
 
     // Auto mode
+{% if is_radiator %}
+    // Radiator sticker: <MODEL><SERIAL 2, space-padded><DD/MM/YY><SHIFT 2><HH:MM:SS>
+    // e.g. "HR200L5GAA 416/11/260121:11:45" or "HR200L5GAA1017/11/260122:08:53".
+    // Anything else (random QR on the line) is rejected.
+    final RegExpMatch? rm = RegExp(r'^([A-Za-z0-9]+?)([ 0-9]{2}\d{2}/\d{2}/\d{2}\d{2}\d{2}:\d{2}:\d{2})$').firstMatch(raw);
+    final int spaceIdx = rm == null ? -1 : 0;
+    String partNo;
+    String engineSerial;
+    if (rm != null) {
+      partNo = rm.group(1)!.trim();
+      engineSerial = rm.group(2)!.trim();
+{% else %}
     final int spaceIdx = raw.indexOf(' ');
     String partNo;
     String engineSerial;
     if (spaceIdx != -1) {
       partNo = raw.substring(0, spaceIdx).trim();
       engineSerial = raw.substring(spaceIdx + 1).trim();
+{% endif %}
       setState(() => _isProcessing = true);
 {% if not skip_masterdata_validation %}
       if (!_isKnownEngineCode(partNo)) {
@@ -485,7 +498,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       setState(() => _isProcessing = true);
 {% else %}
       setState(() => _isProcessing = true);
-      _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
+      _showErrorDialog('Invalid {{ 'radiator' if is_radiator else 'engine' }} barcode. Expected format: {{ 'MODEL SERIAL DD/MM/YY SHIFT HH:MM:SS' if is_radiator else 'PART_NO SERIAL_NO' }}');
       return;
 {% endif %}
     }
@@ -525,12 +538,25 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
     final raw = _pendingBarcode;
     if (raw == null || _isProcessing) return;
 
+{% if is_radiator %}
+    // Radiator sticker: <MODEL><SERIAL 2, space-padded><DD/MM/YY><SHIFT 2><HH:MM:SS>
+    // e.g. "HR200L5GAA 416/11/260121:11:45" or "HR200L5GAA1017/11/260122:08:53".
+    // Anything else (random QR on the line) is rejected.
+    final RegExpMatch? rm = RegExp(r'^([A-Za-z0-9]+?)([ 0-9]{2}\d{2}/\d{2}/\d{2}\d{2}\d{2}:\d{2}:\d{2})$').firstMatch(raw);
+    final int spaceIdx = rm == null ? -1 : 0;
+    String partNo;
+    String engineSerial;
+    if (rm != null) {
+      partNo = rm.group(1)!.trim();
+      engineSerial = rm.group(2)!.trim();
+{% else %}
     final int spaceIdx = raw.indexOf(' ');
     String partNo;
     String engineSerial;
     if (spaceIdx != -1) {
       partNo = raw.substring(0, spaceIdx).trim();
       engineSerial = raw.substring(spaceIdx + 1).trim();
+{% endif %}
       setState(() => _isProcessing = true);
 {% if not skip_masterdata_validation %}
       if (!_isKnownEngineCode(partNo)) {
@@ -554,7 +580,7 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
       setState(() => _isProcessing = true);
 {% else %}
       setState(() => _isProcessing = true);
-      _showErrorDialog('Invalid engine barcode. Expected format: PART_NO SERIAL_NO');
+      _showErrorDialog('Invalid {{ 'radiator' if is_radiator else 'engine' }} barcode. Expected format: {{ 'MODEL SERIAL DD/MM/YY SHIFT HH:MM:SS' if is_radiator else 'PART_NO SERIAL_NO' }}');
       return;
 {% endif %}
     }
