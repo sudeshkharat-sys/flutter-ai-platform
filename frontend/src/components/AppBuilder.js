@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getApp, getModels, buildAPK, downloadAPK, downloadPcPack, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl, uploadOcrModel, replaceModelPt } from '../api';
+import { getApp, getModels, buildAPK, downloadAPK, apkUrl, downloadPcPack, updateApp, uploadModel, getModelStatus, extractClasses, createApp, getMasterMappings, getEngineMappings, uploadReferenceImage, getReferenceImageUrl, uploadOcrModel, replaceModelPt } from '../api';
 import ConfirmModal from './ConfirmModal';
 
 const C = {
@@ -143,24 +143,15 @@ export default function AppBuilder() {
     loadData();
   };
 
-  const handleDownloadAPK = async () => {
-    try {
-      const r = await downloadAPK(id);
-      const url = URL.createObjectURL(r.data);
-      const a = document.createElement('a');
-      a.href = url; a.download = `${app.name.toLowerCase().replace(/ /g, '_')}.apk`;
-      a.click(); URL.revokeObjectURL(url);
-    } catch (err) {
-      // The body is a Blob when responseType is 'blob', so the server's JSON
-      // error (e.g. "APK file not found on disk") has to be read out of it.
-      let detail = err.message || '';
-      try {
-        const data = err.response?.data;
-        if (data instanceof Blob) detail = JSON.parse(await data.text()).detail || detail;
-        else if (data?.detail) detail = data.detail;
-      } catch { /* keep message */ }
-      alert(`APK download failed${err.response ? ` (HTTP ${err.response.status})` : ''}: ${detail}`);
-    }
+  const handleDownloadAPK = () => {
+    // Plain browser download (streams to disk). If the server refuses, the
+    // browser's download list shows the failure; the backend log has the reason.
+    const a = document.createElement('a');
+    a.href = apkUrl(id);
+    a.download = `${app.name.toLowerCase().replace(/ /g, '_')}.apk`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   };
 
   // "Download for PC": tasks + scan logic + the original .pt models, imported by pc_runner.exe

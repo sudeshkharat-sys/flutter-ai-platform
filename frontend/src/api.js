@@ -99,6 +99,10 @@ export const buildAPK = (id) => api.post(`/apps/${id}/build`);
 export const downloadAPK = (id) =>
   api.get(`/apps/${id}/apk`, { responseType: 'blob' });
 
+// Direct URL so the browser streams the (~140 MB) APK straight to disk
+// instead of holding the whole file in memory as a blob.
+export const apkUrl = (id) => `${API_BASE}/apps/${id}/apk`;
+
 export const downloadPcPack = (id) =>
   api.get(`/apps/${id}/pc-export`, { responseType: 'blob' });
 
