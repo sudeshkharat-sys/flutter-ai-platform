@@ -497,14 +497,22 @@ def _flatten_rows(device: str, app_name: str) -> list[dict]:
         if not new_batch_dirs:
             return list(entry["rows"])
 
-        for batch_dir in new_batch_dirs:
-            manifest_path = batch_dir / "manifest.json"
-            entry["batches"].add(batch_dir.name)
-            if not manifest_path.exists():
-                continue
+        # Read every new batch's manifest.json in parallel -- on a big or
+        # network-backed data folder this file I/O is what dominates the
+        # first load, and it's independent per batch.
+        def _read_manifest(b):
+            mp = b / "manifest.json"
             try:
-                inspections = json.loads(manifest_path.read_text())
+                return json.loads(mp.read_text()) if mp.exists() else None
             except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=8) as _pool:
+            _manifests = list(_pool.map(_read_manifest, new_batch_dirs))
+
+        for batch_dir, inspections in zip(new_batch_dirs, _manifests):
+            entry["batches"].add(batch_dir.name)
+            if inspections is None:
                 continue
 
             def _image_url(rel, _batch=batch_dir.name):
@@ -712,22 +720,17 @@ def api_apps(_: None = Depends(_require_session)):
 
 
 # Walking every photo under a folder (rglob + stat) is slow with thousands of
-# images, and the app/device lists call this on every open and auto-refresh.
-# Remember each folder's totals for a short time instead of re-walking disk.
+# images. Once a folder's totals are known they're ALWAYS returned instantly;
+# if older than the TTL, a background thread refreshes them for next time, so
+# no page waits on a re-walk. Only the very first look walks synchronously
+# (and _warm_caches() does that at startup in the background).
 _DIR_STATS_TTL_SEC = 90
 _dir_stats_cache: dict[str, tuple[float, int, int]] = {}
+_dir_stats_refreshing: set[str] = set()
 _dir_stats_lock = threading.Lock()
 
 
-def _dir_stats(path: Path):
-    key = str(path)
-    now = time.time()
-    with _dir_stats_lock:
-        hit = _dir_stats_cache.get(key)
-        if hit and now - hit[0] < _DIR_STATS_TTL_SEC:
-            return hit[1], hit[2]
-    if not path.exists():
-        return 0, 0
+def _walk_dir_stats(path: Path) -> tuple[int, int]:
     count = total = 0
     for f in path.rglob("*"):
         try:
@@ -736,9 +739,52 @@ def _dir_stats(path: Path):
                 total += f.stat().st_size
         except OSError:
             continue
-    with _dir_stats_lock:
-        _dir_stats_cache[key] = (now, count, total)
     return count, total
+
+
+def _refresh_dir_stats(key: str):
+    try:
+        path = Path(key)
+        count, total = _walk_dir_stats(path) if path.exists() else (0, 0)
+        with _dir_stats_lock:
+            _dir_stats_cache[key] = (time.time(), count, total)
+    finally:
+        with _dir_stats_lock:
+            _dir_stats_refreshing.discard(key)
+
+
+def _dir_stats(path: Path):
+    key = str(path)
+    with _dir_stats_lock:
+        hit = _dir_stats_cache.get(key)
+        if hit:
+            if time.time() - hit[0] >= _DIR_STATS_TTL_SEC and key not in _dir_stats_refreshing:
+                _dir_stats_refreshing.add(key)
+                threading.Thread(target=_refresh_dir_stats, args=(key,), daemon=True).start()
+            return hit[1], hit[2]
+    if not path.exists():
+        return 0, 0
+    count, total = _walk_dir_stats(path)
+    with _dir_stats_lock:
+        _dir_stats_cache[key] = (time.time(), count, total)
+    return count, total
+
+
+def _warm_caches():
+    """Runs once in the background at startup: sizes for the app list and the
+    parsed inspection rows for every device/app, so the first page open isn't
+    the one that pays for reading every manifest.json from disk."""
+    try:
+        _list_groups()
+        if DATA_DIR.exists():
+            for device_dir in sorted(DATA_DIR.iterdir()):
+                if not device_dir.is_dir() or device_dir.name == "_master":
+                    continue
+                for app_dir in sorted(device_dir.iterdir()):
+                    if app_dir.is_dir():
+                        _flatten_rows(device_dir.name, app_dir.name)
+    except Exception as e:
+        print(f"[warn] cache warm-up stopped: {e}")
 
 
 @app.get("/api/storage")
@@ -2523,6 +2569,8 @@ if __name__ == "__main__":
     if not TLS_CERT:
         print("[warn] Running over plain HTTP. Put this behind HTTPS (reverse proxy, or set")
         print("       VIEWER_TLS_CERT / VIEWER_TLS_KEY) before exposing it beyond a trusted LAN.")
+
+    threading.Thread(target=_warm_caches, daemon=True).start()
 
     ssl_kwargs = {}
     if TLS_CERT and TLS_KEY:
