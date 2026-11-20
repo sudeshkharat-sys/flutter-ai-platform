@@ -54,21 +54,38 @@ class CameraPrefs {
   static const String _keepNegKey = 'keep_negatives_on_phone';
 
   /// Keep negative-dataset (NOT OK) photos on the phone, in the Pictures
-  /// folder (default on = as before). Off = they are still saved just long
-  /// enough to be sent to the PC, but only in the app's private storage (not
-  /// the gallery), and are deleted once synced; failed-tick frames, which are
-  /// never sent, aren't saved at all.
+  /// folder (default OFF). Off = they are still saved just long enough to be
+  /// sent to the PC, but only in the app's private storage (not the gallery),
+  /// and are deleted once synced.
   static Future<bool> getKeepNegatives() async {
     try {
-      return (await SharedPreferences.getInstance()).getBool(_keepNegKey) ?? true;
+      return (await SharedPreferences.getInstance()).getBool(_keepNegKey) ?? false;
     } catch (_) {
-      return true;
+      return false;
     }
   }
 
   static Future<void> setKeepNegatives(bool on) async {
     try {
       await (await SharedPreferences.getInstance()).setBool(_keepNegKey, on);
+    } catch (_) {}
+  }
+
+  static const String _negTicksKey = 'save_negative_ticks';
+
+  /// Save the live-scan "missed tick" frames to Pictures/.../NegativeDataset/.../Ticks
+  /// for training (default OFF). These are phone-only; they are never sent to the PC.
+  static Future<bool> getSaveNegativeTicks() async {
+    try {
+      return (await SharedPreferences.getInstance()).getBool(_negTicksKey) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> setSaveNegativeTicks(bool on) async {
+    try {
+      await (await SharedPreferences.getInstance()).setBool(_negTicksKey, on);
     } catch (_) {}
   }
 
