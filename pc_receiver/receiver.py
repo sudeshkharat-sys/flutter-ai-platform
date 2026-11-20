@@ -1627,7 +1627,7 @@ async def api_admin_delete_engine_data_row(partNo: str, _: None = Depends(_requi
 
 
 @app.get("/api/storage")
-async def api_storage(_: None = Depends(_require_local)):
+def api_storage(_: None = Depends(_require_local)):
     tree = {}
     if not DATA_DIR.exists():
         return tree
@@ -1676,7 +1676,7 @@ async def api_storage_download(path: str, _: None = Depends(_require_local)):
 
 
 @app.get("/api/negative-dataset")
-async def api_negative_dataset(_: None = Depends(_require_local)):
+def api_negative_dataset(_: None = Depends(_require_local)):
     """Summary of the negative-example training dataset accumulated on this
     PC from every paired phone's NOT OK captures, broken down by app and
     task -- a local admin/QA view, so a plain glob + stat is fine here."""
@@ -1754,7 +1754,7 @@ def _resolve_under_data_dir(rel_path: str) -> Path:
 
 
 @app.get("/api/device-data")
-async def api_device_data(deviceId: str, _: None = Depends(_require_local)):
+def api_device_data(deviceId: str, _: None = Depends(_require_local)):
     """Every task-result row this device has ever sent, flattened for the
     data-viewer table -- one row per inspection task, with the image path
     already rewritten into a URL the browser can load directly."""
@@ -1900,7 +1900,7 @@ def _device_dirs_for_app(canonical_app_name_safe: str) -> list[Path]:
 
 
 @app.get("/api/app-data")
-async def api_app_data(appName: str, _: None = Depends(_require_local)):
+def api_app_data(appName: str, _: None = Depends(_require_local)):
     """Every task-result row every device has ever sent for this app,
     merged into one dataset -- the live-dashboard equivalent of the
     master Excel (_app_master_dir), which already aggregates by app

@@ -645,12 +645,12 @@ def _annotate_rescans(rows: list[dict]) -> list[dict]:
 
 
 @app.get("/api/groups")
-async def api_groups(_: None = Depends(_require_session)):
+def api_groups(_: None = Depends(_require_session)):
     return _list_groups()
 
 
 @app.get("/api/data")
-async def api_data(device: str, appName: str, _: None = Depends(_require_session)):
+def api_data(device: str, appName: str, _: None = Depends(_require_session)):
     """Returns every row for this device/app, unfiltered -- same pattern
     receiver.py's own dashboard uses (fetch once per device, then filter,
     chart, and group entirely client-side), so filtering/charting/expand-
@@ -683,7 +683,7 @@ def _device_dirs_for_app(app_name_safe: str) -> list[str]:
 
 
 @app.get("/api/apps")
-async def api_apps(_: None = Depends(_require_session)):
+def api_apps(_: None = Depends(_require_session)):
     """Same idea as /api/groups, but grouped by app instead of by device --
     lets the Apps tab show one continuous dataset per app instead of
     switching between each device paired under it."""
@@ -742,7 +742,7 @@ def _dir_stats(path: Path):
 
 
 @app.get("/api/storage")
-async def api_storage(_: None = Depends(_require_session)):
+def api_storage(_: None = Depends(_require_session)):
     """Read-only size summary -- how much data each app/device has on disk,
     mirroring receiver.py's Vault tab but with no delete capability, since
     this dashboard is view-only."""
@@ -773,7 +773,7 @@ async def api_storage(_: None = Depends(_require_session)):
 
 
 @app.get("/api/app-data")
-async def api_app_data(appName: str, startDate: str = "", endDate: str = "", _: None = Depends(_require_session)):
+def api_app_data(appName: str, startDate: str = "", endDate: str = "", _: None = Depends(_require_session)):
     """Every row for this app, merged across every device that has data
     for it -- the Apps-tab equivalent of /api/data.
 
