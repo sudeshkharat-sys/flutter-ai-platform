@@ -98,6 +98,12 @@ class AppDatabase extends _$AppDatabase {
     return grouped;
   }
 
+  /// Every saved scan of this VIN / engine number, newest first.
+  Future<List<Inspection>> getInspectionsForVin(String vin) =>
+      (select(inspections)
+        ..where((t) => t.vin.equals(vin))
+        ..orderBy([(t) => OrderingTerm.desc(t.createdAt)])).get();
+
   Future<List<TaskResult>> getResultsForInspection(int inspectionId) =>
     (select(taskResults)..where((t) => t.inspectionId.equals(inspectionId))).get();
 
