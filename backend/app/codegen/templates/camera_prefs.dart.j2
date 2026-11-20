@@ -404,3 +404,28 @@ Future<void> showLastScanLog(BuildContext context) async {
     ),
   );
 }
+
+
+/// Serialises camera teardown against the next camera start. Switching between
+/// a photo screen and a live (video) screen used to dispose the old controller
+/// without waiting while the new screen was already opening a camera on the
+/// same hardware -- CameraX then fails ("No supported surface combination"),
+/// the preview never starts and the screen ends up blank. Every dispose goes
+/// through [release]; every camera start first awaits [waitReleased].
+class CameraGate {
+  static Future<void> _pending = Future.value();
+
+  static void release(Future<void> Function() teardown) {
+    _pending = _pending.then((_) async {
+      try {
+        await teardown();
+      } catch (_) {}
+    });
+  }
+
+  static Future<void> waitReleased() async {
+    await _pending;
+    // Small settle time: the platform finishes unbinding just after dispose() returns.
+    await Future.delayed(const Duration(milliseconds: 150));
+  }
+}

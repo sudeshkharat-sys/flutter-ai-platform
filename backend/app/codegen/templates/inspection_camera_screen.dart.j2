@@ -368,10 +368,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   void dispose() {
     ScanLog.save();
     WidgetsBinding.instance.removeObserver(this);
-    if (_isFlashOn) {
-      _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});
-    }
-    _cameraController?.dispose();
+    final ctrlToRelease = _cameraController;
+    final bool wasFlashOn = _isFlashOn;
+    CameraGate.release(() async {
+      if (wasFlashOn) {
+        try { await ctrlToRelease?.setFlashMode(FlashMode.off); } catch (_) {}
+      }
+      try { await ctrlToRelease?.dispose(); } catch (_) {}
+    });
     super.dispose();
   }
 
@@ -384,7 +388,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         ctrl.setFlashMode(FlashMode.off).catchError((_) {});
         setState(() => _isFlashOn = false);
       }
-      ctrl.dispose();
+      CameraGate.release(() async { await ctrl.dispose(); });
       if (mounted) setState(() => _isCameraInitialized = false);
     } else if (state == AppLifecycleState.resumed) {
       _initializeCamera();
@@ -395,6 +399,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     // never draw a disposed / not-yet-initialized controller (shows as a white preview)
     if (mounted && _isCameraInitialized) setState(() => _isCameraInitialized = false);
     try {
+      // Wait for the previous screen's camera (photo <-> live switch) to be fully released.
+      await CameraGate.waitReleased();
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
         _addLog('No cameras found');
@@ -443,10 +449,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     } catch (e) {
       _addLog("Camera error: $e");
       // The previous screen's camera may still be releasing (live <-> photo switch): retry before giving up.
-      if (attempt < 3 && mounted) {
+      if (attempt < 5 && mounted) {
         try { await _cameraController?.dispose(); } catch (_) {}
         _cameraController = null;
-        await Future.delayed(const Duration(milliseconds: 700));
+        await Future.delayed(Duration(milliseconds: 500 + 400 * attempt));
         if (mounted) return _initializeCamera(attempt + 1);
         return;
       }
@@ -877,7 +883,39 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
-      return Scaffold(body: Center(child: Text('Error: $_error')));
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Camera problem'),
+          backgroundColor: const Color(0xFFDC143C),
+          foregroundColor: Colors.white,
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.videocam_off, size: 56, color: Color(0xFFDC143C)),
+                const SizedBox(height: 12),
+                Text('Error: $_error', textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() => _error = null);
+                    _initializeCamera();
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry camera'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Go back'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
     }
     final currentTask = widget.tasks[_currentIndex];
     final List<String> mandatoryClasses =
@@ -1849,10 +1887,14 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   void dispose() {
     ScanLog.save();
     WidgetsBinding.instance.removeObserver(this);
-    if (_isFlashOn) {
-      _cameraController?.setFlashMode(FlashMode.off).catchError((_) {});
-    }
-    _cameraController?.dispose();
+    final ctrlToRelease = _cameraController;
+    final bool wasFlashOn = _isFlashOn;
+    CameraGate.release(() async {
+      if (wasFlashOn) {
+        try { await ctrlToRelease?.setFlashMode(FlashMode.off); } catch (_) {}
+      }
+      try { await ctrlToRelease?.dispose(); } catch (_) {}
+    });
     super.dispose();
   }
 
@@ -1865,7 +1907,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         ctrl.setFlashMode(FlashMode.off).catchError((_) {});
         setState(() => _isFlashOn = false);
       }
-      ctrl.dispose();
+      CameraGate.release(() async { await ctrl.dispose(); });
       if (mounted) setState(() => _isCameraInitialized = false);
     } else if (state == AppLifecycleState.resumed) {
       _initializeCamera();
@@ -1876,6 +1918,8 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     // never draw a disposed / not-yet-initialized controller (shows as a white preview)
     if (mounted && _isCameraInitialized) setState(() => _isCameraInitialized = false);
     try {
+      // Wait for the previous screen's camera (photo <-> live switch) to be fully released.
+      await CameraGate.waitReleased();
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
         _addLog('No cameras found');
@@ -1924,10 +1968,10 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
     } catch (e) {
       _addLog("Camera error: $e");
       // The previous screen's camera may still be releasing (live <-> photo switch): retry before giving up.
-      if (attempt < 3 && mounted) {
+      if (attempt < 5 && mounted) {
         try { await _cameraController?.dispose(); } catch (_) {}
         _cameraController = null;
-        await Future.delayed(const Duration(milliseconds: 700));
+        await Future.delayed(Duration(milliseconds: 500 + 400 * attempt));
         if (mounted) return _initializeCamera(attempt + 1);
         return;
       }
@@ -2378,7 +2422,39 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
-      return Scaffold(body: Center(child: Text('Error: $_error')));
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Camera problem'),
+          backgroundColor: const Color(0xFFDC143C),
+          foregroundColor: Colors.white,
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.videocam_off, size: 56, color: Color(0xFFDC143C)),
+                const SizedBox(height: 12),
+                Text('Error: $_error', textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() => _error = null);
+                    _initializeCamera();
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry camera'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Go back'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
     }
     final currentTask = widget.tasks[_currentIndex];
     final List<String> taskClasses =
