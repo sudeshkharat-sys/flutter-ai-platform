@@ -616,6 +616,34 @@ async def logout():
 
 # ── Read-only data routes (all require a valid session) ─────────────────────
 
+def _annotate_rescans(rows: list[dict]) -> list[dict]:
+    """Adds scanNo / scanCount / isFinal to every row. A "scan" is one
+    (vin, date, time) event; the oldest scan of a VIN is scanNo 0 and each
+    later scan of the same VIN is a rescan (1, 2, ...). The newest scan of a
+    VIN that was scanned more than once is flagged isFinal. Computed over the
+    full history (before any date filter) so a rescan keeps its number even
+    when only today's rows are requested. Returns copies -- the cached rows
+    are left untouched."""
+    events: dict[str, set] = {}
+    for r in rows:
+        vin = r.get("vin")
+        if vin:
+            events.setdefault(vin, set()).add((r.get("date") or "", r.get("time") or ""))
+    order = {vin: {ev: i for i, ev in enumerate(sorted(evs))} for vin, evs in events.items()}
+    out = []
+    for r in rows:
+        r = dict(r)
+        vin = r.get("vin")
+        if vin:
+            idx = order[vin][(r.get("date") or "", r.get("time") or "")]
+            count = len(order[vin])
+            r["scanNo"] = idx
+            r["scanCount"] = count
+            r["isFinal"] = count > 1 and idx == count - 1
+        out.append(r)
+    return out
+
+
 @app.get("/api/groups")
 async def api_groups(_: None = Depends(_require_session)):
     return _list_groups()
@@ -629,7 +657,7 @@ async def api_data(device: str, appName: str, _: None = Depends(_require_session
     collapse all react instantly without a round trip per keystroke."""
     if (_safe_name(device), _safe_name(appName)) in _load_hidden():
         raise HTTPException(status_code=404, detail="Not found")
-    rows = _flatten_rows(device, appName)
+    rows = _annotate_rescans(_flatten_rows(device, appName))
     truncated = len(rows) > MAX_ROWS_RETURNED
     return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
 
@@ -766,6 +794,7 @@ async def api_app_data(appName: str, startDate: str = "", endDate: str = "", _: 
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(device_dirs)))) as pool:
         for device_rows in pool.map(lambda d: _flatten_rows(d, app_name_safe), device_dirs):
             rows.extend(device_rows)
+    rows = _annotate_rescans(rows)
     if startDate or endDate:
         rows = [
             r for r in rows
@@ -1449,6 +1478,8 @@ VIEWER_HTML = """<!doctype html>
   table.mini-table th { text-align: left; padding: 4px 8px; color: var(--muted); font-weight: 600;
                          border-bottom: 1px solid var(--border); }
   table.mini-table td { padding: 5px 8px; border-bottom: 1px solid #f0f0f3; }
+  .rescan-badge { display:inline-block; font-size:10px; font-weight:700; padding:1px 6px; margin-left:4px; border-radius:8px; background:#fff3cd; color:#8a6100; border:1px solid #f0d98a; white-space:nowrap; }
+  .rescan-badge.final { background:#d4edda; color:#1e6b34; border-color:#a8d5b5; }
   .task-count-ok, .badge-ok { color: var(--green); font-weight: 700; }
   .task-count-fail, .badge-fail { color: var(--crimson-dark); font-weight: 700; }
   .img-link { color: var(--crimson); cursor: pointer; text-decoration: underline; font-size: 11px;
@@ -2028,7 +2059,8 @@ function groupRowsByInspection(rows) {
     const key = `${r.batch}|${r.inspectionId ?? ''}|${r.vin}|${r.date}|${r.time}`;
     if (!groups[key]) {
       groups[key] = { key, vin: r.vin, modelCode: r.modelCode, modelName: r.modelName, modelVariant: r.modelVariant,
-                      date: r.date, time: r.time, shift: r.shift, shiftDate: r.shiftDate, batch: r.batch, device: r.device, tasks: [] };
+                      date: r.date, time: r.time, shift: r.shift, shiftDate: r.shiftDate, batch: r.batch, device: r.device,
+                      scanNo: r.scanNo || 0, scanCount: r.scanCount || 1, isFinal: !!r.isFinal, tasks: [] };
       order.push(key);
     }
     groups[key].tasks.push(r);
@@ -2040,6 +2072,16 @@ const _expandedGroups = new Set();
 function toggleGroup(key) {
   if (_expandedGroups.has(key)) _expandedGroups.delete(key); else _expandedGroups.add(key);
   renderTable();
+}
+
+// "Rescan 2" on every scan after a VIN's first, plus "Final" on the latest of
+// a VIN that was scanned more than once. The first scan has no label.
+function rescanBadge(g) {
+  if (!g.scanCount || g.scanCount < 2) return '';
+  let out = '';
+  if (g.scanNo > 0) out += ` <span class="rescan-badge">Rescan ${g.scanNo}</span>`;
+  if (g.isFinal) out += ' <span class="rescan-badge final">Final</span>';
+  return out;
 }
 
 function escapeAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
@@ -2081,7 +2123,7 @@ function renderTable() {
     return `
       <tr class="group-row ${expanded ? 'expanded' : ''}" onclick="toggleGroup('${g.key.replace(/'/g, "\\\\'")}')">
         <td><span class="chevron">&#9656;</span></td>
-        <td>${g.vin || ''}</td><td>${g.modelCode || ''}</td><td>${g.modelName || ''}</td><td>${g.modelVariant || ''}</td>
+        <td>${g.vin || ''}${rescanBadge(g)}</td><td>${g.modelCode || ''}</td><td>${g.modelName || ''}</td><td>${g.modelVariant || ''}</td>
         <td>${g.date || ''}</td><td>${g.time || ''}</td><td>${g.shift || ''}</td>
         <td>${taskSummary}</td>
         <td class="${vinResult === 'PASS' ? 'badge-ok' : 'badge-fail'}">${vinResult}</td>
