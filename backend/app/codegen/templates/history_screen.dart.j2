@@ -95,8 +95,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
       final List<Inspection> inspections = await db.getAllInspections();
       List<Map<String, dynamic>> results = [];
 
+      // One query for every task result (was one query per inspection).
+      final grouped = await db.getAllResultsGrouped();
+
       for (var insp in inspections) {
-        final taskResults = await db.getResultsForInspection(insp.id);
+        final taskResults = grouped[insp.id] ?? const <TaskResult>[];
         bool overallSuccess = true;
         for (var tr in taskResults) {
           if (!tr.success) overallSuccess = false;

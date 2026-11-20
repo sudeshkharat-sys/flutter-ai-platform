@@ -346,6 +346,38 @@ def _save_hidden_devices():
         raise RuntimeError(f"Could not write {_hidden_devices_file()}: {e}") from e
 
 
+APP_DISPLAY_NAMES_FILE_NAME = "_app_display_names.json"
+
+# Friendly names for the Vault viewer. The real app name is an id baked into
+# the Flutter build (it can't be changed without rebuilding, and it's what
+# merges one app's data across many phones), so it often looks ugly. Admin
+# Edit lets an admin give each app a display name instead; the viewer shows
+# that and still groups/queries by the real name. Written under DATA_DIR so
+# the separate read-only viewer process can read it.
+# {safe app name -> display name}
+_app_display_names: dict[str, str] = {}
+
+
+def _app_display_names_file() -> Path:
+    return DATA_DIR / APP_DISPLAY_NAMES_FILE_NAME
+
+
+def _load_app_display_names():
+    global _app_display_names
+    try:
+        _app_display_names = json.loads(_app_display_names_file().read_text())
+    except Exception:
+        _app_display_names = {}
+
+
+def _save_app_display_names():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _app_display_names_file().write_text(json.dumps(_app_display_names, indent=2))
+    except OSError as e:
+        raise RuntimeError(f"Could not write {_app_display_names_file()}: {e}") from e
+
+
 # App aliases -- for when two builds of what's really the same production
 # app ended up with different names (a rename, a typo, a leftover "(Copy)"
 # from Duplicate), which otherwise fragments their data into two unrelated
@@ -1295,11 +1327,34 @@ async def api_events(since: int = 0, _: None = Depends(_require_local)):
     return {"events": events, "serverTimeMs": int(time.time() * 1000)}
 
 
+# Walking every photo under a folder (rglob + stat) is slow with thousands of
+# images, and the app/device lists call this on every open and auto-refresh.
+# Remember each folder's totals for a short time instead of re-walking disk.
+_DIR_STATS_TTL_SEC = 20
+_dir_stats_cache: dict[str, tuple[float, int, int]] = {}
+_dir_stats_lock = threading.Lock()
+
+
 def _dir_stats(path: Path):
+    key = str(path)
+    now = time.time()
+    with _dir_stats_lock:
+        hit = _dir_stats_cache.get(key)
+        if hit and now - hit[0] < _DIR_STATS_TTL_SEC:
+            return hit[1], hit[2]
     if not path.exists():
         return 0, 0
-    files = [f for f in path.rglob("*") if f.is_file()]
-    return len(files), sum(f.stat().st_size for f in files)
+    count = total = 0
+    for f in path.rglob("*"):
+        try:
+            if f.is_file():
+                count += 1
+                total += f.stat().st_size
+        except OSError:
+            continue
+    with _dir_stats_lock:
+        _dir_stats_cache[key] = (now, count, total)
+    return count, total
 
 
 def _build_devices_list() -> list[dict]:
@@ -1378,6 +1433,33 @@ async def api_admin_hide_device_data(request: Request, _: None = Depends(_requir
             raise HTTPException(status_code=500, detail=str(e))
 
     return {"status": "ok", "deviceName": device_name, "appName": app_name, "hidden": hidden}
+
+
+@app.get("/api/admin/app-display-names")
+async def api_admin_get_app_display_names(_: None = Depends(_require_local)):
+    return _app_display_names
+
+
+@app.post("/api/admin/app-display-name")
+async def api_admin_set_app_display_name(request: Request, _: None = Depends(_require_local)):
+    """Sets (or, with an empty displayName, clears) the name the Vault viewer
+    shows for [appName]. Only affects what's displayed -- data, folders and
+    merging all stay keyed by the real app name."""
+    body = await request.json()
+    safe_app = _safe_name(str(body.get("appName", "")))
+    display = " ".join(str(body.get("displayName", "")).split())[:80]
+    if not str(body.get("appName", "")).strip():
+        raise HTTPException(status_code=400, detail="appName is required")
+    with _lock:
+        if display:
+            _app_display_names[safe_app] = display
+        else:
+            _app_display_names.pop(safe_app, None)
+        try:
+            _save_app_display_names()
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "ok", "appName": safe_app, "displayName": display}
 
 
 @app.get("/api/admin/master-data")
@@ -2355,6 +2437,16 @@ DASHBOARD_HTML = """<!doctype html>
       </div>
     </div>
 
+    <div class="card" style="display:block;padding:16px;margin-bottom:18px;">
+      <h3 style="margin:0 0 6px;">App Display Names</h3>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
+        The app's real name can't be changed (it's fixed in the build and is what
+        merges one app's data from every phone). Give it a friendlier name here --
+        the Vault viewer shows this instead. Leave blank to show the real name.
+      </p>
+      <div id="adminAppNameList"><div class="empty">Loading…</div></div>
+    </div>
+
     <div class="card" style="display:block;padding:16px;">
       <h3 style="margin:0 0 6px;">Hide Device Data</h3>
       <p style="font-size:12px;color:var(--muted);margin:0 0 12px;max-width:640px;">
@@ -2945,11 +3037,49 @@ async function applyEngineData() {
   }
 }
 
+async function loadAdminAppNames(devices) {
+  const el = document.getElementById('adminAppNameList');
+  if (!el) return;
+  try {
+    const names = await (await fetch('/api/admin/app-display-names')).json();
+    const real = [...new Set(devices.map(d => d.appName))];
+    if (!real.length) { el.innerHTML = '<div class="empty">No apps yet.</div>'; return; }
+    el.innerHTML = real.map((a, i) => {
+      const safe = a.replace(/[^A-Za-z0-9 _-]/g, '').trim().replace(/ /g, '_') || 'unknown';
+      return `
+      <div class="app-row">
+        <div class="a-info"><div class="a-name">${a}</div><div class="a-meta">Real app name</div></div>
+        <input id="dispName${i}" value="${(names[safe] || '').replace(/"/g, '&quot;')}" placeholder="Display name" style="min-width:220px;">
+        <button class="primary" onclick="saveAppDisplayName(${i}, '${a.replace(/'/g, "\\'")}')">Save</button>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Could not load app names.</div>';
+  }
+}
+
+async function saveAppDisplayName(i, appName) {
+  const displayName = document.getElementById('dispName' + i).value;
+  try {
+    const r = await fetch('/api/admin/app-display-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appName, displayName }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    showToast(displayName.trim() ? 'Viewer will show "' + d.displayName + '"' : 'Display name cleared');
+  } catch (e) {
+    alert('Could not save: ' + e.message);
+  }
+}
+
 async function loadAdminDeviceList() {
   const el = document.getElementById('adminDeviceList');
   try {
     const r = await fetch('/api/devices');
     const devices = await r.json();
+    loadAdminAppNames(devices);
     if (!devices.length) {
       el.innerHTML = '<div class="empty">No paired devices.</div>';
       return;
@@ -3905,6 +4035,7 @@ def main():
     _load_engine_data()
     _load_heartbeats()
     _load_hidden_devices()
+    _load_app_display_names()
     zeroconf = start_mdns()
 
     ip = _local_ip()

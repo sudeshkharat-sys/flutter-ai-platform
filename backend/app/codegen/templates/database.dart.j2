@@ -86,6 +86,18 @@ class AppDatabase extends _$AppDatabase {
   
   Future<List<Inspection>> getAllInspections() => (select(inspections)..orderBy([(t) => OrderingTerm.desc(t.createdAt)])).get();
 
+  /// Every task result in ONE query, grouped by inspection id. The history
+  /// and dashboard screens used to call getResultsForInspection() once per
+  /// inspection (thousands of sequential queries) before showing anything.
+  Future<Map<int, List<TaskResult>>> getAllResultsGrouped() async {
+    final all = await select(taskResults).get();
+    final Map<int, List<TaskResult>> grouped = {};
+    for (final tr in all) {
+      grouped.putIfAbsent(tr.inspectionId, () => []).add(tr);
+    }
+    return grouped;
+  }
+
   Future<List<TaskResult>> getResultsForInspection(int inspectionId) =>
     (select(taskResults)..where((t) => t.inspectionId.equals(inspectionId))).get();
 

@@ -387,6 +387,18 @@ def _load_heartbeats() -> dict[tuple[str, str], int]:
 HIDDEN_DEVICES_FILE_NAME = "_hidden_devices.json"
 
 
+def _load_display_names() -> dict[str, str]:
+    """{safe app name -> friendly name} an admin set in receiver.py's Admin
+    Edit tab (see _app_display_names there). Display only: grouping and
+    queries still use the real app name. Re-read each call (small file)."""
+    path = DATA_DIR / "_app_display_names.json"
+    try:
+        raw = json.loads(path.read_text())
+        return {k: v for k, v in raw.items() if isinstance(v, str) and v.strip()}
+    except Exception:
+        return {}
+
+
 def _load_hidden() -> set[tuple[str, str]]:
     """Device/app pairs an admin has hidden from this viewer via
     receiver.py's Admin Edit tab -- written under DATA_DIR (same trick as
@@ -663,16 +675,42 @@ async def api_apps(_: None = Depends(_require_session)):
             bucket["lastReceivedAt"] = g["lastReceivedAt"]
         if g["lastHeartbeatAtMs"] and (not bucket["lastHeartbeatAtMs"] or g["lastHeartbeatAtMs"] > bucket["lastHeartbeatAtMs"]):
             bucket["lastHeartbeatAtMs"] = g["lastHeartbeatAtMs"]
+    names = _load_display_names()
     result = list(by_app.values())
+    for a in result:
+        a["displayName"] = names.get(a["appNameSafe"]) or a["appName"]
     result.sort(key=lambda a: a["lastReceivedAt"] or "", reverse=True)
     return result
 
 
+# Walking every photo under a folder (rglob + stat) is slow with thousands of
+# images, and the app/device lists call this on every open and auto-refresh.
+# Remember each folder's totals for a short time instead of re-walking disk.
+_DIR_STATS_TTL_SEC = 90
+_dir_stats_cache: dict[str, tuple[float, int, int]] = {}
+_dir_stats_lock = threading.Lock()
+
+
 def _dir_stats(path: Path):
+    key = str(path)
+    now = time.time()
+    with _dir_stats_lock:
+        hit = _dir_stats_cache.get(key)
+        if hit and now - hit[0] < _DIR_STATS_TTL_SEC:
+            return hit[1], hit[2]
     if not path.exists():
         return 0, 0
-    files = [f for f in path.rglob("*") if f.is_file()]
-    return len(files), sum(f.stat().st_size for f in files)
+    count = total = 0
+    for f in path.rglob("*"):
+        try:
+            if f.is_file():
+                count += 1
+                total += f.stat().st_size
+        except OSError:
+            continue
+    with _dir_stats_lock:
+        _dir_stats_cache[key] = (now, count, total)
+    return count, total
 
 
 @app.get("/api/storage")
@@ -1712,14 +1750,14 @@ function renderApps() {
         <span class="status-label ${online ? 'online' : 'offline'}">${statusText}</span><span class="status-sub">${statusSub}</span>
       </div>
       <div>
-        <div class="a-name">${a.appName}</div>
+        <div class="a-name">${a.displayName || a.appName}</div>
         <div class="a-meta">${a.deviceCount} device${a.deviceCount === 1 ? '' : 's'} paired</div>
       </div>
       <div class="a-stats">
         <div><b>${a.batchCount}</b>sends</div>
         <div><b>${fmtBytes(a.totalBytes)}</b>size</div>
       </div>
-      <button class="primary" onclick="openAppDataViewer('${a.appNameSafe.replace(/'/g, "\\'")}', '${a.appName.replace(/'/g, "\\'")}')">View Data</button>
+      <button class="primary" onclick="openAppDataViewer('${a.appNameSafe.replace(/'/g, "\\'")}', '${a.appName.replace(/'/g, "\\'")}', '${(a.displayName || a.appName).replace(/'/g, "\\'")}')">View Data</button>
     </div>
   `;
   }).join('');
@@ -1765,13 +1803,13 @@ function populateDownloadMonthYears() {
   document.getElementById('dlMonth').value = String(now.getMonth() + 1).padStart(2, '0');
 }
 
-async function openAppDataViewer(appNameSafe, appNameDisplay) {
+async function openAppDataViewer(appNameSafe, appNameDisplay, shownName) {
   currentDevice = 'AllDevices';
   currentAppName = appNameDisplay;
   currentAppTotalBytes = (apps.find(a => a.appName === appNameDisplay) || {}).totalBytes || 0;
   document.getElementById('appsListView').style.display = 'none';
   document.getElementById('dataView').style.display = '';
-  document.getElementById('dataViewTitle').textContent = appNameDisplay;
+  document.getElementById('dataViewTitle').textContent = shownName || appNameDisplay;
   document.getElementById('fDate').value = '';
   populateDownloadMonthYears();
   populateNegDatasetTasks(appNameDisplay);
@@ -2303,7 +2341,7 @@ async function openGear() {
   if (sel.options.length === 1) {
     try {
       const apps = await (await fetch('/api/apps')).json();
-      apps.forEach(a => sel.add(new Option(a.appName, a.appName)));
+      apps.forEach(a => sel.add(new Option(a.displayName || a.appName, a.appName)));
     } catch (e) {}
   }
 }
