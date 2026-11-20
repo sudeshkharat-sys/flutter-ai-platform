@@ -28,6 +28,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   int _threads = 0;
   bool _autofocus = false;
+  bool _keepNeg = true;
   bool _debugDl = false;
   bool _unlocked = false;
   final TextEditingController _pw = TextEditingController();
@@ -52,6 +53,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final t = await CameraPrefs.getThreads();
     final af = await CameraPrefs.getAutofocus();
     final dd = await CameraPrefs.getDebugDownload();
+    final kn = await CameraPrefs.getKeepNegatives();
     final vb = await ResultFeedback.getVibrate();
     final sd = await ResultFeedback.getSound();
     final tOk = await ResultFeedback.getCustomTone('ok');
@@ -60,7 +62,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final live = await CameraPrefs.getLiveTasks();
     final lt = await CameraPrefs.getLiveTimeoutSeconds();
     final names = await _loadTaskNames();
-    if (mounted) setState(() { _threads = t; _autofocus = af; _debugDl = dd; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; _liveTasks = live; _liveTimeout = lt; _taskNames = names; });
+    if (mounted) setState(() { _threads = t; _autofocus = af; _keepNeg = kn; _debugDl = dd; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; _liveTasks = live; _liveTimeout = lt; _taskNames = names; });
   }
 
   /// Every task name of this app (from the bundled manifest), in order, without duplicates.
@@ -339,6 +341,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (v) async {
                 setState(() => _autofocus = v);
                 await CameraPrefs.setAutofocus(v);
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: SwitchListTile(
+              secondary: const Icon(Icons.photo_library, color: _crimson),
+              title: const Text('Keep negative images on phone', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('On = NOT OK photos are saved in the phone\'s Pictures folder as before. Off = they are still sent to the server, but are not kept on the phone (deleted after sending).'),
+              value: _keepNeg,
+              activeColor: _crimson,
+              onChanged: (v) async {
+                setState(() => _keepNeg = v);
+                await CameraPrefs.setKeepNegatives(v);
               },
             ),
           ),

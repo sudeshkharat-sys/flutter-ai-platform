@@ -689,7 +689,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         // parallel folder tree for building a negative-example dataset.
         if (!overallPass && annotated.negative != null) {
           try {
-            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            final negDir = Directory('${await CameraPrefs.negativeRoot(baseDir.path)}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final className = overallPass
                 ? 'OK'
@@ -2177,7 +2177,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
         // parallel folder tree for building a negative-example dataset.
         if (!isPass && cleanImageBytes != null) {
           try {
-            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            final negDir = Directory('${await CameraPrefs.negativeRoot(baseDir.path)}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final negFile = File('${negDir.path}/${resultLabel}_${dateStr}_$timeStr.jpg');
             await negFile.writeAsBytes(cleanImageBytes, flush: true);

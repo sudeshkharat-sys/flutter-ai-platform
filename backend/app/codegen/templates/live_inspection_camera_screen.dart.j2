@@ -702,7 +702,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         // parallel folder tree for building a negative-example dataset.
         if (!overallPass && cleanImageBytes != null) {
           try {
-            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            final negDir = Directory('${await CameraPrefs.negativeRoot(baseDir.path)}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final className = _hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'NOT_OK' : 'None';
             final negFile = File('${negDir.path}/${className}_${dateStr}_$timeStr.jpg');
@@ -979,6 +979,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final String taskName = '${task['name'] ?? task['taskName'] ?? 'task'}';
     unawaited(() async {
       try {
+        if (!await CameraPrefs.getKeepNegatives()) return; // never synced, so skip when not keeping on phone
         // The exact picture the detector sees (same payload as predictFrame: camera zoom
         // applied, same rotation and 640px downscale), at high JPEG quality, so training
         // images match what the model gets at inference.
@@ -1729,7 +1730,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         // parallel folder tree for building a negative-example dataset.
         if (!overallPass && cleanImageBytes != null) {
           try {
-            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            final negDir = Directory('${await CameraPrefs.negativeRoot(baseDir.path)}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final className = _hasDefectDetected(allDetections, failClasses, ignoredClasses) ? 'NOT_OK' : 'None';
             final negFile = File('${negDir.path}/${className}_${dateStr}_$timeStr.jpg');
@@ -3391,7 +3392,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         // parallel folder tree for building a negative-example dataset.
         if (!isPass && cleanImageBytes != null) {
           try {
-            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            final negDir = Directory('${await CameraPrefs.negativeRoot(baseDir.path)}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final negFile = File('${negDir.path}/${resultLabel}_${dateStr}_$timeStr.jpg');
             await negFile.writeAsBytes(cleanImageBytes, flush: true);
@@ -3662,6 +3663,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     final String taskName = '${task['name'] ?? task['taskName'] ?? 'task'}';
     unawaited(() async {
       try {
+        if (!await CameraPrefs.getKeepNegatives()) return; // never synced, so skip when not keeping on phone
         // The exact picture the detector sees (same payload as predictFrame: camera zoom
         // applied, same rotation and 640px downscale), at high JPEG quality, so training
         // images match what the model gets at inference.
@@ -4326,7 +4328,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
         // parallel folder tree for building a negative-example dataset.
         if (!isPass && cleanImageBytes != null) {
           try {
-            final negDir = Directory('${baseDir.path}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
+            final negDir = Directory('${await CameraPrefs.negativeRoot(baseDir.path)}/MAI/$appName/NegativeDataset/$safeVin/$safeTask');
             await negDir.create(recursive: true);
             final negFile = File('${negDir.path}/${resultLabel}_${dateStr}_$timeStr.jpg');
             await negFile.writeAsBytes(cleanImageBytes, flush: true);
