@@ -499,6 +499,12 @@ class _{{ SC }}State extends State<{{ SC }}> with WidgetsBindingObserver {
   }
 
   String _resolveModelCode(String suffix) {
+    // Newer stickers: VIN + MODELCODE + "-" + EXTRA, e.g.
+    // MA1RA2CY2V2034013 GMR2JMCAERJ -SAW017. The dash cleanly ends the model
+    // code (model codes never contain one), so cut there instead of guessing
+    // how many trailing characters are junk.
+    final int dash = suffix.indexOf('-');
+    if (dash > 0) return suffix.substring(0, dash);
     for (final strip in [2, 1, 0]) {
       if (suffix.length > strip) {
         final candidate = suffix.substring(0, suffix.length - strip);
