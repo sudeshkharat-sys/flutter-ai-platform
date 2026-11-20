@@ -1328,22 +1328,18 @@ async def api_events(since: int = 0, _: None = Depends(_require_local)):
 
 
 # Walking every photo under a folder (rglob + stat) is slow with thousands of
-# images, and the app/device lists call this on every open and auto-refresh.
-# Remember each folder's totals for a short time instead of re-walking disk.
+# images. Remember each folder's totals; once a value exists it is ALWAYS
+# returned instantly, and if it's older than the TTL a background thread
+# refreshes it for next time (so no tab ever waits on a re-walk). Only the very
+# first look at a folder walks synchronously -- and _warm_dir_stats() below
+# does that at startup in the background.
 _DIR_STATS_TTL_SEC = 20
 _dir_stats_cache: dict[str, tuple[float, int, int]] = {}
+_dir_stats_refreshing: set[str] = set()
 _dir_stats_lock = threading.Lock()
 
 
-def _dir_stats(path: Path):
-    key = str(path)
-    now = time.time()
-    with _dir_stats_lock:
-        hit = _dir_stats_cache.get(key)
-        if hit and now - hit[0] < _DIR_STATS_TTL_SEC:
-            return hit[1], hit[2]
-    if not path.exists():
-        return 0, 0
+def _walk_dir_stats(path: Path) -> tuple[int, int]:
     count = total = 0
     for f in path.rglob("*"):
         try:
@@ -1352,12 +1348,50 @@ def _dir_stats(path: Path):
                 total += f.stat().st_size
         except OSError:
             continue
-    with _dir_stats_lock:
-        _dir_stats_cache[key] = (now, count, total)
     return count, total
 
 
-def _build_devices_list() -> list[dict]:
+def _refresh_dir_stats(key: str):
+    try:
+        path = Path(key)
+        count, total = _walk_dir_stats(path) if path.exists() else (0, 0)
+        with _dir_stats_lock:
+            _dir_stats_cache[key] = (time.time(), count, total)
+    finally:
+        with _dir_stats_lock:
+            _dir_stats_refreshing.discard(key)
+
+
+def _dir_stats(path: Path):
+    key = str(path)
+    with _dir_stats_lock:
+        hit = _dir_stats_cache.get(key)
+        if hit:
+            if time.time() - hit[0] >= _DIR_STATS_TTL_SEC and key not in _dir_stats_refreshing:
+                _dir_stats_refreshing.add(key)
+                threading.Thread(target=_refresh_dir_stats, args=(key,), daemon=True).start()
+            return hit[1], hit[2]
+    if not path.exists():
+        return 0, 0
+    count, total = _walk_dir_stats(path)
+    with _dir_stats_lock:
+        _dir_stats_cache[key] = (time.time(), count, total)
+    return count, total
+
+
+def _warm_dir_stats():
+    """Pre-computes every paired device's folder size in the background right
+    after startup, so the first Devices/Apps/Admin tab open is already warm."""
+    try:
+        with _lock:
+            items = list(_paired_devices.values())
+        for d in items:
+            _dir_stats(DATA_DIR / _safe_name(d["deviceName"]) / _safe_name(d.get("appName", "app")))
+    except Exception:
+        pass
+
+
+def _build_devices_list(light: bool = False) -> list[dict]:
     result = []
     with _lock:
         items = list(_paired_devices.items())
@@ -1366,7 +1400,9 @@ def _build_devices_list() -> list[dict]:
         app_name_safe = _safe_name(d.get("appName", "app"))
         device_dir = DATA_DIR / device_name_safe / app_name_safe
         batch_dirs = sorted([p for p in device_dir.iterdir() if p.is_dir()]) if device_dir.exists() else []
-        file_count, total_bytes = _dir_stats(device_dir)
+        # light=True skips the (potentially slow) size walk -- Admin Edit
+        # doesn't need sizes, only names and hide state.
+        file_count, total_bytes = (0, 0) if light else _dir_stats(device_dir)
         result.append({
             "deviceId": device_id,
             "deviceName": d["deviceName"],
@@ -1383,12 +1419,12 @@ def _build_devices_list() -> list[dict]:
 
 
 @app.get("/api/devices")
-async def api_devices(_: None = Depends(_require_local)):
+async def api_devices(light: bool = False, _: None = Depends(_require_local)):
     # Walks every paired device's folder on disk (rglob + stat per file), which
     # can be slow on a large or network/SAN-backed data folder. Run it off the
     # event loop so a slow scan doesn't stall the whole server (dashboard,
     # pairing, uploads) while it's in progress.
-    return await run_in_threadpool(_build_devices_list)
+    return await run_in_threadpool(_build_devices_list, light)
 
 
 @app.delete("/api/devices/{device_id}")
@@ -3077,7 +3113,7 @@ async function saveAppDisplayName(i, appName) {
 async function loadAdminDeviceList() {
   const el = document.getElementById('adminDeviceList');
   try {
-    const r = await fetch('/api/devices');
+    const r = await fetch('/api/devices?light=1');
     const devices = await r.json();
     loadAdminAppNames(devices);
     if (!devices.length) {
@@ -3088,7 +3124,7 @@ async function loadAdminDeviceList() {
       <div class="app-row">
         <div class="a-info">
           <div class="a-name">${d.deviceName} — ${d.appName}</div>
-          <div class="a-meta">${d.batchCount} send(s) • ${fmtBytes(d.totalBytes)}${d.hidden ? ' • Hidden from Vault viewer' : ''}</div>
+          <div class="a-meta">${d.batchCount} send(s)${d.hidden ? ' • Hidden from Vault viewer' : ''}</div>
         </div>
         <button class="ghost" onclick="toggleHideDeviceData('${d.deviceName.replace(/'/g, "\\'")}', '${d.appName.replace(/'/g, "\\'")}', ${!d.hidden})">${d.hidden ? 'Unhide' : 'Hide from Viewer'}</button>
       </div>
@@ -4036,6 +4072,7 @@ def main():
     _load_heartbeats()
     _load_hidden_devices()
     _load_app_display_names()
+    threading.Thread(target=_warm_dir_stats, daemon=True).start()
     zeroconf = start_mdns()
 
     ip = _local_ip()
