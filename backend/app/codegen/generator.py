@@ -185,7 +185,6 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 "tflite_path": paths.get("tflite", "assets/models/model_0.tflite"),
                 "labels_path": paths.get("labels", "assets/models/labels_0.txt"),
                 "vehicle_code": task.get("vehicleCode"),
-                "branch": task.get("branch") or "",
                 "reference_image": f"assets/reference_images/{ref_img}" if ref_img else None,
             })
     else:

@@ -502,59 +502,101 @@ export default function AppBuilder() {
 
 import { Plus, Trash2, Edit3, ChevronRight, ArrowLeft, Check, ChevronDown, ArrowUp, ArrowDown, Search, Download, ImageIcon } from 'lucide-react';
 
-function CountryVariantsModal({ row, onChange, onClose }) {
+function CountryVariantsModal({ row, models, onChange, onClose }) {
   const cc = row.countryCheck;
   const rules = cc?.rules || [];
   const setCC = (p) => onChange({ countryCheck: { ...cc, ...p } });
   const setRule = (i, p) => setCC({ rules: rules.map((r, k) => k === i ? { ...r, ...p } : r) });
-  const setBranch = (aiIdx, branch) => onChange({ selectedAIModels: row.selectedAIModels.map((a, k) => k === aiIdx ? { ...a, branch } : a) });
   const inp = { padding: '8px 10px', borderRadius: 8, border: '1px solid #8886', background: 'transparent', color: 'inherit', fontSize: 13 };
+  const btn = (on, color) => ({ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, cursor: 'pointer', border: `1px solid ${on ? color : '#8886'}`, background: on ? color : 'transparent', color: on ? '#fff' : 'inherit' });
+  const taskLabel = (ai, i) => `${i + 1}. ${ai.instruction || ai.class || 'Task'}`;
+  const classesOf = (ai) => models.find(m => m.id === ai.modelId)?.classes || [];
+
+  // overrides of one rule: [{ aiIdx, mandatoryClasses, ignoredClasses }]
+  const setOverride = (ri, oi, p) => setRule(ri, { overrides: (rules[ri].overrides || []).map((o, k) => k === oi ? { ...o, ...p } : o) });
+  const addOverride = (ri) => {
+    const used = (rules[ri].overrides || []).map(o => o.aiIdx);
+    const aiIdx = row.selectedAIModels.findIndex((_, i) => !used.includes(i));
+    if (aiIdx < 0) return;
+    const ai = row.selectedAIModels[aiIdx];
+    // start from the task's current rules so only the differences need changing
+    setRule(ri, { overrides: [...(rules[ri].overrides || []), { aiIdx, mandatoryClasses: [...(ai.mandatoryClasses || [])], ignoredClasses: [...(ai.ignoredClasses || [])] }] });
+  };
+  const pickTask = (ri, oi, aiIdx) => {
+    const ai = row.selectedAIModels[aiIdx];
+    setOverride(ri, oi, { aiIdx, mandatoryClasses: [...(ai.mandatoryClasses || [])], ignoredClasses: [...(ai.ignoredClasses || [])] });
+  };
+  const toggle = (ri, oi, cls, kind) => {
+    const o = rules[ri].overrides[oi];
+    const m = new Set(o.mandatoryClasses || []); const ig = new Set(o.ignoredClasses || []);
+    if (kind === 'm') { if (m.has(cls)) m.delete(cls); else { m.add(cls); ig.delete(cls); } }
+    else { if (ig.has(cls)) ig.delete(cls); else { ig.add(cls); m.delete(cls); } }
+    setOverride(ri, oi, { mandatoryClasses: [...m], ignoredClasses: [...ig] });
+  };
+
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
-      <div style={{ background: '#1e1f26', color: '#eee', width: 'min(760px, 94vw)', maxHeight: '88vh', overflowY: 'auto', borderRadius: 14, padding: 22, boxShadow: '0 10px 40px #000a' }} onClick={e => e.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+      <div style={{ background: '#1e1f26', color: '#eee', width: 'min(820px, 94vw)', maxHeight: '90vh', overflowY: 'auto', borderRadius: 14, padding: 22, boxShadow: '0 10px 40px #000a' }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div style={{ fontWeight: 900, fontSize: 16 }}>Country Variants - {row.model_code}</div>
           <button type="button" onClick={onClose} style={{ ...inp, cursor: 'pointer' }}>Done</button>
         </div>
         <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 14 }}>
-          All VINs with this model code share the task list below. A decision-maker task runs first: the operator photographs the sticker, ML Kit reads the text, and the matching branch's tasks run.
+          A decision-maker task runs first: the operator photographs the sticker and ML Kit reads the text. If the text contains a country below, the class rules you set for that country replace the normal rules of the tasks you pick. If no country matches, nothing changes.
         </div>
         {!cc ? (
-          <button type="button" onClick={() => onChange({ countryCheck: { description: 'Photograph the sticker where the country name is printed', reader: 'mlkit', rules: [{ keyword: 'INDONESIA', label: 'Indonesia' }] } })}
+          <button type="button" onClick={() => onChange({ countryCheck: { description: 'Photograph the sticker where the country name is printed', reader: 'mlkit', rules: [{ keyword: '', overrides: [] }] } })}
             style={{ ...inp, cursor: 'pointer', fontWeight: 800, borderColor: 'var(--accent)' }}>+ Add decision-maker task</button>
         ) : (
-          <div style={{ border: '1px solid #8884', borderRadius: 10, padding: 14, marginBottom: 16 }}>
-            <div style={{ fontWeight: 800, marginBottom: 8 }}>Decision-maker task (runs first)</div>
-            <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Description shown to the operator</div>
-            <input style={{ ...inp, width: '100%', boxSizing: 'border-box', marginBottom: 10 }} value={cc.description || ''} onChange={e => setCC({ description: e.target.value })} />
-            <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Reader</div>
-            <select style={{ ...inp, marginBottom: 12 }} value="mlkit" onChange={() => {}}><option value="mlkit">ML Kit (text)</option></select>
-            <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>If the text contains... (else = nothing matched)</div>
-            {rules.map((r, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
-                <input style={{ ...inp, flex: 1 }} placeholder="Text to find, e.g. INDONESIA" value={r.keyword || ''} onChange={e => setRule(i, { keyword: e.target.value })} />
-                <input style={{ ...inp, flex: 1 }} placeholder="Branch name, e.g. Indonesia" value={r.label || ''} onChange={e => setRule(i, { label: e.target.value })} />
-                <button type="button" onClick={() => setCC({ rules: rules.filter((_, k) => k !== i) })} style={{ ...inp, cursor: 'pointer' }}>x</button>
+          <>
+            <div style={{ border: '1px solid #8884', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>Decision-maker task (runs first)</div>
+              <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Description shown to the operator</div>
+              <input style={{ ...inp, width: '100%', boxSizing: 'border-box', marginBottom: 10 }} value={cc.description || ''} onChange={e => setCC({ description: e.target.value })} />
+              <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Reader</div>
+              <select style={inp} value="mlkit" onChange={() => {}}><option value="mlkit">ML Kit (text on the sticker)</option></select>
+            </div>
+            {rules.map((r, ri) => (
+              <div key={ri} style={{ border: '1px solid #8884', borderRadius: 10, padding: 14, marginBottom: 12 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+                  <span style={{ fontWeight: 800, fontSize: 13 }}>If text contains</span>
+                  <input style={{ ...inp, flex: 1 }} placeholder="e.g. INDONESIA" value={r.keyword || ''} onChange={e => setRule(ri, { keyword: e.target.value })} />
+                  <button type="button" onClick={() => setCC({ rules: rules.filter((_, k) => k !== ri) })} style={{ ...inp, cursor: 'pointer', color: '#e74c3c' }}>Remove country</button>
+                </div>
+                {(r.overrides || []).map((o, oi) => {
+                  const ai = row.selectedAIModels[o.aiIdx];
+                  if (!ai) return null;
+                  const m = new Set(o.mandatoryClasses || []); const ig = new Set(o.ignoredClasses || []);
+                  return (
+                    <div key={oi} style={{ background: '#0003', borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                        <span style={{ fontSize: 12, opacity: 0.8 }}>Change task</span>
+                        <select style={{ ...inp, flex: 1 }} value={o.aiIdx} onChange={e => pickTask(ri, oi, parseInt(e.target.value, 10))}>
+                          {row.selectedAIModels.map((a, i) => <option key={i} value={i}>{taskLabel(a, i)}</option>)}
+                        </select>
+                        <button type="button" onClick={() => setRule(ri, { overrides: r.overrides.filter((_, k) => k !== oi) })} style={{ ...inp, cursor: 'pointer' }}>x</button>
+                      </div>
+                      <div style={{ fontSize: 10, opacity: 0.6, marginBottom: 6, textTransform: 'uppercase', fontWeight: 700 }}>For this country: Mandatory = must detect - Ignore = no effect - neither = fail if detected</div>
+                      {classesOf(ai).map(c => (
+                        <div key={c} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                          <span style={{ minWidth: 150, fontSize: 12, fontWeight: 600, color: m.has(c) ? 'var(--accent)' : (ig.has(c) ? '#aaa' : '#e74c3c') }}>{c}</span>
+                          <button type="button" style={btn(m.has(c), '#2ecc71')} onClick={() => toggle(ri, oi, c, 'm')}>Mandatory</button>
+                          <button type="button" style={btn(ig.has(c), '#7f8c8d')} onClick={() => toggle(ri, oi, c, 'i')}>Ignore</button>
+                          {!m.has(c) && !ig.has(c) && <span style={{ fontSize: 10, color: '#e74c3c' }}>FAIL if detected</span>}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+                <button type="button" disabled={(r.overrides || []).length >= row.selectedAIModels.length} onClick={() => addOverride(ri)} style={{ ...inp, cursor: 'pointer' }}>+ Change another task</button>
               </div>
             ))}
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <button type="button" onClick={() => setCC({ rules: [...rules, { keyword: '', label: '' }] })} style={{ ...inp, cursor: 'pointer' }}>+ Add another country</button>
-              <button type="button" onClick={() => onChange({ countryCheck: null, selectedAIModels: row.selectedAIModels.map(a => ({ ...a, branch: '' })) })} style={{ ...inp, cursor: 'pointer', color: '#e74c3c' }}>Remove decision task</button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={() => setCC({ rules: [...rules, { keyword: '', overrides: [] }] })} style={{ ...inp, cursor: 'pointer', fontWeight: 800 }}>+ Add another country</button>
+              <button type="button" onClick={() => onChange({ countryCheck: null })} style={{ ...inp, cursor: 'pointer', color: '#e74c3c' }}>Remove decision task</button>
             </div>
-          </div>
+          </>
         )}
-        <div style={{ fontWeight: 800, marginBottom: 8 }}>Tasks for this model code</div>
-        {row.selectedAIModels.length === 0 && <div style={{ fontSize: 12, opacity: 0.6 }}>No tasks yet - add them in the table, then come back to assign branches.</div>}
-        {row.selectedAIModels.map((ai, i) => (
-          <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #8883' }}>
-            <div style={{ flex: 1, fontSize: 13 }}>{i + 1}. {ai.instruction || ai.class || 'Task'}</div>
-            <select disabled={!cc} style={inp} value={ai.branch || ''} onChange={e => setBranch(i, e.target.value)}>
-              <option value="">Always</option>
-              {rules.filter(r => (r.label || r.keyword)).map((r, k) => <option key={k} value={(r.label || r.keyword).trim()}>If {(r.label || r.keyword).trim()}</option>)}
-              <option value="__else__">Else (no country matched)</option>
-            </select>
-          </div>
-        ))}
       </div>
     </div>
   );
@@ -710,7 +752,6 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           if (t.decision) { decisionByCode[code] = { ...t.decision }; return acc; }
           if (!acc[code]) acc[code] = [];
           acc[code].push({
-            branch: t.branch || '',
             modelId: t.modelId,
             class: t.classes?.[0] || '',
             mandatoryClasses: t.mandatoryClasses || [],
@@ -1166,7 +1207,20 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             reader: 'mlkit',
             rules: (row.countryCheck.rules || [])
               .filter(r => (r.keyword || '').trim())
-              .map(r => ({ keyword: r.keyword.trim(), label: (r.label || r.keyword).trim() })),
+              .map(r => ({
+                keyword: r.keyword.trim(),
+                overrides: (r.overrides || []).map(o => {
+                  const ai = row.selectedAIModels[o.aiIdx];
+                  const mdl = ai && models.find(m => m.id === ai.modelId);
+                  if (!mdl) return null;
+                  return {
+                    taskIndex: o.aiIdx,
+                    taskName: ai.instruction || `${row.model_code} - ${mdl.vision_project_name}`,
+                    mandatoryClasses: o.mandatoryClasses || [],
+                    ignoredClasses: o.ignoredClasses || [],
+                  };
+                }).filter(Boolean),
+              })),
           },
         });
       }
@@ -1187,7 +1241,6 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             tflitePath: model.tflite_path,
             labelsPath: model.labels_path,
             vehicleCode: row.model_code,
-            branch: row.countryCheck ? (ai.branch || '') : '',
             instruction: ai.instruction,
             referenceImage: ai.referenceImage || null,
           });
@@ -2087,6 +2140,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       {variantRow !== null && reviewData[variantRow] && (
         <CountryVariantsModal
           row={reviewData[variantRow]}
+          models={models}
           onChange={(patch) => { const nd = [...reviewData]; nd[variantRow] = { ...nd[variantRow], ...patch }; setReviewData(nd); }}
           onClose={() => setVariantRow(null)} />
       )}

@@ -5,8 +5,8 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 
 /// Country Variants decision-maker: the operator photographs the sticker that
 /// names the country, ML Kit reads every word in the photo, and the first rule
-/// whose keyword appears in the text decides which branch of tasks runs.
-/// Pops with the matched rule's label, or '__else__' when nothing matched (or
+/// whose keyword appears in the text decides which class-rule changes apply.
+/// Pops with the matched keyword, or '__else__' when nothing matched (or
 /// the operator picked "Other"). Pops null if cancelled.
 class CountryCheckScreen extends StatefulWidget {
   final Map<String, dynamic> decision;
@@ -96,7 +96,7 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
       String match = '__else__';
       for (final r in _rules) {
         if (_matches(hay, (r['keyword'] ?? '').toString())) {
-          match = (r['label'] ?? r['keyword']).toString();
+          match = (r['keyword'] ?? '').toString();
           break;
         }
       }
@@ -151,7 +151,7 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
                 const Text('Not right? Pick the correct country:', style: TextStyle(color: Colors.white60, fontSize: 12)),
                 const SizedBox(height: 8),
                 Wrap(spacing: 8, runSpacing: 8, alignment: WrapAlignment.center, children: [
-                  for (final v in [..._rules.map((r) => (r['label'] ?? r['keyword']).toString()), '__else__'])
+                  for (final v in [..._rules.map((r) => (r['keyword'] ?? '').toString()), '__else__'])
                     ChoiceChip(label: Text(_labelText(v)), selected: _selected == v, onSelected: (_) => setState(() => _selected = v)),
                 ]),
                 const SizedBox(height: 12),

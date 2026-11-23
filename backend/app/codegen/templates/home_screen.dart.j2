@@ -153,9 +153,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }).toList();
 
       // Country Variants: a decision-maker task (ML Kit reads the sticker) runs
-      // first and picks which branch's tasks apply. Tasks tagged '' always run;
-      // a branch label runs only for that country; '__else__' runs when no
-      // country matched. Models without a decision task are unaffected.
+      // first; the matched country's class rules replace those of the tasks it
+      // changes. No match = nothing changes. Models without one are unaffected.
       Map<String, dynamic>? decision;
       for (final t in forCode) {
         if (t is Map && t['decision'] is Map) { decision = Map<String, dynamic>.from(t['decision'] as Map); break; }
@@ -168,10 +167,26 @@ class _HomeScreenState extends State<HomeScreen> {
         if (!mounted) return;
         if (country == null) { Navigator.pop(context); return; }
         _country = country;
-        filtered = filtered.where((t) {
-          final b = (t is Map ? (t['branch'] ?? '') : '').toString();
-          return b.isEmpty || b == country;
-        }).toList();
+        // Apply the chosen country's class rules (mandatory / ignore) to the
+        // tasks it changes; every other task keeps its normal rules.
+        List overrides = [];
+        for (final r in (decision['rules'] as List? ?? const [])) {
+          if (r is Map && (r['keyword'] ?? '').toString() == country) { overrides = (r['overrides'] as List? ?? const []); break; }
+        }
+        if (overrides.isNotEmpty) {
+          filtered = filtered.map((t) {
+            if (t is! Map) return t;
+            for (final o in overrides) {
+              if (o is Map && o['taskName'] == t['name']) {
+                final nt = Map<String, dynamic>.from(t);
+                nt['mandatoryClasses'] = List.from(o['mandatoryClasses'] ?? const []);
+                nt['ignoredClasses'] = List.from(o['ignoredClasses'] ?? const []);
+                return nt;
+              }
+            }
+            return t;
+          }).toList();
+        }
       }
 
       // 2. Resume progress from local DB for this VIN, but only if the most
