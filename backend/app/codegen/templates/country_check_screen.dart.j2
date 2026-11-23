@@ -182,15 +182,24 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
           Padding(padding: const EdgeInsets.all(12), child: Text(desc, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 15))),
           Expanded(
             child: _error != null
-                ? Center(child: Text(_error!, style: const TextStyle(color: Colors.redAccent)))
+                ? Center(child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.redAccent)),
+                      const SizedBox(height: 12),
+                      OutlinedButton(onPressed: () { setState(() => _error = null); _initCamera(); }, child: const Text('RETRY CAMERA')),
+                    ]),
+                  ))
                 : (_ctrl == null || !_ctrl!.value.isInitialized)
                     ? const Center(child: CircularProgressIndicator())
                     : ClipRect(child: Center(child: CameraPreview(_ctrl!))),
           ),
           if (_selected == null)
             Padding(
-              padding: const EdgeInsets.all(16),
-              child: SizedBox(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextButton(onPressed: _busy ? null : () => setState(() => _selected = '__else__'), child: const Text('Pick country manually', style: TextStyle(color: Colors.white70))),
+                SizedBox(
                 width: double.infinity, height: 56,
                 child: ElevatedButton.icon(
                   onPressed: _busy ? null : _capture,
@@ -198,6 +207,7 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
                   label: Text(_busy ? 'Reading...' : 'CAPTURE STICKER', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 ),
               ),
+              ]),
             )
           else
             Container(

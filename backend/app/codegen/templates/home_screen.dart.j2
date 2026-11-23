@@ -167,8 +167,14 @@ class _HomeScreenState extends State<HomeScreen> {
       List<dynamic> filtered = forCode.where((t) => !(t is Map && t['decision'] != null)).toList();
       if (decision != null) {
         if (!mounted) return;
-        final String? country = await Navigator.push<String>(
-          context, MaterialPageRoute(builder: (_) => CountryCheckScreen(decision: decision!)));
+        String? country;
+        try {
+          country = await Navigator.push<String>(
+            context, MaterialPageRoute(builder: (_) => CountryCheckScreen(decision: decision!)));
+        } catch (e) {
+          debugPrint('Country check failed: $e');
+          country = '__else__'; // never leave the operator on a blank screen
+        }
         if (!mounted) return;
         if (country == null) { Navigator.pop(context); return; }
         _country = country;
