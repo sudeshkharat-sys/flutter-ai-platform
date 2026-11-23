@@ -136,6 +136,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // camera currently sees, landing on the normal not-found/fail result.
   bool _watchActive = false;
   bool _watching = false;
+  // Live inspection waits for a tap ('TAP TO START') so the operator can
+  // hold the camera on the part first; set again for every new task.
+  bool _startPending = true;
   int _holdCount = 0;
   // Capture on the FIRST tick that sees every required class, not after
   // holding steady across several ticks -- an assembly line needs the
@@ -1043,6 +1046,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   /// forever.
   void _startWatching() {
     if (_watchActive) return;
+    if (_startPending) { if (mounted) setState(() {}); return; }
     _watchActive = true;
     _holdCount = 0;
     _failCount = 0;
@@ -1101,6 +1105,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
   void _startSimScan() {
     if (_simScanActive) return;
+    if (_startPending) { if (mounted) setState(() {}); return; }
     _simScanActive = true;
     _consecutiveNullFrameTicks = 0;
     _simDeadline = DateTime.now().add(_watchTimeout);
@@ -1915,6 +1920,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _addLog("Moving to Task ${nextIdx + 1}");
     setState(() {
       _currentIndex = nextIdx;
+      _startPending = true;
       _capturedImageBytes = null;
       _bestResult = null;
       _mandatoryClassResults = {};
@@ -2214,6 +2220,27 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 ),
                               ),
                             ],
+                          ),
+                        ),
+                      ),
+                    if (_startPending && _isModelLoaded && _isCameraInitialized && _capturedImageBytes == null)
+                      Positioned.fill(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            setState(() => _startPending = false);
+                            _startWatching();
+                          },
+                          child: Container(
+                            color: Colors.black45,
+                            alignment: Alignment.center,
+                            child: Column(mainAxisSize: MainAxisSize.min, children: const [
+                              Icon(Icons.play_circle_fill, color: Colors.white, size: 72),
+                              SizedBox(height: 8),
+                              Text('TAP TO START', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                              SizedBox(height: 4),
+                              Text('Hold the camera on the part, then tap', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                            ]),
                           ),
                         ),
                       ),
@@ -2843,6 +2870,27 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           ),
                         ),
                       ),
+                    if (_startPending && _isModelLoaded && _isCameraInitialized && _capturedImageBytes == null)
+                      Positioned.fill(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            setState(() => _startPending = false);
+                            _startSimScan();
+                          },
+                          child: Container(
+                            color: Colors.black45,
+                            alignment: Alignment.center,
+                            child: Column(mainAxisSize: MainAxisSize.min, children: const [
+                              Icon(Icons.play_circle_fill, color: Colors.white, size: 72),
+                              SizedBox(height: 8),
+                              Text('TAP TO START', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                              SizedBox(height: 4),
+                              Text('Hold the camera on the part, then tap', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                            ]),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -3059,6 +3107,9 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   // the normal not-found result.
   bool _watchActive = false;
   bool _watching = false;
+  // Live inspection waits for a tap ('TAP TO START') so the operator can
+  // hold the camera on the part first; set again for every new task.
+  bool _startPending = true;
   int _holdCount = 0;
   // Capture on the FIRST tick that sees every required class, not after
   // holding steady across several ticks -- an assembly line needs the
@@ -3767,6 +3818,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
   /// auto-captures within 45s instead of watching forever.
   void _startWatching() {
     if (_watchActive) return;
+    if (_startPending) { if (mounted) setState(() {}); return; }
     _watchActive = true;
     _holdCount = 0;
     _consecutiveNullFrameTicks = 0;
@@ -3823,6 +3875,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
   void _startSimScan() {
     if (_simScanActive) return;
+    if (_startPending) { if (mounted) setState(() {}); return; }
     _simScanActive = true;
     _consecutiveNullFrameTicks = 0;
     _simDeadline = DateTime.now().add(_watchTimeout);
@@ -4562,6 +4615,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _addLog("Moving to Task ${nextIdx + 1}");
     setState(() {
       _currentIndex = nextIdx;
+      _startPending = true;
       _capturedImageBytes = null;
       _bestResult = null;
       _detectedNonTargetClasses = [];
@@ -4850,6 +4904,27 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 ),
                               ),
                             ],
+                          ),
+                        ),
+                      ),
+                    if (_startPending && _isModelLoaded && _isCameraInitialized && _capturedImageBytes == null)
+                      Positioned.fill(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            setState(() => _startPending = false);
+                            _startWatching();
+                          },
+                          child: Container(
+                            color: Colors.black45,
+                            alignment: Alignment.center,
+                            child: Column(mainAxisSize: MainAxisSize.min, children: const [
+                              Icon(Icons.play_circle_fill, color: Colors.white, size: 72),
+                              SizedBox(height: 8),
+                              Text('TAP TO START', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                              SizedBox(height: 4),
+                              Text('Hold the camera on the part, then tap', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                            ]),
                           ),
                         ),
                       ),
@@ -5351,6 +5426,27 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                 ),
                               ),
                             ],
+                          ),
+                        ),
+                      ),
+                    if (_startPending && _isModelLoaded && _isCameraInitialized && _capturedImageBytes == null)
+                      Positioned.fill(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            setState(() => _startPending = false);
+                            _startSimScan();
+                          },
+                          child: Container(
+                            color: Colors.black45,
+                            alignment: Alignment.center,
+                            child: Column(mainAxisSize: MainAxisSize.min, children: const [
+                              Icon(Icons.play_circle_fill, color: Colors.white, size: 72),
+                              SizedBox(height: 8),
+                              Text('TAP TO START', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                              SizedBox(height: 4),
+                              Text('Hold the camera on the part, then tap', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                            ]),
                           ),
                         ),
                       ),
