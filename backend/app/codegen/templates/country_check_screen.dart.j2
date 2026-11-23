@@ -16,6 +16,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import '../ml/detector.dart';
+import '../services/camera_prefs.dart';
 
 /// Country Variants decision-maker: the operator photographs the sticker that
 /// names the country, ML Kit reads every word in the photo, and the first rule
@@ -46,8 +47,11 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
     _initCamera();
   }
 
-  Future<void> _initCamera() async {
+  Future<void> _initCamera([int attempt = 0]) async {
     try {
+      // Wait for the previous screen's camera (VIN scan) to be fully released,
+      // otherwise opening a second camera fails and the screen stays blank.
+      await CameraGate.waitReleased();
       final cams = await availableCameras();
       final back = cams.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cams.first);
       final c = CameraController(back, ResolutionPreset.high, enableAudio: false);
@@ -56,13 +60,19 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
       if (!mounted) { await c.dispose(); return; }
       setState(() => _ctrl = c);
     } catch (e) {
+      if (attempt < 2 && mounted) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        return _initCamera(attempt + 1);
+      }
       if (mounted) setState(() => _error = 'Camera error: $e');
     }
   }
 
   @override
   void dispose() {
-    _ctrl?.dispose();
+    final ctrl = _ctrl;
+    // Release through the gate so the next camera screen waits for this one.
+    CameraGate.release(() async { try { await ctrl?.dispose(); } catch (_) {} });
     super.dispose();
   }
 
