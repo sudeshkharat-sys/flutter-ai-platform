@@ -526,6 +526,9 @@ function CountryVariantsModal({ row, models, onChange, onClose }) {
   };
   const pickTask = (ri, oi, aiIdx) => {
     const ai = row.selectedAIModels[aiIdx];
+    if (!Number.isInteger(aiIdx) || !ai) return;
+    // each task can be changed only once per country
+    if ((rules[ri].overrides || []).some((o, k) => k !== oi && o.aiIdx === aiIdx)) return;
     setOverride(ri, oi, { aiIdx, mandatoryClasses: [...(ai.mandatoryClasses || [])], ignoredClasses: [...(ai.ignoredClasses || [])] });
   };
   const toggle = (ri, oi, cls, kind) => {
@@ -614,7 +617,12 @@ function CountryVariantsModal({ row, models, onChange, onClose }) {
                 </div>
                 {(r.overrides || []).map((o, oi) => {
                   const ai = row.selectedAIModels[o.aiIdx];
-                  if (!ai) return null;
+                  if (!ai) return (
+                    <div key={oi} style={{ background: '#0003', borderRadius: 8, padding: 10, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 12, color: '#e74c3c' }}>Invalid task entry - remove it and add again</span>
+                      <button type="button" onClick={() => setRule(ri, { overrides: r.overrides.filter((_, k) => k !== oi) })} style={{ ...inp, cursor: 'pointer' }}>Remove</button>
+                    </div>
+                  );
                   const m = new Set(o.mandatoryClasses || []); const ig = new Set(o.ignoredClasses || []);
                   return (
                     <div key={oi} style={{ background: '#0003', borderRadius: 8, padding: 10, marginBottom: 8 }}>
@@ -1953,8 +1961,8 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                           {row.countryCheck && (row.countryCheck.rules || []).map((r, k) => (
                             <div key={k} style={{ fontSize: 10, marginTop: 4, color: C.muted, lineHeight: 1.4, maxWidth: 140 }}>
                               <b style={{ color: C.accent }}>{(r.keyword || r.matchClass || '(no text yet)')}</b>
-                              {(r.overrides || []).length > 0
-                                ? ' -> changes ' + (r.overrides || []).map(o => `task ${o.aiIdx + 1}`).join(', ')
+                              {(r.overrides || []).filter(o => Number.isInteger(o.aiIdx) && row.selectedAIModels[o.aiIdx]).length > 0
+                                ? ' -> changes ' + (r.overrides || []).filter(o => Number.isInteger(o.aiIdx) && row.selectedAIModels[o.aiIdx]).map(o => `task ${o.aiIdx + 1}`).join(', ')
                                 : ' -> no task changed'}
                             </div>
                           ))}
