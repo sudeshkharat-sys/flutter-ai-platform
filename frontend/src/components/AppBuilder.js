@@ -502,6 +502,64 @@ export default function AppBuilder() {
 
 import { Plus, Trash2, Edit3, ChevronRight, ArrowLeft, Check, ChevronDown, ArrowUp, ArrowDown, Search, Download, ImageIcon } from 'lucide-react';
 
+function CountryVariantsModal({ row, onChange, onClose }) {
+  const cc = row.countryCheck;
+  const rules = cc?.rules || [];
+  const setCC = (p) => onChange({ countryCheck: { ...cc, ...p } });
+  const setRule = (i, p) => setCC({ rules: rules.map((r, k) => k === i ? { ...r, ...p } : r) });
+  const setBranch = (aiIdx, branch) => onChange({ selectedAIModels: row.selectedAIModels.map((a, k) => k === aiIdx ? { ...a, branch } : a) });
+  const inp = { padding: '8px 10px', borderRadius: 8, border: '1px solid #8886', background: 'transparent', color: 'inherit', fontSize: 13 };
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+      <div style={{ background: '#1e1f26', color: '#eee', width: 'min(760px, 94vw)', maxHeight: '88vh', overflowY: 'auto', borderRadius: 14, padding: 22, boxShadow: '0 10px 40px #000a' }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <div style={{ fontWeight: 900, fontSize: 16 }}>Country Variants - {row.model_code}</div>
+          <button type="button" onClick={onClose} style={{ ...inp, cursor: 'pointer' }}>Done</button>
+        </div>
+        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 14 }}>
+          All VINs with this model code share the task list below. A decision-maker task runs first: the operator photographs the sticker, ML Kit reads the text, and the matching branch's tasks run.
+        </div>
+        {!cc ? (
+          <button type="button" onClick={() => onChange({ countryCheck: { description: 'Photograph the sticker where the country name is printed', reader: 'mlkit', rules: [{ keyword: 'INDONESIA', label: 'Indonesia' }] } })}
+            style={{ ...inp, cursor: 'pointer', fontWeight: 800, borderColor: 'var(--accent)' }}>+ Add decision-maker task</button>
+        ) : (
+          <div style={{ border: '1px solid #8884', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>Decision-maker task (runs first)</div>
+            <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Description shown to the operator</div>
+            <input style={{ ...inp, width: '100%', boxSizing: 'border-box', marginBottom: 10 }} value={cc.description || ''} onChange={e => setCC({ description: e.target.value })} />
+            <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Reader</div>
+            <select style={{ ...inp, marginBottom: 12 }} value="mlkit" onChange={() => {}}><option value="mlkit">ML Kit (text)</option></select>
+            <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>If the text contains... (else = nothing matched)</div>
+            {rules.map((r, i) => (
+              <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                <input style={{ ...inp, flex: 1 }} placeholder="Text to find, e.g. INDONESIA" value={r.keyword || ''} onChange={e => setRule(i, { keyword: e.target.value })} />
+                <input style={{ ...inp, flex: 1 }} placeholder="Branch name, e.g. Indonesia" value={r.label || ''} onChange={e => setRule(i, { label: e.target.value })} />
+                <button type="button" onClick={() => setCC({ rules: rules.filter((_, k) => k !== i) })} style={{ ...inp, cursor: 'pointer' }}>x</button>
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button type="button" onClick={() => setCC({ rules: [...rules, { keyword: '', label: '' }] })} style={{ ...inp, cursor: 'pointer' }}>+ Add another country</button>
+              <button type="button" onClick={() => onChange({ countryCheck: null, selectedAIModels: row.selectedAIModels.map(a => ({ ...a, branch: '' })) })} style={{ ...inp, cursor: 'pointer', color: '#e74c3c' }}>Remove decision task</button>
+            </div>
+          </div>
+        )}
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>Tasks for this model code</div>
+        {row.selectedAIModels.length === 0 && <div style={{ fontSize: 12, opacity: 0.6 }}>No tasks yet - add them in the table, then come back to assign branches.</div>}
+        {row.selectedAIModels.map((ai, i) => (
+          <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #8883' }}>
+            <div style={{ flex: 1, fontSize: 13 }}>{i + 1}. {ai.instruction || ai.class || 'Task'}</div>
+            <select disabled={!cc} style={inp} value={ai.branch || ''} onChange={e => setBranch(i, e.target.value)}>
+              <option value="">Always</option>
+              {rules.filter(r => (r.label || r.keyword)).map((r, k) => <option key={k} value={(r.label || r.keyword).trim()}>If {(r.label || r.keyword).trim()}</option>)}
+              <option value="__else__">Else (no country matched)</option>
+            </select>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const navigate = useNavigate();
   const appliedRef = useRef(new Set());
@@ -588,6 +646,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
 
   const [isReviewing, setIsReviewing] = useState(startAtReview);
   const [reviewData, setReviewData] = useState([]); 
+  const [variantRow, setVariantRow] = useState(null); // index of the review row whose Country Variants popup is open
 
   useEffect(() => {
     let mounted = true;
@@ -645,10 +704,13 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         // the rest of the modal's life -- Edit All opens straight into
         // isReviewing=true, so that showed as a permanently blank table
         // instead of the codes list it should show (each with no tasks yet).
+        const decisionByCode = {};
         const tasksByCode = (existingApp.inspection_tasks || []).reduce((acc, t) => {
           const code = t.vehicleCode || 'Default';
+          if (t.decision) { decisionByCode[code] = { ...t.decision }; return acc; }
           if (!acc[code]) acc[code] = [];
           acc[code].push({
+            branch: t.branch || '',
             modelId: t.modelId,
             class: t.classes?.[0] || '',
             mandatoryClasses: t.mandatoryClasses || [],
@@ -706,6 +768,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         // Default tasks saved earlier were already applied to every code.
         // Saved default tasks were already applied to every code; remember by uid.
         (existingApp.app_settings?.default_configs || []).forEach((c, i) => restoredReviewData.forEach(r => appliedRef.current.add(`${r.model_code}|${restored_uids[i]}`)));
+        restoredReviewData.forEach(r => { r.countryCheck = decisionByCode[r.model_code || 'Default'] || null; });
         setReviewData(restoredReviewData);
         if (startAtReview) setIsReviewing(true);
       }
@@ -1089,6 +1152,24 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
   const handleSaveProfile = async () => {
     let finalTasks = [];
     reviewData.forEach(row => {
+      // Country Variants: a decision-maker task runs first and picks the branch.
+      if (row.countryCheck && (row.countryCheck.rules || []).some(r => (r.keyword || '').trim())) {
+        finalTasks.push({
+          modelId: null,
+          taskName: row.countryCheck.description || 'Country check',
+          modelName: 'ML Kit text',
+          classes: [],
+          vehicleCode: row.model_code,
+          instruction: row.countryCheck.description || '',
+          decision: {
+            description: row.countryCheck.description || '',
+            reader: 'mlkit',
+            rules: (row.countryCheck.rules || [])
+              .filter(r => (r.keyword || '').trim())
+              .map(r => ({ keyword: r.keyword.trim(), label: (r.label || r.keyword).trim() })),
+          },
+        });
+      }
       row.selectedAIModels.forEach(ai => {
         const model = models.find(m => m.id === ai.modelId);
         if (model) {
@@ -1106,6 +1187,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
             tflitePath: model.tflite_path,
             labelsPath: model.labels_path,
             vehicleCode: row.model_code,
+            branch: row.countryCheck ? (ai.branch || '') : '',
             instruction: ai.instruction,
             referenceImage: ai.referenceImage || null,
           });
@@ -1135,7 +1217,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
         ...(existingApp?.model_asset_ids || []),
         ...finalTasks.map(t => t.modelId),
         ...classifierIds,
-      ]));
+      ].filter(Boolean)));
       let profileSlug = (profileName || 'app').toLowerCase().replace(/[^a-z0-9]/g, '_');
       if (!profileSlug) profileSlug = 'app';
       // Java package segments can't start with a digit (e.g. "4x4_reverse").
@@ -1756,6 +1838,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                       <td style={tdStyle}><div style={{ fontWeight: 700, fontSize: 13 }}>{row.platform_name}</div></td>
                       <td style={tdStyle}>
                         <span style={{ fontSize: 11, padding: '3px 6px', background: C.surface2, borderRadius: 4, fontWeight: 700, color: C.accent }}>{row.model_code}</span>
+                        <div style={{ marginTop: 6 }}>
+                          <button type="button" onClick={() => setVariantRow(rowIndex)}
+                            style={{ fontSize: 10, fontWeight: 800, padding: '4px 8px', borderRadius: 6, border: `1px solid ${C.accent}`, background: row.countryCheck ? C.accent : 'transparent', color: row.countryCheck ? '#fff' : C.accent, cursor: 'pointer' }}>
+                            Country Variants{row.countryCheck ? ` (${(row.countryCheck.rules || []).length})` : ''}
+                          </button>
+                        </div>
                         {row.description && (
                           <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.4, wordBreak: 'break-word', maxWidth: 120 }}>{row.description}</div>
                         )}
@@ -1996,6 +2084,12 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           </>
         )}
       </div>
+      {variantRow !== null && reviewData[variantRow] && (
+        <CountryVariantsModal
+          row={reviewData[variantRow]}
+          onChange={(patch) => { const nd = [...reviewData]; nd[variantRow] = { ...nd[variantRow], ...patch }; setReviewData(nd); }}
+          onClose={() => setVariantRow(null)} />
+      )}
     </div>
   );
 }

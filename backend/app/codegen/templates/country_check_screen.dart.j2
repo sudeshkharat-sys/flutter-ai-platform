@@ -1,0 +1,169 @@
+import 'dart:io';
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+
+/// Country Variants decision-maker: the operator photographs the sticker that
+/// names the country, ML Kit reads every word in the photo, and the first rule
+/// whose keyword appears in the text decides which branch of tasks runs.
+/// Pops with the matched rule's label, or '__else__' when nothing matched (or
+/// the operator picked "Other"). Pops null if cancelled.
+class CountryCheckScreen extends StatefulWidget {
+  final Map<String, dynamic> decision;
+  const CountryCheckScreen({super.key, required this.decision});
+
+  @override
+  State<CountryCheckScreen> createState() => _CountryCheckScreenState();
+}
+
+class _CountryCheckScreenState extends State<CountryCheckScreen> {
+  CameraController? _ctrl;
+  bool _busy = false;
+  String? _readText;
+  String? _selected; // label or '__else__'
+  String? _error;
+
+  List<Map<String, dynamic>> get _rules =>
+      ((widget.decision['rules'] as List?) ?? const []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+
+  @override
+  void initState() {
+    super.initState();
+    _initCamera();
+  }
+
+  Future<void> _initCamera() async {
+    try {
+      final cams = await availableCameras();
+      final back = cams.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cams.first);
+      final c = CameraController(back, ResolutionPreset.high, enableAudio: false);
+      await c.initialize();
+      try { await c.setFocusMode(FocusMode.auto); } catch (_) {}
+      if (!mounted) { await c.dispose(); return; }
+      setState(() => _ctrl = c);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Camera error: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl?.dispose();
+    super.dispose();
+  }
+
+  static String _norm(String s) => s.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+  /// Contains-match that tolerates one OCR slip (e.g. INDONES1A) for keywords of 6+ chars.
+  static bool _matches(String haystack, String keyword) {
+    final k = _norm(keyword);
+    if (k.isEmpty) return false;
+    if (haystack.contains(k)) return true;
+    if (k.length < 6) return false;
+    for (int i = 0; i + k.length - 1 <= haystack.length; i++) {
+      for (final len in [k.length - 1, k.length, k.length + 1]) {
+        if (i + len > haystack.length) continue;
+        if (_editDistance(haystack.substring(i, i + len), k) <= 1) return true;
+      }
+    }
+    return false;
+  }
+
+  static int _editDistance(String a, String b) {
+    var prev = List<int>.generate(b.length + 1, (i) => i);
+    for (int i = 1; i <= a.length; i++) {
+      final cur = List<int>.filled(b.length + 1, 0)..[0] = i;
+      for (int j = 1; j <= b.length; j++) {
+        final cost = a[i - 1] == b[j - 1] ? 0 : 1;
+        cur[j] = [prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost].reduce((x, y) => x < y ? x : y);
+      }
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+
+  Future<void> _capture() async {
+    final c = _ctrl;
+    if (c == null || _busy) return;
+    setState(() => _busy = true);
+    final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+    try {
+      final XFile f = await c.takePicture();
+      final res = await recognizer.processImage(InputImage.fromFilePath(f.path));
+      try { await File(f.path).delete(); } catch (_) {}
+      final text = res.text;
+      final hay = _norm(text);
+      String match = '__else__';
+      for (final r in _rules) {
+        if (_matches(hay, (r['keyword'] ?? '').toString())) {
+          match = (r['label'] ?? r['keyword']).toString();
+          break;
+        }
+      }
+      if (mounted) setState(() { _readText = text; _selected = match; });
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Could not read the sticker: $e');
+    } finally {
+      await recognizer.close();
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String _labelText(String v) => v == '__else__' ? 'Other / standard' : v;
+
+  @override
+  Widget build(BuildContext context) {
+    final desc = (widget.decision['description'] ?? 'Photograph the sticker with the country name').toString();
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(title: const Text('Country check'), backgroundColor: Colors.black, foregroundColor: Colors.white,
+          leading: IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context, null))),
+      body: SafeArea(
+        child: Column(children: [
+          Padding(padding: const EdgeInsets.all(12), child: Text(desc, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 15))),
+          Expanded(
+            child: _error != null
+                ? Center(child: Text(_error!, style: const TextStyle(color: Colors.redAccent)))
+                : (_ctrl == null || !_ctrl!.value.isInitialized)
+                    ? const Center(child: CircularProgressIndicator())
+                    : ClipRect(child: Center(child: CameraPreview(_ctrl!))),
+          ),
+          if (_selected == null)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: SizedBox(
+                width: double.infinity, height: 56,
+                child: ElevatedButton.icon(
+                  onPressed: _busy ? null : _capture,
+                  icon: _busy ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.camera_alt),
+                  label: Text(_busy ? 'Reading...' : 'CAPTURE STICKER', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                ),
+              ),
+            )
+          else
+            Container(
+              width: double.infinity,
+              color: const Color(0xFF1E1F26),
+              padding: const EdgeInsets.all(14),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Text('Detected: ${_labelText(_selected!)}', style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                const Text('Not right? Pick the correct country:', style: TextStyle(color: Colors.white60, fontSize: 12)),
+                const SizedBox(height: 8),
+                Wrap(spacing: 8, runSpacing: 8, alignment: WrapAlignment.center, children: [
+                  for (final v in [..._rules.map((r) => (r['label'] ?? r['keyword']).toString()), '__else__'])
+                    ChoiceChip(label: Text(_labelText(v)), selected: _selected == v, onSelected: (_) => setState(() => _selected = v)),
+                ]),
+                const SizedBox(height: 12),
+                Row(children: [
+                  Expanded(child: OutlinedButton(onPressed: () => setState(() { _selected = null; _readText = null; }), child: const Text('RETAKE'))),
+                  const SizedBox(width: 10),
+                  Expanded(child: ElevatedButton(onPressed: () => Navigator.pop(context, _selected), child: const Text('CONFIRM'))),
+                ]),
+              ]),
+            ),
+        ]),
+      ),
+    );
+  }
+}

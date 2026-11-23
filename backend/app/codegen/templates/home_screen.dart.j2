@@ -8,6 +8,7 @@ import 'package:drift/drift.dart' as drift;
 import 'inspection_camera_screen.dart';
 import 'live_inspection_camera_screen.dart';
 import 'history_screen.dart';
+import 'country_check_screen.dart';
 import 'printer_discovery_screen.dart';
 import 'sync_screen.dart';
 import '../services/print_service.dart';
@@ -28,6 +29,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   List<dynamic> _tasks = [];
+  String? _country; // Country Variants branch chosen for this scan
   Set<String> _liveTasks = {}; // tasks set to live video in Settings
   Map<int, dynamic> _taskResults = {}; // Index -> DetectionResult
   bool _loading = true;
@@ -145,10 +147,32 @@ class _HomeScreenState extends State<HomeScreen> {
       final String manifestStr = await rootBundle.loadString('assets/models_manifest.json');
       final List<dynamic> manifest = json.decode(manifestStr);
       
-      final List<dynamic> filtered = manifest.where((task) {
+      final List<dynamic> forCode = manifest.where((task) {
         if (widget.modelCode == null || widget.modelCode!.isEmpty) return true;
         return task['vehicle_code'] == widget.modelCode;
       }).toList();
+
+      // Country Variants: a decision-maker task (ML Kit reads the sticker) runs
+      // first and picks which branch's tasks apply. Tasks tagged '' always run;
+      // a branch label runs only for that country; '__else__' runs when no
+      // country matched. Models without a decision task are unaffected.
+      Map<String, dynamic>? decision;
+      for (final t in forCode) {
+        if (t is Map && t['decision'] is Map) { decision = Map<String, dynamic>.from(t['decision'] as Map); break; }
+      }
+      List<dynamic> filtered = forCode.where((t) => !(t is Map && t['decision'] != null)).toList();
+      if (decision != null) {
+        if (!mounted) return;
+        final String? country = await Navigator.push<String>(
+          context, MaterialPageRoute(builder: (_) => CountryCheckScreen(decision: decision!)));
+        if (!mounted) return;
+        if (country == null) { Navigator.pop(context); return; }
+        _country = country;
+        filtered = filtered.where((t) {
+          final b = (t is Map ? (t['branch'] ?? '') : '').toString();
+          return b.isEmpty || b == country;
+        }).toList();
+      }
 
       // 2. Resume progress from local DB for this VIN, but only if the most
       // recent inspection for it was left genuinely incomplete (app closed

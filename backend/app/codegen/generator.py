@@ -105,6 +105,16 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
 
     if inspection_tasks:
         for task in inspection_tasks:
+            # Country Variants decision-maker task: no model, ML Kit reads the
+            # sticker text and picks which branch's tasks run.
+            if task.get("decision"):
+                models_manifest.append({
+                    "name": task.get("taskName") or "Country check",
+                    "decision": task.get("decision"),
+                    "vehicle_code": task.get("vehicleCode"),
+                    "classes": [],
+                })
+                continue
             mid = task.get("modelId")
             paths = model_id_to_paths.get(mid, {})
             task_classes = task.get("classes", [])
@@ -175,6 +185,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 "tflite_path": paths.get("tflite", "assets/models/model_0.tflite"),
                 "labels_path": paths.get("labels", "assets/models/labels_0.txt"),
                 "vehicle_code": task.get("vehicleCode"),
+                "branch": task.get("branch") or "",
                 "reference_image": f"assets/reference_images/{ref_img}" if ref_img else None,
             })
     else:
@@ -555,6 +566,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "lib/screens/inspection_camera_screen.dart": "inspection_camera_screen.dart.j2",
         "lib/screens/live_inspection_camera_screen.dart": "live_inspection_camera_screen.dart.j2",
         "lib/screens/history_screen.dart": "history_screen.dart.j2",
+        "lib/screens/country_check_screen.dart": "country_check_screen.dart.j2",
         "lib/screens/printer_discovery_screen.dart": "printer_discovery_screen.dart.j2",
         "lib/screens/sync_screen.dart": "sync_screen.dart.j2",
         "lib/screens/settings_screen.dart": "settings_screen.dart.j2",
