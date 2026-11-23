@@ -14,8 +14,8 @@ class CountryCheckScreen extends StatelessWidget {
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import '../ml/detector.dart' as det;
+import '../ml/sticker_text_reader.dart';
+import '../ml/detector.dart';
 import '../services/camera_prefs.dart';
 
 /// Country Variants decision-maker: the operator photographs the sticker that
@@ -110,15 +110,13 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
     final c = _ctrl;
     if (c == null || _busy) return;
     setState(() => _busy = true);
-    final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
     try {
       final XFile f = await c.takePicture();
       final String reader = (widget.decision['reader'] ?? 'mlkit').toString();
       String text = '';
       String match = '__else__';
       if (reader == 'mlkit') {
-        final res = await recognizer.processImage(InputImage.fromFilePath(f.path));
-        text = res.text;
+        text = await readStickerText(f.path);
         final hay = _norm(text);
         for (final r in _rules) {
           if (_matches(hay, (r['keyword'] ?? '').toString())) { match = (r['keyword'] ?? '').toString(); break; }
@@ -126,7 +124,7 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
       } else {
         // YOLO / OCR: run the detector on the photo.
         final bytes = await File(f.path).readAsBytes();
-        final mm = det.ModelManager();
+        final mm = ModelManager();
         await mm.loadModel(widget.decision['tflite_path'].toString(), widget.decision['labels_path'].toString());
 {% if ocr_uses_crnn %}
         await mm.loadOcrModel(
@@ -163,7 +161,6 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not read the sticker: $e');
     } finally {
-      await recognizer.close();
       if (mounted) setState(() => _busy = false);
     }
   }

@@ -1,0 +1,19 @@
+{% if has_country_check %}
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+
+/// Reads every word in a photo with ML Kit (Latin script). Kept in its own
+/// file so screens never import the ML Kit package directly -- its package
+/// exports a `ModelManager` that clashes with the app's own detector class.
+Future<String> readStickerText(String imagePath) async {
+  final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+  try {
+    final res = await recognizer.processImage(InputImage.fromFilePath(imagePath));
+    return res.text;
+  } finally {
+    await recognizer.close();
+  }
+}
+{% else %}
+/// This app has no Country Variants decision task, so ML Kit is not included.
+Future<String> readStickerText(String imagePath) async => '';
+{% endif %}

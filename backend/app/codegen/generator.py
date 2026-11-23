@@ -589,6 +589,7 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
         "lib/screens/live_inspection_camera_screen.dart": "live_inspection_camera_screen.dart.j2",
         "lib/screens/history_screen.dart": "history_screen.dart.j2",
         "lib/screens/country_check_screen.dart": "country_check_screen.dart.j2",
+        "lib/ml/sticker_text_reader.dart": "sticker_text_reader.dart.j2",
         "lib/screens/printer_discovery_screen.dart": "printer_discovery_screen.dart.j2",
         "lib/screens/sync_screen.dart": "sync_screen.dart.j2",
         "lib/screens/settings_screen.dart": "settings_screen.dart.j2",
