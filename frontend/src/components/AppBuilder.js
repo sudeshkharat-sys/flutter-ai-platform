@@ -1950,6 +1950,14 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                             style={{ fontSize: 10, fontWeight: 800, padding: '4px 8px', borderRadius: 6, border: `1px solid ${C.accent}`, background: row.countryCheck ? C.accent : 'transparent', color: row.countryCheck ? '#fff' : C.accent, cursor: 'pointer' }}>
                             Country Variants{row.countryCheck ? ` (${(row.countryCheck.rules || []).length})` : ''}
                           </button>
+                          {row.countryCheck && (row.countryCheck.rules || []).map((r, k) => (
+                            <div key={k} style={{ fontSize: 10, marginTop: 4, color: C.muted, lineHeight: 1.4, maxWidth: 140 }}>
+                              <b style={{ color: C.accent }}>{(r.keyword || r.matchClass || '(no text yet)')}</b>
+                              {(r.overrides || []).length > 0
+                                ? ' -> changes ' + (r.overrides || []).map(o => `task ${o.aiIdx + 1}`).join(', ')
+                                : ' -> no task changed'}
+                            </div>
+                          ))}
                         </div>
                         {row.description && (
                           <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.4, wordBreak: 'break-word', maxWidth: 120 }}>{row.description}</div>
