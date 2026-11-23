@@ -15,7 +15,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import '../ml/detector.dart';
+import '../ml/detector.dart' as det;
 import '../services/camera_prefs.dart';
 
 /// Country Variants decision-maker: the operator photographs the sticker that
@@ -126,7 +126,7 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
       } else {
         // YOLO / OCR: run the detector on the photo.
         final bytes = await File(f.path).readAsBytes();
-        final mm = ModelManager();
+        final mm = det.ModelManager();
         await mm.loadModel(widget.decision['tflite_path'].toString(), widget.decision['labels_path'].toString());
 {% if ocr_uses_crnn %}
         await mm.loadOcrModel(
