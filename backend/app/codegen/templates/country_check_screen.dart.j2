@@ -1,3 +1,16 @@
+{% if not has_country_check %}
+import 'package:flutter/material.dart';
+
+/// This app has no Country Variants decision task; this stub only keeps
+/// home_screen compiling. It is never shown.
+class CountryCheckScreen extends StatelessWidget {
+  final Map<String, dynamic> decision;
+  const CountryCheckScreen({super.key, required this.decision});
+
+  @override
+  Widget build(BuildContext context) => const Scaffold(body: SizedBox.shrink());
+}
+{% else %}
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -203,3 +216,4 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
     );
   }
 }
+{% endif %}

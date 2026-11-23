@@ -29,7 +29,7 @@ dependencies:
   # wifi_service.dart) so inspection data reaches the paired PC without the
   # inspector having to remember to join the network by hand.
   wifi_iot: ^0.3.19
-{% if ocr_enabled or ocr_use_mlkit_fallback %}
+{% if ocr_enabled or ocr_use_mlkit_fallback or has_country_check %}
   google_mlkit_text_recognition: ^0.13.0
 {% endif %}
 

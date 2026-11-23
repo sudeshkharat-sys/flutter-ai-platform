@@ -3,7 +3,7 @@
 -dontwarn org.tensorflow.lite.support.**
 -keep class io.flutter.plugins.** { *; }
 -keep class com.baseflow.permissionhandler.** { *; }
-{% if ocr_enabled or ocr_use_mlkit_fallback %}
+{% if ocr_enabled or ocr_use_mlkit_fallback or has_country_check %}
 # google_mlkit_text_recognition's TextRecognizer references optional
 # language-specific recognizer classes (Chinese/Japanese/Korean/Devanagari)
 # that only exist if those separate ML Kit dependencies are also pulled in.

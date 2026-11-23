@@ -391,6 +391,9 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
     # mandatory class has OCR reading turned on. Target text is now OPTIONAL
     # (empty = just read and record the text, no pass/fail) -- it used to be
     # required here, which is why this no longer also checks ocrTargetText.
+    # Country Variants (decision-maker task) needs ML Kit text recognition + the
+    # country check screen; apps without one get a harmless stub screen instead.
+    ctx["has_country_check"] = any(bool(e.get("decision")) for e in models_manifest)
     ctx["ocr_enabled"] = (
         ctx["detection_method"] == "multiclass"
         and any(
