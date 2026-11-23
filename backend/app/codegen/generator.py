@@ -108,12 +108,32 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
             # Country Variants decision-maker task: no model, ML Kit reads the
             # sticker text and picks which branch's tasks run.
             if task.get("decision"):
-                models_manifest.append({
+                _dec = task.get("decision") or {}
+                _entry = {
                     "name": task.get("taskName") or "Country check",
-                    "decision": task.get("decision"),
+                    "decision": _dec,
                     "vehicle_code": task.get("vehicleCode"),
                     "classes": [],
-                })
+                }
+                # YOLO / OCR readers run a detector on the sticker photo.
+                if _dec.get("reader") in ("yolo", "ocr"):
+                    _p = model_id_to_paths.get(_dec.get("modelId"), {})
+                    _entry["tflite_path"] = _p.get("tflite")
+                    _entry["labels_path"] = _p.get("labels")
+                    _rc = _dec.get("regionClass")
+                    if _dec.get("reader") == "ocr" and _rc:
+                        # Same per-class OCR config a normal task uses, so the
+                        # app is generated with OCR (ML Kit / trained recognizer)
+                        # switched on for this region class. Empty target text =
+                        # read only; the decision compares the text itself.
+                        _entry["classes"] = [_rc]
+                        _entry["mandatoryClasses"] = [_rc]
+                        _entry["classOcrConfig"] = {_rc: {
+                            "ocrEnabled": True,
+                            "ocrTargetText": "",
+                            "ocrEngine": _dec.get("ocrEngine") or "mlkit",
+                        }}
+                models_manifest.append(_entry)
                 continue
             mid = task.get("modelId")
             paths = model_id_to_paths.get(mid, {})

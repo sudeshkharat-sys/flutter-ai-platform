@@ -505,6 +505,8 @@ import { Plus, Trash2, Edit3, ChevronRight, ArrowLeft, Check, ChevronDown, Arrow
 function CountryVariantsModal({ row, models, onChange, onClose }) {
   const cc = row.countryCheck;
   const rules = cc?.rules || [];
+  const reader = cc?.reader || 'mlkit';
+  const modelClasses = models.find(m => m.id === cc?.modelId)?.classes || [];
   const setCC = (p) => onChange({ countryCheck: { ...cc, ...p } });
   const setRule = (i, p) => setCC({ rules: rules.map((r, k) => k === i ? { ...r, ...p } : r) });
   const inp = { padding: '8px 10px', borderRadius: 8, border: '1px solid #8886', background: 'transparent', color: 'inherit', fontSize: 13 };
@@ -554,13 +556,60 @@ function CountryVariantsModal({ row, models, onChange, onClose }) {
               <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Description shown to the operator</div>
               <input style={{ ...inp, width: '100%', boxSizing: 'border-box', marginBottom: 10 }} value={cc.description || ''} onChange={e => setCC({ description: e.target.value })} />
               <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Reader</div>
-              <select style={inp} value="mlkit" onChange={() => {}}><option value="mlkit">ML Kit (text on the sticker)</option></select>
+              <select style={inp} value={reader} onChange={e => setCC({ reader: e.target.value, modelId: '', regionClass: '', rules: rules.map(r => ({ ...r, matchClass: '' })) })}>
+                <option value="mlkit">ML Kit - text on the sticker</option>
+                <option value="yolo">YOLO model - class detected</option>
+                <option value="ocr">OCR - detect a region, then read its text</option>
+              </select>
+              {reader !== 'mlkit' && (
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Detector model</div>
+                    <select style={inp} value={cc.modelId || ''} onChange={e => setCC({ modelId: e.target.value, regionClass: '', rules: rules.map(r => ({ ...r, matchClass: '' })) })}>
+                      <option value="">Select model...</option>
+                      {models.filter(m => m.model_kind !== 'classifier' && m.model_kind !== 'ocr_cnn' && m.model_kind !== 'ocr_crnn').map(m => <option key={m.id} value={m.id}>{m.vision_project_name}</option>)}
+                    </select>
+                  </div>
+                  {reader === 'ocr' && (
+                    <>
+                      <div>
+                        <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Region class to read</div>
+                        <select style={inp} value={cc.regionClass || ''} onChange={e => setCC({ regionClass: e.target.value })} disabled={!cc.modelId}>
+                          <option value="">Select class...</option>
+                          {modelClasses.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Text reader</div>
+                        <select style={inp} value={cc.ocrEngine || 'mlkit'} onChange={e => setCC({ ocrEngine: e.target.value })}>
+                          <option value="mlkit">ML Kit</option>
+                          <option value="crnn">Trained OCR model (attached to the app)</option>
+                        </select>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
             {rules.map((r, ri) => (
               <div key={ri} style={{ border: '1px solid #8884', borderRadius: 10, padding: 14, marginBottom: 12 }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
-                  <span style={{ fontWeight: 800, fontSize: 13 }}>If text contains</span>
-                  <input style={{ ...inp, flex: 1 }} placeholder="e.g. INDONESIA" value={r.keyword || ''} onChange={e => setRule(ri, { keyword: e.target.value })} />
+                  {reader === 'yolo' ? (
+                    <>
+                      <span style={{ fontWeight: 800, fontSize: 13 }}>If class detected</span>
+                      <select style={inp} value={r.matchClass || ''} onChange={e => setRule(ri, { matchClass: e.target.value, keyword: r.keyword || e.target.value })} disabled={!cc.modelId}>
+                        <option value="">Select class...</option>
+                        {modelClasses.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <span style={{ fontSize: 12, opacity: 0.8 }}>country name</span>
+                      <input style={{ ...inp, flex: 1 }} placeholder="e.g. Indonesia" value={r.keyword || ''} onChange={e => setRule(ri, { keyword: e.target.value })} />
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ fontWeight: 800, fontSize: 13 }}>{reader === 'ocr' ? 'If read text contains' : 'If text contains'}</span>
+                      <input style={{ ...inp, flex: 1 }} placeholder="e.g. INDONESIA" value={r.keyword || ''} onChange={e => setRule(ri, { keyword: e.target.value })} />
+                    </>
+                  )}
                   <button type="button" onClick={() => setCC({ rules: rules.filter((_, k) => k !== ri) })} style={{ ...inp, cursor: 'pointer', color: '#e74c3c' }}>Remove country</button>
                 </div>
                 {(r.overrides || []).map((o, oi) => {
@@ -1194,7 +1243,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
     let finalTasks = [];
     reviewData.forEach(row => {
       // Country Variants: a decision-maker task runs first and picks the branch.
-      if (row.countryCheck && (row.countryCheck.rules || []).some(r => (r.keyword || '').trim())) {
+      if (row.countryCheck && (row.countryCheck.rules || []).some(r => (r.keyword || r.matchClass || '').trim())) {
         finalTasks.push({
           modelId: null,
           taskName: row.countryCheck.description || 'Country check',
@@ -1204,11 +1253,15 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
           instruction: row.countryCheck.description || '',
           decision: {
             description: row.countryCheck.description || '',
-            reader: 'mlkit',
+            reader: row.countryCheck.reader || 'mlkit',
+            modelId: row.countryCheck.reader && row.countryCheck.reader !== 'mlkit' ? (row.countryCheck.modelId || null) : null,
+            regionClass: row.countryCheck.reader === 'ocr' ? (row.countryCheck.regionClass || '') : '',
+            ocrEngine: row.countryCheck.reader === 'ocr' ? (row.countryCheck.ocrEngine || 'mlkit') : '',
             rules: (row.countryCheck.rules || [])
-              .filter(r => (r.keyword || '').trim())
+              .filter(r => (r.keyword || r.matchClass || '').trim())
               .map(r => ({
-                keyword: r.keyword.trim(),
+                keyword: (r.keyword || r.matchClass).trim(),
+                matchClass: row.countryCheck.reader === 'yolo' ? (r.matchClass || '') : '',
                 overrides: (r.overrides || []).map(o => {
                   const ai = row.selectedAIModels[o.aiIdx];
                   const mdl = ai && models.find(m => m.id === ai.modelId);
@@ -1269,6 +1322,7 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
       const modelAssetIds = Array.from(new Set([
         ...(existingApp?.model_asset_ids || []),
         ...finalTasks.map(t => t.modelId),
+        ...finalTasks.map(t => t.decision?.modelId),
         ...classifierIds,
       ].filter(Boolean)));
       let profileSlug = (profileName || 'app').toLowerCase().replace(/[^a-z0-9]/g, '_');

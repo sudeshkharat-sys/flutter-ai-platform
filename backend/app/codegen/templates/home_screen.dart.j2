@@ -157,7 +157,12 @@ class _HomeScreenState extends State<HomeScreen> {
       // changes. No match = nothing changes. Models without one are unaffected.
       Map<String, dynamic>? decision;
       for (final t in forCode) {
-        if (t is Map && t['decision'] is Map) { decision = Map<String, dynamic>.from(t['decision'] as Map); break; }
+        if (t is Map && t['decision'] is Map) {
+          decision = Map<String, dynamic>.from(t['decision'] as Map);
+          decision['tflite_path'] = t['tflite_path'];
+          decision['labels_path'] = t['labels_path'];
+          break;
+        }
       }
       List<dynamic> filtered = forCode.where((t) => !(t is Map && t['decision'] != null)).toList();
       if (decision != null) {

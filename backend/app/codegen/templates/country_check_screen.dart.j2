@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import '../ml/detector.dart';
 
 /// Country Variants decision-maker: the operator photographs the sticker that
 /// names the country, ML Kit reads every word in the photo, and the first rule
@@ -89,17 +90,52 @@ class _CountryCheckScreenState extends State<CountryCheckScreen> {
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
     try {
       final XFile f = await c.takePicture();
-      final res = await recognizer.processImage(InputImage.fromFilePath(f.path));
-      try { await File(f.path).delete(); } catch (_) {}
-      final text = res.text;
-      final hay = _norm(text);
+      final String reader = (widget.decision['reader'] ?? 'mlkit').toString();
+      String text = '';
       String match = '__else__';
-      for (final r in _rules) {
-        if (_matches(hay, (r['keyword'] ?? '').toString())) {
-          match = (r['keyword'] ?? '').toString();
-          break;
+      if (reader == 'mlkit') {
+        final res = await recognizer.processImage(InputImage.fromFilePath(f.path));
+        text = res.text;
+        final hay = _norm(text);
+        for (final r in _rules) {
+          if (_matches(hay, (r['keyword'] ?? '').toString())) { match = (r['keyword'] ?? '').toString(); break; }
+        }
+      } else {
+        // YOLO / OCR: run the detector on the photo.
+        final bytes = await File(f.path).readAsBytes();
+        final mm = ModelManager();
+        await mm.loadModel(widget.decision['tflite_path'].toString(), widget.decision['labels_path'].toString());
+{% if ocr_uses_crnn %}
+        await mm.loadOcrModel(
+          '{{ ocr_class_recognizer_tflite | default("", true) }}',
+          '{{ ocr_class_recognizer_charset | default("", true) }}',
+          metaPath: {% if ocr_class_recognizer_meta %}'{{ ocr_class_recognizer_meta }}'{% else %}null{% endif %},
+        );
+{% endif %}
+        final dets = await mm.predictBytes(bytes);
+        if (reader == 'yolo') {
+          text = dets.map((d) => '${d.className} ${(d.confidence * 100).round()}%').join(', ');
+          for (final r in _rules) {
+            final mc = (r['matchClass'] ?? '').toString().toLowerCase().trim();
+            if (mc.isNotEmpty && dets.any((d) => d.className.toLowerCase().trim() == mc)) { match = (r['keyword'] ?? '').toString(); break; }
+          }
+        } else {
+          final region = (widget.decision['regionClass'] ?? '').toString().toLowerCase().trim();
+          final reads = <String>[];
+          for (final d in dets) {
+            if (d.className.toLowerCase().trim() != region) continue;
+            for (final t in [d.ocrText, d.ocrCrnnText, d.ocrMlKitText]) {
+              if (t != null && t.trim().isNotEmpty) reads.add(t);
+            }
+          }
+          text = reads.join(' | ');
+          final hay = _norm(text);
+          for (final r in _rules) {
+            if (_matches(hay, (r['keyword'] ?? '').toString())) { match = (r['keyword'] ?? '').toString(); break; }
+          }
         }
       }
+      try { await File(f.path).delete(); } catch (_) {}
       if (mounted) setState(() { _readText = text; _selected = match; });
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not read the sticker: $e');
