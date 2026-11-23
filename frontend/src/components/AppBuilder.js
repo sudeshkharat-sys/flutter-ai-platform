@@ -1958,14 +1958,39 @@ function ProfileModal({ onClose, existingApp, startAtReview = false }) {
                             style={{ fontSize: 10, fontWeight: 800, padding: '4px 8px', borderRadius: 6, border: `1px solid ${C.accent}`, background: row.countryCheck ? C.accent : 'transparent', color: row.countryCheck ? '#fff' : C.accent, cursor: 'pointer' }}>
                             Country Variants{row.countryCheck ? ` (${(row.countryCheck.rules || []).length})` : ''}
                           </button>
-                          {row.countryCheck && (row.countryCheck.rules || []).map((r, k) => (
-                            <div key={k} style={{ fontSize: 10, marginTop: 4, color: C.muted, lineHeight: 1.4, maxWidth: 140 }}>
-                              <b style={{ color: C.accent }}>{(r.keyword || r.matchClass || '(no text yet)')}</b>
-                              {(r.overrides || []).filter(o => Number.isInteger(o.aiIdx) && row.selectedAIModels[o.aiIdx]).length > 0
-                                ? ' -> changes ' + (r.overrides || []).filter(o => Number.isInteger(o.aiIdx) && row.selectedAIModels[o.aiIdx]).map(o => `task ${o.aiIdx + 1}`).join(', ')
-                                : ' -> no task changed'}
-                            </div>
-                          ))}
+                          {row.countryCheck && (row.countryCheck.rules || []).map((r, k) => {
+                            const upd = (patch) => { const nd = [...reviewData]; nd[rowIndex] = { ...nd[rowIndex], ...patch }; setReviewData(nd); };
+                            const rulesNow = row.countryCheck.rules || [];
+                            const ovs = (r.overrides || []).filter(o => Number.isInteger(o.aiIdx) && row.selectedAIModels[o.aiIdx]);
+                            const small = { fontSize: 10, padding: '2px 6px', borderRadius: 5, border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, cursor: 'pointer', marginLeft: 4 };
+                            return (
+                              <div key={k} style={{ marginTop: 8, padding: 6, borderRadius: 6, background: C.surface2, fontSize: 10, lineHeight: 1.5, maxWidth: 220 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+                                  <b style={{ color: C.accent, fontSize: 11 }}>If {(r.keyword || r.matchClass || '(no text yet)')}</b>
+                                  <button type="button" style={small} onClick={() => setVariantRow(rowIndex)}>Edit</button>
+                                  <button type="button" style={{ ...small, color: '#e74c3c' }} onClick={() => { if (window.confirm(`Delete the "${r.keyword || 'this'}" country and its changes?`)) upd({ countryCheck: { ...row.countryCheck, rules: rulesNow.filter((_, i) => i !== k) } }); }}>Delete</button>
+                                </div>
+                                {ovs.length === 0 && <div>no task changed</div>}
+                                {ovs.map((o, oi) => {
+                                  const ai = row.selectedAIModels[o.aiIdx];
+                                  const all = models.find(m => m.id === ai.modelId)?.classes || [];
+                                  const mand = (o.mandatoryClasses || []);
+                                  const ign = (o.ignoredClasses || []);
+                                  const fail = all.filter(c => !mand.includes(c) && !ign.includes(c));
+                                  return (
+                                    <div key={oi} style={{ marginTop: 3, paddingTop: 3, borderTop: `1px solid ${C.border}` }}>
+                                      <div style={{ fontWeight: 700 }}>Task {o.aiIdx + 1}: {ai.instruction || ai.class || 'Task'}
+                                        <button type="button" style={{ ...small, color: '#e74c3c' }} onClick={() => upd({ countryCheck: { ...row.countryCheck, rules: rulesNow.map((rr, i) => i === k ? { ...rr, overrides: (rr.overrides || []).filter(x => x !== o) } : rr) } })}>Delete</button>
+                                      </div>
+                                      <div style={{ color: '#2ecc71' }}>Mandatory: {mand.join(', ') || '-'}</div>
+                                      <div style={{ color: '#999' }}>Ignore: {ign.join(', ') || '-'}</div>
+                                      <div style={{ color: '#e74c3c' }}>Fail if detected: {fail.join(', ') || '-'}</div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })}
                         </div>
                         {row.description && (
                           <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.4, wordBreak: 'break-word', maxWidth: 120 }}>{row.description}</div>
