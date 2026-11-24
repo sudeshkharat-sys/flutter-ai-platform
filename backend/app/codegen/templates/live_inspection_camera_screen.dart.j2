@@ -395,10 +395,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _currentIndex = widget.initialIndex;
     CameraPrefs.getLiveTimeoutSeconds().then((sec) { if (mounted) _watchTimeout = Duration(seconds: sec); });
     WidgetsBinding.instance.addObserver(this);
-    _simultaneousMode = widget.tasks.length > 1 &&
-        widget.tasks.every((t) =>
-            t['tflite_path'] == widget.tasks[0]['tflite_path'] &&
-            t['labels_path'] == widget.tasks[0]['labels_path']);
+    // Every video task runs on its own (own model, own TAP TO START, own image).
+    // The old all-at-once scan let ONE frame resolve several tasks that share
+    // class names, so it is switched off.
+    _simultaneousMode = false;
     for (var i = 0; i < widget.tasks.length; i++) {
       _taskStatus[i] = 'pending';
       _taskHoldCount[i] = 0;
@@ -760,7 +760,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           _isLoadingModel = false;
           _isModelLoaded = true;
         });
-        _addLog("Model loaded. Target: ${task['classes']}");
+        _addLog("Model loaded: ${task['tflite_path']} | Target: ${task['classes']}");
         _startWatching();
       }
     } catch (e, st) {
@@ -2228,6 +2228,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
+                            _addLog('Tap to start pressed (task ${_currentIndex + 1})');
                             setState(() => _startPending = false);
                             _startWatching();
                           },
@@ -2875,6 +2876,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
+                            _addLog('Tap to start pressed (task ${_currentIndex + 1})');
                             setState(() => _startPending = false);
                             _startSimScan();
                           },
@@ -3308,10 +3310,10 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     _currentIndex = widget.initialIndex;
     CameraPrefs.getLiveTimeoutSeconds().then((sec) { if (mounted) _watchTimeout = Duration(seconds: sec); });
     WidgetsBinding.instance.addObserver(this);
-    _simultaneousMode = widget.tasks.length > 1 &&
-        widget.tasks.every((t) =>
-            t['tflite_path'] == widget.tasks[0]['tflite_path'] &&
-            t['labels_path'] == widget.tasks[0]['labels_path']);
+    // Every video task runs on its own (own model, own TAP TO START, own image).
+    // The old all-at-once scan let ONE frame resolve several tasks that share
+    // class names, so it is switched off.
+    _simultaneousMode = false;
     for (var i = 0; i < widget.tasks.length; i++) {
       _taskStatus[i] = 'pending';
       _taskHoldCount[i] = 0;
@@ -3531,7 +3533,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
           _isLoadingModel = false;
           _isModelLoaded = true;
         });
-        _addLog("Model loaded. Target: ${task['classes']}");
+        _addLog("Model loaded: ${task['tflite_path']} | Target: ${task['classes']}");
         _startWatching();
       }
     } catch (e, st) {
@@ -4912,6 +4914,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
+                            _addLog('Tap to start pressed (task ${_currentIndex + 1})');
                             setState(() => _startPending = false);
                             _startWatching();
                           },
@@ -5434,6 +5437,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
+                            _addLog('Tap to start pressed (task ${_currentIndex + 1})');
                             setState(() => _startPending = false);
                             _startSimScan();
                           },

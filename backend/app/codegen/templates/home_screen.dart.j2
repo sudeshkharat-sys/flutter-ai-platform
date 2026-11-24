@@ -132,6 +132,9 @@ class _HomeScreenState extends State<HomeScreen> {
       // let the finished screen release the camera before the next (live/photo) screen opens it
       await Future.delayed(const Duration(milliseconds: 600));
     }
+    // Whole inspection done: all OK submits straight away; if any task is
+    // NOT OK, _submitInspection shows its confirm popup (with Submit) first.
+    if (mounted && !single && _taskResults.length == _tasks.length) _submitInspection();
   }
 
   @override

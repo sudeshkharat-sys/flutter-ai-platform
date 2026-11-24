@@ -137,6 +137,9 @@ def generate_flutter_project(app_project, model_asset=None, all_model_assets=Non
                 continue
             mid = task.get("modelId")
             paths = model_id_to_paths.get(mid, {})
+            if not paths:
+                print(f"[generator] WARNING: task '{task.get('taskName')}' model id {mid!r} is not "
+                      f"attached to this app; it falls back to model_0 and may share a model with other tasks.")
             task_classes = task.get("classes", [])
             if isinstance(task_classes, str):
                 try:
