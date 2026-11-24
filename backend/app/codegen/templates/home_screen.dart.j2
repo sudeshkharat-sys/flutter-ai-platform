@@ -134,7 +134,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     // Whole inspection done: all OK submits straight away; if any task is
     // NOT OK, _submitInspection shows its confirm popup (with Submit) first.
-    if (mounted && !single && _taskResults.length == _tasks.length) _submitInspection();
+    if (mounted && !single && _taskResults.length == _tasks.length) {
+      final bool allOk = _taskResults.values.every((r) => r['success'] == true);
+      // Switch in Settings: 'Auto submit when all OK' (default on). A failed task always asks first.
+      if (!allOk || await CameraPrefs.getAutoSubmitAllOk()) _submitInspection();
+    }
   }
 
   @override

@@ -30,6 +30,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _autofocus = false;
   bool _keepNeg = false;
   bool _negTicks = false;
+  bool _autoSubmit = true;
   bool _debugDl = false;
   bool _unlocked = false;
   final TextEditingController _pw = TextEditingController();
@@ -56,6 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final dd = await CameraPrefs.getDebugDownload();
     final kn = await CameraPrefs.getKeepNegatives();
     final nt = await CameraPrefs.getSaveNegativeTicks();
+    final asb = await CameraPrefs.getAutoSubmitAllOk();
     final vb = await ResultFeedback.getVibrate();
     final sd = await ResultFeedback.getSound();
     final tOk = await ResultFeedback.getCustomTone('ok');
@@ -64,7 +66,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final live = await CameraPrefs.getLiveTasks();
     final lt = await CameraPrefs.getLiveTimeoutSeconds();
     final names = await _loadTaskNames();
-    if (mounted) setState(() { _threads = t; _autofocus = af; _keepNeg = kn; _negTicks = nt; _debugDl = dd; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; _liveTasks = live; _liveTimeout = lt; _taskNames = names; });
+    if (mounted) setState(() { _threads = t; _autofocus = af; _keepNeg = kn; _negTicks = nt; _autoSubmit = asb; _debugDl = dd; _vibrate = vb; _sound = sd; _toneOk = tOk; _toneNotOk = tNo; _unsynced = n; _liveTasks = live; _liveTimeout = lt; _taskNames = names; });
   }
 
   /// Every task name of this app (from the bundled manifest), in order, without duplicates.
@@ -357,6 +359,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (v) async {
                 setState(() => _keepNeg = v);
                 await CameraPrefs.setKeepNegatives(v);
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: SwitchListTile(
+              secondary: const Icon(Icons.send, color: _crimson),
+              title: const Text('Auto submit when all OK', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('On (default). When every task is OK the inspection is submitted automatically. Off = tap SUBMIT INSPECTION yourself. If any task is not OK you are always asked first.'),
+              value: _autoSubmit,
+              activeColor: _crimson,
+              onChanged: (v) async {
+                setState(() => _autoSubmit = v);
+                await CameraPrefs.setAutoSubmitAllOk(v);
               },
             ),
           ),

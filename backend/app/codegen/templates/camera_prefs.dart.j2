@@ -71,6 +71,24 @@ class CameraPrefs {
     } catch (_) {}
   }
 
+  static const String _autoSubmitKey = 'auto_submit_all_ok';
+
+  /// When every task of an inspection is OK, submit it automatically (default ON).
+  /// Off = the inspector taps SUBMIT INSPECTION. Any failed task always asks first.
+  static Future<bool> getAutoSubmitAllOk() async {
+    try {
+      return (await SharedPreferences.getInstance()).getBool(_autoSubmitKey) ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static Future<void> setAutoSubmitAllOk(bool on) async {
+    try {
+      await (await SharedPreferences.getInstance()).setBool(_autoSubmitKey, on);
+    } catch (_) {}
+  }
+
   static const String _negTicksKey = 'save_negative_ticks';
 
   /// Save the live-scan "missed tick" frames to Pictures/.../NegativeDataset/.../Ticks
