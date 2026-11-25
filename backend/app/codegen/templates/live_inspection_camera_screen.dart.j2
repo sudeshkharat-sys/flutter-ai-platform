@@ -412,6 +412,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
     ScanLog.begin('{% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %} ${widget.vin}');
     _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %}: ${widget.vin}");
+    _addLog('Scan mode: ${_simultaneousMode ? "ALL-AT-ONCE (sim)" : "one task at a time"} | ${widget.tasks.length} task(s)');
   }
 
   /// This process's cumulative CPU time (user + system) in clock ticks (100/s), from
@@ -1105,6 +1106,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
   void _startSimScan() {
     if (_simScanActive) return;
+    _addLog('Sim scan START (all-at-once loop) called from: ${StackTrace.current.toString().split("\n").skip(1).take(3).join(" <- ")}');
     if (_startPending) { if (mounted) setState(() {}); return; }
     _simScanActive = true;
     _consecutiveNullFrameTicks = 0;
@@ -3326,6 +3328,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     }
     ScanLog.begin('{% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %} ${widget.vin}');
     _addLog("Live Scan screen initialized for {% if scan_type == "engine" %}{{ trace_label|default("Engine No") }}{% else %}VIN{% endif %}: ${widget.vin}");
+    _addLog('Scan mode: ${_simultaneousMode ? "ALL-AT-ONCE (sim)" : "one task at a time"} | ${widget.tasks.length} task(s)');
   }
 
   void _addLog(String msg) {
@@ -3877,6 +3880,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
 
   void _startSimScan() {
     if (_simScanActive) return;
+    _addLog('Sim scan START (all-at-once loop) called from: ${StackTrace.current.toString().split("\n").skip(1).take(3).join(" <- ")}');
     if (_startPending) { if (mounted) setState(() {}); return; }
     _simScanActive = true;
     _consecutiveNullFrameTicks = 0;
