@@ -2683,8 +2683,8 @@ def _render_day_mail(day: str, per_app: list[dict]) -> tuple[str, str]:
                 plain.append("    " + label.ljust(8) + "".join(str(by_shift[sh][key]).ljust(6) for sh in shifts))
         html.append("</table>")
         plain.append("")
-    note = ("The attached Excel has one tab per app: the same tables as above, and below them the NOT OK "
-            "results of that day. Shift C is counted with the day before it.")
+    note = ("The attached Excel starts with a Summary tab (these tables for every app), then one tab per app "
+            "with the VINs that failed that day and all their tasks. Shift C is counted with the day before it.")
     plain += [note, "Automatic mail from the Digital Eye Viewer."]
     html += [f"<p>{note}</p>", '<p style="color:#888;">Automatic mail from the Digital Eye Viewer.</p>']
     return "\n".join(plain), "".join(html)
@@ -2703,14 +2703,19 @@ def _sheet_title(name: str, used: set) -> str:
 
 
 def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> bytes:
-    """One Excel, one tab per (visible) app. Each tab: the app name on top, the
-    All Results / All VINs tables (same as the mail), then below them the NOT OK
-    results of that day in the same columns as the viewer's data table."""
+    """One Excel for the day.
+    - First tab "Summary": every visible app one after another (display name on
+      top, the All Results / All VINs tables, some space between apps).
+    - Then one tab per app: the same tables on top, and below them the VINs that
+      failed that day, with every task of each of those VINs (OK and NOT OK) in
+      the same columns as the viewer's data table."""
     from openpyxl.styles import Alignment, Font, PatternFill
 
     red = PatternFill("solid", fgColor="C8102E")
     grey = PatternFill("solid", fgColor="EEEEEE")
+    light_red = PatternFill("solid", fgColor="F8D7DA")
     center = Alignment(horizontal="center")
+    result_col = [k for _l, k in EXCEL_COLUMNS].index("result") + 1
 
     def style_row(ws, row, n_cols, fill=None, font=None, align=None):
         for col in range(1, n_cols + 1):
@@ -2722,18 +2727,11 @@ def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> b
             if align:
                 c.alignment = align
 
-    wb = Workbook()
-    wb.remove(wb.active)
-    used: set = set()
-    stats_by_app = {st["app"]: st for st in per_app}
-
-    for app_name, rows in by_app.items():
-        st = stats_by_app[app_name]
-        ws = wb.create_sheet(_sheet_title(app_name, used))
-        ws.append([app_name])
-        style_row(ws, 1, 4, fill=red, font=Font(bold=True, size=14, color="FFFFFF"))
+    def write_app_tables(ws, st):
+        """App name, then the All Results and All VINs tables. Ends with a blank row."""
+        ws.append([st["app"]])
+        style_row(ws, ws.max_row, 4, fill=red, font=Font(bold=True, size=14, color="FFFFFF"))
         ws.append([])
-
         for name, total, by_shift, good, bad in (
                 ("All Results", st["results"], st["resultsByShift"], "OK", "NOT OK"),
                 ("All VINs", st["vins"], st["vinsByShift"], "PASS", "FAIL")):
@@ -2750,20 +2748,47 @@ def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> b
                 ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
             ws.append([])
 
-        notok = [r for r in rows if r.get("result") != "OK"]
-        notok.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
-        ws.append([f"NOT OK vehicles of this day ({len(notok)} failed task results)"])
+    wb = Workbook()
+    wb.remove(wb.active)
+    used: set = {"summary"}
+    stats_by_app = {st["app"]: st for st in per_app}
+
+    # Tab 1: Summary -- all apps, one by one
+    ws = wb.create_sheet("Summary")
+    for st in per_app:
+        write_app_tables(ws, st)
+        ws.append([])          # extra space before the next app
+        ws.append([])
+    if not per_app:
+        ws.append(["No visible apps found."])
+    ws.column_dimensions["A"].width = 26
+    for col in "BCD":
+        ws.column_dimensions[col].width = 12
+
+    # Then one tab per app
+    for app_name, rows in by_app.items():
+        ws = wb.create_sheet(_sheet_title(app_name, used))
+        write_app_tables(ws, stats_by_app[app_name])
+
+        scans: dict[tuple, list[dict]] = {}
+        for r in rows:
+            scans.setdefault((r.get("vin"), r.get("date"), r.get("time")), []).append(r)
+        failed = [tasks for tasks in scans.values() if any(t.get("result") != "OK" for t in tasks)]
+        failed.sort(key=lambda tasks: (tasks[0].get("date") or "", tasks[0].get("time") or ""), reverse=True)
+
+        ws.append([f"NOT OK vehicles of this day ({len(failed)} VINs failed, all their tasks shown)"])
         style_row(ws, ws.max_row, 1, font=Font(bold=True, size=12))
         ws.append([label for label, _k in EXCEL_COLUMNS])
         style_row(ws, ws.max_row, len(EXCEL_COLUMNS), fill=red, font=Font(bold=True, color="FFFFFF"), align=center)
-        for r in notok:
-            ws.append([r.get(k, "") for _l, k in EXCEL_COLUMNS])
+        for tasks in failed:
+            for r in tasks:
+                ws.append([r.get(k, "") for _l, k in EXCEL_COLUMNS])
+                if r.get("result") != "OK":
+                    ws.cell(row=ws.max_row, column=result_col).fill = light_red
         for i, (label, _k) in enumerate(EXCEL_COLUMNS, start=1):
             ws.column_dimensions[get_column_letter(i)].width = max(14, len(label) + 4)
-        ws.column_dimensions["A"].width = 24
+        ws.column_dimensions["A"].width = 26
 
-    if not wb.sheetnames:
-        wb.create_sheet("No apps").append(["No visible apps found."])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
