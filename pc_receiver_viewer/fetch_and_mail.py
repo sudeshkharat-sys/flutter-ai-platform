@@ -4,9 +4,9 @@ web address AND can send mail. It logs in to the viewer, gets one day's
 numbers + the NOT OK Excel, and mails them (uses send_report_mail.py's
 settings and sender, keep both files together).
 
-The mail has, for every app: All Results (OK / NOT OK), the same by Shift A/B/C,
-All VINs (PASS / FAIL), the same by Shift A/B/C -- and the attached Excel
-holds only the NOT OK results of that day (same columns as the viewer table).
+The mail has, for every app: All Results (OK / NOT OK) with Shift A/B/C on the
+next lines, All VINs (PASS / FAIL) with Shift A/B/C -- and the attached Excel has
+3 tabs: Summary, All VINs (each VIN with its tasks) and NOT OK (failed results).
 
 Usage:
     python fetch_and_mail.py --setup     (first time: viewer address + password, then mail settings)
@@ -62,8 +62,8 @@ def build_day_message(settings, day):
 
     print(f"Getting the numbers for {day} ...")
     summary = json.loads(opener.open(base + "/api/daily-summary" + query, timeout=600).read())
-    print(f"Getting the NOT OK Excel ({summary['notokRows']} rows) ...")
-    excel = opener.open(base + "/download/daily-notok" + query, timeout=600).read()
+    print(f"Getting the Excel ({summary['notokRows']} NOT OK rows) ...")
+    excel = opener.open(base + "/download/daily-excel" + query, timeout=600).read()
 
     msg = EmailMessage()
     msg["Subject"] = f"Digital Eye Daily Report - {day}"
@@ -72,7 +72,7 @@ def build_day_message(settings, day):
     msg.set_content(summary["plain"])
     msg.add_alternative(summary["html"], subtype="html")
     msg.add_attachment(excel, maintype=XLSX_TYPE[0], subtype=XLSX_TYPE[1],
-                       filename=f"DigitalEye_NOT_OK_{day}.xlsx")
+                       filename=f"DigitalEye_Daily_{day}.xlsx")
     return msg
 
 

@@ -2641,58 +2641,124 @@ def _all_apps_stats(per_app: list[dict]) -> dict:
 
 
 def _render_day_mail(day: str, per_app: list[dict]) -> tuple[str, str]:
-    """Plain-text and HTML mail body: one table per app."""
+    """Plain-text and HTML mail body: one table per app. Each group is one
+    line of totals, then the shifts A / B / C side by side on the next lines."""
     tables = list(per_app)
     if len(per_app) > 1:
         tables.append(_all_apps_stats(per_app))
 
-    def block(st):
-        # (label, counts, name of the "good" column, name of the "bad" column)
-        rows = [("All Results", st["results"], "OK", "NOT OK")]
-        rows += [(f"Shift {s}", c, "OK", "NOT OK") for s, c in st["resultsByShift"].items()]
-        rows += [("All VINs", st["vins"], "PASS", "FAIL")]
-        rows += [(f"Shift {s}", c, "PASS", "FAIL") for s, c in st["vinsByShift"].items()]
-        return rows
-
     plain = [f"Digital Eye daily report for {day}", ""]
     html = [f"<p>Digital Eye daily report for <b>{day}</b></p>"]
     cell = 'style="border:1px solid #ccc;padding:5px 12px;text-align:center;"'
-    left = 'style="border:1px solid #ccc;padding:5px 12px;text-align:left;"'
+    left = 'style="border:1px solid #ccc;padding:5px 12px;text-align:left;font-weight:bold;"'
     head = 'style="border:1px solid #ccc;padding:5px 12px;background:#C8102E;color:#fff;"'
+    sub = 'style="border:1px solid #ccc;padding:5px 12px;background:#f1f1f1;"'
+
     for st in tables:
         plain.append(st["app"])
-        html.append(f'<table style="border-collapse:collapse;font-family:Arial;font-size:13px;margin-bottom:16px;">'
+        html.append('<table style="border-collapse:collapse;font-family:Arial;font-size:13px;margin-bottom:18px;">'
                     f'<tr><th {head} colspan="4" align="left">{st["app"]}</th></tr>')
-        for label, c, good, bad in block(st):
-            is_total = label.startswith("All")
-            if is_total:
-                html.append(f'<tr><td {head}>{label}</td><td {head}>Total</td><td {head}>{good}</td><td {head}>{bad}</td></tr>')
-                plain.append(f"  {label}: total {c['total']}, {good} {c['ok']}, {bad} {c['notok']}")
-                html.append(f'<tr style="font-weight:bold;"><td {left}>&nbsp;</td><td {cell}>{c["total"]}</td>'
-                            f'<td {cell}>{c["ok"]}</td><td {cell}>{c["notok"]}</td></tr>')
-            else:
-                plain.append(f"    {label}: total {c['total']}, {good} {c['ok']}, {bad} {c['notok']}")
-                html.append(f'<tr><td {left}>{label}</td><td {cell}>{c["total"]}</td>'
-                            f'<td {cell}>{c["ok"]}</td><td {cell}>{c["notok"]}</td></tr>')
+        for name, total, by_shift, good, bad in (
+                ("All Results", st["results"], st["resultsByShift"], "OK", "NOT OK"),
+                ("All VINs", st["vins"], st["vinsByShift"], "PASS", "FAIL")):
+            # line 1: the totals
+            html.append(f'<tr><td {sub}><b>{name}</b></td><td {sub}><b>Total</b></td>'
+                        f'<td {sub}><b>{good}</b></td><td {sub}><b>{bad}</b></td></tr>'
+                        f'<tr><td {left}>&nbsp;</td><td {cell}>{total["total"]}</td>'
+                        f'<td {cell}>{total["ok"]}</td><td {cell}>{total["notok"]}</td></tr>')
+            plain.append(f"  {name}: total {total['total']}, {good} {total['ok']}, {bad} {total['notok']}")
+            # next line: shifts side by side
+            shifts = list(by_shift)
+            html.append(f'<tr><td {sub}><b>Shift</b></td>'
+                        + "".join(f'<td {sub}><b>{sh}</b></td>' for sh in shifts) + "</tr>")
+            plain.append("    " + "Shift".ljust(8) + "".join(sh.ljust(6) for sh in shifts))
+            for label, key in (("Total", "total"), (good, "ok"), (bad, "notok")):
+                html.append(f'<tr><td {left}>{label}</td>'
+                            + "".join(f'<td {cell}>{by_shift[sh][key]}</td>' for sh in shifts) + "</tr>")
+                plain.append("    " + label.ljust(8) + "".join(str(by_shift[sh][key]).ljust(6) for sh in shifts))
         html.append("</table>")
         plain.append("")
-    note = ("The attached Excel has only the NOT OK results of this day (same columns as the viewer table). "
-            "Shift C is counted with the day before it.")
+    note = ("The attached Excel has 3 tabs: Summary (these numbers), All VINs (every VIN of the day with its "
+            "tasks and result) and NOT OK (only the failed results). Shift C is counted with the day before it.")
     plain += [note, "Automatic mail from the Digital Eye Viewer."]
     html += [f"<p>{note}</p>", '<p style="color:#888;">Automatic mail from the Digital Eye Viewer.</p>']
     return "\n".join(plain), "".join(html)
 
 
+def _write_sheet(wb, title: str, headers: list[str], data: list[list], widths: list[int]):
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    ws = wb.create_sheet(title[:31])
+    ws.append(headers)
+    for c in ws[1]:
+        c.fill = PatternFill("solid", fgColor="C8102E")
+        c.font = Font(bold=True, color="FFFFFF")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for row in data:
+        ws.append(row)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(ws.max_row, 1)}"
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+
+def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> bytes:
+    """One Excel, three tabs: Summary, All VINs (each VIN with its tasks),
+    NOT OK (failed task results, same columns as the viewer's table)."""
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    summary = []
+    for st in per_app:
+        for measure, total, by_shift in (("Results", st["results"], st["resultsByShift"]),
+                                         ("VINs", st["vins"], st["vinsByShift"])):
+            summary.append([st["app"], measure, "All", total["total"], total["ok"], total["notok"]])
+            for sh, c in by_shift.items():
+                summary.append([st["app"], measure, f"Shift {sh}", c["total"], c["ok"], c["notok"]])
+    _write_sheet(wb, "Summary", ["App", "Measure", "Shift", "Total", "OK / PASS", "NOT OK / FAIL"],
+                 summary, [28, 10, 10, 10, 12, 14])
+
+    vin_rows = []
+    for app_name, rows in by_app.items():
+        scans: dict[tuple, list[dict]] = {}
+        for r in rows:
+            scans.setdefault((r.get("vin"), r.get("date"), r.get("time")), []).append(r)
+        for (vin, date, time_), tasks in scans.items():
+            first = tasks[0]
+            failed = [t.get("taskName") or "" for t in tasks if t.get("result") != "OK"]
+            vin_rows.append([
+                app_name, vin or "", first.get("modelCode") or "", first.get("modelName") or "",
+                first.get("modelVariant") or "", date or "", time_ or "", first.get("shift") or "",
+                "FAIL" if failed else "PASS",
+                "; ".join(f"{t.get('taskName') or '?'}: {t.get('result')}" for t in tasks),
+                "; ".join(failed), first.get("device") or "", first.get("batch") or "",
+            ])
+    vin_rows.sort(key=lambda r: (r[5], r[6]), reverse=True)
+    _write_sheet(wb, "All VINs",
+                 ["App", "VIN", "Model Code", "Model Name", "Model Variant", "Date", "Time", "Shift",
+                  "Result", "Tasks (result)", "NOT OK tasks", "Device", "Batch"],
+                 vin_rows, [24, 22, 12, 18, 14, 12, 10, 8, 9, 60, 30, 16, 20])
+
+    notok = [r for rows in by_app.values() for r in rows if r.get("result") != "OK"]
+    notok.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    _write_sheet(wb, "NOT OK", [label for label, _k in EXCEL_COLUMNS],
+                 [[r.get(k, "") for _l, k in EXCEL_COLUMNS] for r in notok],
+                 [max(12, len(label) + 4) for label, _k in EXCEL_COLUMNS])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def _daily_package(day: str) -> dict:
     """Everything one daily mail needs: summary numbers, mail bodies, and the
-    NOT OK-only Excel (bytes) for that shift day."""
+    3-tab Excel (bytes) for that shift day."""
     by_app = _rows_for_day(day)
     per_app = [_app_stats(display, rows) for display, rows in by_app.items()]
     plain, html = _render_day_mail(day, per_app)
-    notok_rows = [r for rows in by_app.values() for r in rows if r.get("result") != "OK"]
-    notok_rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    notok_count = sum(1 for rows in by_app.values() for r in rows if r.get("result") != "OK")
     return {"day": day, "apps": per_app, "plain": plain, "html": html,
-            "excel": _build_workbook(notok_rows).getvalue(), "notokRows": len(notok_rows)}
+            "excel": _build_day_workbook(per_app, by_app), "notokRows": notok_count}
 
 
 def _check_day(day: str) -> str:
@@ -2710,17 +2776,14 @@ async def api_daily_summary(day: str, _: None = Depends(_require_session)):
     return {k: pkg[k] for k in ("day", "apps", "plain", "html", "notokRows")}
 
 
-@app.get("/download/daily-notok")
-async def download_daily_notok(day: str, _: None = Depends(_require_session)):
-    """Excel with only the NOT OK results of one shift day, all apps."""
-    day = _check_day(day)
-    rows_by_app = await run_in_threadpool(_rows_for_day, day)
-    rows = [r for rs in rows_by_app.values() for r in rs if r.get("result") != "OK"]
-    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+@app.get("/download/daily-excel")
+async def download_daily_excel(day: str, _: None = Depends(_require_session)):
+    """The 3-tab Excel (Summary / All VINs / NOT OK) for one shift day."""
+    pkg = await run_in_threadpool(_daily_package, _check_day(day))
     return Response(
-        content=_build_workbook(rows).getvalue(),
+        content=pkg["excel"],
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="DigitalEye_NOT_OK_{day}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="DigitalEye_Daily_{day}.xlsx"'},
     )
 
 
@@ -2745,7 +2808,7 @@ def _send_daily_report(day: str):
     msg.add_alternative(pkg["html"], subtype="html")
     msg.add_attachment(pkg["excel"], maintype="application",
                        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       filename=f"DigitalEye_NOT_OK_{day}.xlsx")
+                       filename=f"DigitalEye_Daily_{day}.xlsx")
 
     port = int(mail.get("port") or 587)
     security = (mail.get("security") or "starttls").lower()   # starttls / ssl / none
