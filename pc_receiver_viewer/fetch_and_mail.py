@@ -20,6 +20,7 @@ Usage:
 Run it every morning with Windows Task Scheduler (see README).
 """
 
+import getpass
 import http.cookiejar
 import json
 import sys
@@ -37,7 +38,9 @@ XLSX_TYPE = ("application", "vnd.openxmlformats-officedocument.spreadsheetml.she
 def ask_setup(with_mail=True):
     old = mailer.load_settings()
     url = mailer.ask("Viewer address (e.g. http://10.3.48.175:8766)", old.get("viewerUrl", ""))
-    password = mailer.ask("Viewer login password", old.get("viewerPassword", ""))
+    # typed without showing it on screen; Enter keeps the saved one
+    keep = " (Enter = keep the saved one)" if old.get("viewerPassword") else ""
+    password = getpass.getpass(f"Viewer login password{keep}: ") or old.get("viewerPassword", "")
     settings = dict(old)
     settings.update({"viewerUrl": url.rstrip("/"), "viewerPassword": password})
     mailer.SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
@@ -59,6 +62,20 @@ def login(settings):
     if "/login" in reply.geturl():          # the viewer sent us back to the login page
         raise RuntimeError("Viewer login failed (wrong password, or locked out for a minute).")
     return opener
+
+
+def save_excel(folder, day, excel):
+    """Saves the Excel. If the usual file is open in Excel (Windows then refuses
+    to overwrite it), saves a second copy with the time in its name."""
+    path = folder / f"DigitalEye_Daily_{day}.xlsx"
+    try:
+        path.write_bytes(excel)
+    except PermissionError:
+        path = folder / f"DigitalEye_Daily_{day}_{datetime.now():%H%M%S}.xlsx"
+        path.write_bytes(excel)
+        print("(The usual file is open in Excel, so this copy has the time in its name. "
+              "Close Excel to reuse the normal name.)")
+    return path
 
 
 def build_day_message(settings, day):
@@ -112,8 +129,7 @@ def main():
         if dry:
             folder = mailer.Path(settings.get("reportFolder") or mailer.DOWNLOADS)
             folder.mkdir(parents=True, exist_ok=True)
-            path = folder / f"DigitalEye_Daily_{day}.xlsx"
-            path.write_bytes(excel)
+            path = save_excel(folder, day, excel)
             print("--- DRY RUN: nothing was sent ---\n")
             print(msg.get_body(preferencelist=("plain",)).get_content())
             print(f"Excel saved: {path}")
