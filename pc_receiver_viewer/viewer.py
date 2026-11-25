@@ -2586,17 +2586,22 @@ SHIFT_NAMES = ["A", "B", "C"]
 
 
 def _rows_for_day(day: str) -> dict[str, list[dict]]:
-    """{app name: every task row of that SHIFT day}. Shift C (00:00-07:00)
-    counts with the day before, same as the on-screen cards."""
+    """{app display name: every task row of that SHIFT day}. Apps hidden in the
+    viewer are not included. Shift C (00:00-07:00) counts with the day before,
+    same as the on-screen cards."""
     app_names: dict[str, str] = {}
     for g in _list_groups():
         app_names.setdefault(_safe_name(g["appName"]), g["appName"])
+    display_names = _load_display_names()
     out: dict[str, list[dict]] = {}
-    for safe, display in sorted(app_names.items()):
+    for safe, real_name in sorted(app_names.items()):
         rows: list[dict] = []
         for d in _device_dirs_for_app(safe):
             rows.extend(_flatten_rows(d, safe))
-        out[display] = [r for r in rows if _shift_day(r) == day]
+        label = display_names.get(safe) or real_name
+        if label in out:                       # two apps with the same display name
+            label = f"{label} ({safe})"
+        out[label] = [r for r in rows if _shift_day(r) == day]
     return out
 
 
@@ -2678,73 +2683,87 @@ def _render_day_mail(day: str, per_app: list[dict]) -> tuple[str, str]:
                 plain.append("    " + label.ljust(8) + "".join(str(by_shift[sh][key]).ljust(6) for sh in shifts))
         html.append("</table>")
         plain.append("")
-    note = ("The attached Excel has 3 tabs: Summary (these numbers), All VINs (every VIN of the day with its "
-            "tasks and result) and NOT OK (only the failed results). Shift C is counted with the day before it.")
+    note = ("The attached Excel has one tab per app: the same tables as above, and below them the NOT OK "
+            "results of that day. Shift C is counted with the day before it.")
     plain += [note, "Automatic mail from the Digital Eye Viewer."]
     html += [f"<p>{note}</p>", '<p style="color:#888;">Automatic mail from the Digital Eye Viewer.</p>']
     return "\n".join(plain), "".join(html)
 
 
-def _write_sheet(wb, title: str, headers: list[str], data: list[list], widths: list[int]):
-    from openpyxl.styles import Alignment, Font, PatternFill
-
-    ws = wb.create_sheet(title[:31])
-    ws.append(headers)
-    for c in ws[1]:
-        c.fill = PatternFill("solid", fgColor="C8102E")
-        c.font = Font(bold=True, color="FFFFFF")
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    for row in data:
-        ws.append(row)
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(ws.max_row, 1)}"
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+def _sheet_title(name: str, used: set) -> str:
+    """Excel tab names: max 31 characters, no []:*?/\\, and unique."""
+    cleaned = "".join("_" if c in '[]:*?/\\' else c for c in name).strip() or "App"
+    title, n = cleaned[:31], 2
+    while title.lower() in used:
+        suffix = f" ({n})"
+        title = cleaned[:31 - len(suffix)] + suffix
+        n += 1
+    used.add(title.lower())
+    return title
 
 
 def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> bytes:
-    """One Excel, three tabs: Summary, All VINs (each VIN with its tasks),
-    NOT OK (failed task results, same columns as the viewer's table)."""
+    """One Excel, one tab per (visible) app. Each tab: the app name on top, the
+    All Results / All VINs tables (same as the mail), then below them the NOT OK
+    results of that day in the same columns as the viewer's data table."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    red = PatternFill("solid", fgColor="C8102E")
+    grey = PatternFill("solid", fgColor="EEEEEE")
+    center = Alignment(horizontal="center")
+
+    def style_row(ws, row, n_cols, fill=None, font=None, align=None):
+        for col in range(1, n_cols + 1):
+            c = ws.cell(row=row, column=col)
+            if fill:
+                c.fill = fill
+            if font:
+                c.font = font
+            if align:
+                c.alignment = align
+
     wb = Workbook()
     wb.remove(wb.active)
+    used: set = set()
+    stats_by_app = {st["app"]: st for st in per_app}
 
-    summary = []
-    for st in per_app:
-        for measure, total, by_shift in (("Results", st["results"], st["resultsByShift"]),
-                                         ("VINs", st["vins"], st["vinsByShift"])):
-            summary.append([st["app"], measure, "All", total["total"], total["ok"], total["notok"]])
-            for sh, c in by_shift.items():
-                summary.append([st["app"], measure, f"Shift {sh}", c["total"], c["ok"], c["notok"]])
-    _write_sheet(wb, "Summary", ["App", "Measure", "Shift", "Total", "OK / PASS", "NOT OK / FAIL"],
-                 summary, [28, 10, 10, 10, 12, 14])
-
-    vin_rows = []
     for app_name, rows in by_app.items():
-        scans: dict[tuple, list[dict]] = {}
-        for r in rows:
-            scans.setdefault((r.get("vin"), r.get("date"), r.get("time")), []).append(r)
-        for (vin, date, time_), tasks in scans.items():
-            first = tasks[0]
-            failed = [t.get("taskName") or "" for t in tasks if t.get("result") != "OK"]
-            vin_rows.append([
-                app_name, vin or "", first.get("modelCode") or "", first.get("modelName") or "",
-                first.get("modelVariant") or "", date or "", time_ or "", first.get("shift") or "",
-                "FAIL" if failed else "PASS",
-                "; ".join(f"{t.get('taskName') or '?'}: {t.get('result')}" for t in tasks),
-                "; ".join(failed), first.get("device") or "", first.get("batch") or "",
-            ])
-    vin_rows.sort(key=lambda r: (r[5], r[6]), reverse=True)
-    _write_sheet(wb, "All VINs",
-                 ["App", "VIN", "Model Code", "Model Name", "Model Variant", "Date", "Time", "Shift",
-                  "Result", "Tasks (result)", "NOT OK tasks", "Device", "Batch"],
-                 vin_rows, [24, 22, 12, 18, 14, 12, 10, 8, 9, 60, 30, 16, 20])
+        st = stats_by_app[app_name]
+        ws = wb.create_sheet(_sheet_title(app_name, used))
+        ws.append([app_name])
+        style_row(ws, 1, 4, fill=red, font=Font(bold=True, size=14, color="FFFFFF"))
+        ws.append([])
 
-    notok = [r for rows in by_app.values() for r in rows if r.get("result") != "OK"]
-    notok.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
-    _write_sheet(wb, "NOT OK", [label for label, _k in EXCEL_COLUMNS],
-                 [[r.get(k, "") for _l, k in EXCEL_COLUMNS] for r in notok],
-                 [max(12, len(label) + 4) for label, _k in EXCEL_COLUMNS])
+        for name, total, by_shift, good, bad in (
+                ("All Results", st["results"], st["resultsByShift"], "OK", "NOT OK"),
+                ("All VINs", st["vins"], st["vinsByShift"], "PASS", "FAIL")):
+            ws.append([name, "Total", good, bad])
+            style_row(ws, ws.max_row, 4, fill=grey, font=Font(bold=True), align=center)
+            ws.append(["", total["total"], total["ok"], total["notok"]])
+            style_row(ws, ws.max_row, 4, align=center)
+            shifts = list(by_shift)
+            ws.append(["Shift"] + shifts)
+            style_row(ws, ws.max_row, len(shifts) + 1, fill=grey, font=Font(bold=True), align=center)
+            for label, key in (("Total", "total"), (good, "ok"), (bad, "notok")):
+                ws.append([label] + [by_shift[sh][key] for sh in shifts])
+                style_row(ws, ws.max_row, len(shifts) + 1, align=center)
+                ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+            ws.append([])
 
+        notok = [r for r in rows if r.get("result") != "OK"]
+        notok.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+        ws.append([f"NOT OK vehicles of this day ({len(notok)} failed task results)"])
+        style_row(ws, ws.max_row, 1, font=Font(bold=True, size=12))
+        ws.append([label for label, _k in EXCEL_COLUMNS])
+        style_row(ws, ws.max_row, len(EXCEL_COLUMNS), fill=red, font=Font(bold=True, color="FFFFFF"), align=center)
+        for r in notok:
+            ws.append([r.get(k, "") for _l, k in EXCEL_COLUMNS])
+        for i, (label, _k) in enumerate(EXCEL_COLUMNS, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = max(14, len(label) + 4)
+        ws.column_dimensions["A"].width = 24
+
+    if not wb.sheetnames:
+        wb.create_sheet("No apps").append(["No visible apps found."])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -2752,7 +2771,7 @@ def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> b
 
 def _daily_package(day: str) -> dict:
     """Everything one daily mail needs: summary numbers, mail bodies, and the
-    3-tab Excel (bytes) for that shift day."""
+    Excel (one tab per app, bytes) for that shift day."""
     by_app = _rows_for_day(day)
     per_app = [_app_stats(display, rows) for display, rows in by_app.items()]
     plain, html = _render_day_mail(day, per_app)
@@ -2778,7 +2797,7 @@ async def api_daily_summary(day: str, _: None = Depends(_require_session)):
 
 @app.get("/download/daily-excel")
 async def download_daily_excel(day: str, _: None = Depends(_require_session)):
-    """The 3-tab Excel (Summary / All VINs / NOT OK) for one shift day."""
+    """The Excel (one tab per app) for one shift day."""
     pkg = await run_in_threadpool(_daily_package, _check_day(day))
     return Response(
         content=pkg["excel"],

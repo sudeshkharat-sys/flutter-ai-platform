@@ -6,7 +6,7 @@ settings and sender, keep both files together).
 
 The mail has, for every app: All Results (OK / NOT OK) with Shift A/B/C on the
 next lines, All VINs (PASS / FAIL) with Shift A/B/C -- and the attached Excel has
-3 tabs: Summary, All VINs (each VIN with its tasks) and NOT OK (failed results).
+one tab per app: those tables, and below them the NOT OK results of that day.
 
 Usage:
     python fetch_and_mail.py --setup-viewer   (step 1: only the viewer address + password, NO mail needed)
