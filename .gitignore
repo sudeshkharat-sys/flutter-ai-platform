@@ -52,3 +52,7 @@ data/
 
 # Watchdog single-instance lock files (created next to the exe at runtime)
 *.lock
+
+# Viewer config holds the password hash and the mail (SMTP) password -- never commit
+viewer_config.json
+FIRST_RUN_PASSWORD.txt

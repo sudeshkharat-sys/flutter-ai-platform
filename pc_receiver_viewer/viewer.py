@@ -1052,7 +1052,10 @@ def _disk_rows() -> list[list]:
     return out
 
 
-def _build_report_workbook() -> io.BytesIO:
+def _build_report_workbook(only_day: str | None = None, stats: list | None = None) -> io.BytesIO:
+    """only_day = "YYYY-MM-DD" keeps just that shift day (used by the daily mail).
+    stats = an empty list; if given, one small dict per app is added to it so the
+    mail body can show the same numbers without re-reading the data."""
     from openpyxl.styles import Alignment, Font, PatternFill
 
     head_fill = PatternFill("solid", fgColor="C8102E")
@@ -1084,6 +1087,8 @@ def _build_report_workbook() -> io.BytesIO:
 
     summary, daily, shifts, monthly, dups, tasks, models = [], [], [], [], [], [], []
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if only_day:
+        generated += f" -- showing shift day {only_day} only"
     grand = {"bytes": 0, "neg": 0, "rows": 0, "scans": 0, "vins": 0, "dupvins": 0, "pass": 0, "fail": 0}
 
     for safe, display in sorted(app_names.items()):
@@ -1096,6 +1101,8 @@ def _build_report_workbook() -> io.BytesIO:
             app_dir = DATA_DIR / _safe_name(d) / safe
             recv_bytes += _dir_stats(app_dir)[1]
             batches += sum(1 for p in app_dir.iterdir() if p.is_dir()) if app_dir.exists() else 0
+        if only_day:
+            rows = [r for r in rows if _shift_day(r) == only_day]
         neg_files, neg_bytes = _dir_stats(NEGATIVE_DATASET_DIR / safe)
 
         events = _scan_events(rows)
@@ -1116,6 +1123,9 @@ def _build_report_workbook() -> io.BytesIO:
             else:
                 vin_fail += 1
         dates = sorted(e["date"] for e in events if e["date"])
+        if stats is not None:
+            stats.append({"app": display, "scans": len(events), "vins": unique_vins,
+                          "pass": scan_pass, "fail": scan_fail})
 
         summary.append([
             display, len(device_dirs), batches,
@@ -2548,6 +2558,207 @@ def _cli_set_data_dir(path_str: str | None):
     print("This is saved permanently -- restart the viewer normally (no env var needed) to use it.")
 
 
+# ── Daily report mail ─────────────────────────────────────────────────────
+# Every day at the configured time (default 08:00) this mails yesterday's
+# report (Excel attached + a short summary in the mail body).
+# "Yesterday" means yesterday's SHIFT day, so Shift C (00:00-07:00 today)
+# is already included -- it has finished by 08:00.
+# Settings live in viewer_config.json under "mail" (set with --set-mail).
+# The mail password can come from the VIEWER_MAIL_PASSWORD environment
+# variable (safer) or from the config file.
+
+MAIL_RETRY_MINUTES = 15
+MAIL_MAX_TRIES_PER_DAY = 5
+
+
+def _mail_password() -> str:
+    return os.environ.get("VIEWER_MAIL_PASSWORD") or _config.get("mailPassword", "")
+
+
+def _yesterday_str() -> str:
+    return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _build_mail_body(day: str, stats: list) -> tuple[str, str]:
+    """Returns (plain_text, html) for the mail body."""
+    total = {"scans": 0, "vins": 0, "pass": 0, "fail": 0}
+    for st in stats:
+        for k in total:
+            total[k] += st[k]
+    pct = _pct(total["pass"], total["scans"])
+
+    lines = [f"Digital Eye daily report for {day}", ""]
+    if total["scans"] == 0:
+        lines.append("No inspections were recorded for this day.")
+    else:
+        lines.append(f"Total scans: {total['scans']}   Unique VINs: {total['vins']}   "
+                     f"PASS: {total['pass']}   FAIL: {total['fail']}   Pass %: {pct}")
+        lines.append("")
+        for st in stats:
+            lines.append(f"{st['app']}: scans {st['scans']}, VINs {st['vins']}, "
+                         f"PASS {st['pass']}, FAIL {st['fail']}, pass {_pct(st['pass'], st['scans'])}%")
+    lines += ["", "Full report is attached (Excel). Shift C is counted with the day before it.",
+              "This is an automatic mail from the Digital Eye Viewer."]
+    plain = "\n".join(lines)
+
+    cell = 'style="border:1px solid #ccc;padding:6px 10px;text-align:center;"'
+    head = 'style="border:1px solid #ccc;padding:6px 10px;background:#C8102E;color:#fff;"'
+    rows_html = ""
+    for st in stats + [{"app": "ALL APPS", **total}]:
+        bold = "font-weight:bold;" if st["app"] == "ALL APPS" else ""
+        rows_html += (f'<tr style="{bold}"><td {cell}>{st["app"]}</td><td {cell}>{st["scans"]}</td>'
+                      f'<td {cell}>{st["vins"]}</td><td {cell}>{st["pass"]}</td><td {cell}>{st["fail"]}</td>'
+                      f'<td {cell}>{_pct(st["pass"], st["scans"])}%</td></tr>')
+    html = (f"<p>Digital Eye daily report for <b>{day}</b></p>"
+            + ("<p>No inspections were recorded for this day.</p>" if total["scans"] == 0 else "")
+            + f'<table style="border-collapse:collapse;font-family:Arial;font-size:13px;">'
+              f'<tr><th {head}>App</th><th {head}>Scans</th><th {head}>Unique VINs</th>'
+              f'<th {head}>PASS</th><th {head}>FAIL</th><th {head}>Pass %</th></tr>{rows_html}</table>'
+            + "<p>Full report is attached (Excel). Shift C is counted with the day before it.</p>"
+            + '<p style="color:#888;">Automatic mail from the Digital Eye Viewer.</p>')
+    return plain, html
+
+
+def _send_daily_report(day: str):
+    """Builds the report for `day` and mails it. Raises an Exception on any
+    problem (caller prints it) so a failure is never silent."""
+    import smtplib
+    from email.message import EmailMessage
+
+    mail = _config.get("mail") or {}
+    host, sender = mail.get("host"), mail.get("sender")
+    recipients = mail.get("recipients") or []
+    if not host or not sender or not recipients:
+        raise ValueError("Mail is not set up. Run: python viewer.py --set-mail")
+
+    stats: list = []
+    buf = _build_report_workbook(only_day=day, stats=stats)
+    plain, html = _build_mail_body(day, stats)
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Digital Eye Daily Report - {day}"
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+    msg.set_content(plain)
+    msg.add_alternative(html, subtype="html")
+    msg.add_attachment(buf.getvalue(), maintype="application",
+                       subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       filename=f"DigitalEye_Report_{day}.xlsx")
+
+    port = int(mail.get("port") or 587)
+    security = (mail.get("security") or "starttls").lower()   # starttls / ssl / none
+    password = _mail_password()
+    if security == "ssl":
+        server = smtplib.SMTP_SSL(host, port, timeout=60)
+    else:
+        server = smtplib.SMTP(host, port, timeout=60)
+    try:
+        if security == "starttls":
+            server.starttls()
+        if mail.get("username") and password:
+            server.login(mail["username"], password)
+        server.send_message(msg)
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
+
+
+def _mail_scheduler():
+    """Background loop: once a day, at/after the send time, mail yesterday's
+    report. If the viewer was off at 08:00 it sends when it next starts
+    (the same day). Failed sends are retried every 15 minutes, up to 5 times."""
+    tries_today = {"day": "", "count": 0, "next": 0.0}
+    while True:
+        time.sleep(30)
+        try:
+            mail = _config.get("mail") or {}
+            if not mail.get("enabled"):
+                continue
+            now = datetime.now()
+            today = now.strftime("%Y-%m-%d")
+            if _config.get("mailLastSentDay") == today:
+                continue
+            hh, mm = (mail.get("sendTime") or "08:00").split(":")
+            if now < now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0):
+                continue
+            if tries_today["day"] != today:
+                tries_today.update(day=today, count=0, next=0.0)
+            if tries_today["count"] >= MAIL_MAX_TRIES_PER_DAY or time.time() < tries_today["next"]:
+                continue
+            tries_today["count"] += 1
+            try:
+                day = _yesterday_str()
+                _send_daily_report(day)
+                _config["mailLastSentDay"] = today
+                _save_config(_config)
+                print(f"[mail] Daily report for {day} sent to {', '.join(mail.get('recipients') or [])}")
+            except Exception as e:
+                tries_today["next"] = time.time() + MAIL_RETRY_MINUTES * 60
+                print(f"[mail] Sending failed (try {tries_today['count']} of {MAIL_MAX_TRIES_PER_DAY}): {e}")
+        except Exception as e:
+            print(f"[mail] Scheduler error: {e}")
+
+
+def _cli_set_mail():
+    """Admin-only: asks for the mail settings and saves them. Press Enter to
+    keep the value shown in [brackets]."""
+    import getpass
+
+    old = _config.get("mail") or {}
+
+    def ask(label, key, default=""):
+        cur = old.get(key, default)
+        val = input(f"{label} [{cur}]: ").strip()
+        return val or cur
+
+    print("Daily report mail settings (Enter = keep the value in brackets)")
+    host = ask("SMTP host (e.g. smtp.gmail.com)", "host")
+    port = int(ask("SMTP port (587 = STARTTLS, 465 = SSL, 25 = plain)", "port", 587))
+    security = ask("Security (starttls / ssl / none)", "security", "starttls")
+    username = ask("Login user (blank if the server needs no login)", "username")
+    sender = ask("Sender address (From)", "sender", username)
+    recipients_raw = ask("Recipients (separate with commas)", "recipients", "")
+    if isinstance(recipients_raw, list):
+        recipients_raw = ", ".join(recipients_raw)
+    send_time = ask("Send time, 24h HH:MM", "sendTime", "08:00")
+    try:
+        datetime.strptime(send_time, "%H:%M")
+    except ValueError:
+        print("Send time must look like 08:00. Nothing saved.")
+        sys.exit(1)
+    recipients = [r.strip() for r in recipients_raw.replace(";", ",").split(",") if r.strip()]
+    if not host or not sender or not recipients:
+        print("Host, sender and at least one recipient are required. Nothing saved.")
+        sys.exit(1)
+
+    pw = getpass.getpass("Mail password / app password (Enter = keep current): ")
+    if pw:
+        _config["mailPassword"] = pw
+    _config["mail"] = {"enabled": True, "host": host, "port": port, "security": security.lower(),
+                       "username": username, "sender": sender, "recipients": recipients,
+                       "sendTime": send_time}
+    _save_config(_config)
+    print(f"Saved. A report for the previous day will be mailed daily at {send_time} to: {', '.join(recipients)}")
+    print("Test it now with:  python viewer.py --send-test-mail")
+    print("Restart the viewer so the schedule starts using the new settings.")
+
+
+def _cli_send_test_mail():
+    """Sends the report right now. Optional date: --send-test-mail 2026-11-24
+    (default = yesterday). Does NOT count as today's daily mail."""
+    idx = sys.argv.index("--send-test-mail")
+    day = sys.argv[idx + 1] if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("--") else _yesterday_str()
+    print(f"Sending report for {day} ...")
+    try:
+        _send_daily_report(day)
+    except Exception as e:
+        print(f"FAILED: {e}")
+        sys.exit(1)
+    print("Sent. Check the inbox (and spam folder).")
+
+
 if __name__ == "__main__":
     if "--set-password" in sys.argv:
         _cli_set_password()
@@ -2562,6 +2773,14 @@ if __name__ == "__main__":
         _cli_set_data_dir(sys.argv[idx + 1] if has_path_arg else None)
         sys.exit(0)
 
+    if "--set-mail" in sys.argv:
+        _cli_set_mail()
+        sys.exit(0)
+
+    if "--send-test-mail" in sys.argv:
+        _cli_send_test_mail()
+        sys.exit(0)
+
     local_ip = "0.0.0.0"
     print("Mahindra Digital Eye Vault -- Viewer (read-only)")
     print(f"Data folder: {DATA_DIR}")
@@ -2571,6 +2790,7 @@ if __name__ == "__main__":
         print("       VIEWER_TLS_CERT / VIEWER_TLS_KEY) before exposing it beyond a trusted LAN.")
 
     threading.Thread(target=_warm_caches, daemon=True).start()
+    threading.Thread(target=_mail_scheduler, daemon=True).start()
 
     ssl_kwargs = {}
     if TLS_CERT and TLS_KEY:
