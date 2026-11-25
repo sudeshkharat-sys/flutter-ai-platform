@@ -214,8 +214,9 @@ The attached Excel (`DigitalEye_Daily_<day>.xlsx`) has 3 tabs:
 
 ```bash
 pip install openpyxl
-python fetch_and_mail.py --setup     # viewer address + password, then mail settings
-python fetch_and_mail.py 2026-11-24 --dry-run   # test with any date, send nothing
+python fetch_and_mail.py --setup-viewer         # step 1: viewer address + password only (no mail needed)
+python fetch_and_mail.py 2026-11-24 --dry-run   # step 1: show the table + save the Excel, send nothing
+python fetch_and_mail.py --setup     # step 2: viewer address + password, then mail settings
 python fetch_and_mail.py             # YESTERDAY -> mail (use this for the 8 AM run)
 python fetch_and_mail.py --today     # today so far -> mail
 ```
