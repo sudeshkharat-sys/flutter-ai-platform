@@ -49,8 +49,9 @@ def setup():
     recipients = [r.strip() for r in recipients.replace(";", ",").split(",") if r.strip()]
     folder = ask("Folder to look for reports", old.get("reportFolder", str(DOWNLOADS)))
 
-    settings = {"host": host, "port": port, "security": security, "username": username,
-                "sender": sender, "recipients": recipients, "reportFolder": folder}
+    settings = dict(old)   # keep other keys (like the viewer address used by fetch_and_mail.py)
+    settings.update({"host": host, "port": port, "security": security, "username": username,
+                     "sender": sender, "recipients": recipients, "reportFolder": folder})
 
     if username:
         save = ask("Save the password in the settings file? (y/n)", "n").lower()

@@ -1209,9 +1209,17 @@ def _build_report_workbook(only_day: str | None = None, stats: list | None = Non
 
 
 @app.get("/download/report")
-async def download_report(_: None = Depends(_require_session)):
-    buf = await run_in_threadpool(_build_report_workbook)
-    filename = f"DigitalEye_Report_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
+async def download_report(day: str = "", _: None = Depends(_require_session)):
+    """/download/report = everything. /download/report?day=2026-11-24 = only that
+    shift day (used by fetch_and_mail.py for the daily mail)."""
+    if day:
+        try:
+            datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="day must look like 2026-11-24")
+    buf = await run_in_threadpool(_build_report_workbook, day or None)
+    name_part = day if day else datetime.now().strftime('%Y-%m-%d_%H%M')
+    filename = f"DigitalEye_Report_{name_part}.xlsx"
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

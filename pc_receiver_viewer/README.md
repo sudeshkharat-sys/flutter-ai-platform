@@ -196,3 +196,25 @@ folder.
 The watchdog window it opens **is** what's keeping the viewer alive --
 minimize it, don't close it. Its restart log is written to
 `viewer_watchdog.log` next to the exe.
+
+## Daily report mail from another PC (`fetch_and_mail.py`)
+
+Use this when the server running the viewer cannot send mail itself. It runs on
+**any PC that can open the viewer's web address and can send mail**. Keep
+`fetch_and_mail.py` and `send_report_mail.py` in the same folder.
+
+```bash
+pip install openpyxl
+python fetch_and_mail.py --setup     # viewer address + password, then mail settings
+python fetch_and_mail.py --dry-run   # download + show the mail, send nothing
+python fetch_and_mail.py             # yesterday's report -> mail
+python fetch_and_mail.py --all       # full report (all dates)
+python fetch_and_mail.py 2026-11-24  # one given day
+```
+
+Yesterday's report = yesterday's shift day (Shift C 00:00-07:00 today counts with
+yesterday), so run it after 07:00. To run it every day: Windows Task Scheduler ->
+new task -> daily 08:00 -> action `python` with arguments `fetch_and_mail.py` and
+"Start in" = the folder holding the scripts. Settings (including the passwords)
+are in `mail_settings.json` next to the scripts -- it is git-ignored; keep it private.
+`/download/report?day=YYYY-MM-DD` on the viewer returns just that day.
