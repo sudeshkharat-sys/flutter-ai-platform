@@ -1,13 +1,19 @@
 """
 fetch_and_mail.py -- "program 3": runs on ANY PC that can open the viewer's
-web address AND can send mail. It logs in to the viewer, downloads the
-report, and mails it (using send_report_mail.py, keep both files together).
+web address AND can send mail. It logs in to the viewer, gets one day's
+numbers + the NOT OK Excel, and mails them (uses send_report_mail.py's
+settings and sender, keep both files together).
+
+The mail has, for every app: All Results (OK / NOT OK), the same by Shift A/B/C,
+All VINs (PASS / FAIL), the same by Shift A/B/C -- and the attached Excel
+holds only the NOT OK results of that day (same columns as the viewer table).
 
 Usage:
     python fetch_and_mail.py --setup     (first time: viewer address + password, then mail settings)
-    python fetch_and_mail.py             (yesterday's report -> mail)
-    python fetch_and_mail.py --all       (the full report, all dates -> mail)
-    python fetch_and_mail.py 2026-11-24  (that one day -> mail)
+    python fetch_and_mail.py             (YESTERDAY -> mail; best for the 8 AM run)
+    python fetch_and_mail.py --today     (today so far -> mail)
+    python fetch_and_mail.py 2026-11-24  (any date, e.g. for testing)
+    add --dry-run to any of them: shows the mail, sends nothing
 
 Run it every morning with Windows Task Scheduler (see README).
 """
@@ -19,8 +25,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 
 import send_report_mail as mailer
+
+XLSX_TYPE = ("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 def ask_setup():
@@ -34,30 +43,37 @@ def ask_setup():
     mailer.setup()
 
 
-def download_report(settings, day):
-    """Logs in, downloads the report Excel, returns the saved file path."""
+def login(settings):
+    """Returns an opener that carries the viewer's login cookie."""
     base = settings["viewerUrl"]
     jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-
-    login_data = urllib.parse.urlencode({"password": settings["viewerPassword"]}).encode()
-    reply = opener.open(base + "/login", data=login_data, timeout=60)
+    data = urllib.parse.urlencode({"password": settings["viewerPassword"]}).encode()
+    reply = opener.open(base + "/login", data=data, timeout=60)
     if "/login" in reply.geturl():          # the viewer sent us back to the login page
         raise RuntimeError("Viewer login failed (wrong password, or locked out for a minute).")
+    return opener
 
-    url = base + "/download/report"
-    if day:
-        url += "?day=" + day
-    print(f"Downloading {url} (a big report can take a minute) ...")
-    data = opener.open(url, timeout=600).read()
 
-    folder = mailer.Path(settings.get("reportFolder") or mailer.DOWNLOADS)
-    folder.mkdir(parents=True, exist_ok=True)
-    label = day if day else f"ALL_{datetime.now():%Y-%m-%d}"
-    path = folder / f"DigitalEye_Report_{label}.xlsx"
-    path.write_bytes(data)
-    print(f"Saved: {path}")
-    return path
+def build_day_message(settings, day):
+    base = settings["viewerUrl"]
+    opener = login(settings)
+    query = "?day=" + day
+
+    print(f"Getting the numbers for {day} ...")
+    summary = json.loads(opener.open(base + "/api/daily-summary" + query, timeout=600).read())
+    print(f"Getting the NOT OK Excel ({summary['notokRows']} rows) ...")
+    excel = opener.open(base + "/download/daily-notok" + query, timeout=600).read()
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Digital Eye Daily Report - {day}"
+    msg["From"] = settings["sender"]
+    msg["To"] = ", ".join(settings["recipients"])
+    msg.set_content(summary["plain"])
+    msg.add_alternative(summary["html"], subtype="html")
+    msg.add_attachment(excel, maintype=XLSX_TYPE[0], subtype=XLSX_TYPE[1],
+                       filename=f"DigitalEye_NOT_OK_{day}.xlsx")
+    return msg
 
 
 def main():
@@ -71,22 +87,22 @@ def main():
         sys.exit(1)
 
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    if "--all" in sys.argv:
-        day = ""
+    if "--today" in sys.argv:
+        day = datetime.now().strftime("%Y-%m-%d")
     elif args:
         day = args[0]
     else:
         day = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     try:
-        path = download_report(settings, day)
-        msg = mailer.build_message(settings, path)
+        msg = build_day_message(settings, day)
         if "--dry-run" in sys.argv:
             print("--- DRY RUN: not sent ---")
-            print(msg.get_body().get_content())
+            print(f"To: {msg['To']}\nSubject: {msg['Subject']}\n")
+            print(msg.get_body(preferencelist=("plain",)).get_content())
             return
         mailer.send(settings, msg)
-    except (urllib.error.URLError, RuntimeError, OSError, Exception) as e:
+    except Exception as e:
         print(f"FAILED: {e}")
         sys.exit(1)
     print(f"Sent to: {msg['To']}")

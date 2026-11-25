@@ -203,18 +203,33 @@ Use this when the server running the viewer cannot send mail itself. It runs on
 **any PC that can open the viewer's web address and can send mail**. Keep
 `fetch_and_mail.py` and `send_report_mail.py` in the same folder.
 
+For one day, the mail shows a table per app -- the same numbers as the pie cards
+on the app page:
+
+| | Total | OK | NOT OK |
+|---|---|---|---|
+| All Results (+ Shift A / B / C) | | | |
+
+| | Total | PASS | FAIL |
+|---|---|---|---|
+| All VINs (+ Shift A / B / C) | | | |
+
+and the attached Excel has **only the NOT OK results of that day**, with the same
+columns as the viewer's data table.
+
 ```bash
 pip install openpyxl
 python fetch_and_mail.py --setup     # viewer address + password, then mail settings
-python fetch_and_mail.py --dry-run   # download + show the mail, send nothing
-python fetch_and_mail.py             # yesterday's report -> mail
-python fetch_and_mail.py --all       # full report (all dates)
-python fetch_and_mail.py 2026-11-24  # one given day
+python fetch_and_mail.py 2026-11-24 --dry-run   # test with any date, send nothing
+python fetch_and_mail.py             # YESTERDAY -> mail (use this for the 8 AM run)
+python fetch_and_mail.py --today     # today so far -> mail
 ```
 
-Yesterday's report = yesterday's shift day (Shift C 00:00-07:00 today counts with
-yesterday), so run it after 07:00. To run it every day: Windows Task Scheduler ->
-new task -> daily 08:00 -> action `python` with arguments `fetch_and_mail.py` and
-"Start in" = the folder holding the scripts. Settings (including the passwords)
-are in `mail_settings.json` next to the scripts -- it is git-ignored; keep it private.
-`/download/report?day=YYYY-MM-DD` on the viewer returns just that day.
+"Day" is the shift day: Shift C (00:00-07:00) counts with the day before, so
+yesterday is complete by 07:00. To run it daily: Windows Task Scheduler -> new
+task -> daily 08:00 -> action `python`, arguments `fetch_and_mail.py`, "Start in" =
+the folder holding the scripts. Settings (including the passwords) are in
+`mail_settings.json` next to the scripts -- it is git-ignored; keep it private.
+The viewer serves this through `/api/daily-summary?day=YYYY-MM-DD` and
+`/download/daily-notok?day=YYYY-MM-DD`. If the viewer's own PC can send mail,
+`python viewer.py --set-mail` makes the viewer send the same mail itself at 08:00.

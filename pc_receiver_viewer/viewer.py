@@ -1052,10 +1052,8 @@ def _disk_rows() -> list[list]:
     return out
 
 
-def _build_report_workbook(only_day: str | None = None, stats: list | None = None) -> io.BytesIO:
-    """only_day = "YYYY-MM-DD" keeps just that shift day (used by the daily mail).
-    stats = an empty list; if given, one small dict per app is added to it so the
-    mail body can show the same numbers without re-reading the data."""
+def _build_report_workbook(only_day: str | None = None) -> io.BytesIO:
+    """only_day = "YYYY-MM-DD" keeps just that shift day."""
     from openpyxl.styles import Alignment, Font, PatternFill
 
     head_fill = PatternFill("solid", fgColor="C8102E")
@@ -1123,9 +1121,6 @@ def _build_report_workbook(only_day: str | None = None, stats: list | None = Non
             else:
                 vin_fail += 1
         dates = sorted(e["date"] for e in events if e["date"])
-        if stats is not None:
-            stats.append({"app": display, "scans": len(events), "vins": unique_vins,
-                          "pass": scan_pass, "fail": scan_fail})
 
         summary.append([
             display, len(device_dirs), batches,
@@ -2587,48 +2582,150 @@ def _yesterday_str() -> str:
     return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
-def _build_mail_body(day: str, stats: list) -> tuple[str, str]:
-    """Returns (plain_text, html) for the mail body."""
-    total = {"scans": 0, "vins": 0, "pass": 0, "fail": 0}
-    for st in stats:
-        for k in total:
-            total[k] += st[k]
-    pct = _pct(total["pass"], total["scans"])
+SHIFT_NAMES = ["A", "B", "C"]
 
-    lines = [f"Digital Eye daily report for {day}", ""]
-    if total["scans"] == 0:
-        lines.append("No inspections were recorded for this day.")
-    else:
-        lines.append(f"Total scans: {total['scans']}   Unique VINs: {total['vins']}   "
-                     f"PASS: {total['pass']}   FAIL: {total['fail']}   Pass %: {pct}")
-        lines.append("")
-        for st in stats:
-            lines.append(f"{st['app']}: scans {st['scans']}, VINs {st['vins']}, "
-                         f"PASS {st['pass']}, FAIL {st['fail']}, pass {_pct(st['pass'], st['scans'])}%")
-    lines += ["", "Full report is attached (Excel). Shift C is counted with the day before it.",
-              "This is an automatic mail from the Digital Eye Viewer."]
-    plain = "\n".join(lines)
 
-    cell = 'style="border:1px solid #ccc;padding:6px 10px;text-align:center;"'
-    head = 'style="border:1px solid #ccc;padding:6px 10px;background:#C8102E;color:#fff;"'
-    rows_html = ""
-    for st in stats + [{"app": "ALL APPS", **total}]:
-        bold = "font-weight:bold;" if st["app"] == "ALL APPS" else ""
-        rows_html += (f'<tr style="{bold}"><td {cell}>{st["app"]}</td><td {cell}>{st["scans"]}</td>'
-                      f'<td {cell}>{st["vins"]}</td><td {cell}>{st["pass"]}</td><td {cell}>{st["fail"]}</td>'
-                      f'<td {cell}>{_pct(st["pass"], st["scans"])}%</td></tr>')
-    html = (f"<p>Digital Eye daily report for <b>{day}</b></p>"
-            + ("<p>No inspections were recorded for this day.</p>" if total["scans"] == 0 else "")
-            + f'<table style="border-collapse:collapse;font-family:Arial;font-size:13px;">'
-              f'<tr><th {head}>App</th><th {head}>Scans</th><th {head}>Unique VINs</th>'
-              f'<th {head}>PASS</th><th {head}>FAIL</th><th {head}>Pass %</th></tr>{rows_html}</table>'
-            + "<p>Full report is attached (Excel). Shift C is counted with the day before it.</p>"
-            + '<p style="color:#888;">Automatic mail from the Digital Eye Viewer.</p>')
-    return plain, html
+def _rows_for_day(day: str) -> dict[str, list[dict]]:
+    """{app name: every task row of that SHIFT day}. Shift C (00:00-07:00)
+    counts with the day before, same as the on-screen cards."""
+    app_names: dict[str, str] = {}
+    for g in _list_groups():
+        app_names.setdefault(_safe_name(g["appName"]), g["appName"])
+    out: dict[str, list[dict]] = {}
+    for safe, display in sorted(app_names.items()):
+        rows: list[dict] = []
+        for d in _device_dirs_for_app(safe):
+            rows.extend(_flatten_rows(d, safe))
+        out[display] = [r for r in rows if _shift_day(r) == day]
+    return out
+
+
+def _blank_count() -> dict:
+    return {"total": 0, "ok": 0, "notok": 0}
+
+
+def _add_count(counts: dict, is_ok: bool):
+    counts["total"] += 1
+    counts["ok" if is_ok else "notok"] += 1
+
+
+def _app_stats(display: str, rows: list[dict]) -> dict:
+    """The same four groups as the pie cards on the viewer's app page:
+    All Results, Results by Shift, All VINs (pass/fail), VINs by Shift."""
+    results, vins = _blank_count(), _blank_count()
+    results_shift = {s: _blank_count() for s in SHIFT_NAMES}
+    vins_shift = {s: _blank_count() for s in SHIFT_NAMES}
+    for r in rows:                       # one row = one task result
+        ok = r.get("result") == "OK"
+        _add_count(results, ok)
+        _add_count(results_shift.setdefault(r.get("shift") or "Unknown", _blank_count()), ok)
+    for e in _scan_events(rows):         # one event = one VIN scan (PASS only if every task is OK)
+        _add_count(vins, e["pass"])
+        _add_count(vins_shift.setdefault(e["shift"] or "Unknown", _blank_count()), e["pass"])
+    return {"app": display, "results": results, "resultsByShift": results_shift,
+            "vins": vins, "vinsByShift": vins_shift}
+
+
+def _all_apps_stats(per_app: list[dict]) -> dict:
+    total = _app_stats("ALL APPS", [])
+    for st in per_app:
+        for group in ("results", "vins"):
+            for k in ("total", "ok", "notok"):
+                total[group][k] += st[group][k]
+        for group in ("resultsByShift", "vinsByShift"):
+            for shift, c in st[group].items():
+                t = total[group].setdefault(shift, _blank_count())
+                for k in ("total", "ok", "notok"):
+                    t[k] += c[k]
+    return total
+
+
+def _render_day_mail(day: str, per_app: list[dict]) -> tuple[str, str]:
+    """Plain-text and HTML mail body: one table per app."""
+    tables = list(per_app)
+    if len(per_app) > 1:
+        tables.append(_all_apps_stats(per_app))
+
+    def block(st):
+        # (label, counts, name of the "good" column, name of the "bad" column)
+        rows = [("All Results", st["results"], "OK", "NOT OK")]
+        rows += [(f"Shift {s}", c, "OK", "NOT OK") for s, c in st["resultsByShift"].items()]
+        rows += [("All VINs", st["vins"], "PASS", "FAIL")]
+        rows += [(f"Shift {s}", c, "PASS", "FAIL") for s, c in st["vinsByShift"].items()]
+        return rows
+
+    plain = [f"Digital Eye daily report for {day}", ""]
+    html = [f"<p>Digital Eye daily report for <b>{day}</b></p>"]
+    cell = 'style="border:1px solid #ccc;padding:5px 12px;text-align:center;"'
+    left = 'style="border:1px solid #ccc;padding:5px 12px;text-align:left;"'
+    head = 'style="border:1px solid #ccc;padding:5px 12px;background:#C8102E;color:#fff;"'
+    for st in tables:
+        plain.append(st["app"])
+        html.append(f'<table style="border-collapse:collapse;font-family:Arial;font-size:13px;margin-bottom:16px;">'
+                    f'<tr><th {head} colspan="4" align="left">{st["app"]}</th></tr>')
+        for label, c, good, bad in block(st):
+            is_total = label.startswith("All")
+            if is_total:
+                html.append(f'<tr><td {head}>{label}</td><td {head}>Total</td><td {head}>{good}</td><td {head}>{bad}</td></tr>')
+                plain.append(f"  {label}: total {c['total']}, {good} {c['ok']}, {bad} {c['notok']}")
+                html.append(f'<tr style="font-weight:bold;"><td {left}>&nbsp;</td><td {cell}>{c["total"]}</td>'
+                            f'<td {cell}>{c["ok"]}</td><td {cell}>{c["notok"]}</td></tr>')
+            else:
+                plain.append(f"    {label}: total {c['total']}, {good} {c['ok']}, {bad} {c['notok']}")
+                html.append(f'<tr><td {left}>{label}</td><td {cell}>{c["total"]}</td>'
+                            f'<td {cell}>{c["ok"]}</td><td {cell}>{c["notok"]}</td></tr>')
+        html.append("</table>")
+        plain.append("")
+    note = ("The attached Excel has only the NOT OK results of this day (same columns as the viewer table). "
+            "Shift C is counted with the day before it.")
+    plain += [note, "Automatic mail from the Digital Eye Viewer."]
+    html += [f"<p>{note}</p>", '<p style="color:#888;">Automatic mail from the Digital Eye Viewer.</p>']
+    return "\n".join(plain), "".join(html)
+
+
+def _daily_package(day: str) -> dict:
+    """Everything one daily mail needs: summary numbers, mail bodies, and the
+    NOT OK-only Excel (bytes) for that shift day."""
+    by_app = _rows_for_day(day)
+    per_app = [_app_stats(display, rows) for display, rows in by_app.items()]
+    plain, html = _render_day_mail(day, per_app)
+    notok_rows = [r for rows in by_app.values() for r in rows if r.get("result") != "OK"]
+    notok_rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    return {"day": day, "apps": per_app, "plain": plain, "html": html,
+            "excel": _build_workbook(notok_rows).getvalue(), "notokRows": len(notok_rows)}
+
+
+def _check_day(day: str) -> str:
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="day must look like 2026-11-24")
+    return day
+
+
+@app.get("/api/daily-summary")
+async def api_daily_summary(day: str, _: None = Depends(_require_session)):
+    """Numbers + ready-made mail text for one shift day (used by fetch_and_mail.py)."""
+    pkg = await run_in_threadpool(_daily_package, _check_day(day))
+    return {k: pkg[k] for k in ("day", "apps", "plain", "html", "notokRows")}
+
+
+@app.get("/download/daily-notok")
+async def download_daily_notok(day: str, _: None = Depends(_require_session)):
+    """Excel with only the NOT OK results of one shift day, all apps."""
+    day = _check_day(day)
+    rows_by_app = await run_in_threadpool(_rows_for_day, day)
+    rows = [r for rs in rows_by_app.values() for r in rs if r.get("result") != "OK"]
+    rows.sort(key=lambda r: (r["date"] or "", r["time"] or ""), reverse=True)
+    return Response(
+        content=_build_workbook(rows).getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="DigitalEye_NOT_OK_{day}.xlsx"'},
+    )
 
 
 def _send_daily_report(day: str):
-    """Builds the report for `day` and mails it. Raises an Exception on any
+    """Builds the day's mail and sends it. Raises an Exception on any
     problem (caller prints it) so a failure is never silent."""
     import smtplib
     from email.message import EmailMessage
@@ -2639,19 +2736,16 @@ def _send_daily_report(day: str):
     if not host or not sender or not recipients:
         raise ValueError("Mail is not set up. Run: python viewer.py --set-mail")
 
-    stats: list = []
-    buf = _build_report_workbook(only_day=day, stats=stats)
-    plain, html = _build_mail_body(day, stats)
-
+    pkg = _daily_package(day)
     msg = EmailMessage()
     msg["Subject"] = f"Digital Eye Daily Report - {day}"
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
-    msg.set_content(plain)
-    msg.add_alternative(html, subtype="html")
-    msg.add_attachment(buf.getvalue(), maintype="application",
+    msg.set_content(pkg["plain"])
+    msg.add_alternative(pkg["html"], subtype="html")
+    msg.add_attachment(pkg["excel"], maintype="application",
                        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       filename=f"DigitalEye_Report_{day}.xlsx")
+                       filename=f"DigitalEye_NOT_OK_{day}.xlsx")
 
     port = int(mail.get("port") or 587)
     security = (mail.get("security") or "starttls").lower()   # starttls / ssl / none
