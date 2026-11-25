@@ -2232,7 +2232,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           onTap: () {
                             _addLog('Tap to start pressed (task ${_currentIndex + 1})');
                             setState(() => _startPending = false);
-                            _startWatching();
+                            _startSimScan();
                           },
                           child: Container(
                             color: Colors.black45,
@@ -2880,7 +2880,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           onTap: () {
                             _addLog('Tap to start pressed (task ${_currentIndex + 1})');
                             setState(() => _startPending = false);
-                            _startSimScan();
+                            _startWatching();
                           },
                           child: Container(
                             color: Colors.black45,
@@ -4920,7 +4920,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           onTap: () {
                             _addLog('Tap to start pressed (task ${_currentIndex + 1})');
                             setState(() => _startPending = false);
-                            _startWatching();
+                            _startSimScan();
                           },
                           child: Container(
                             color: Colors.black45,
@@ -5443,7 +5443,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                           onTap: () {
                             _addLog('Tap to start pressed (task ${_currentIndex + 1})');
                             setState(() => _startPending = false);
-                            _startSimScan();
+                            _startWatching();
                           },
                           child: Container(
                             color: Colors.black45,
