@@ -2664,46 +2664,48 @@ def _all_apps_stats(per_app: list[dict]) -> dict:
 
 
 def _render_day_mail(day: str, per_app: list[dict]) -> tuple[str, str]:
-    """Plain-text and HTML mail body: one table per app. Each group is one
-    line of totals, then the shifts A / B / C side by side on the next lines."""
-    tables = list(per_app)
+    """Plain-text and HTML mail body: ONE table, same layout as the Excel Summary
+    tab. Columns: All, Shift A, Shift B, Shift C, each with Total / OK / NOK.
+    Two rows per app (Results, VINs), plus an ALL APPS total at the end."""
+    apps = list(per_app)
     if len(per_app) > 1:
-        tables.append(_all_apps_stats(per_app))
+        apps.append(_all_apps_stats(per_app))
 
-    plain = [f"Digital Eye daily report for {day}", ""]
-    html = [f"<p>Digital Eye daily report for <b>{day}</b></p>"]
-    cell = 'style="border:1px solid #ccc;padding:5px 12px;text-align:center;"'
-    left = 'style="border:1px solid #ccc;padding:5px 12px;text-align:left;font-weight:bold;"'
-    head = 'style="border:1px solid #ccc;padding:5px 12px;background:#C8102E;color:#fff;"'
-    sub = 'style="border:1px solid #ccc;padding:5px 12px;background:#f1f1f1;"'
+    def nums(c):
+        return [c["total"], c["ok"], c["notok"]]
 
-    for st in tables:
-        plain.append(st["app"])
-        html.append('<table style="border-collapse:collapse;font-family:Arial;font-size:13px;margin-bottom:18px;">'
-                    f'<tr><th {head} colspan="4" align="left">{st["app"]}</th></tr>')
-        for name, total, by_shift, good, bad in (
-                ("All Results", st["results"], st["resultsByShift"], "OK", "NOT OK"),
-                ("All VINs", st["vins"], st["vinsByShift"], "PASS", "FAIL")):
-            # line 1: the totals
-            html.append(f'<tr><td {sub}><b>{name}</b></td><td {sub}><b>Total</b></td>'
-                        f'<td {sub}><b>{good}</b></td><td {sub}><b>{bad}</b></td></tr>'
-                        f'<tr><td {left}>&nbsp;</td><td {cell}>{total["total"]}</td>'
-                        f'<td {cell}>{total["ok"]}</td><td {cell}>{total["notok"]}</td></tr>')
-            plain.append(f"  {name}: total {total['total']}, {good} {total['ok']}, {bad} {total['notok']}")
-            # next line: shifts side by side
-            shifts = list(by_shift)
-            html.append(f'<tr><td {sub}><b>Shift</b></td>'
-                        + "".join(f'<td {sub}><b>{sh}</b></td>' for sh in shifts) + "</tr>")
-            plain.append("    " + "Shift".ljust(8) + "".join(sh.ljust(6) for sh in shifts))
-            for label, key in (("Total", "total"), (good, "ok"), (bad, "notok")):
-                html.append(f'<tr><td {left}>{label}</td>'
-                            + "".join(f'<td {cell}>{by_shift[sh][key]}</td>' for sh in shifts) + "</tr>")
-                plain.append("    " + label.ljust(8) + "".join(str(by_shift[sh][key]).ljust(6) for sh in shifts))
-        html.append("</table>")
-        plain.append("")
-    note = ("The attached Excel starts with a Summary tab (these tables for every app), then one tab per app "
-            "with the VINs that failed that day and all their tasks. Shift C is counted with the day before it.")
-    plain += [note, "Automatic mail from the Digital Eye Viewer."]
+    def row_values(total, by_shift):
+        values = nums(total)
+        for sh in SHIFT_NAMES:
+            values += nums(by_shift.get(sh, _blank_count()))
+        return values
+
+    plain = [f"Digital Eye daily report for {day}", "",
+             "App".ljust(24) + "Measure".ljust(9)
+             + "".join(g.ljust(18) for g in ("All", "Shift A", "Shift B", "Shift C")),
+             " " * 33 + "".join("Total OK    NOK   " for _ in range(4))]
+    cell = 'style="border:1px solid #ccc;padding:4px 10px;text-align:center;"'
+    left = 'style="border:1px solid #ccc;padding:4px 10px;text-align:left;font-weight:bold;"'
+    head = 'style="border:1px solid #ccc;padding:4px 10px;background:#C8102E;color:#fff;text-align:center;"'
+    sub = 'style="border:1px solid #ccc;padding:4px 10px;background:#eee;font-weight:bold;text-align:center;"'
+
+    html = [f"<p>Digital Eye daily report for <b>{day}</b></p>",
+            '<table style="border-collapse:collapse;font-family:Arial;font-size:13px;">',
+            f'<tr><th {head} rowspan="2">App</th><th {head} rowspan="2">Measure</th>'
+            + "".join(f'<th {head} colspan="3">{g}</th>' for g in ("All", "Shift A", "Shift B", "Shift C"))
+            + "</tr><tr>" + f"<th {sub}>Total</th><th {sub}>OK</th><th {sub}>NOK</th>" * 4 + "</tr>"]
+    for st in apps:
+        for i, (measure, total, by_shift) in enumerate((("Results", st["results"], st["resultsByShift"]),
+                                                        ("VINs", st["vins"], st["vinsByShift"]))):
+            values = row_values(total, by_shift)
+            name = st["app"] if i == 0 else ""
+            html.append(f'<tr><td {left}>{name}</td><td {cell}>{measure}</td>'
+                        + "".join(f"<td {cell}>{v}</td>" for v in values) + "</tr>")
+            plain.append(name.ljust(24) + measure.ljust(9) + "".join(str(v).ljust(6) for v in values))
+    html.append("</table>")
+    note = ("The attached Excel starts with a Summary tab (this table with pie charts), then one tab per app "
+            "with the NOK VINs of that day and all their tasks. Shift C is counted with the day before it.")
+    plain += ["", note, "Automatic mail from the Digital Eye Viewer."]
     html += [f"<p>{note}</p>", '<p style="color:#888;">Automatic mail from the Digital Eye Viewer.</p>']
     return "\n".join(plain), "".join(html)
 
