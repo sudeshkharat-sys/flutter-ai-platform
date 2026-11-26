@@ -2757,47 +2757,57 @@ def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> b
     from openpyxl.chart import PieChart, Reference
     from openpyxl.chart.label import DataLabelList
 
-    def tom(c):
-        """Total/OK/NOT OK as text, like 10/8/2."""
-        return f"{c['total']}/{c['ok']}/{c['notok']}"
+    def three(c):
+        """Total, OK, NOT OK as three separate numbers."""
+        return [c["total"], c["ok"], c["notok"]]
 
     ws = wb.create_sheet("Summary")
-    ws.append(["Daily summary  (cells show Total / OK / NOT OK)"])
-    style_row(ws, 1, 6, font=Font(bold=True, size=14))
-    ws.append(["App", "Measure", "All (T/O/N)", "A (T/O/N)", "B (T/O/N)", "C (T/O/N)"])
-    style_row(ws, 2, 6, fill=red, font=Font(bold=True, color="FFFFFF"), align=center)
+    ws.append(["Daily summary"])
+    style_row(ws, 1, 14, font=Font(bold=True, size=14))
+    # header row 1: group names (merged over 3 columns), row 2: Total / OK / NOT OK
+    ws.append(["App", "Measure", "All", "", "", "A", "", "", "B", "", "", "C", "", ""])
+    ws.append(["", ""] + ["Total", "OK", "NOT OK"] * 4)
+    for col in (1, 2):
+        ws.merge_cells(start_row=2, start_column=col, end_row=3, end_column=col)
+    for start in (3, 6, 9, 12):
+        ws.merge_cells(start_row=2, start_column=start, end_row=2, end_column=start + 2)
+    style_row(ws, 2, 14, fill=red, font=Font(bold=True, color="FFFFFF"), align=Alignment(horizontal="center", vertical="center"))
+    style_row(ws, 3, 14, fill=grey, font=Font(bold=True), align=center)
     for st in per_app:
         for measure, total, by_shift in (("Results", st["results"], st["resultsByShift"]),
                                          ("VINs", st["vins"], st["vinsByShift"])):
-            ws.append([st["app"] if measure == "Results" else "", measure, tom(total)]
-                      + [tom(by_shift.get(sh, _blank_count())) for sh in SHIFT_NAMES])
-            style_row(ws, ws.max_row, 6, align=center)
+            row = [st["app"] if measure == "Results" else "", measure] + three(total)
+            for sh in SHIFT_NAMES:
+                row += three(by_shift.get(sh, _blank_count()))
+            ws.append(row)
+            style_row(ws, ws.max_row, 14, align=center)
             ws.cell(row=ws.max_row, column=1).alignment = Alignment(horizontal="left")
             ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
     if not per_app:
         ws.append(["No visible apps found."])
     ws.column_dimensions["A"].width = 28
-    for col in "BCDEF":
-        ws.column_dimensions[col].width = 14
+    ws.column_dimensions["B"].width = 10
+    for i in range(3, 15):
+        ws.column_dimensions[get_column_letter(i)].width = 9
 
-    # Numbers for the pie charts (plain numbers, far right, columns J:L)
-    ws["J2"], ws["K2"], ws["L2"] = "Chart data", "OK / PASS", "NOT OK / FAIL"
+    # Numbers for the pie charts (plain numbers, far right, columns Q:S)
+    ws["Q2"], ws["R2"], ws["S2"] = "Chart data", "OK / PASS", "NOT OK / FAIL"
     chart_row = ws.max_row + 3
     data_row = 3
     for st in per_app:
-        ws.cell(row=data_row, column=10, value=f"{st['app']} - Results")
-        ws.cell(row=data_row, column=11, value=st["results"]["ok"])
-        ws.cell(row=data_row, column=12, value=st["results"]["notok"])
-        ws.cell(row=data_row + 1, column=10, value=f"{st['app']} - VINs")
-        ws.cell(row=data_row + 1, column=11, value=st["vins"]["ok"])
-        ws.cell(row=data_row + 1, column=12, value=st["vins"]["notok"])
-        for i, (title, anchor_col) in enumerate((("Results (OK / NOT OK)", "A"), ("VINs (PASS / FAIL)", "D"))):
+        ws.cell(row=data_row, column=17, value=f"{st['app']} - Results")
+        ws.cell(row=data_row, column=18, value=st["results"]["ok"])
+        ws.cell(row=data_row, column=19, value=st["results"]["notok"])
+        ws.cell(row=data_row + 1, column=17, value=f"{st['app']} - VINs")
+        ws.cell(row=data_row + 1, column=18, value=st["vins"]["ok"])
+        ws.cell(row=data_row + 1, column=19, value=st["vins"]["notok"])
+        for i, (title, anchor_col) in enumerate((("Results (OK / NOT OK)", "A"), ("VINs (PASS / FAIL)", "H"))):
             pie = PieChart()
             pie.title = f"{st['app']} - {title}"
             row = data_row + i
             # series = the two numbers of this row; labels = the two header names
-            pie.add_data(Reference(ws, min_col=11, max_col=12, min_row=row), from_rows=True, titles_from_data=False)
-            pie.set_categories(Reference(ws, min_col=11, max_col=12, min_row=2))
+            pie.add_data(Reference(ws, min_col=18, max_col=19, min_row=row), from_rows=True, titles_from_data=False)
+            pie.set_categories(Reference(ws, min_col=18, max_col=19, min_row=2))
             pie.dataLabels = DataLabelList()
             pie.dataLabels.showVal = True
             pie.dataLabels.showCatName = False
@@ -2808,9 +2818,9 @@ def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> b
             ws.add_chart(pie, f"{anchor_col}{chart_row}")
         data_row += 2
         chart_row += 16       # next app's two pies go below
-    ws.column_dimensions["J"].width = 30
-    ws.column_dimensions["K"].width = 14
-    ws.column_dimensions["L"].width = 16
+    ws.column_dimensions["Q"].width = 30
+    ws.column_dimensions["R"].width = 14
+    ws.column_dimensions["S"].width = 16
 
     # Then one tab per app
     for app_name, rows in by_app.items():
