@@ -1640,6 +1640,12 @@ VIEWER_HTML = """<!doctype html>
       <span class="muted" style="font-size:12px;">All apps: storage, total / unique / duplicate VINs, pass-fail by day, shift and month, drive space.</span>
       <button class="btn-back" onclick="window.location='/download/report'">&#128202; Generate Report</button>
     </div>
+    <div class="gear-section">
+      <b>Daily Summary Report</b>
+      <span class="muted" style="font-size:12px;">Summary tab (All / Shift A / B / C: Total, OK, NOK per app) with pie charts, then one tab per app with its NOK VINs. Shift C counts with the day before.</span>
+      <label>Day <input type="date" id="gDay"></label>
+      <button class="btn-back" onclick="gearDailyReport()">&#128202; Download Daily Summary</button>
+    </div>
   </div>
 </div>
 <main>
@@ -2447,6 +2453,18 @@ async function openGear() {
   }
 }
 function closeGear() { document.getElementById('gearModal').style.display = 'none'; }
+function gearDailyReport() {
+  var d = document.getElementById('gDay').value;
+  if (!d) { alert('Pick a day first.'); return; }
+  window.location = '/download/daily-excel?day=' + d;
+}
+// default the day picker to yesterday
+(function () {
+  var t = new Date(); t.setDate(t.getDate() - 1);
+  var m = String(t.getMonth() + 1).padStart(2, '0'), dd = String(t.getDate()).padStart(2, '0');
+  var el = document.getElementById('gDay');
+  if (el) el.value = t.getFullYear() + '-' + m + '-' + dd;
+})();
 function gearDownload() {
   const year = document.getElementById('gYear').value, month = document.getElementById('gMonth').value;
   if (month && !year) { alert('Pick a year along with the month.'); return; }
@@ -2765,8 +2783,8 @@ def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> b
     ws.append(["Daily summary"])
     style_row(ws, 1, 14, font=Font(bold=True, size=14))
     # header row 1: group names (merged over 3 columns), row 2: Total / OK / NOT OK
-    ws.append(["App", "Measure", "All", "", "", "A", "", "", "B", "", "", "C", "", ""])
-    ws.append(["", ""] + ["Total", "OK", "NOT OK"] * 4)
+    ws.append(["App", "Measure", "All", "", "", "Shift A", "", "", "Shift B", "", "", "Shift C", "", ""])
+    ws.append(["", ""] + ["Total", "OK", "NOK"] * 4)
     for col in (1, 2):
         ws.merge_cells(start_row=2, start_column=col, end_row=3, end_column=col)
     for start in (3, 6, 9, 12):
