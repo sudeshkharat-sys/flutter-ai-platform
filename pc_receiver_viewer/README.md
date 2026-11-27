@@ -207,12 +207,13 @@ For one day, the mail shows a table per app -- the same numbers as the pie cards
 on the app page. Each group is one line of totals (All Results: Total / OK / NOT OK,
 All VINs: Total / PASS / FAIL) with Shift A / B / C side by side on the next lines.
 
-The attached Excel (`DigitalEye_Daily_<day>.xlsx`) starts with a **Summary** tab:
-every visible app one after another (its viewer display name on top, then the same
-tables as the mail). After it comes **one tab per app** (hidden apps are left out): the
-same tables on top, and below them the VINs that **failed** that day with **every task of
-each of those VINs** (OK and NOT OK, NOT OK highlighted), in the same columns as the
-viewer's data table.
+The attached Excel (`DigitalEye_Daily_<day>.xlsx`) starts with a **Summary** tab: one table,
+two rows per app (Results, VINs), columns All / Shift A / Shift B / Shift C, each with
+Total / OK / NOK / % (OK share). NOK columns have a light red background. Apps hidden in the
+viewer are included here, marked "(hidden)", and two pie charts per app sit below the table.
+After it comes **one tab per visible app** (hidden apps are left out): the same tables on top,
+and below them the VINs that **failed** that day with **every task of each of those VINs**
+(OK and NOT OK, NOT OK highlighted), in the same columns as the viewer's data table.
 
 ```bash
 pip install openpyxl

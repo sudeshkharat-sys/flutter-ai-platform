@@ -670,7 +670,7 @@ def api_data(device: str, appName: str, _: None = Depends(_require_session)):
     return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
 
 
-def _device_dirs_for_app(app_name_safe: str) -> list[str]:
+def _device_dirs_for_app(app_name_safe: str, include_hidden: bool = False) -> list[str]:
     """Every device's safe folder name that has data for this exact app
     name. Unlike receiver.py's equivalent, this has no alias/merge concept
     of its own -- it's derived purely from the folder layout (same as
@@ -683,7 +683,7 @@ def _device_dirs_for_app(app_name_safe: str) -> list[str]:
     for device_dir in DATA_DIR.iterdir():
         if not device_dir.is_dir() or device_dir.name == "_master":
             continue
-        if (device_dir.name, app_name_safe) in hidden:
+        if not include_hidden and (device_dir.name, app_name_safe) in hidden:
             continue
         if (device_dir / app_name_safe).exists():
             devices.append(device_dir.name)
@@ -2603,24 +2603,34 @@ def _yesterday_str() -> str:
 SHIFT_NAMES = ["A", "B", "C"]
 
 
-def _rows_for_day(day: str) -> dict[str, list[dict]]:
-    """{app display name: every task row of that SHIFT day}. Apps hidden in the
-    viewer are not included. Shift C (00:00-07:00) counts with the day before,
-    same as the on-screen cards."""
-    app_names: dict[str, str] = {}
+def _rows_for_day(day: str) -> tuple[dict[str, list[dict]], set[str]]:
+    """({app label: every task row of that SHIFT day}, {labels of hidden apps}).
+    Apps hidden in the viewer ARE included (labelled "name (hidden)") so the Summary
+    shows the whole picture; the per-app Excel tabs use only the visible ones.
+    Shift C (00:00-07:00) counts with the day before, same as the on-screen cards."""
+    visible: dict[str, str] = {}
     for g in _list_groups():
-        app_names.setdefault(_safe_name(g["appName"]), g["appName"])
+        visible.setdefault(_safe_name(g["appName"]), g["appName"])
+    all_apps = dict(visible)
+    for _dev, app_safe in _load_hidden():          # hidden device/app pairs
+        all_apps.setdefault(app_safe, app_safe)
     display_names = _load_display_names()
     out: dict[str, list[dict]] = {}
-    for safe, real_name in sorted(app_names.items()):
+    hidden_labels: set[str] = set()
+    for safe, real_name in sorted(all_apps.items()):
         rows: list[dict] = []
-        for d in _device_dirs_for_app(safe):
+        for d in _device_dirs_for_app(safe, include_hidden=True):
             rows.extend(_flatten_rows(d, safe))
         label = display_names.get(safe) or real_name
+        is_hidden = safe not in visible
+        if is_hidden:
+            label = f"{label} (hidden)"
         if label in out:                       # two apps with the same display name
             label = f"{label} ({safe})"
         out[label] = [r for r in rows if _shift_day(r) == day]
-    return out
+        if is_hidden:
+            hidden_labels.add(label)
+    return out, hidden_labels
 
 
 def _blank_count() -> dict:
@@ -2630,6 +2640,11 @@ def _blank_count() -> dict:
 def _add_count(counts: dict, is_ok: bool):
     counts["total"] += 1
     counts["ok" if is_ok else "notok"] += 1
+
+
+def _pct_text(c: dict) -> str:
+    """OK share of Total, e.g. '95.2%' ('-' when there is nothing)."""
+    return f"{c['ok'] * 100 / c['total']:.1f}%" if c["total"] else "-"
 
 
 def _app_stats(display: str, rows: list[dict]) -> dict:
@@ -2672,7 +2687,7 @@ def _render_day_mail(day: str, per_app: list[dict]) -> tuple[str, str]:
         apps.append(_all_apps_stats(per_app))
 
     def nums(c):
-        return [c["total"], c["ok"], c["notok"]]
+        return [c["total"], c["ok"], c["notok"], _pct_text(c)]
 
     def row_values(total, by_shift):
         values = nums(total)
@@ -2683,24 +2698,27 @@ def _render_day_mail(day: str, per_app: list[dict]) -> tuple[str, str]:
     plain = [f"Digital Eye daily report for {day}", "",
              "App".ljust(24) + "Measure".ljust(9)
              + "".join(g.ljust(18) for g in ("All", "Shift A", "Shift B", "Shift C")),
-             " " * 33 + "".join("Total OK    NOK   " for _ in range(4))]
+             " " * 33 + "".join("Total OK    NOK   %     " for _ in range(4))]
     cell = 'style="border:1px solid #ccc;padding:4px 10px;text-align:center;"'
     left = 'style="border:1px solid #ccc;padding:4px 10px;text-align:left;font-weight:bold;"'
     head = 'style="border:1px solid #ccc;padding:4px 10px;background:#C8102E;color:#fff;text-align:center;"'
     sub = 'style="border:1px solid #ccc;padding:4px 10px;background:#eee;font-weight:bold;text-align:center;"'
+    nok_head = 'style="border:1px solid #ccc;padding:4px 10px;background:#F8D7DA;font-weight:bold;text-align:center;"'
+    nok_cell = 'style="border:1px solid #ccc;padding:4px 10px;text-align:center;background:#F8D7DA;"'
 
     html = [f"<p>Digital Eye daily report for <b>{day}</b></p>",
             '<table style="border-collapse:collapse;font-family:Arial;font-size:13px;">',
             f'<tr><th {head} rowspan="2">App</th><th {head} rowspan="2">Measure</th>'
-            + "".join(f'<th {head} colspan="3">{g}</th>' for g in ("All", "Shift A", "Shift B", "Shift C"))
-            + "</tr><tr>" + f"<th {sub}>Total</th><th {sub}>OK</th><th {sub}>NOK</th>" * 4 + "</tr>"]
+            + "".join(f'<th {head} colspan="4">{g}</th>' for g in ("All", "Shift A", "Shift B", "Shift C"))
+            + "</tr><tr>" + f"<th {sub}>Total</th><th {sub}>OK</th><th {nok_head}>NOK</th><th {sub}>%</th>" * 4 + "</tr>"]
     for st in apps:
         for i, (measure, total, by_shift) in enumerate((("Results", st["results"], st["resultsByShift"]),
                                                         ("VINs", st["vins"], st["vinsByShift"]))):
             values = row_values(total, by_shift)
             name = st["app"] if i == 0 else ""
             html.append(f'<tr><td {left}>{name}</td><td {cell}>{measure}</td>'
-                        + "".join(f"<td {cell}>{v}</td>" for v in values) + "</tr>")
+                        + "".join(f"<td {nok_cell if k % 4 == 2 else cell}>{v}</td>"
+                                  for k, v in enumerate(values)) + "</tr>")
             plain.append(name.ljust(24) + measure.ljust(9) + "".join(str(v).ljust(6) for v in values))
     html.append("</table>")
     note = ("The attached Excel starts with a Summary tab (this table with pie charts), then one tab per app "
@@ -2723,6 +2741,8 @@ def _sheet_title(name: str, used: set) -> str:
 
 
 def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> bytes:
+    # per_app = every app (the Summary tab, hidden ones included);
+    # by_app = visible apps only (one tab each).
     """One Excel for the day.
     - First tab "Summary": every visible app one after another (display name on
       top, the All Results / All VINs tables, some space between apps).
@@ -2776,71 +2796,96 @@ def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> b
     # Tab 1: Summary -- one compact table (2 rows per app) + pie charts
     from openpyxl.chart import PieChart, Reference
     from openpyxl.chart.label import DataLabelList
+    from openpyxl.chart.series import DataPoint
+    from openpyxl.drawing.text import CharacterProperties, ParagraphProperties
 
-    def three(c):
-        """Total, OK, NOT OK as three separate numbers."""
-        return [c["total"], c["ok"], c["notok"]]
+    def four(c):
+        """Total, OK, NOT OK and OK % (a real number, shown as a percent)."""
+        return [c["total"], c["ok"], c["notok"], (c["ok"] / c["total"]) if c["total"] else None]
 
+    N_COLS = 18                                  # App, Measure + 4 groups x 4 columns
     ws = wb.create_sheet("Summary")
     ws.append(["Daily summary"])
-    style_row(ws, 1, 14, font=Font(bold=True, size=14))
-    # header row 1: group names (merged over 3 columns), row 2: Total / OK / NOT OK
-    ws.append(["App", "Measure", "All", "", "", "Shift A", "", "", "Shift B", "", "", "Shift C", "", ""])
-    ws.append(["", ""] + ["Total", "OK", "NOK"] * 4)
+    style_row(ws, 1, N_COLS, font=Font(bold=True, size=14))
+    # header row 1: group names (merged over 4 columns), row 2: Total / OK / NOK / %
+    ws.append(["App", "Measure", "All", "", "", "", "Shift A", "", "", "", "Shift B", "", "", "", "Shift C", "", "", ""])
+    ws.append(["", ""] + ["Total", "OK", "NOK", "%"] * 4)
     for col in (1, 2):
         ws.merge_cells(start_row=2, start_column=col, end_row=3, end_column=col)
-    for start in (3, 6, 9, 12):
-        ws.merge_cells(start_row=2, start_column=start, end_row=2, end_column=start + 2)
-    style_row(ws, 2, 14, fill=red, font=Font(bold=True, color="FFFFFF"), align=Alignment(horizontal="center", vertical="center"))
-    style_row(ws, 3, 14, fill=grey, font=Font(bold=True), align=center)
+    for start in (3, 7, 11, 15):
+        ws.merge_cells(start_row=2, start_column=start, end_row=2, end_column=start + 3)
+    style_row(ws, 2, N_COLS, fill=red, font=Font(bold=True, color="FFFFFF"), align=Alignment(horizontal="center", vertical="center"))
+    style_row(ws, 3, N_COLS, fill=grey, font=Font(bold=True), align=center)
+    for col in range(5, N_COLS + 1, 4):          # NOK columns: light red
+        ws.cell(row=3, column=col).fill = light_red
     for st in per_app:
         for measure, total, by_shift in (("Results", st["results"], st["resultsByShift"]),
                                          ("VINs", st["vins"], st["vinsByShift"])):
-            row = [st["app"] if measure == "Results" else "", measure] + three(total)
+            row = [st["app"] if measure == "Results" else "", measure] + four(total)
             for sh in SHIFT_NAMES:
-                row += three(by_shift.get(sh, _blank_count()))
+                row += four(by_shift.get(sh, _blank_count()))
             ws.append(row)
-            style_row(ws, ws.max_row, 14, align=center)
+            style_row(ws, ws.max_row, N_COLS, align=center)
+            for col in range(5, N_COLS + 1, 4):  # NOK columns: light red
+                ws.cell(row=ws.max_row, column=col).fill = light_red
+            for col in range(6, N_COLS + 1, 4):  # % columns: show as 95.2%
+                ws.cell(row=ws.max_row, column=col).number_format = "0.0%"
             ws.cell(row=ws.max_row, column=1).alignment = Alignment(horizontal="left")
             ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
     if not per_app:
         ws.append(["No visible apps found."])
     ws.column_dimensions["A"].width = 28
     ws.column_dimensions["B"].width = 10
-    for i in range(3, 15):
+    for i in range(3, N_COLS + 1):
         ws.column_dimensions[get_column_letter(i)].width = 9
 
-    # Numbers for the pie charts (plain numbers, far right, columns Q:S)
-    ws["Q2"], ws["R2"], ws["S2"] = "Chart data", "OK / PASS", "NOT OK / FAIL"
+    # Numbers for the pie charts (plain numbers, far right, columns U:W)
+    CD = 21                                      # column U
+    ws.cell(row=2, column=CD, value="Chart data")
+    ws.cell(row=2, column=CD + 1, value="OK / PASS")
+    ws.cell(row=2, column=CD + 2, value="NOT OK / FAIL")
     chart_row = ws.max_row + 3
     data_row = 3
     for st in per_app:
-        ws.cell(row=data_row, column=17, value=f"{st['app']} - Results")
-        ws.cell(row=data_row, column=18, value=st["results"]["ok"])
-        ws.cell(row=data_row, column=19, value=st["results"]["notok"])
-        ws.cell(row=data_row + 1, column=17, value=f"{st['app']} - VINs")
-        ws.cell(row=data_row + 1, column=18, value=st["vins"]["ok"])
-        ws.cell(row=data_row + 1, column=19, value=st["vins"]["notok"])
-        for i, (title, anchor_col) in enumerate((("Results (OK / NOT OK)", "A"), ("VINs (PASS / FAIL)", "H"))):
+        ws.cell(row=data_row, column=CD, value=f"{st['app']} - Results")
+        ws.cell(row=data_row, column=CD + 1, value=st["results"]["ok"])
+        ws.cell(row=data_row, column=CD + 2, value=st["results"]["notok"])
+        ws.cell(row=data_row + 1, column=CD, value=f"{st['app']} - VINs")
+        ws.cell(row=data_row + 1, column=CD + 1, value=st["vins"]["ok"])
+        ws.cell(row=data_row + 1, column=CD + 2, value=st["vins"]["notok"])
+        for i, (title, anchor_col) in enumerate((("Results", "A"), ("VINs", "H"))):
             pie = PieChart()
+            # Short title, in a small font, NOT drawn over the pie, so it cannot
+            # mix with the slice numbers. The legend sits at the bottom.
             pie.title = f"{st['app']} - {title}"
+            pie.title.overlay = False
+            small = CharacterProperties(sz=1000, b=True)
+            pie.title.tx.rich.p[0].pPr = ParagraphProperties(defRPr=small)
+            for run in pie.title.tx.rich.p[0].r:
+                run.rPr = small
             row = data_row + i
             # series = the two numbers of this row; labels = the two header names
-            pie.add_data(Reference(ws, min_col=18, max_col=19, min_row=row), from_rows=True, titles_from_data=False)
-            pie.set_categories(Reference(ws, min_col=18, max_col=19, min_row=2))
+            pie.add_data(Reference(ws, min_col=CD + 1, max_col=CD + 2, min_row=row), from_rows=True, titles_from_data=False)
+            pie.set_categories(Reference(ws, min_col=CD + 1, max_col=CD + 2, min_row=2))
+            for idx, colour in ((0, "1F9D55"), (1, "DC143C")):     # green OK, red NOT OK
+                point = DataPoint(idx=idx)
+                point.graphicalProperties.solidFill = colour
+                pie.series[0].dPt.append(point)
             pie.dataLabels = DataLabelList()
             pie.dataLabels.showVal = True
             pie.dataLabels.showCatName = False
             pie.dataLabels.showSerName = False
             pie.dataLabels.showLeaderLines = False
             pie.dataLabels.showLegendKey = False
-            pie.height, pie.width = 7.5, 10
+            pie.dataLabels.position = "bestFit"
+            pie.legend.position = "b"
+            pie.height, pie.width = 9, 12
             ws.add_chart(pie, f"{anchor_col}{chart_row}")
         data_row += 2
-        chart_row += 16       # next app's two pies go below
-    ws.column_dimensions["Q"].width = 30
-    ws.column_dimensions["R"].width = 14
-    ws.column_dimensions["S"].width = 16
+        chart_row += 20       # next app's two pies go below
+    ws.column_dimensions["U"].width = 30
+    ws.column_dimensions["V"].width = 14
+    ws.column_dimensions["W"].width = 16
 
     # Then one tab per app
     for app_name, rows in by_app.items():
@@ -2874,12 +2919,13 @@ def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> b
 def _daily_package(day: str) -> dict:
     """Everything one daily mail needs: summary numbers, mail bodies, and the
     Excel (one tab per app, bytes) for that shift day."""
-    by_app = _rows_for_day(day)
-    per_app = [_app_stats(display, rows) for display, rows in by_app.items()]
+    all_rows, hidden_labels = _rows_for_day(day)
+    visible_rows = {k: v for k, v in all_rows.items() if k not in hidden_labels}
+    per_app = [_app_stats(display, rows) for display, rows in all_rows.items()]
     plain, html = _render_day_mail(day, per_app)
-    notok_count = sum(1 for rows in by_app.values() for r in rows if r.get("result") != "OK")
+    notok_count = sum(1 for rows in visible_rows.values() for r in rows if r.get("result") != "OK")
     return {"day": day, "apps": per_app, "plain": plain, "html": html,
-            "excel": _build_day_workbook(per_app, by_app), "notokRows": notok_count}
+            "excel": _build_day_workbook(per_app, visible_rows), "notokRows": notok_count}
 
 
 def _check_day(day: str) -> str:
