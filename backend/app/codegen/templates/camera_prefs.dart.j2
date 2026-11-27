@@ -73,13 +73,14 @@ class CameraPrefs {
 
   static const String _showConfKey = 'show_confidence_inspecting';
 
-  /// Show the confidence % on the inspection screen while inspecting (default ON).
+  /// Show the confidence % on the inspection screen while inspecting (default OFF).
+  /// Only changeable in Settings, which is behind the saved password.
   /// Off only hides the number on screen: it is still saved in history, local storage and sent to the server.
   static Future<bool> getShowConfidence() async {
     try {
-      return (await SharedPreferences.getInstance()).getBool(_showConfKey) ?? true;
+      return (await SharedPreferences.getInstance()).getBool(_showConfKey) ?? false;
     } catch (_) {
-      return true;
+      return false;
     }
   }
 

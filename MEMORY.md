@@ -80,7 +80,7 @@ silver and a silver part can look black.
 
 ## Hide confidence % while inspecting (built, untested - no Flutter SDK here)
 
-- New Settings switch **Show confidence % while inspecting** (default ON).
+- New Settings switch **Show confidence % while inspecting** (default **OFF**; Settings is behind the saved password, so only a known person can turn it on).
 - OFF only hides the percentage on the inspection screens (photo and live: result
   list, "PREDICTED ... %", box labels). It is **still saved** in history, local
   storage and on the server, and history still shows it.

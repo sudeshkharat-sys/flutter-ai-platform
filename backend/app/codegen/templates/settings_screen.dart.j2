@@ -31,7 +31,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _keepNeg = false;
   bool _negTicks = false;
   bool _autoSubmit = true;
-  bool _showConf = true;
+  bool _showConf = false;
   bool _debugDl = false;
   bool _unlocked = false;
   final TextEditingController _pw = TextEditingController();
@@ -369,7 +369,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: SwitchListTile(
               secondary: const Icon(Icons.percent, color: _crimson),
               title: const Text('Show confidence % while inspecting', style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('On by default. Off = the inspector does not see the percentage on the inspection screen. It is still saved in history, on the phone and on the server.'),
+              subtitle: const Text('Off by default. Off = the inspector does not see the percentage on the inspection screen. It is still saved in history, on the phone and on the server.'),
               value: _showConf,
               activeColor: _crimson,
               onChanged: (v) async {
