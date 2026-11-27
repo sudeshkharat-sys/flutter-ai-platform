@@ -54,6 +54,41 @@ until it looks right, then bake the final values in as the app-builder default.
 - Does the PC ever print this label?
 - Real sticker width (photo shows two small side-by-side labels).
 
+## Mono photo app for glare (idea, not started)
+
+Status: **idea only, not built.** Decided 2026-11-27.
+
+### Why
+Reflection makes inspection results bad: under light a black part can look
+silver and a silver part can look black.
+
+### Facts we agreed on
+- Normal phone sensors only capture color. "Black and white" at capture is a
+  gray conversion of a color photo, and even a true mono sensor does not remove
+  glare (glare is light bouncing into the lens). Gray cannot be turned back into
+  the real colors, but gray can always be made from color.
+- So: keep the **color photo**, and use the **mono (gray) version** for the model.
+
+### Plan
+- Build a **simple app** that takes the **monochrome photo** and **saves the
+  color version in the background**.
+- Glare-free steps (locked exposure / ISO / white balance, diffuse light,
+  polarizing filter, same angle and distance, 2-3 exposure burst, train on
+  glare photos) are added **step by step later, not now**.
+- Open questions: standalone app or a mode in the generated app; fixed lighting
+  or not; need a sample "silver looks black" photo.
+
+## Hide confidence % while inspecting (built, untested - no Flutter SDK here)
+
+- New Settings switch **Show confidence % while inspecting** (default ON).
+- OFF only hides the percentage on the inspection screens (photo and live: result
+  list, "PREDICTED ... %", box labels). It is **still saved** in history, local
+  storage and on the server, and history still shows it.
+- Code: `camera_prefs.dart.j2` (`getShowConfidence`), `settings_screen.dart.j2`
+  (switch), `inspection_camera_screen.dart.j2` and
+  `live_inspection_camera_screen.dart.j2` (`_showConf`),
+  `detection_overlay.dart.j2` (`hideConfidence`). Needs an APK rebuild.
+
 ---
 
 # Index of the other notes files (full detail stays in each file)

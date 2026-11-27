@@ -26,6 +26,8 @@ class DetectionOverlay extends StatelessWidget {
   final Color? overrideColor;
   final List<String> mandatoryClasses;
   final List<String> ignoredClasses;
+  /// Runtime switch (Settings > show confidence): true hides the % on this overlay.
+  final bool hideConfidence;
 
   const DetectionOverlay({
     super.key,
@@ -34,6 +36,7 @@ class DetectionOverlay extends StatelessWidget {
     this.overrideColor,
     this.mandatoryClasses = const [],
     this.ignoredClasses = const [],
+    this.hideConfidence = false,
   });
 
   @override
@@ -46,7 +49,8 @@ class DetectionOverlay extends StatelessWidget {
         mandatoryClasses: mandatoryClasses,
         ignoredClasses: ignoredClasses,
         {% if show_labels %}showLabels: true,{% else %}showLabels: false,{% endif %}
-        {% if show_confidence %}showConfidence: true,{% else %}showConfidence: false,{% endif %}
+        {% if show_confidence %}showConfidence: !hideConfidence,{% else %}showConfidence: false,{% endif %}
+        hideConfidence: hideConfidence,
       ),
     );
   }
@@ -57,6 +61,7 @@ class _BoundingBoxPainter extends CustomPainter {
   final Size previewSize;
   final bool showLabels;
   final bool showConfidence;
+  final bool hideConfidence;
   final Color? overrideColor;
 
   static const _fallbackColors = [
@@ -96,6 +101,7 @@ class _BoundingBoxPainter extends CustomPainter {
     this.ignoredClasses = const [],
     this.showLabels = true,
     this.showConfidence = true,
+    this.hideConfidence = false,
   });
 
   @override
@@ -191,7 +197,7 @@ class _BoundingBoxPainter extends CustomPainter {
         final clsText = result.classifierLabel == null
             ? ''
             : ' → ${result.classifierLabel}'
-                '${result.classifierConfidence != null ? ' ${(result.classifierConfidence! * 100).toStringAsFixed(0)}%' : ''}';
+                '${!hideConfidence && result.classifierConfidence != null ? ' ${(result.classifierConfidence! * 100).toStringAsFixed(0)}%' : ''}';
         final Color clsLabelColor = result.isClassifierPass == null
             ? labelColor
             : (result.isClassifierPass! ? const Color(0xFF43A047) : const Color(0xFFE53935));
@@ -266,12 +272,14 @@ class DetectionOverlay extends StatelessWidget {
   final List<DetectionResult> results;
   final Size previewSize;
   final Color? overrideColor;
+  final bool hideConfidence;
 
   const DetectionOverlay({
     super.key,
     required this.results,
     required this.previewSize,
     this.overrideColor,
+    this.hideConfidence = false,
   });
 
   @override
@@ -282,7 +290,8 @@ class DetectionOverlay extends StatelessWidget {
         previewSize: previewSize,
         overrideColor: overrideColor,
         {% if show_labels %}showLabels: true,{% else %}showLabels: false,{% endif %}
-        {% if show_confidence %}showConfidence: true,{% else %}showConfidence: false,{% endif %}
+        {% if show_confidence %}showConfidence: !hideConfidence,{% else %}showConfidence: false,{% endif %}
+        hideConfidence: hideConfidence,
       ),
     );
   }
@@ -293,6 +302,7 @@ class _BoundingBoxPainter extends CustomPainter {
   final Size previewSize;
   final bool showLabels;
   final bool showConfidence;
+  final bool hideConfidence;
   final Color? overrideColor;
 
   static const _fallbackColors = [
@@ -317,6 +327,7 @@ class _BoundingBoxPainter extends CustomPainter {
     this.overrideColor,
     this.showLabels = true,
     this.showConfidence = true,
+    this.hideConfidence = false,
   });
 
   @override

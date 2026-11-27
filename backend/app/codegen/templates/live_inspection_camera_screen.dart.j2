@@ -389,9 +389,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     ]);
   }
 
+  bool _showConf = true; // Settings > show confidence % while inspecting
+
   @override
   void initState() {
     super.initState();
+    CameraPrefs.getShowConfidence().then((v) { if (mounted) setState(() => _showConf = v); });
     _currentIndex = widget.initialIndex;
     CameraPrefs.getLiveTimeoutSeconds().then((sec) { if (mounted) _watchTimeout = Duration(seconds: sec); });
     WidgetsBinding.instance.addObserver(this);
@@ -2052,6 +2055,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         _cameraController!.value.previewSize != null)
                       Positioned.fill(
                         child: DetectionOverlay(
+                          hideConfidence: !_showConf,
                           results: _liveTickDetections,
                           previewSize: Size(
                             _cameraController!.value.previewSize!.height,
@@ -2514,6 +2518,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         _cameraController!.value.previewSize != null)
                       Positioned.fill(
                         child: DetectionOverlay(
+                          hideConfidence: !_showConf,
                           results: _liveTickDetections,
                           previewSize: Size(
                             _cameraController!.value.previewSize!.height,
@@ -2546,6 +2551,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                       ),
                                       if (_allDetections.isNotEmpty)
                                         DetectionOverlay(
+                                          hideConfidence: !_showConf,
                                           results: _allDetections,
                                           previewSize: _capturedImageSize!,
                                           mandatoryClasses: mandatoryClasses,
@@ -2762,7 +2768,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                     ),
                                     if (detected)
                                       Text(
-                                        "${(entry.value!.confidence * 100).toStringAsFixed(0)}%",
+                                        (_showConf ? "${(entry.value!.confidence * 100).toStringAsFixed(0)}%" : ""),
                                         style: const TextStyle(color: Colors.white54, fontSize: 12),
                                       ),
                                     if (!detected)
@@ -2774,7 +2780,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                       Padding(
                                         padding: const EdgeInsets.only(left: 24, top: 2),
                                         child: Text(
-                                          'PREDICTED: $clsLabel${clsConf != null ? '  ${(clsConf * 100).toStringAsFixed(0)}%' : ''}'
+                                          'PREDICTED: $clsLabel${clsConf != null && _showConf ? '  ${(clsConf * 100).toStringAsFixed(0)}%' : ''}'
                                           '${clsPass == true ? '  OK' : clsPass == false ? '  NOT OK' : ''}',
                                           style: TextStyle(
                                             fontSize: 14,
@@ -2805,7 +2811,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                       ),
                                     ),
                                     Text(
-                                      "${(entry.value!.confidence * 100).toStringAsFixed(0)}%",
+                                      (_showConf ? "${(entry.value!.confidence * 100).toStringAsFixed(0)}%" : ""),
                                       style: const TextStyle(color: Colors.white54, fontSize: 12),
                                     ),
                                     const SizedBox(width: 4),
@@ -3306,9 +3312,12 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
     });
   }
 
+  bool _showConf = true; // Settings > show confidence % while inspecting
+
   @override
   void initState() {
     super.initState();
+    CameraPrefs.getShowConfidence().then((v) { if (mounted) setState(() => _showConf = v); });
     _currentIndex = widget.initialIndex;
     CameraPrefs.getLiveTimeoutSeconds().then((sec) { if (mounted) _watchTimeout = Duration(seconds: sec); });
     WidgetsBinding.instance.addObserver(this);
@@ -4750,6 +4759,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         _cameraController!.value.previewSize != null)
                       Positioned.fill(
                         child: DetectionOverlay(
+                          hideConfidence: !_showConf,
                           results: _liveTickDetections,
                           previewSize: Size(
                             _cameraController!.value.previewSize!.height,
@@ -5200,6 +5210,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                         _cameraController!.value.previewSize != null)
                       Positioned.fill(
                         child: DetectionOverlay(
+                          hideConfidence: !_showConf,
                           results: _liveTickDetections,
                           previewSize: Size(
                             _cameraController!.value.previewSize!.height,
@@ -5231,6 +5242,7 @@ class _LiveInspectionCameraScreenState extends State<LiveInspectionCameraScreen>
                                       ),
                                       if (overlayResult != null)
                                         DetectionOverlay(
+                                          hideConfidence: !_showConf,
                                           results: [overlayResult],
                                           previewSize: _capturedImageSize!,
                                           overrideColor: badgeGreen ? Colors.green : Colors.red,

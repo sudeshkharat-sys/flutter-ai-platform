@@ -214,9 +214,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   int _currentIndex = 0;
   final Map<int, dynamic> _results = {};
 
+  bool _showConf = true; // Settings > show confidence % while inspecting
+
   @override
   void initState() {
     super.initState();
+    CameraPrefs.getShowConfidence().then((v) { if (mounted) setState(() => _showConf = v); });
     _currentIndex = widget.initialIndex;
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
@@ -1043,6 +1046,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                           previewSize: _capturedImageSize!,
                                           mandatoryClasses: mandatoryClasses,
                                           ignoredClasses: ignoredClasses,
+                                          hideConfidence: !_showConf,
                                         ),
                                     ],
                                   ),
@@ -1266,7 +1270,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                         ),
                                         if (detected)
                                           Text(
-                                            "${(entry.value!.confidence * 100).toStringAsFixed(0)}%",
+                                            (_showConf ? "${(entry.value!.confidence * 100).toStringAsFixed(0)}%" : ""),
                                             style: const TextStyle(color: Colors.white54, fontSize: 12),
                                           ),
                                         if (!detected)
@@ -1419,7 +1423,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                                     ),
                                                     child: Text(
                                                       clsLabel != null
-                                                          ? 'PREDICTED: $clsLabel${clsConf != null ? '  ${(clsConf * 100).toStringAsFixed(0)}%' : ''}'
+                                                          ? 'PREDICTED: $clsLabel${clsConf != null && _showConf ? '  ${(clsConf * 100).toStringAsFixed(0)}%' : ''}'
                                                           : 'PREDICTED: (classifier did not run -- check the app build log / model)',
                                                       style: TextStyle(
                                                         fontSize: 17,
@@ -1494,7 +1498,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                       ),
                                     ),
                                     Text(
-                                      "${(entry.value!.confidence * 100).toStringAsFixed(0)}%",
+                                      (_showConf ? "${(entry.value!.confidence * 100).toStringAsFixed(0)}%" : ""),
                                       style: const TextStyle(color: Colors.white54, fontSize: 12),
                                     ),
                                     const SizedBox(width: 4),
@@ -1792,9 +1796,12 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
   int _currentIndex = 0;
   final Map<int, dynamic> _results = {};
 
+  bool _showConf = true; // Settings > show confidence % while inspecting
+
   @override
   void initState() {
     super.initState();
+    CameraPrefs.getShowConfidence().then((v) { if (mounted) setState(() => _showConf = v); });
     _currentIndex = widget.initialIndex;
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
@@ -2582,6 +2589,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                           overrideColor: badgeGreen
                                               ? Colors.green
                                               : Colors.red,
+                                          hideConfidence: !_showConf,
                                         ),
                                     ],
                                   ),
@@ -2740,7 +2748,7 @@ class _InspectionCameraScreenState extends State<InspectionCameraScreen>
                                             ),
                                             const SizedBox(width: 8),
                                             Text(
-                                              "${(d.confidence * 100).toStringAsFixed(0)}%",
+                                              (_showConf ? "${(d.confidence * 100).toStringAsFixed(0)}%" : ""),
                                               style: const TextStyle(
                                                   color: Colors.white54,
                                                   fontSize: 12),
