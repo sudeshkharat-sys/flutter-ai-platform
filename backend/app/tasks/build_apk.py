@@ -6,6 +6,7 @@ import shutil
 import json
 import time
 import tempfile
+import hashlib
 from pathlib import Path
 from app.tasks.celery_app import celery_app
 from app.config import settings
@@ -97,6 +98,48 @@ def _run_command_streaming(db, app_id, cmd, cwd, env):
     if batch:
         _update_status(db, app_id, log_append="".join(batch))
     return process.returncode
+
+
+# ---- Resume support -------------------------------------------------------
+# A small file inside the export folder remembers which build steps finished.
+# If the worker/backend crashes (or the build is stopped), the file stays on
+# disk. The next build for the same app reads it and skips finished steps, and
+# it does NOT run 'flutter clean', so the Gradle/pub cache is reused.
+# The file is deleted when a build succeeds or fails normally, so only an
+# interrupted build is ever resumed.
+STATE_FILE_NAME = ".build_state.json"
+
+def _app_fingerprint(app, models):
+    """Short text that changes if the user edits the app after the crash."""
+    keys = ["name", "package_name", "canvas_state", "app_settings",
+            "inspection_tasks", "model_asset_ids"]
+    data = {k: str(app.get(k)) for k in keys}
+    data["models"] = [str(m.get("id")) + str(m.get("tflite_path")) for m in models]
+    return hashlib.md5(json.dumps(data, sort_keys=True).encode("utf-8")).hexdigest()
+
+def _load_state(export_root):
+    try:
+        return json.loads((export_root / STATE_FILE_NAME).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def _save_state(export_root, state):
+    try:
+        export_root.mkdir(parents=True, exist_ok=True)
+        (export_root / STATE_FILE_NAME).write_text(json.dumps(state), encoding="utf-8")
+    except Exception:
+        pass  # saving progress must never break the build
+
+def _clear_state(export_root):
+    try:
+        (export_root / STATE_FILE_NAME).unlink()
+    except Exception:
+        pass
+
+def _mark_done(export_root, state, step):
+    if step not in state["done"]:
+        state["done"].append(step)
+    _save_state(export_root, state)
 
 def _safe_extract(zip_bytes, extract_path):
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
@@ -216,59 +259,82 @@ def build_apk_task(self, app_id: str):
             params = {f"id{i}": mid for i, mid in enumerate(model_asset_ids)}
             all_model_assets = db.execute_query(query, params)
 
-        # Bump build_number so this build's versionCode is strictly higher
-        # than the last -- otherwise Android can't tell the new APK is an
-        # update and forces an uninstall (wiping the phone's paired-PC
-        # setup) instead of updating in place.
-        build_number_rows = db.execute_query(ProjectQueries.INCREMENT_BUILD_NUMBER, {"id": app_id})
-        app["build_number"] = build_number_rows[0]["build_number"]
-
-        zip_bytes = generate_flutter_project(app, all_model_assets=all_model_assets)
-        
-        # 2. Extract to export directory
-        _update_status(db, app_id, step="Preparing project workspace...", log_append="Cleaning previous build workspace...\n")
         export_root = Path(settings.exports_dir) / app_id
+        fingerprint = _app_fingerprint(app, all_model_assets)
 
-        _force_delete_dir(
-            export_root,
-            log_fn=lambda msg: _update_status(db, app_id, log_append=msg),
+        # Resume only if an interrupted build left its progress file AND the
+        # app was not edited since. Otherwise start fresh.
+        state = _load_state(export_root)
+        resuming = bool(
+            state
+            and state.get("fingerprint") == fingerprint
+            and "generated" in state.get("done", [])
+            and state.get("project_dir")
+            and Path(state["project_dir"]).exists()
         )
 
-        export_root.mkdir(parents=True, exist_ok=True)
-        _update_status(db, app_id, step="Preparing project workspace...", log_append="Extracting project files...\n")
-        _safe_extract(zip_bytes, export_root)
+        if resuming:
+            project_dir = Path(state["project_dir"])
+            done_text = ", ".join(state["done"])
+            _update_status(db, app_id, step="Resuming interrupted build...",
+                           log_append=f"\n--- RESUMING previous build (finished steps: {done_text}) ---\n")
+        else:
+            state = {"fingerprint": fingerprint, "done": [], "project_dir": ""}
 
-        # Locate the Flutter project root by finding pubspec.yaml.
-        # Using next(iterdir()) was unreliable: OS-dependent ordering or any
-        # extra file at the top level would pick the wrong directory and cause
-        # every subsequent flutter command to fail with "No pubspec.yaml found".
-        project_dir = _find_project_dir(export_root)
-        _update_status(db, app_id, log_append=f"Project root: {project_dir.name}\n")
+            # Bump build_number so this build's versionCode is strictly higher
+            # than the last -- otherwise Android can't tell the new APK is an
+            # update and forces an uninstall (wiping the phone's paired-PC
+            # setup) instead of updating in place.
+            build_number_rows = db.execute_query(ProjectQueries.INCREMENT_BUILD_NUMBER, {"id": app_id})
+            app["build_number"] = build_number_rows[0]["build_number"]
+
+            zip_bytes = generate_flutter_project(app, all_model_assets=all_model_assets)
         
-        # 3. Copy model assets
-        if all_model_assets:
-            _update_status(db, app_id, step="Embedding AI models...", log_append=f"Copying {len(all_model_assets)} models...\n")
-            assets_dir = project_dir / "assets" / "models"
-            assets_dir.mkdir(parents=True, exist_ok=True)
+            # 2. Extract to export directory
+            _update_status(db, app_id, step="Preparing project workspace...", log_append="Cleaning previous build workspace...\n")
+            _force_delete_dir(
+                export_root,
+                log_fn=lambda msg: _update_status(db, app_id, log_append=msg),
+            )
+
+            export_root.mkdir(parents=True, exist_ok=True)
+            _update_status(db, app_id, step="Preparing project workspace...", log_append="Extracting project files...\n")
+            _safe_extract(zip_bytes, export_root)
+
+            # Locate the Flutter project root by finding pubspec.yaml.
+            # Using next(iterdir()) was unreliable: OS-dependent ordering or any
+            # extra file at the top level would pick the wrong directory and cause
+            # every subsequent flutter command to fail with "No pubspec.yaml found".
+            project_dir = _find_project_dir(export_root)
+            _update_status(db, app_id, log_append=f"Project root: {project_dir.name}\n")
+        
+            # 3. Copy model assets
+            if all_model_assets:
+                _update_status(db, app_id, step="Embedding AI models...", log_append=f"Copying {len(all_model_assets)} models...\n")
+                assets_dir = project_dir / "assets" / "models"
+                assets_dir.mkdir(parents=True, exist_ok=True)
             
-            for idx, ma in enumerate(all_model_assets):
-                if ma.get("tflite_path"):
-                    shutil.copy(ma["tflite_path"], assets_dir / f"model_{idx}.tflite")
+                for idx, ma in enumerate(all_model_assets):
+                    if ma.get("tflite_path"):
+                        shutil.copy(ma["tflite_path"], assets_dir / f"model_{idx}.tflite")
 
-                    classes = ma.get("classes", [])
-                    if isinstance(classes, str):
-                        classes = json.loads(classes)
-                    labels_content = "\n".join(classes or [])
-                    (assets_dir / f"labels_{idx}.txt").write_text(labels_content)
+                        classes = ma.get("classes", [])
+                        if isinstance(classes, str):
+                            classes = json.loads(classes)
+                        labels_content = "\n".join(classes or [])
+                        (assets_dir / f"labels_{idx}.txt").write_text(labels_content)
 
-                    # OCR bundles (model_kind "ocr_cnn"/"ocr_crnn") carry a
-                    # charset/blank-index sidecar the CTC decoder needs at
-                    # runtime -- copy it alongside the tflite when present.
-                    if ma.get("charset_path") and os.path.exists(ma["charset_path"]):
-                        shutil.copy(ma["charset_path"], assets_dir / f"charset_{idx}.txt")
-                    if ma.get("meta_path") and os.path.exists(ma["meta_path"]):
-                        shutil.copy(ma["meta_path"], assets_dir / f"meta_{idx}.json")
+                        # OCR bundles (model_kind "ocr_cnn"/"ocr_crnn") carry a
+                        # charset/blank-index sidecar the CTC decoder needs at
+                        # runtime -- copy it alongside the tflite when present.
+                        if ma.get("charset_path") and os.path.exists(ma["charset_path"]):
+                            shutil.copy(ma["charset_path"], assets_dir / f"charset_{idx}.txt")
+                        if ma.get("meta_path") and os.path.exists(ma["meta_path"]):
+                            shutil.copy(ma["meta_path"], assets_dir / f"meta_{idx}.json")
         
+            state["project_dir"] = str(project_dir)
+            _mark_done(export_root, state, "generated")
+
         # 4. Run Flutter build
         flutter_path = r"C:\flutter\bin\flutter.bat"
         if not os.path.exists(flutter_path): flutter_path = "flutter"
@@ -279,19 +345,31 @@ def build_apk_task(self, app_id: str):
         env["PATH"] = f"C:\\jdk-17.0.14+7\\bin;C:\\flutter\\bin;C:\\android-sdk\\cmdline-tools\\latest\\bin;C:\\android-sdk\\platform-tools;{env.get('PATH', '')}"
         env["FLUTTER_ROOT"] = "C:\\flutter"
 
-        _update_status(db, app_id, step="Fetching dependencies...", log_append="Running 'flutter clean'...\n")
-        _run_command_streaming(db, app_id, [flutter_path, "clean"], project_dir, env)
+        # 'flutter clean' wipes the cache, so run it only on a fresh build.
+        if not resuming:
+            _update_status(db, app_id, step="Fetching dependencies...", log_append="Running 'flutter clean'...\n")
+            _run_command_streaming(db, app_id, [flutter_path, "clean"], project_dir, env)
 
-        _update_status(db, app_id, step="Fetching dependencies...", log_append="Running 'flutter pub get'...\n")
-        ret_pub = _run_command_streaming(db, app_id, [flutter_path, "pub", "get"], project_dir, env)
-        if ret_pub != 0: raise Exception(f"'flutter pub get' failed with exit code {ret_pub}. Check pubspec.yaml and network access.")
+        if "pub_get" in state["done"]:
+            _update_status(db, app_id, log_append="Skipping 'flutter pub get' (already done).\n")
+        else:
+            _update_status(db, app_id, step="Fetching dependencies...", log_append="Running 'flutter pub get'...\n")
+            ret_pub = _run_command_streaming(db, app_id, [flutter_path, "pub", "get"], project_dir, env)
+            if ret_pub != 0: raise Exception(f"'flutter pub get' failed with exit code {ret_pub}. Check pubspec.yaml and network access.")
+            _mark_done(export_root, state, "pub_get")
 
         dart_path = r"C:\flutter\bin\dart.bat"
         if not os.path.exists(dart_path): dart_path = "dart"
-        _update_status(db, app_id, step="Generating database code...", log_append="\nRunning 'dart run build_runner build'...\n")
-        ret_gen = _run_command_streaming(db, app_id, [dart_path, "run", "build_runner", "build", "--delete-conflicting-outputs"], project_dir, env)
-        if ret_gen != 0: raise Exception(f"Code generation failed with exit code {ret_gen}")
+        if "build_runner" in state["done"]:
+            _update_status(db, app_id, log_append="Skipping code generation (already done).\n")
+        else:
+            _update_status(db, app_id, step="Generating database code...", log_append="\nRunning 'dart run build_runner build'...\n")
+            ret_gen = _run_command_streaming(db, app_id, [dart_path, "run", "build_runner", "build", "--delete-conflicting-outputs"], project_dir, env)
+            if ret_gen != 0: raise Exception(f"Code generation failed with exit code {ret_gen}")
+            _mark_done(export_root, state, "build_runner")
 
+        # The compile step is the long one. Gradle keeps its own cache, so a
+        # re-run after a crash continues from the cached work.
         _update_status(db, app_id, step="Compiling APK...", log_append="\nRunning final compilation...\n")
         ret_build = _run_command_streaming(db, app_id, [
             flutter_path, "build", "apk", "--release", "--no-pub", "--android-skip-build-dependency-validation"
@@ -305,12 +383,19 @@ def build_apk_task(self, app_id: str):
             apk_output = project_dir / "build" / "app" / "outputs" / "apk" / "release" / "app-release.apk"
 
         if apk_output.exists():
+            _clear_state(export_root)
             _update_status(db, app_id, status="ready", step="Success!", apk_path=str(apk_output), log_append="\n--- Build Finished ---")
             return {"status": "ready", "apk_path": str(apk_output)}
         else:
             raise FileNotFoundError("APK built but file not found on disk.")
 
     except Exception as e:
+        # A normal failure is not a crash: next build starts fresh.
+        # (A crash/stop never reaches here, so its progress file stays.)
+        try:
+            _clear_state(Path(settings.exports_dir) / app_id)
+        except Exception:
+            pass
         error_msg = str(e)
         _update_status(db, app_id, status="error", step="Failed", error=error_msg, log_append=f"\nERROR: {error_msg}")
         return {"error": error_msg}
