@@ -670,7 +670,7 @@ def api_data(device: str, appName: str, _: None = Depends(_require_session)):
     return {"rows": rows[:MAX_ROWS_RETURNED], "totalCount": len(rows), "truncated": truncated}
 
 
-def _device_dirs_for_app(app_name_safe: str, include_hidden: bool = False) -> list[str]:
+def _device_dirs_for_app(app_name_safe: str) -> list[str]:
     """Every device's safe folder name that has data for this exact app
     name. Unlike receiver.py's equivalent, this has no alias/merge concept
     of its own -- it's derived purely from the folder layout (same as
@@ -683,7 +683,7 @@ def _device_dirs_for_app(app_name_safe: str, include_hidden: bool = False) -> li
     for device_dir in DATA_DIR.iterdir():
         if not device_dir.is_dir() or device_dir.name == "_master":
             continue
-        if not include_hidden and (device_dir.name, app_name_safe) in hidden:
+        if (device_dir.name, app_name_safe) in hidden:
             continue
         if (device_dir / app_name_safe).exists():
             devices.append(device_dir.name)
@@ -2603,34 +2603,24 @@ def _yesterday_str() -> str:
 SHIFT_NAMES = ["A", "B", "C"]
 
 
-def _rows_for_day(day: str) -> tuple[dict[str, list[dict]], set[str]]:
-    """({app label: every task row of that SHIFT day}, {labels of hidden apps}).
-    Apps hidden in the viewer ARE included (labelled "name (hidden)") so the Summary
-    shows the whole picture; the per-app Excel tabs use only the visible ones.
-    Shift C (00:00-07:00) counts with the day before, same as the on-screen cards."""
-    visible: dict[str, str] = {}
-    for g in _list_groups():
-        visible.setdefault(_safe_name(g["appName"]), g["appName"])
-    all_apps = dict(visible)
-    for _dev, app_safe in _load_hidden():          # hidden device/app pairs
-        all_apps.setdefault(app_safe, app_safe)
+def _rows_for_day(day: str) -> dict[str, list[dict]]:
+    """{app display name: every task row of that SHIFT day}. Apps hidden by the admin
+    are NOT included (same as the viewer). Shift C (00:00-07:00) counts with the day
+    before, same as the on-screen cards."""
+    app_names: dict[str, str] = {}
+    for g in _list_groups():                       # _list_groups already skips hidden apps
+        app_names.setdefault(_safe_name(g["appName"]), g["appName"])
     display_names = _load_display_names()
     out: dict[str, list[dict]] = {}
-    hidden_labels: set[str] = set()
-    for safe, real_name in sorted(all_apps.items()):
+    for safe, real_name in sorted(app_names.items()):
         rows: list[dict] = []
-        for d in _device_dirs_for_app(safe, include_hidden=True):
+        for d in _device_dirs_for_app(safe):       # skips hidden devices too
             rows.extend(_flatten_rows(d, safe))
         label = display_names.get(safe) or real_name
-        is_hidden = safe not in visible
-        if is_hidden:
-            label = f"{label} (hidden)"
-        if label in out:                       # two apps with the same display name
+        if label in out:                           # two apps with the same display name
             label = f"{label} ({safe})"
         out[label] = [r for r in rows if _shift_day(r) == day]
-        if is_hidden:
-            hidden_labels.add(label)
-    return out, hidden_labels
+    return out
 
 
 def _blank_count() -> dict:
@@ -2741,8 +2731,6 @@ def _sheet_title(name: str, used: set) -> str:
 
 
 def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> bytes:
-    # per_app = every app (the Summary tab, hidden ones included);
-    # by_app = visible apps only (one tab each).
     """One Excel for the day.
     - First tab "Summary": every visible app one after another (display name on
       top, the All Results / All VINs tables, some space between apps).
@@ -2919,13 +2907,12 @@ def _build_day_workbook(per_app: list[dict], by_app: dict[str, list[dict]]) -> b
 def _daily_package(day: str) -> dict:
     """Everything one daily mail needs: summary numbers, mail bodies, and the
     Excel (one tab per app, bytes) for that shift day."""
-    all_rows, hidden_labels = _rows_for_day(day)
-    visible_rows = {k: v for k, v in all_rows.items() if k not in hidden_labels}
-    per_app = [_app_stats(display, rows) for display, rows in all_rows.items()]
+    by_app = _rows_for_day(day)
+    per_app = [_app_stats(display, rows) for display, rows in by_app.items()]
     plain, html = _render_day_mail(day, per_app)
-    notok_count = sum(1 for rows in visible_rows.values() for r in rows if r.get("result") != "OK")
+    notok_count = sum(1 for rows in by_app.values() for r in rows if r.get("result") != "OK")
     return {"day": day, "apps": per_app, "plain": plain, "html": html,
-            "excel": _build_day_workbook(per_app, visible_rows), "notokRows": notok_count}
+            "excel": _build_day_workbook(per_app, by_app), "notokRows": notok_count}
 
 
 def _check_day(day: str) -> str:

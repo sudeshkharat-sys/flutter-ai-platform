@@ -209,9 +209,9 @@ All VINs: Total / PASS / FAIL) with Shift A / B / C side by side on the next lin
 
 The attached Excel (`DigitalEye_Daily_<day>.xlsx`) starts with a **Summary** tab: one table,
 two rows per app (Results, VINs), columns All / Shift A / Shift B / Shift C, each with
-Total / OK / NOK / % (OK share). NOK columns have a light red background. Apps hidden in the
-viewer are included here, marked "(hidden)", and two pie charts per app sit below the table.
-After it comes **one tab per visible app** (hidden apps are left out): the same tables on top,
+Total / OK / NOK / % (OK share). NOK columns have a light red background. Apps hidden by the
+admin are left out everywhere, and two pie charts per app sit below the table.
+After it comes **one tab per app**: the same tables on top,
 and below them the VINs that **failed** that day with **every task of each of those VINs**
 (OK and NOT OK, NOT OK highlighted), in the same columns as the viewer's data table.
 
